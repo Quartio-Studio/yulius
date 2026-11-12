@@ -1171,6 +1171,8 @@ test('file paths in the task terminal open the editor at the file and line', asy
 
 test('file names a shell prints open the editor', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // Task #12's page first: a Shell opened before the page has its sandbox waits for it (SPEC-450).
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
   const shell = '.term-views .term-slot:not([hidden])';

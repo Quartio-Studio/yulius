@@ -130,6 +130,8 @@ test('read access explains why the Superagent is not available', async ({ app, b
 // Review round 1: New task from a task page hands the keyboard to the composer, not the Superagent.
 test('New task from the Superagent beside a task focuses the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // Task #12's page first: a tool opened before the page has its sandbox waits for it (SPEC-450).
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
@@ -196,6 +198,46 @@ test('switching to a sandbox whose Superagent starts keeps the keyboard on the p
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
   await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+});
+
+// SPEC-450 (the e2e job of #1113's pull request): chosen while the sandbox's page still loads, the
+// Superagent was the Global one, which then stayed in front in the sandbox and the next one
+// (SPEC-428 SAT-005). It waits for its sandbox and is that sandbox's own.
+test('the Superagent chosen while its sandbox’s page loads is that sandbox’s own', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+  // Not `openSuperagent`: it waits for the page, and this one is chosen before the page is there.
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
+  await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*studio/);
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
+});
+
+// Review of SPEC-450 SSC-007: the page ended outside a sandbox, so the Superagent that waited for
+// one is not wanted there: its button, the one the rail keeps outside a sandbox, is not pressed.
+test('the Superagent chosen for a sandbox is dropped when its page is left for Settings', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+  await screen.getByRole('button', /^Show tools/).click();
+  const superagent = screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent');
+  await superagent.click();
+  await expect(superagent).toHaveAttribute('aria-pressed', 'true');
+
+  await browser.evaluate(() => { window.location.hash = '#/settings'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await expect(superagent).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  // The read of studio's tasks answers a page that is gone: nothing opens.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldWaiting?: number } }).__yuliusMock.heldWaiting ?? 0)).toBe(0);
+  await expect(superagent).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 });
 
 // Review round 3: the rail shown for a Superagent link becomes the person's when they use it for

@@ -829,7 +829,7 @@ export function mountTaskView(ctx, sandbox, task) {
     const accountText = runsOn || 'Continue on…';
     const accountTitle = runsOn && current.account_label ? `Runs on ${current.account_label}` : live ? 'Not on a subscription right now' : 'Continue it on a subscription you choose';
     const account = movable
-      ? h('button', { type: 'button', class: 'chip strip-extra account-chip', 'aria-haspopup': 'menu', title: `${accountTitle}: choose another`, onClick: (event) => openSubscriptionMenu(ctx, event.currentTarget, current) }, icon('key', { size: 12 }), accountText)
+      ? h('button', { type: 'button', class: 'chip strip-extra account-chip', 'aria-haspopup': 'menu', title: `${accountTitle}: choose another`, onClick: (event) => openSubscriptionMenu(ctx, event.currentTarget, { ...current, model: taskModel() }) }, icon('key', { size: 12 }), accountText)
       : runsOn ? h('span', { class: 'chip strip-extra account-chip', title: accountTitle }, icon('key', { size: 12 }), runsOn) : null;
     setChildren(extrasEl,
       supertask,
@@ -871,6 +871,9 @@ export function mountTaskView(ctx, sandbox, task) {
   let detailRead = 0;
   let appliedRead = 0;
   let changesHeard = 0;
+  // The model the task asks for, known from its details (the summary carries none): which
+  // subscriptions can take it depends on it (SPEC-464).
+  const taskModel = () => (detail && detail.id === current.id && detail.model) || null;
   async function loadDetail() {
     const read = ++detailRead;
     const heardBefore = changesHeard;

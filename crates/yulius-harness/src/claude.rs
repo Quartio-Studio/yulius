@@ -18,7 +18,9 @@
 use serde_json::{Map, Value};
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{
+    LimitScope, ModelFamily, SESSION_WINDOW_MINUTES, TokenUsage, WEEKLY_WINDOW_MINUTES,
+};
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
 use crate::observe::Observed;
@@ -26,6 +28,12 @@ use crate::time::{from_epoch_seconds, parse_rfc3339};
 
 /// Maximum bytes of provider limit text kept in [`Observed::LimitReached`].
 const LIMIT_MESSAGE_BYTES: usize = 512;
+
+/// Maximum bytes kept of the model a record names (SPEC-468 CCF-005): the agent writes its own
+/// transcript, where a line may be megabytes, and the model is kept per run and shown. It is
+/// the bound of a model a launch asks for. The version a record names is cut where every path
+/// that reads it ends ([`crate::observe::UsageAccumulator::note_cli_version`]).
+const MODEL_NAME_BYTES: usize = 128;
 
 /// Model name Claude uses for locally generated (non-API) messages.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
@@ -50,16 +58,28 @@ const ACCESS_ERRORS: [&str; 3] = [
 /// HTTP statuses of an API error record that refuse the credential: unauthorized, forbidden.
 const ACCESS_STATUSES: [u64; 2] = [401, 403];
 
+/// Lower-case phrases of a model refused for its usage credits, for records that carry only text
+/// (Claude Code 2.1.322's own list of its limit messages: "You're out of usage credits", "Fable 5
+/// requires usage credits", "You're out of extra usage").
+const CREDITS_PHRASES: [&str; 3] = [
+    "out of usage credits",
+    "requires usage credits",
+    "out of extra usage",
+];
+
+/// Lower-case phrases by which such a text says the limit is one model's: Claude Code names the
+/// model or a way to another one ("Fable 5 requires usage credits", "/model to switch models",
+/// "Switch to another model"). Without one it is Claude Code's message for a subscription whose
+/// window and usage credits are both used up ("You're out of usage credits · resets 3pm"), which
+/// binds every model.
+const MODEL_PHRASES: [&str; 3] = ["requires usage credits", "/model", "another model"];
+
 /// Lower-case phrases of the same refusals, for records that carry only text.
 const ACCESS_PHRASES: [&str; 3] = [
     "disabled claude subscription access",
     "oauth token has been revoked",
     "invalid api key",
 ];
-
-/// The five-hour session window and the weekly window, in minutes.
-const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
-const WEEKLY_WINDOW_MINUTES: u32 = 7 * 24 * 60;
 
 /// The window of Claude's `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, …).
 fn window_of_type(kind: &str) -> Option<u32> {
@@ -93,6 +113,29 @@ const INTERRUPT_MARKERS: [&str; 2] = [
 /// `apiError` of the error record Claude Code writes when the account's usage limit rejects a
 /// request (alongside `error: "rate_limit"` and HTTP 429).
 const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
+
+/// `apiError` of the error record Claude Code writes when the model runs on usage credits and
+/// they are used up or off ("You're out of usage credits. /model to switch models.", SPEC-464).
+/// It comes with `error: "rate_limit"` and HTTP 429 too, but Claude Code 2.1.311 writes it
+/// without `rate_limit_info`; 2.1.322 adds it, with `rateLimitType`
+/// `seven_day_overage_included` when the model's weekly allowance was used up.
+const CREDITS_API_ERROR: &str = "model_requires_usage_credits";
+
+/// The `rateLimitType` of the weekly allowance of usage credits included for a model that
+/// otherwise runs on them: a bucket per model, which Claude Code 2.1.322 calls the "Fable limit"
+/// after the one model that has it today.
+const CREDITS_ALLOWANCE_TYPE: &str = "seven_day_overage_included";
+
+/// What Claude's `rateLimitType` binds: the subscription, or the models of one family. The
+/// allowance of usage credits is the bucket of the model the request ran, whichever that is.
+fn scope_of_type(kind: &str) -> LimitScope {
+    match kind {
+        "seven_day_opus" => LimitScope::Model(Some(ModelFamily::Opus)),
+        "seven_day_sonnet" => LimitScope::Model(Some(ModelFamily::Sonnet)),
+        CREDITS_ALLOWANCE_TYPE => LimitScope::Model(None),
+        _ => LimitScope::Account,
+    }
+}
 
 /// Lower-case marks of a too-long prompt in an error record: Claude Code's own text ("Prompt is
 /// too long", its `PROMPT_TOO_LONG` constant), the API's error (`errorDetails`) or its code.
@@ -170,17 +213,33 @@ const RESUMABLE_NOTE_MARKS: [&str; 2] = [
 /// Normalizes one Claude Code transcript line.
 #[must_use]
 pub fn observe_line(line: &str) -> Vec<Observed> {
+    observe_versioned(line).0
+}
+
+/// [`observe_line`], and the Claude Code version the record names when it is one of the
+/// session's own thread. Claude Code writes its version on every such record, so a session
+/// resumed with nothing typed (it redoes an interrupted turn by itself) names the version it
+/// runs with its first line, long before its next prompt record (SPEC-461 CCM-011). A
+/// sub-agent's record names nothing for the session.
+#[must_use]
+pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
     let Some(record) = parse_object(line) else {
-        return vec![Observed::Malformed];
+        return (vec![Observed::Malformed], None);
     };
-    match str_of(&record, "type") {
+    let observed = match str_of(&record, "type") {
         Some("user") => observe_user(&record),
         Some("assistant") => observe_assistant(&record),
         Some("attachment") => observe_attachment(&record),
         Some("system") => observe_system(&record),
         Some(_) => Vec::new(),
-        None => vec![Observed::Malformed],
-    }
+        None => return (vec![Observed::Malformed], None),
+    };
+    let version = if bool_of(&record, "isSidechain") {
+        None
+    } else {
+        owned_str(&record, "version")
+    };
+    (observed, version)
 }
 
 /// When a transcript line was recorded (its top-level `timestamp`), if it says. Records Claude
@@ -517,7 +576,9 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
             .into_iter()
             .collect();
     }
-    let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
+    let model = str_of(message, "model")
+        .filter(|model| *model != SYNTHETIC_MODEL)
+        .map(|model| shorten(model, MODEL_NAME_BYTES));
     let mut out = Vec::new();
     if let Some(message_id) = owned_str(message, "id") {
         out.push(Observed::AssistantMessage {
@@ -575,11 +636,13 @@ fn recorded_at(limit: Observed, when: Option<Timestamp>) -> Observed {
             resets_at,
             message,
             window_minutes,
+            scope,
             ..
         } => Observed::LimitReached {
             resets_at,
             message,
             window_minutes,
+            scope,
             at: when,
         },
         other => other,
@@ -589,23 +652,37 @@ fn recorded_at(limit: Observed, when: Option<Timestamp>) -> Observed {
 /// Recognizes the usage-limit error record of Claude Code 2.1.x by its structure, whatever its
 /// wording ("You've hit your session limit · resets 10:20am"): `apiError: "usage_limit_reached"`
 /// or a `rejected` rate-limit status, with `resetsAt` (epoch seconds) in
-/// `apiErrorParams.rate_limit_info` or `quotaLimits`.
+/// `apiErrorParams.rate_limit_info` or `quotaLimits`; and the refusal of a model for its usage
+/// credits ([`CREDITS_API_ERROR`]), which is that model's limit also when the record names no
+/// window (SPEC-464).
 fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed> {
     let info = obj_of(record, "apiErrorParams")
         .and_then(|params| obj_of(params, "rate_limit_info"))
         .or_else(|| obj_of(record, "quotaLimits"));
     let rejected = info.and_then(|i| str_of(i, "status")) == Some("rejected");
-    if str_of(record, "apiError") != Some(USAGE_LIMIT_API_ERROR) && !rejected {
+    let api_error = str_of(record, "apiError");
+    let credits = api_error == Some(CREDITS_API_ERROR);
+    if api_error != Some(USAGE_LIMIT_API_ERROR) && !credits && !rejected {
         return None;
     }
+    let kind = info.and_then(|i| str_of(i, "rateLimitType"));
+    let scope = match kind.map(scope_of_type) {
+        Some(scope @ LimitScope::Model(_)) => scope,
+        // The refusal is the model's whichever window the response claimed.
+        _ if credits => LimitScope::Model(None),
+        _ => LimitScope::Account,
+    };
+    // A credits refusal's `resetsAt` is the reset of the window the response claimed: only the
+    // allowance's own says when the model runs again.
     let resets_at = info
+        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE))
         .and_then(|i| i.get("resetsAt"))
         .and_then(Value::as_i64)
         .and_then(from_epoch_seconds);
-    let window_minutes = info
-        .and_then(|i| str_of(i, "rateLimitType"))
+    let window_minutes = kind
         .and_then(window_of_type)
-        .or_else(|| window_of_text(&text.to_lowercase()));
+        .or_else(|| window_of_text(&text.to_lowercase()))
+        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE));
     let message = if text.trim().is_empty() {
         "usage limit reached"
     } else {
@@ -615,6 +692,7 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         resets_at,
         message: shorten(message, LIMIT_MESSAGE_BYTES),
         window_minutes,
+        scope,
         at: None,
     })
 }
@@ -632,9 +710,25 @@ fn access_lost(record: &Map<String, Value>, text: &str) -> bool {
 }
 
 /// Recognizes Claude usage-limit error text such as `Claude AI usage limit reached|1760000000`
-/// (epoch seconds after `|`) or `5-hour limit reached ∙ resets 3pm` (no absolute time).
+/// (epoch seconds after `|`) or `5-hour limit reached ∙ resets 3pm` (no absolute time), and the
+/// text of a refusal for usage credits ([`CREDITS_PHRASES`]): the model's when the text names
+/// the model or a way to another one ([`MODEL_PHRASES`]), else the subscription's.
 fn limit_signal(text: &str) -> Option<Observed> {
     let lower = text.to_lowercase();
+    if CREDITS_PHRASES.iter().any(|p| lower.contains(p)) {
+        let scope = if MODEL_PHRASES.iter().any(|p| lower.contains(p)) {
+            LimitScope::Model(None)
+        } else {
+            LimitScope::Account
+        };
+        return Some(Observed::LimitReached {
+            resets_at: None,
+            message: shorten(text.trim(), LIMIT_MESSAGE_BYTES),
+            window_minutes: None,
+            scope,
+            at: None,
+        });
+    }
     if !LIMIT_PHRASES.iter().any(|p| lower.contains(p)) {
         return None;
     }
@@ -654,6 +748,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
         resets_at,
         message: shorten(human.trim(), LIMIT_MESSAGE_BYTES),
         window_minutes: window_of_text(&lower),
+        scope: LimitScope::Account,
         at: None,
     })
 }
@@ -765,6 +860,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Claude AI usage limit reached".into(),
                 window_minutes: None,
+                scope: LimitScope::Account,
                 at: None,
             })
         );
@@ -774,6 +870,7 @@ mod tests {
                 resets_at: None,
                 message: "5-hour limit reached ∙ resets 3pm".into(),
                 window_minutes: Some(300),
+                scope: LimitScope::Account,
                 at: None,
             })
         );
@@ -784,6 +881,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into(),
                 window_minutes: Some(300),
+                scope: LimitScope::Account,
                 at: None,
             })
         );
@@ -793,6 +891,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your weekly limit · resets Oct 12".into(),
                 window_minutes: Some(10080),
+                scope: LimitScope::Account,
                 at: None,
             })
         );
@@ -945,6 +1044,13 @@ mod tests {
             !synthetic
                 .iter()
                 .any(|o| matches!(o, Observed::AgentWork { .. }))
+        );
+        // Nor an answer of the session: a resumed session that only says so has not worked
+        // (SPEC-469).
+        assert!(
+            !synthetic
+                .iter()
+                .any(|o| matches!(o, Observed::TurnComplete { .. }))
         );
         assert!(
             assistant(r#""end_turn""#, false)
@@ -1266,6 +1372,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Limit hit, see you soon".into(),
                 window_minutes: Some(300),
+                scope: LimitScope::Account,
                 at: None,
             }]
         );
@@ -1277,12 +1384,158 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "usage limit reached".into(),
                 window_minutes: None,
+                scope: LimitScope::Account,
                 at: None,
             }]
         );
         // A transient rate limit that was retried is not a usage limit.
         let transient = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"allowed_warning","resetsAt":1760000000},"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429) · retrying"}]}}"#;
         assert_eq!(observe_line(transient), Vec::<Observed>::new());
+    }
+
+    /// SPEC-464, production 2026-11-11: the refusal of a model that runs on usage credits once
+    /// they are used up ("You're out of usage credits. /model to switch models.") is a usage
+    /// limit of that model. Claude Code 2.1.311 writes it without `rate_limit_info` (task #438's
+    /// record, ids replaced); 2.1.322 adds the allowance's reset (task #443's).
+    #[test]
+    fn a_usage_credits_refusal_is_a_usage_limit() {
+        let text = "You're out of usage credits. /model to switch models.";
+        let old = r#"{"parentUuid":"p1","isSidechain":false,"type":"assistant","uuid":"u1","timestamp":"2026-11-11T14:49:49.800Z","message":{"diagnostics":null,"id":"m1","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}],"context_management":null},"requestId":"req_1","apiError":"model_requires_usage_credits","error":"rate_limit","errorDetails":"429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"},\"request_id\":\"req_1\"}","isApiErrorMessage":true,"apiErrorStatus":429,"perTurnEffort":null,"userType":"external","entrypoint":"cli","sessionId":"s1","version":"2.1.311"}"#;
+        assert_eq!(
+            observe_line(old),
+            vec![Observed::LimitReached {
+                resets_at: None,
+                message: text.into(),
+                window_minutes: None,
+                scope: LimitScope::Model(None),
+                at: parse_rfc3339("2026-11-11T14:49:49.800Z"),
+            }]
+        );
+        let new = r#"{"parentUuid":"p2","isSidechain":false,"type":"assistant","uuid":"u2","timestamp":"2026-11-11T14:49:50.566Z","message":{"id":"m2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"requestId":"req_2","apiError":"model_requires_usage_credits","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794556800,"rateLimitType":"seven_day_overage_included","overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false}},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"version":"2.1.322"}"#;
+        // The allowance is the bucket of the model the session runs: no family is named.
+        let allowance = Observed::LimitReached {
+            resets_at: Some(Timestamp(1_794_556_800_000)),
+            message: text.into(),
+            window_minutes: Some(WEEKLY_WINDOW_MINUTES),
+            scope: LimitScope::Model(None),
+            at: parse_rfc3339("2026-11-11T14:49:50.566Z"),
+        };
+        assert_eq!(observe_line(new), vec![allowance.clone()]);
+        // A sub-agent shares the session's credential: its refusal is the session's too.
+        let sidechain = new.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+        assert_eq!(observe_line(&sidechain), vec![allowance]);
+
+        let record = |fields: serde_json::Value, text: &str| {
+            let mut record = serde_json::json!({"type": "assistant", "isApiErrorMessage": true,
+                "error": "rate_limit", "apiErrorStatus": 429,
+                "message": {"model": "<synthetic>", "content": [{"type": "text", "text": text}]}});
+            if let (Some(map), Some(more)) = (record.as_object_mut(), fields.as_object()) {
+                map.extend(more.clone());
+            }
+            record.to_string()
+        };
+        let scope_and_reset = |line: &str| match observe_line(line).as_slice() {
+            [
+                Observed::LimitReached {
+                    scope, resets_at, ..
+                },
+            ] => Some((*scope, *resets_at)),
+            _ => None,
+        };
+        // The response claimed another window (the body said `credits_required`): the refusal
+        // is still the model's, and that window's reset is not when the model runs again.
+        let other_claim = record(
+            serde_json::json!({"apiError": "model_requires_usage_credits", "apiErrorParams":
+                {"rate_limit_info": {"status": "rejected", "resetsAt": 1_794_000_000,
+                "rateLimitType": "five_hour", "errorCode": "credits_required"}}}),
+            "Fable 5 requires usage credits. /model to switch models.",
+        );
+        assert_eq!(
+            observe_line(&other_claim),
+            vec![Observed::LimitReached {
+                resets_at: None,
+                message: "Fable 5 requires usage credits. /model to switch models.".into(),
+                window_minutes: None,
+                scope: LimitScope::Model(None),
+                at: None,
+            }]
+        );
+        // The typed kind alone, whatever the words (Claude Code's own advice: key on the kind,
+        // the text may change).
+        assert_eq!(
+            scope_and_reset(&record(
+                serde_json::json!({"apiError": "model_requires_usage_credits"}),
+                "This model needs credits you do not have.",
+            )),
+            Some((LimitScope::Model(None), None))
+        );
+        // Only the text says so (a CLI without the typed kind). Claude Code names a way to
+        // another model when the model's own allowance is the limit; the same words without
+        // one are its message for a subscription whose window and credits are both used up,
+        // which binds every model (review round 2).
+        for (worded, scope) in [
+            (text, LimitScope::Model(None)),
+            (
+                "Fable 5 requires usage credits. /model to switch models.",
+                LimitScope::Model(None),
+            ),
+            // Each of the three ways alone: the model named, `/model`, "another model".
+            ("Fable 5 requires usage credits.", LimitScope::Model(None)),
+            (
+                "You're out of usage credits. Run /usage-credits or /model.",
+                LimitScope::Model(None),
+            ),
+            (
+                "You're out of usage credits. Switch to another model to continue.",
+                LimitScope::Model(None),
+            ),
+            (
+                "You're out of usage credits · resets 3pm",
+                LimitScope::Account,
+            ),
+            (
+                "You're out of extra usage · resets 3pm",
+                LimitScope::Account,
+            ),
+        ] {
+            assert_eq!(
+                scope_and_reset(&record(serde_json::json!({}), worded)),
+                Some((scope, None)),
+                "{worded}"
+            );
+        }
+        // A per-model weekly cap is that model's; the 5-hour and weekly windows are the
+        // subscription's, as is a limit of a kind Yulius does not know.
+        for (kind, scope) in [
+            ("seven_day_opus", LimitScope::Model(Some(ModelFamily::Opus))),
+            (
+                "seven_day_sonnet",
+                LimitScope::Model(Some(ModelFamily::Sonnet)),
+            ),
+            ("seven_day_overage_included", LimitScope::Model(None)),
+            ("seven_day", LimitScope::Account),
+            ("five_hour", LimitScope::Account),
+            ("overage", LimitScope::Account),
+        ] {
+            let limit = record(
+                serde_json::json!({"apiError": "usage_limit_reached", "apiErrorParams":
+                    {"rate_limit_info": {"status": "rejected", "resetsAt": 1_794_556_800,
+                    "rateLimitType": kind}}}),
+                "You've hit your limit",
+            );
+            assert_eq!(
+                scope_and_reset(&limit),
+                Some((scope, Some(Timestamp(1_794_556_800_000)))),
+                "{kind}"
+            );
+        }
+        // An agent's ordinary answer that quotes the words is no error record.
+        let answer = r#"{"type":"assistant","message":{"model":"claude-fable-5-2","id":"m3","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}],"stop_reason":"end_turn"}}"#;
+        assert!(
+            !observe_line(answer)
+                .iter()
+                .any(|o| matches!(o, Observed::LimitReached { .. }))
+        );
     }
 
     /// The record Claude Code 2.1.292 writes when the API rejects a prompt as too long (#213):
@@ -1521,5 +1774,32 @@ mod tests {
             serde_json::json!({"origin": {"kind": "task-notification"}, "promptSource": "system"}),
         );
         assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
+    }
+
+    /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. The
+    /// model a record names is kept per run and shown, so it is cut to a few bytes on a
+    /// character boundary (the version is cut where it is kept, `observe.rs`).
+    #[test]
+    fn the_model_a_record_names_is_capped() {
+        let answer = |model: &str| {
+            let record = serde_json::json!({"type": "assistant", "isSidechain": false,
+                "timestamp": "2026-10-10T05:38:01.385Z",
+                "message": {"id": "m1", "model": model, "role": "assistant", "content": [],
+                    "stop_reason": "end_turn"}});
+            observe_line(&record.to_string())
+                .into_iter()
+                .find_map(|observed| match observed {
+                    Observed::AssistantMessage { model, .. } => model,
+                    _ => None,
+                })
+        };
+        assert_eq!(
+            answer("claude-fable-5-2").as_deref(),
+            Some("claude-fable-5-2")
+        );
+        let long = answer(&"m".repeat(4 * 1024 * 1024)).unwrap_or_default();
+        assert_eq!(long, format!("{}…", "m".repeat(MODEL_NAME_BYTES)));
+        // Claude Code's own messages still name no model.
+        assert_eq!(answer(SYNTHETIC_MODEL), None);
     }
 }

@@ -48,6 +48,17 @@ pub struct FakeGitHub {
     pub fail_permissions: std::sync::atomic::AtomicBool,
     /// While set, permission lookups never answer (a GitHub that hangs; SPEC-118).
     pub hang_permissions: std::sync::atomic::AtomicBool,
+    /// The callback URLs registered in the App (SPEC-466); unset, GitHub gives no answer.
+    pub callback_urls: Mutex<Option<Vec<String>>>,
+    /// While set, asking about a callback fails with this (GitHub down).
+    pub callback_error: Mutex<Option<String>>,
+    /// Every callback URL GitHub was asked about, in order: one request each.
+    pub callback_asked: Mutex<Vec<String>>,
+    /// When set, the next callback question dies (a panic), once.
+    pub callback_dies: std::sync::atomic::AtomicBool,
+    /// When set, a callback question waits for it; `callback_entered` says one began.
+    pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
@@ -157,6 +168,29 @@ impl GitHubPort for FakeGitHub {
             expires_at: None,
             refresh_expires_at: None,
         })
+    }
+    async fn callback_registered(&self, _: &GitHubAppConfig, uri: &str) -> AppResult<bool> {
+        self.callback_asked
+            .lock()
+            .map_err(AppError::internal)?
+            .push(uri.to_owned());
+        assert!(
+            !self.callback_dies.swap(false, Ordering::SeqCst),
+            "the callback question dies (a test asked for it)"
+        );
+        let hold = self.callback_hold.lock().ok().and_then(|h| h.clone());
+        if let Some(hold) = hold {
+            self.callback_entered.notify_one();
+            hold.notified().await;
+        }
+        if let Some(why) = self.callback_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(AppError::Upstream(why));
+        }
+        let urls = self.callback_urls.lock().map_err(AppError::internal)?;
+        match urls.as_ref() {
+            Some(urls) => Ok(urls.iter().any(|u| u == uri)),
+            None => Err(AppError::Upstream("GitHub: no answer".into())),
+        }
     }
     async fn refresh_token(&self, _: &GitHubAppConfig, _: &Secret) -> AppResult<GhUserToken> {
         Err(AppError::Upstream("no refresh".into()))
@@ -772,9 +806,19 @@ impl yulius_app::ports::system::SystemProbe for FixedSystem {
 #[derive(Default)]
 pub struct SettableSystem {
     pub disk: std::sync::Mutex<Option<(u64, u64)>>,
+    /// Logical CPUs and memory bytes ([`FixedSystem`]'s by default).
+    pub host: std::sync::Mutex<Option<(u32, u64)>>,
 }
 
 impl SettableSystem {
+    /// Sets the host's logical CPUs and memory bytes.
+    pub fn set_host(&self, cpus: u32, memory: u64) {
+        *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((cpus, memory));
+    }
+
     /// Sets the data disk's total and used bytes.
     pub fn set_disk(&self, total: u64, used: u64) {
         *self
@@ -790,10 +834,17 @@ impl yulius_app::ports::system::SystemProbe for SettableSystem {
             .disk
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixed = yulius_app::ports::system::SystemProbe::snapshot(&FixedSystem, dir);
+        let host = *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         yulius_app::ports::system::SystemSnapshot {
             disk_total: disk.map(|d| d.0),
             disk_used: disk.map(|d| d.1),
-            ..yulius_app::ports::system::SystemProbe::snapshot(&FixedSystem, dir)
+            cpu_count: host.map_or(fixed.cpu_count, |h| Some(h.0)),
+            memory_total: host.map_or(fixed.memory_total, |h| Some(h.1)),
+            ..fixed
         }
     }
 }
@@ -1542,6 +1593,7 @@ pub async fn exhausted_subscription(h: &Harness) -> Result<(), Box<dyn std::erro
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -1871,4 +1923,28 @@ impl SecretAnnouncements {
         }
         sandboxes
     }
+}
+
+/// Holds the server at the pause point `point` for `key` (a task id, an account id, a path)
+/// until the returned sender is used, or 60 s pass; the receiver says when it got there. The
+/// hook blocks the thread that reached the point, so the test's runtime needs another one.
+pub fn hold_point(
+    point: yulius_app::race::Point,
+    key: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached, at) = std::sync::mpsc::channel();
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(point, std::path::Path::new(key), move || {
+        let _ = reached.send(());
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(60));
+    });
+    (at, go)
+}
+
+/// Waits until the server reached the pause point `at` stands for.
+pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
+    tokio::task::spawn_blocking(move || at.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the server never reached the pause point")?;
+    Ok(())
 }

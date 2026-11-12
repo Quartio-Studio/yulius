@@ -696,6 +696,11 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .account-name-text:hover { text-decoration: underline dotted; }
 .account-rename { width: var(--control-sm); height: var(--control-sm); }
 .account-rename-input { height: var(--control-sm); max-width: 260px; }
+/* The email under the name is typed in place the same way (SPEC-463). A long address is cut
+   short of its pencil, which stays on the line (the field's refusal wraps under the field). */
+.account-email-edit { display: flex; align-items: center; gap: 2px; min-width: 0; flex-wrap: wrap; }
+.account-email-text { min-width: 0; max-width: calc(100% - var(--control-sm) - 2px); cursor: text; }
+.account-email-text:hover { text-decoration: underline dotted; }
 .plan-badge { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent-fg); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; flex: none; }
 .account-state { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; white-space: nowrap; flex: none; }
 .state-ok { background: var(--ok-soft); color: var(--ok-fg); }
@@ -2267,6 +2272,8 @@ a.dl-task:hover { text-decoration: underline; }
 .btn-github { height: var(--control-xl); font-weight: 600; }
 /* The quiet "another GitHub account" link under the sign-in button (ACC-004). */
 .auth-alt { align-self: center; }
+/* GitHub refuses this address after a move (SPEC-466 MVC-012). */
+.auth-moved { align-items: flex-start; }
 .drawer-backdrop { display: none; }
 
 /* ---------------------------------------------------------------- home (pages/home.js, UI-045) */
@@ -2814,9 +2821,74 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .leftovers-what > div + div { margin-top: 2px; }
 .leftovers-path { overflow-wrap: anywhere; color: var(--muted); }
 .update-confirm-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
+/* The instance page's Resource limits card (SPEC-459 HSL-008). */
+.limits-intro { margin: 0; max-width: 72ch; }
+.limits-notice { align-items: flex-start; }
+.limits-notice .banner-text { display: flex; flex-direction: column; gap: 8px; }
+.limits-stale { margin: 0; padding-left: 16px; }
+.limits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.limit { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--border); }
+.limit-head { gap: 8px; flex-wrap: wrap; }
+.limit-name { font-size: var(--fs); line-height: var(--lh); }
+.limit-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.limit-note { margin: 0; max-width: 88ch; }
+.limit-form { flex-wrap: wrap; }
+.limit-input { width: 112px; }
+/* The instance page's Address card (SPEC-466 MVC-011). */
+.address-ok { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.address-ok .icon { flex: none; color: var(--ok); }
+.address-moved { margin: 0; max-width: 88ch; }
+/* The instance page's "Move to another host" card (SPEC-470). */
+.move-intro, .move-arrived-head, .move-recorded { margin: 0; max-width: 88ch; }
+.move-recorded { display: flex; align-items: flex-start; gap: 8px; }
+.move-recorded .icon { flex: none; margin-top: 2px; color: var(--muted); }
+.move-form { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.move-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px 16px; }
+.move-waiting { color: var(--text-2); }
+.move-waiting .spinner, .move-frozen .spinner { display: inline-block; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.move-key, .move-attention, .move-frozen { align-items: flex-start; }
+.move-key .banner-text, .move-attention .banner-text, .move-frozen .banner-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.move-key p, .move-frozen p, .move-outcome p { margin: 0; max-width: 88ch; }
+.move-key-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.move-key-line code { overflow-wrap: anywhere; user-select: all; }
+.move-attention-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.move-checklist > summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.move-lines { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.move-line { display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.move-line-mark { display: inline-flex; align-items: center; gap: 6px; }
+.move-line-mark .icon { flex: none; color: var(--muted); }
+.move-line-ok .move-line-mark .icon, .move-line-changed .move-line-mark .icon { color: var(--ok); }
+.move-line-manual .move-line-mark .icon { color: var(--warn-fg); }
+.move-line-failed .move-line-mark .icon { color: var(--danger); }
+.move-line-text { min-width: 0; overflow-wrap: anywhere; }
+.move-line-detail { color: var(--text-2); }
+.move-arrived { display: flex; flex-direction: column; gap: 8px; }
+.move-error { overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .move-fields { grid-template-columns: minmax(0, 1fr); }
+  .move-line { grid-template-columns: minmax(0, 1fr); }
+}
+.address-missing { align-items: flex-start; }
+.address-missing .banner-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.address-missing p { margin: 0; max-width: 80ch; }
+.address-values { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.address-value dt { font-weight: 600; }
+.address-value dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.address-value code { overflow-wrap: anywhere; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+/* The Claude Code card (SPEC-461): the check's line, the channel choice, tasks on an older version. */
+.claude-check { margin: 0; }
+.claude-check .spinner { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.claude-unmanaged { margin: 0; overflow-wrap: anywhere; }
+.claude-notes { margin: 0; padding-left: 16px; }
+.claude-channel { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
+.claude-channel .select { flex: none; width: 220px; max-width: 100%; }
+.claude-channel p { margin: 0; }
+.claude-behind { border-top: 1px solid var(--border); padding-top: 12px; }
+.claude-behind h3, .claude-behind p { margin: 0; }
+.claude-behind-list { margin: 0; padding-left: 16px; }
 /* The Vidoc card's projects, each with its switch (SPEC-338 VOF-005). */
 .vidoc-instance { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border); padding-top: 12px; max-width: 520px; }
 .vidoc-instance p { margin: 0; }

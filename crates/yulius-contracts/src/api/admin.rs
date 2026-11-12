@@ -69,6 +69,17 @@ pub struct AccountUsageView {
     /// Weekly cap of Sonnet models (`seven_day_sonnet`), when the provider reports it.
     #[serde(default)]
     pub weekly_sonnet: Option<UsageWindowView>,
+    /// Weekly allowance of usage credits the Fable models run on, once Claude reported it used
+    /// up: at 100 % until `resets_at` (SPEC-464).
+    #[serde(default)]
+    pub weekly_fable: Option<UsageWindowView>,
+    /// A limit Claude reported for the whole subscription, which binds every model, until
+    /// `limit_resets_at` (SPEC-464).
+    #[serde(default)]
+    pub limit_reached: bool,
+    /// When that limit ends; `null` when Claude did not say, or without one.
+    #[serde(default)]
+    pub limit_resets_at: Option<String>,
     /// When the snapshot was observed.
     pub observed_at: Option<String>,
 }
@@ -88,9 +99,14 @@ pub struct AccountView {
     pub usage: AccountUsageView,
     /// Last error (no secrets).
     pub last_error: Option<String>,
-    /// Email of the Claude account behind it, read at sign-in; `null` while unknown (SPEC-244).
+    /// Email of the Claude account behind it: the one an administrator typed (SPEC-463), else
+    /// the one read at sign-in; `null` while unknown (SPEC-244).
     #[serde(default)]
     pub email: Option<String>,
+    /// Whether an administrator typed `email`; `false` for one Claude gave, and while unknown
+    /// (SPEC-463 EML-006).
+    #[serde(default)]
+    pub email_typed: bool,
     /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
@@ -149,13 +165,19 @@ pub struct AccountLoginCancelled {
     pub status: String,
 }
 
-/// `PATCH /api/admin/accounts/{id}`: only the label. The pool has no priorities or switches
-/// (F 2026-10-10); any other field is refused (422).
+/// `PATCH /api/admin/accounts/{id}`: the label, the email, or both; a request with neither is
+/// refused. The pool has no priorities or switches (F 2026-10-10); any other field is refused
+/// (422).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateAccount {
-    /// Label.
-    pub label: String,
+    /// The new name (trimmed, 1 to 80 printable characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The email an administrator types for the subscription (trimmed, an address); an empty
+    /// string removes it (SPEC-463 EML-003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 /// One account in [`CapacityView`]. Everyone sees label, status and usage; `id`, `email` and
@@ -279,6 +301,60 @@ pub struct GitHubStatus {
     pub install_url: Option<String>,
     /// Installation found.
     pub installed: bool,
+}
+
+/// `GET /api/admin/instance/address` and `POST /api/admin/instance/address/check` (SPEC-466
+/// MVC-010): the card "Address" of Settings → Instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceAddress {
+    /// The instance's public URL.
+    pub public_url: String,
+    /// GitHub's answer about the sign-in callback; `null` without a GitHub App.
+    pub github: Option<GitHubCallback>,
+    /// The last move to this host; `null` when the instance never moved.
+    pub moved: Option<InstanceMoved>,
+}
+
+/// Whether GitHub accepts a public URL's sign-in callback, and what a person registers in the
+/// GitHub App for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubCallback {
+    /// `registered`, `missing` or `unknown`.
+    pub state: String,
+    /// Why GitHub's answer is not known.
+    pub reason: Option<String>,
+    /// The callback URL to register.
+    pub callback_url: String,
+    /// The homepage URL to set.
+    pub homepage_url: String,
+    /// The App's settings page on GitHub.
+    pub settings_url: String,
+    /// When GitHub answered (RFC 3339); `null` before its first answer.
+    pub checked_at: Option<String>,
+}
+
+/// What the first start after a move recorded (`moved.json`, SPEC-460 MIG-050).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceMoved {
+    /// The old public URL.
+    pub from: Option<String>,
+    /// The new one.
+    pub to: Option<String>,
+    /// When the new instance first started (RFC 3339).
+    pub at: String,
+    /// Tasks put back in the queue.
+    pub queued: u32,
+    /// Tasks left stopped: a person had paused them or was stopping them.
+    pub left: u32,
+    /// Tasks that could not be queued; their owners find them under Needs you.
+    pub failed: u32,
+}
+
+/// `GET /internal/github-callback` (loopback, root's commands; SPEC-466 MVC-020).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubCallbackAnswer {
+    /// GitHub's answer; `null` without a GitHub App.
+    pub github: Option<GitHubCallback>,
 }
 
 /// `POST /api/admin/github/manifest`.

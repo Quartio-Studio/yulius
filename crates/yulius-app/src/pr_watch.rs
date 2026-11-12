@@ -30,6 +30,7 @@ use crate::delivery::{delivery_profile, past_merge};
 use crate::error::AppError;
 use crate::merge_train::Hold;
 use crate::model::{SandboxRecord, TaskRecord};
+use crate::task_message::Typed;
 
 /// How often the watch runs: an event reaches the task within it.
 pub const WATCH_EVERY: Duration = Duration::from_secs(20);
@@ -457,7 +458,10 @@ impl App {
                     // character may end the paste early (review minor 4).
                     let text = crate::task_message::clean_message(&text);
                     let paste = format!("\x1b[200~{text}\x1b[201~");
-                    match self.type_into_session(&task, paste.as_bytes()).await {
+                    match self
+                        .type_into_session(&task, paste.as_bytes(), Typed::Prompt)
+                        .await
+                    {
                         Ok(()) => {
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
                             typed.push((task.id.clone(), text));

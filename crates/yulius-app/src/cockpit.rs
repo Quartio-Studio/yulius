@@ -30,7 +30,7 @@ use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::ModelFamily;
+use yulius_domain::usage::{ModelFamily, ReportedLimit};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -174,10 +174,10 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model family the Cockpit runs: the default model's, Fable 5.2, which no per-model weekly
-/// cap binds (SPEC-023).
+/// The model family the Cockpit runs: the default model's, Fable 5.2 (SPEC-023), which its
+/// weekly allowance of usage credits binds (SPEC-464).
 fn cockpit_family() -> ModelFamily {
-    ModelFamily::of(Some(yulius_domain::harness::DEFAULT_CLAUDE_MODEL))
+    crate::capacity::default_family()
 }
 
 impl App {
@@ -562,12 +562,18 @@ impl App {
                 Observation::LimitReached {
                     resets_at,
                     window_minutes,
+                    scope,
                     at,
                     ..
                 } if at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
                     && resets_at.is_none_or(|resets| resets.0 > now.0) =>
                 {
-                    Some((resets_at, window_minutes, at))
+                    let limit = ReportedLimit {
+                        scope,
+                        window_minutes,
+                        resets_at,
+                    };
+                    Some((limit, at))
                 }
                 _ => None,
             });
@@ -584,17 +590,14 @@ impl App {
                     _ = ended.wait_for(|ended| *ended) => return,
                 }
             }
-            if let Some((resets_at, window_minutes, at)) = limit {
+            if let Some((limit, at)) = limit {
                 runtime
                     .limit_handled_ms
                     .fetch_max(at.unwrap_or(now).0, Ordering::SeqCst);
                 if let Err(err) = self.save_shell(&runtime) {
                     tracing::warn!(error = %err, shell = %runtime.id(), "could not keep the cockpit's handled limit");
                 }
-                if self
-                    .cockpit_limit_reached(&runtime, resets_at, window_minutes)
-                    .await
-                {
+                if self.cockpit_limit_reached(&runtime, limit).await {
                     return;
                 }
             }
@@ -878,13 +881,12 @@ impl App {
     async fn cockpit_limit_reached(
         self: &Arc<Self>,
         runtime: &Arc<ShellRuntime>,
-        resets_at: Option<Timestamp>,
-        window_minutes: Option<u32>,
+        limit: ReportedLimit,
     ) -> bool {
         let current = runtime.account.get().cloned();
-        tracing::info!(shell = %runtime.id(), account = ?current, "usage limit reached in the cockpit");
+        tracing::info!(shell = %runtime.id(), account = ?current, scope = ?limit.scope, "usage limit reached in the cockpit");
         if let Some(account) = &current {
-            self.record_limit(account, resets_at, window_minutes).await;
+            self.record_limit(account, limit, cockpit_family()).await;
         }
         let Ok(_starting) = self
             .cockpit_start_slot(runtime.creator(), runtime.seat())

@@ -98,6 +98,8 @@ pub struct FakeHelper {
     pub cleared: AtomicUsize,
     /// The kept re-check of the host (SPEC-203 HST-012).
     pub host_check: Mutex<Option<yulius_contracts::update::HostCheckReport>>,
+    /// Why a restart would leave the server down (SPEC-458 RST-003).
+    pub blocker: Mutex<Option<String>>,
 }
 
 impl FakeHelper {
@@ -170,6 +172,9 @@ impl UpdateHelper for FakeHelper {
     }
     fn clear_request(&self) {
         self.cleared.fetch_add(1, Ordering::SeqCst);
+    }
+    fn restart_blocker(&self) -> Option<String> {
+        self.blocker.lock().ok()?.clone()
     }
 }
 

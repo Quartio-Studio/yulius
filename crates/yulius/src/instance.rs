@@ -13,6 +13,9 @@ pub mod export;
 pub mod extract;
 pub mod freeze;
 pub mod import;
+pub mod inventory;
+pub mod migrate;
+pub mod receipts;
 pub mod walk;
 
 /// The manifest's archive path, the first entry.
@@ -21,6 +24,9 @@ pub const MANIFEST: &[u8] = b"yulius-export.json";
 pub const MANIFEST_LEN: u64 = 8192;
 /// The archive format this build writes and reads.
 pub const FORMAT: u32 = 1;
+/// The archive path of an exact pass's last entry: 16 bytes for every path the old host holds
+/// ([`archive::path_digest`]), so the new host removes the rest.
+pub const KEPT: &[u8] = b"yulius-export.kept";
 
 /// Exit code of a command refused before it changed anything.
 pub const REFUSED: u8 = 2;
@@ -52,6 +58,25 @@ pub struct Manifest {
     pub subuid: Option<IdRange>,
     /// The service user's subordinate gids.
     pub subgid: Option<IdRange>,
+    /// Set when the stream is one pass of a move into a staged copy, not a whole copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<Pass>,
+}
+
+/// A stream that is one pass of a move (SPEC-465, ADR-0303): what it builds on and how it was
+/// read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pass {
+    /// The staged copy's id.
+    pub stage: String,
+    /// The count of streams the new host acknowledged before this one.
+    pub seq: u64,
+    /// This stream's own name.
+    pub nonce: String,
+    /// Read while the instance ran: the totals are estimates and nothing is removed.
+    pub live: bool,
+    /// The paths the old host holds, listed in [`KEPT`] (exact passes).
+    pub kept: u64,
 }
 
 /// The service and its user.
@@ -155,11 +180,16 @@ impl Progress {
     pub fn line(&self, done: u64, elapsed: Duration) -> String {
         let secs = elapsed.as_secs_f64().max(0.001);
         let rate = done as f64 / secs;
-        let percent = if self.total == 0 {
-            100.0
-        } else {
-            done as f64 * 100.0 / self.total as f64
-        };
+        if self.total == 0 {
+            // A pass of a move read while the instance runs: nobody knows its length.
+            return format!(
+                "{} {}, {}/s",
+                self.verb,
+                yulius_import::human_bytes(done),
+                yulius_import::human_bytes(rate as u64),
+            );
+        }
+        let percent = done as f64 * 100.0 / self.total as f64;
         let left = if rate >= 1.0 {
             let s = (self.total.saturating_sub(done) as f64 / rate) as u64;
             format!(", {}h{:02}m{:02}s left", s / 3600, s / 60 % 60, s % 60)

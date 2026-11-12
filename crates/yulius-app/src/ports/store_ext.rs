@@ -436,6 +436,23 @@ pub trait UpdateStore: Send + Sync {
     async fn vidoc_off(&self) -> AppResult<Option<crate::vidoc_key::VidocOff>>;
     /// Switches Vidoc off for the instance, by `by` (`Some`), or on again (`None`).
     async fn set_vidoc_off(&self, by: Option<&str>, at: Timestamp) -> AppResult<()>;
+    /// The instance's resource limits record (SPEC-459): a JSON document, `None` before the
+    /// first one is saved.
+    async fn limits(&self) -> AppResult<Option<String>>;
+    /// Saves the limits record.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up: there is no row to keep it.
+    async fn set_limits(&self, doc: &str) -> AppResult<()>;
+    /// The Claude Code release channel chosen in Settings, with when and by whom (SPEC-461
+    /// CCM-009); `None` while the server's configuration is followed.
+    async fn claude_channel(&self) -> AppResult<Option<crate::claude_code::ChosenChannel>>;
+    /// Stores the channel `by` chose (`Some((channel, by))`), or forgets it (`None`).
+    async fn set_claude_channel(
+        &self,
+        channel: Option<(&str, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()>;
 }
 
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
@@ -641,6 +658,14 @@ pub trait NeedsYouStore: Send + Sync {
         &self,
         task: &TaskId,
         request: Option<&crate::needs_you::NeedsYouRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Ends the request at `at` only while it still asks `action`, in one step: a request made
+    /// meanwhile stays. `true` when it ended one.
+    async fn end_task_needs_you_asking(
+        &self,
+        task: &TaskId,
+        action: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.

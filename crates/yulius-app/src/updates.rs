@@ -208,6 +208,16 @@ enum FreezeState {
     Refused,
 }
 
+/// SPEC-458 RST-003: refuses a restart the server's unit would not come back from, before a
+/// task is paused or anything is built. The helper checks again before it stops the unit.
+async fn refuse_unsafe_restart(helper: &Arc<dyn UpdateHelper>) -> AppResult<()> {
+    let helper = Arc::clone(helper);
+    match tokio::task::spawn_blocking(move || helper.restart_blocker()).await {
+        Ok(Some(why)) => Err(AppError::Conflict(format!("{why}; nothing was stopped"))),
+        _ => Ok(()),
+    }
+}
+
 fn build_view(commit: Option<&str>) -> BuildView {
     BuildView {
         commit: commit.map(str::to_owned),
@@ -261,6 +271,19 @@ fn step_message(step: &str) -> Option<&'static str> {
 }
 
 impl App {
+    /// SPEC-470 MVB-023: no update or restart starts while a move's request waits or its run
+    /// is in flight: it would stop and start the unit the move is about to freeze.
+    async fn refuse_during_a_move(&self) -> AppResult<()> {
+        if self.move_in_flight().await {
+            return Err(AppError::Conflict(
+                "the instance is being moved to another host (Settings → Instance): update or \
+                 restart once the move ended or was aborted"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Installs the update services (once; later calls are ignored and return `false`).
     pub fn set_updates(&self, services: UpdateServices) -> bool {
         self.updates.services.set(services).is_ok()
@@ -887,6 +910,7 @@ impl App {
                 "the commit must be a full 40-character id".into(),
             ));
         }
+        self.refuse_during_a_move().await?;
         let services = self
             .update_services()
             .ok_or_else(|| AppError::Conflict("updates are not available on this server".into()))?;
@@ -900,6 +924,7 @@ impl App {
                         .into(),
                 )
             })?;
+        refuse_unsafe_restart(&helper).await?;
         let (summary, via) = {
             let slot = self.updates.check.lock().map_err(AppError::internal)?;
             let snapshot = slot.as_ref().ok_or_else(|| {
@@ -989,15 +1014,17 @@ impl App {
                 "confirm the restart: tasks pause while the server restarts".into(),
             ));
         }
+        self.refuse_during_a_move().await?;
         let services = self.update_services().ok_or_else(|| {
             AppError::Conflict("restarts are not available on this server".into())
         })?;
-        if !services.helper.as_ref().is_some_and(|h| h.installed()) {
+        let Some(helper) = services.helper.clone().filter(|h| h.installed()) else {
             return Err(AppError::Conflict(
                 "the update helper is not installed on this server (see the operations guide)"
                     .into(),
             ));
-        }
+        };
+        refuse_unsafe_restart(&helper).await?;
         let build = services
             .build
             .clone()

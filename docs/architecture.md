@@ -92,10 +92,26 @@ counts as the sandbox's, one above the service does not
 [SPEC-316](../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
 [decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
+The sandboxes' groups do not live in the server's unit. systemd 258 and later start a unit
+inside the unit's own group, which the kernel refuses while a group below it holds processes, so
+a server whose sandboxes lived in its unit could not start again while one session ran. They live
+in the sessions unit `yulius-sandboxes.service`, in one slice with the server; the slice's
+`cgroup.procs` is the service user's, which lets a process move between the two units. A root
+unit, `yulius-adopt.service`, runs before every start of the server and moves what an earlier
+layout left in the server's unit. `yulius host setup` writes all three; without them the server
+uses its own unit as before, and Restart and Update now are refused where the restart would fail
+([SPEC-458](../.ai/specs/SPEC-458-urgent-yulius-service-cannot-restart-wit.md),
+[decision 0298](decisions/0298-sessions-live-in-their-own-unit.md)). The task limits below are
+then the sessions unit's.
+
 ```mermaid
 flowchart TD
-  UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
-  UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
+  SLICE["yulius.slice: cgroup.procs is the service user's"] --> UNIT["yulius.service: restarted freely"]
+  UNIT --> SRV["server/: yulius serve"]
+  SLICE --> SESS["yulius-sandboxes.service: pids.max (TasksMax); stopping it ends every session"]
+  SESS --> KEEP["keeper/: sleep infinity, root's"]
+  SESS --> ALL["sandboxes/: pids.max 3/4 of the unit's"]
+  ADOPT["yulius-adopt.service: root, before every start of yulius.service"] -.->|"moves sandboxes/ an earlier layout left in yulius.service"| SESS
   ALL --> SBX
   SBX["sandboxes/sandbox: cpu.weight 500 while CI jobs run, else 100; cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
@@ -156,9 +172,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   restart stops it instead of adopting it. A run's own processes end with the run (its own PID
   namespace). A CD deploy already running finishes.
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
-  `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
-  (`KillMode=process` keeps the holder and front running). The front makes it again before each
-  start, and the upkeep tick does the same for a kept engine or relay front (SPEC-201, #614).
+  `engine/` leaf is then empty, so where the sandboxes still live in `yulius.service` systemd
+  prunes it when that unit stops (`KillMode=process` keeps the holder and front running). The
+  front makes it again before each start, and the upkeep tick does the same for a kept engine or
+  relay front (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
+  moved to the sessions unit is replaced, since the path it was started with leads nowhere
+  (SPEC-458 LAY-005).
 - **Disk.** Its storage counts toward the quota, and so do the production holder's layer and
   engine storage (consumer `production`). Under pressure, a running engine's unused images
   and build cache are pruned through its own control socket, the production engine's too; a
@@ -222,9 +241,12 @@ flowchart LR
 [decision 0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 `yulius host setup` (root, `crates/yulius/src/host_setup.rs`) brings a host to what sandboxes
 need for Docker: Docker Engine for the bases to copy, the host's own daemon stopped, the
-modules, the service user and its ids, the unit's delegation, a root-owned binary, a current
-base. Each item reads the host through a `Host` trait, so the same items run against a fake host
-in tests. `yulius host check` is the same list with only the safe fixes. After each healthy
+modules, the service user and its ids, an AppArmor rule that lets bwrap create user namespaces
+where the host restricts them (`host_setup/bwrap_userns.rs`, proven by starting bwrap;
+[decision 0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)),
+the unit's delegation, a root-owned binary, a current base. Each item reads the host through a
+`Host` trait, so the same items run against a fake host in tests. `yulius host check` is the
+same list with only the safe fixes. After each healthy
 install, the update helper runs the **new** binary's `host check --json` and keeps the report.
 One verdict, `yulius_sandbox::docker_status::verdict`, gives "sandbox Docker" to the doctor, the
 setup and the server. The server's isolation adapter adds the base's rebuild and the sandboxes
@@ -233,7 +255,7 @@ on their own Docker. Settings → Instance reads it all from `GET /api/admin/san
 
 ```mermaid
 flowchart LR
-  OP["operator: sudo yulius host setup"] --> HS["host items: needrestart rule, packages, Docker Engine, host units off, modules, user + ids, unit drop-in, binary owner, base build"]
+  OP["operator: sudo yulius host setup"] --> HS["host items: needrestart rule, packages, Docker Engine, host units off, modules, user + ids, bwrap's AppArmor rule, unit drop-in, binary owner, base build"]
   HS --> V["verdict: sandbox Docker"]
   HS --> SM["doctor --contained, doctor --docker-smoke"]
   UH["update helper (root), after a healthy install"] -->|"new binary: host check --json (safe fixes)"| HC["status.host_check, host-check.json"]
@@ -244,27 +266,95 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Resource limits
+
+Six limits decide how much work the host takes: live sessions, CI jobs, CI runs per sandbox, a
+sandbox's memory, its disk quota and the disk bound of a CD or environment run
+([SPEC-459](../.ai/specs/SPEC-459-resource-limits-default-to-the-host-s-si.md),
+[decision 0294](decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)). The rules are pure
+functions in `yulius_domain::limits`: `Limit::host_sized` (the formula over the host's CPUs,
+memory and the data directory's filesystem), `Limit::resolve` (a Settings number, else
+"host-sized" saved in Settings, else the unit's `YULIUS_*` value, else the formula) and
+`Pin::stale` (a number configured on a host that differs by a quarter or more). The application
+part is `crates/yulius-app/src/limits.rs`: `App::load_limits` runs once at start, before the
+isolation is built; it reads the host through the system probe port, records each unit number
+with the host it was first seen on (one JSON document, `instance.limits`, migration 0051), adapts
+by itself when `yulius instance import` left `<data>/.yulius-limits-adapt`, and answers the
+start values. From then on the values in force live in the `App`: the session queue, the CI lanes
+and the CD run disk read them at each use, the CI job slots (`ci/slots.rs`) resize while jobs
+run, and the disk quota reaches the sandbox manager through the isolation port's
+`set_disk_quota`. Only the sandbox memory waits for a restart: each sandbox's `memory.max` and
+the CI budget pools are sized at start. Settings → Instance works through
+`/api/admin/limits*` (superadmin; every change audited).
+
+```mermaid
+flowchart LR
+  UNIT["service unit: YULIUS_* numbers (optional)"] --> LOAD
+  PROBE["system probe: CPUs, memory, data disk"] --> LOAD["App::load_limits (at start)"]
+  MARK["instance import: .yulius-limits-adapt"] -->|"first start: host-sized for pins of another host"| LOAD
+  LOAD <--> ROW[("instance.limits: settings, pins with their host")]
+  LOAD -->|"memory, disk quota"| ISO["isolation (sandbox manager)"]
+  LOAD --> LIVE["limits in force (in the App)"]
+  UI["Settings → Instance: Resource limits"] -->|"/api/admin/limits*"| SET["set, host-sized, remove, adapt, keep"]
+  SET --> ROW
+  SET --> LIVE
+  LIVE --> Q["session queue"]
+  LIVE --> CI["CI job slots and lanes"]
+  LIVE --> CD["CD run disk bound"]
+  SET -->|"set_disk_quota"| ISO
+```
+
 ## Claude Code updates
 
 Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
 as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
-[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md)): the
-adapter `wiring/claude_cli.rs` checks npm's dist-tag hourly, installs a newer platform binary
-under `<data>/claude-code` after its sha512, ELF and embedded-version checks (never running it),
-and switches `current`
-atomically; the version policy (channels, versions, platform package, what to keep) is
-`yulius_domain::agent_cli`. `NamespaceIsolation` puts the newer of the host's npm package and
-`current` into each join's `extra_binds`, read-only at the host package's path, and agent runs,
-shells, CI jobs and dev CD runs add it to their binds, so a run gets the version current when it
-starts and keeps it while it runs. Sign-ins are sealed tokens, untouched by a new binary.
+[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md);
+[SPEC-461](../.ai/specs/SPEC-461-claude-code-in-sandboxes-always-knows-yu.md),
+[decision 0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md)).
+
+- `wiring/claude_cli.rs` (the updater) reads npm's dist-tags, installs a newer platform binary
+  under `<data>/claude-code` after its sha512, ELF, embedded-version and default-model checks
+  (never running it), and switches `current` atomically. `wiring/claude_models.rs` reads a binary
+  for the model ids the composer offers (`OFFERED_CLAUDE_MODELS`), in chunks, once per file.
+- `wiring/claude_service.rs` (`ClaudeCode`, the app's `AgentCli` port) holds the channel in
+  effect, runs the checks (hourly, at a channel change, on demand, one at a time), records what
+  the last one did and writes `status.json` for `yulius doctor`.
+- The policy is `yulius_domain::agent_cli`: channels (`latest` by default), versions, the platform
+  package, what to keep, which gap refuses a release (the default model), when `stable` falls
+  forward to `latest`, and when a running session moves (`moves_now`).
+- `yulius_app::claude_code` is Settings, Instance: the view, the stored channel
+  (`instance.claude_channel`, which wins over `YULIUS_CLAUDE_UPDATES`), "Check now", and the move
+  of running tasks. Each run records the Claude Code version its transcript names
+  (`metrics.cli_version`); when a turn ends and that is older than what runs get now, the session
+  is restarted on the newer one through the subscription switch (reason `claude_code`), at the
+  Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
+  A session stays while a goal its person set in it is open, while a draft may sit in its
+  prompt box (typed since its last prompt, by a person or by Yulius; a prompt that waits in
+  Claude Code's queue is not known, issue #1204) and while another restart of its task is under
+  way; an idle one that is restarted is idle again from its launch on, with what its goal left
+  (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
+  through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
+  A restart whose session does not reach its SessionStart hook (the launch fails, the process
+  ends by itself, or two minutes pass) stops further restarts on that version.
+
+`NamespaceIsolation` puts the newer of the host's npm package and `current` into each join's
+`extra_binds`, read-only at the host package's path, as the channel says when the run starts
+(`off`: the host's), and agent runs, shells, CI jobs and dev CD runs add it to their binds.
+Sign-ins are sealed tokens, untouched by a new binary.
 
 ```mermaid
 flowchart LR
-  REG["registry.npmjs.org"] -->|"hourly: dist-tag, then the platform tarball"| UPD["claude_cli updater (server)"]
-  UPD -->|"sha512, ELF, embedded version, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
-  HOST["host npm install (operator)"] --> PICK{"newer of the two"}
+  REG["registry.npmjs.org"] -->|"hourly, on demand: dist-tags, then the platform tarball"| UPD["claude_cli updater (server)"]
+  UPD -->|"sha512, ELF, embedded version, default model, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
+  UPD -.->|"without the default model: refused"| ST["status.json and the Instance card"]
+  SET["Settings, Instance: channel, Check now"] --> SVC["claude_service (channel in effect, checks)"]
+  SVC --> UPD
+  SVC --> ST
+  HOST["host npm install (operator)"] --> PICK{"newer of the two (off: the host's)"}
   CUR --> PICK
   PICK -->|"SandboxJoin.extra_binds, read-only at the host package path"| RUN["new run: agent, shell, CI job, dev CD"]
+  PICK -->|"a running task's turn ends on an older version: restart by resume"| RUN
+  ST --> DOC["yulius doctor: FAIL without the default model"]
 ```
 
 ## Sandbox browser DevTools
@@ -281,7 +371,18 @@ sandbox Superagent its own sandbox's browser, the Global Superagent the browser 
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
 ([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
-[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). Pixels cannot be
+redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
+`browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
+a password field. Before and after a capture the browser instance reads the page's text and
+fields with a probe in an isolated world and its frames (frame tree, `iframe` targets, and how
+many frames of its own origin the probe read), and searches them in Yulius, also with the
+redactor's matcher, holding the input lock throughout:
+`browser_screenshot` is refused while the page shows an agent secret, is on an exposed host
+(a value went outside a password field, or was edited as typed), frames a host a secret went
+into, or cannot be read; password sign-ins keep screenshots
+([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
+[decision 0291](decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
 
 ```mermaid
 flowchart LR
@@ -290,6 +391,7 @@ flowchart LR
   G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
+  Y -->|"after a fill: probe page text before a screenshot"| C
   C -->|"fd 4: responses, events"| Y
   O["Other local process"] -. "no DevTools port to connect to" .-x C
 ```
@@ -370,6 +472,85 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+### What a limit binds
+
+A limit Claude reports binds either the subscription or the models of one family
+([SPEC-464](../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md),
+[decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). The harness
+reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
+subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
+The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
+runs on one) is the limit of the model the task is launched with, the default model when it
+names none. So is Claude Code's refusal "You're out of usage credits"
+(`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
+or a reset. A record that carries only the text is the model's when the text names the model or
+a way to another one ("/model to switch models"), else the subscription's.
+
+A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
+`weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
+that window only for tasks of that family, so other models still run on the subscription, and the
+subscription is usable for the model again the moment the window resets. A reset is believed only
+as far as a window lasts, a week and a day ahead (`LIMIT_RESET_MAX_MS`): the limit record comes
+from the session's transcript, which is the agent's own file. Without a believable reset the
+window is full with no reset time. A family that has no window of its own (Haiku, an unknown
+name) gets the subscription's limit instead (`limit_reached`), which the provider's next reading
+replaces.
+
+Such a window ends at its reset, at a new sign-in of the subscription (it was the previous
+sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
+endpoint reports the Opus and Sonnet caps when the plan has them; nothing reports the allowance of
+usage credits), and one that does not keeps it only while its reset is ahead, so a window without
+a reset ends with the next provider's reading. A session's reading replaces the 5-hour and weekly
+windows only. A subscription reads `limited` while the default model cannot run on it. A reported
+limit, a session's reading and a provider's reading read, change and store a subscription's usage
+through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
+which a new sign-in takes too; it is never held across a request to the provider, so a limit
+recorded while a reading is under way is kept. The write that marks a subscription refused
+(`record_access_lost`) takes the lock as well: a usage write stores the status it read together
+with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+
+A model's limit nothing says the end of, with no subscription the task can go to, makes the task
+wait, and the provider's reading that ends it lets the pool try the task once
+(`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
+the task is not started on that subscription at each of its readings, so no session is restarted
+every few minutes with nobody told. What follows depends on what is known. When another
+subscription says when it resets, the task waits for that reset and the pool leaves the refusing
+subscription out for the waiting task, whatever its readings say meanwhile
+(`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
+subscription remain possible, one each: once no reset is known any more (the other subscription
+was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
+is refused there may be sent back by that limit's own decision; refused again, the task waits
+or asks as above. The count is the task's and in memory: an answer from the model clears it, and
+so does a restart of Yulius. Only a model's limit is bounded this way
+(`ReportedLimit::without_an_end`): a provider's reading shows the windows of the subscription's
+own limit.
+
+Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
+paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
+when the session's agent works again, or sooner when Yulius takes the task on at the refusal
+that cut its turn (`TakenOn`; a usage limit, or a subscription Claude refuses for good): it runs
+the session on past the refusal, or pauses the task until a subscription can take it and resumes
+it then. The audit log says which (`task.needs_you.resolved`). When the last subscription is
+refused, the request gives way to the one that asks for a sign-in.
+
+```mermaid
+flowchart TD
+    R["Claude Code's limit record<br/>(usage_limit_reached, or model_requires_usage_credits)"] --> S{"What it binds<br/>(LimitScope)"}
+    S -->|"the subscription:<br/>five_hour, seven_day, unknown"| A["5-hour or weekly window full,<br/>limit in effect until the reset"]
+    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet (named),<br/>seven_day_overage_included (the task's model)"| K{"Reset named,<br/>at most 8 days ahead?"}
+    K -->|yes| M["that family's weekly window full<br/>until the reset; other windows kept"]
+    K -->|no| A2["that family's window full, no reset:<br/>a provider's reading ends it"]
+    A --> P["Pool: the task moves past the cut turn,<br/>or waits and resumes at the reset"]
+    M --> P
+    A2 --> B{"Nowhere to go, and refused<br/>again after one retry?"}
+    B -->|no| P
+    B -->|yes| W{"Does another subscription<br/>say when it resets?"}
+    W -->|yes| L["The task waits for that reset;<br/>the pool leaves this subscription out for it"]
+    W -->|no| N["The session stays at the refusal:<br/>Yulius asks a person"]
+    U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
+```
+
 ```mermaid
 sequenceDiagram
     participant C as Claude Code (account A)
@@ -419,20 +600,32 @@ flowchart LR
 A subscription (an `accounts` row) has the name a person gives it and the email of the Claude
 account behind its credential ([SPEC-244](../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
 [decision 0185](decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
-Administrators rename it in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}`).
-The email is read, never typed. After a sign-in stores a credential, the app asks Claude's profile
-with that credential through the usage adapter. The background usage round asks the same for
-every signed-in account whose email was never answered. A definite answer is stored with
-`email_checked_at`; a temporary failure backs that account off. A new credential clears both.
-Only administrators get the email in views (UI-022); task summaries never carry it.
+Administrators edit both in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}` with
+`label`, `email` or both; [SPEC-463](../.ai/specs/SPEC-463-hey-i-want-to-do-a-quick-change.md),
+[decision 0300](decisions/0300-an-administrator-can-type-a-subscriptions-email.md)).
+
+The email is Claude's unless an administrator types it. After a sign-in stores a credential, the
+app asks Claude's profile with that credential through the usage adapter. The background usage
+round asks the same for every signed-in account whose email was never answered. A definite answer
+is stored with `email_checked_at`; a temporary failure backs that account off. A new credential
+clears both.
+
+A typed email is marked `email_typed` and is the person's, like the name. A new credential keeps
+it, and Claude's answer stores only `email_checked_at` beside it. Removing it (an empty `email`)
+clears the email, the mark and the check, so the round asks Claude again. Each of these writes
+settles the email in one SQL statement (a name changed with it goes in the same transaction), so
+an answer that arrives while a person types cannot replace what they typed.
+`AccountView.email_typed` tells the two apart: the toast after a sign-in names only an email
+Claude gave. Only administrators get the email in views (UI-022); task summaries never carry it.
 
 ```mermaid
 flowchart LR
-  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email, email_checked_at = NULL"| DB[("accounts")]
+  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email_checked_at = NULL, email = NULL unless typed"| DB[("accounts")]
   L -->|"record_account_email"| P["UsageProbe::account_email: GET /api/oauth/profile"]
   R["Background usage round"] -->|"backfill_account_emails: email_checked_at IS NULL"| P
-  P -->|"address, none or 401/403: set_account_email(email, now)"| DB
+  P -->|"address, none or 401/403: set_account_email(email, now); beside a typed email only the time"| DB
   P -->|"timeout, 5xx, 429: back off"| R
+  A["Administrator: Subscriptions page"] -->|"PATCH email: update_account, email_typed = 1; empty: email, mark and check cleared"| DB
   DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
@@ -448,7 +641,38 @@ over the record that closes the turn, which otherwise settles it as Your turn
 A failed goal check is retried the same way, and a notice ends the wait for a goal verdict. A goal
 cleared, achieved or failed while a retry is armed settles the closed turn, since no check-in
 comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
-request. A restart's replay folds the last notice the same way.
+request. A restart's replay folds the last notice the same way. A pause that follows a usage limit
+or a refused subscription in the same turn is not such a pause: Claude Code answers a model
+refused for its usage credits with "Goal paused · the request was rate limited", and the limit
+path already moves the task or resumes it at the reset, so nobody is asked
+([decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
+is held meanwhile (`LimitGoalPause`): when the switch past the limit is refused before it ends the
+session, the session stays at the refusal, and the held pause puts the task in Needs you after
+all; a later move past the limit ends that request and says so in the audit log
+(`task.needs_you.resolved`). It is asked and audited once per limit: an audit entry written at or
+after Claude Code recorded the limit says the limit was asked about, so a restart that reads the
+same pause again only puts the task back under Needs you.
+
+That request says the task does not go on by itself, so it ends when the session does go on
+([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
+[decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md),
+#1183): at the agent's first work after the pause (`AgentWork`, or the session's own answer),
+whatever woke it: Claude Code's wake-up, a prompt Yulius typed, a session Yulius restarted, or no
+prompt anyone sees. A prompt alone ends nothing, since the API may refuse it again. Only the
+request Yulius opened ends this way (`end_task_needs_you_asking`, by its action in one statement);
+a request the agent made stays. The pause's flag is answered by work like a notice's
+(`notice_attention_ms`); a run that starts while the request is open takes the flag's time back
+from the task's state, which a restart of Yulius forgot. That time stands only while the task
+still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
+without a word, and one raised later is not answered by work. The replay after a restart folds when
+the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
+request ends, and the task the pause flagged follows its session. The request Yulius opens for a
+usage limit nothing says the end of follows the same rule (`STALLED_ACTIONS`, one flag helper
+`flag_stalled`), and so does a goal pause's asked at a limit; a limit that cut the turn counts as
+a pause there, so work before it answers nothing. A request of an earlier goal pause that such a
+limit overtook therefore ends by what Yulius does at the limit: a move past it or a wait it
+resumes from ends the request, and at a refused move the session is at a refusal again and the
+request stays.
 
 ```mermaid
 stateDiagram-v2
@@ -457,8 +681,12 @@ stateDiagram-v2
     Retrying --> Working: the goal check-in prompt (or a person's)
     Retrying --> NeedsYou: "Goal paused after 3 automatic retries"
     Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
+    Working --> Working: a pause after a usage limit of the same turn (the limit path moves the task)
+    Working --> NeedsYou: that pause, when the move past the limit is refused
     Retrying --> Waiting: /goal clear (no check-in comes)
     NeedsYou --> Working: a person sends a message
+    NeedsYou --> Working: the agent works again (the request ends by itself)
+    NeedsYou --> NeedsYou: a woken turn the API refuses again (the request stays)
     note right of Retrying: reads Working; the turn record does not settle it
 ```
 
@@ -589,7 +817,8 @@ failure names the entry that stayed. No link is followed: an item reached throug
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
 the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
-loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the same key opens
+`/internal/github-callback` for `yulius instance migrate`, [Moving an instance](#moving-an-instance)).
 
 **Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
 [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
@@ -884,7 +1113,9 @@ A restart or an update is invisible to a task's session
   closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
   pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
   started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
-  any Yulius tool from the shell.
+  any Yulius tool from the shell. In a session `yulius` is the `/yulius/bin` wrapper, which passes
+  only the session's commands (`wait`, `tool`, `security-scan`, `remove`) to the binary; a test
+  fails when a subcommand documented "In a task's session" is missing from it (SPEC-451).
 
 ```mermaid
 sequenceDiagram
@@ -1915,7 +2146,8 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 `<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it; its request (what happened, the problem, what to do or decide) is
+you until a person writes to it (a request Yulius opened itself also ends when what it describes
+does, [ADR-0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)); its request (what happened, the problem, what to do or decide) is
 stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
@@ -2393,7 +2625,9 @@ each sandbox and on each sandbox page, including the filters pages keep in their
 Tasks and Git back links) go back there, and a link to where the person already is opens the plain
 path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
-the background keeps its files' text without Monaco models. Sign-out and an expired session forget
+the background keeps its files' text without Monaco models. A tool chosen while a sandbox's page
+loads and no sandbox is the panel's context yet waits, shown pressed, and opens in that sandbox
+([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md) SSC-007). Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
 and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the
@@ -2942,8 +3176,9 @@ The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a s
 
 `yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222, module
 `crates/yulius/src/instance/`) copy a whole instance to another host. Both run as root on the host,
-outside Yulius. The export freezes the whole `yulius.service` unit with systemd's freezer (the
-cgroup v2 `cgroup.freeze` of the unit, above every run's own freeze of ADR-0131), so the server and
+outside Yulius. The export freezes the whole `yulius.service` unit and its sessions unit
+(`yulius-sandboxes.service`, ADR-0298) with systemd's freezer (the
+cgroup v2 `cgroup.freeze` of each unit, above every run's own freeze of ADR-0131), so the server and
 everything it started stop at once and the data directory is read-only while it is read. A first
 walk of the data directory plans the archive's exact length and a fingerprint of its headers; the
 second streams an uncompressed pax tar to stdout (`archive.rs`): the manifest with the total first,
@@ -2961,7 +3196,7 @@ sequenceDiagram
   participant I as yulius instance import (new VM)
   participant N as New data directory
   O->>E: sudo yulius instance export | ssh root@new yulius instance import
-  E->>D: systemctl freeze yulius.service (wait for frozen)
+  E->>D: systemctl freeze yulius.service, then yulius-sandboxes.service (wait for frozen)
   E->>F: walk 1: exact length + header fingerprint
   E->>I: manifest (total_bytes) first
   I->>I: check format, schema, free space, no instance, make user and ids
@@ -2974,6 +3209,158 @@ sequenceDiagram
   I->>I: compare checksum and length, remove the incomplete marker
   E->>D: systemctl thaw (or --move: stay frozen, disable)
   O->>I: then yulius host setup on the new VM
+```
+
+## Moving an instance
+
+`yulius instance migrate` (SPEC-460, ADR-0297, module `crates/yulius/src/instance/migrate/`) moves
+an instance to another host as one resumable checklist. It runs as root on the old host and reaches
+the new one only through `ssh` with a one-time key and a handful of constant remote commands
+(`remote.rs`): every value travels as JSON or as a stream on standard input, never in a command
+line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
+same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
+(`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
+software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
+the new host by pure rewrites (release codename, public URL, host name). The copy is the export's
+own stream, sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
+runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
+host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
+and its inode's change time) and leaves an entry out only while its receipt matches; an entry
+earns one only when it last changed two seconds before its pass, which begins by syncing the
+filesystem. Receipts are believed only in the boot they were earned in and while the clock was
+not set back; otherwise they are dropped and the staged copy is filled again. A walk while the
+instance runs holds every directory it is in open and names its entries through it
+(`walk.rs`), so nothing a sandbox does to its own files leads the walk, which runs as root,
+outside the data directory. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
+streams and what the last one installed; it names a stream before its first entry, so a receive
+that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
+every path the old host holds, and the new host removes the rest. Both hosts then count the
+copy's inventory (`inventory.rs`: entries and bytes per top-level folder and a fingerprint over
+every entry's metadata, as the import installs it and in the old host's ids; the import's own
+limits mark is left out of every pass and of both counts, `walk::left_out`), and the new
+instance is started only when they are equal. Only the move's identity, the cutover's progress
+and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); every step reads the
+facts and acts if needed, so the same command continues a move. A run that goes on from a
+recorded start asks the new instance first and never ends well with both running: whatever
+unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
+that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
+carries a mark
+(`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
+old host (`yulius-app::host_move`).
+
+A move to another URL leaves one thing only a person can do: add the new callback URL to the
+GitHub App (GitHub has no API for it). The instance finds out by itself whether that is done
+(SPEC-466, ADR-0302, `yulius-app::github_callback`): it posts its own client id and secret, a
+made-up code and its callback URL to GitHub's token endpoint, which answers `redirect_uri_mismatch`
+or `bad_verification_code` (believed only when a control question about a URL that cannot be
+registered is refused), and keeps the answer (registered, missing, or unknown with the reason)
+in memory. GitHub is asked at start, on demand, and when an answer that is not "registered" is
+read once it is due (30 s old; after eleven answers in a row that say the same the wait doubles
+with each one, up to 4 minutes, until a demand or a changed answer); never in a loop, and one
+check at a time. Settings → Instance reads it with the
+App's settings link and the move's report (`GET /api/admin/instance/address`), the sign-in page
+through `GET /api/setup/status`. The answer is advice: a sign-in start always goes to GitHub and
+asks nothing; a sign-in that completes proves the callback and makes the answer "registered" by
+itself. The root command cannot open the sealed App
+credentials, so it asks the running server (`migrate/github.rs`): `GET /internal/github-callback`
+on the loopback listener with the key of `<data>/leftovers-cli.key`, in the plan for the new URL
+(the old instance answers) and before the finish (the new instance answers, through the staged
+build). Remote clients follow the move by themselves: the old host's proxy answers 307 with
+`X-Yulius-Moved-To`, and `yulius remote` (`yulius-import::remote`) takes exactly that redirect
+(a bare `https` origin, the same path) as a move: the saved sign-in is kept under the new URL, the
+old name is remembered (`moved` in `remote-credentials.json`) and the call is repeated once.
+
+A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
+the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
+installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
+host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+`yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
+the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
+argument: such a run never signs in as root does (the command's operator sign-in is not tried, no
+ssh configuration is read, every connection offers the move's one-time key alone), so the new host
+is one where a person added the key's line and never one that merely trusts root here. The helper
+trusts nothing in the file: it takes it only from the data directory's owner, with the exact
+schema, fresh and once, never while the update helper's unit runs, and checks every value again
+with the rules the server used (`yulius-app::migration::rules`, where `destination_ok` now lives).
+It reports the request, a heartbeat and the command's exit code in `helper.json`, keeps every id it
+handled until its request would be stale, never touches the command's checklist, and passes an
+abort that arrives meanwhile on as SIGTERM, which the command answers by its own rule. The
+application (`yulius-app::migration`, port `ports::migration::MoveHelper`, adapter
+`wiring::migrate_files`) stores nothing: `GET /api/admin/instance/migration` is computed from the
+request file, the helper's report and the command's `status.json` on every read, because the
+database travels with the copy and a row "running" would arrive on the new host as a move of that
+host. For the same reason no copy takes the request along (`migrate/` is left out of every copy, as
+`update/` is). Asks are taken one at a time and audited before the request is written; a removal
+and a repeated write name the request's id; and the checklist itself tells whose it is: the helper
+passes the request's id to the command, which writes it into `status.json`, and one that names
+another request, or none (a run started on the host), is the recorded move's, not what the helper's
+last run found. A move needs the plan that was shown for the same values, and the host typed by the
+person. The finished checklist travels with the Finish step (`target::Request::Carry`, then the new
+host's Finish leaves it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in
+the data directory the running instance's user owns), so the new instance's page shows it. The page
+(`web/assets/instancemove.js`) keeps trying while nothing answers, and notices the old address's
+redirect with a request that follows none.
+
+```mermaid
+flowchart LR
+  B["Settings → Instance: Move to another host (superadmin)"] -->|"POST /api/admin/instance/migration: plan, move (typed host), abort"| S["yulius.service (service user)"]
+  S -->|"<data>/migrate/request.json, 0600"| P["yulius-migrate.path (root)"]
+  P --> H["yulius migrate-helper: owner, schema, fresh, once, no update running, rules"]
+  H -->|"child process, one argument per value"| M["yulius instance migrate --no-sign-in"]
+  M -->|"status.json: phase, lines, key line, new URL"| F["/var/lib/yulius-migrate (root, 0711)"]
+  H -->|"helper.json: running, heartbeat, exit code or refusal"| F
+  F -->|"read on every GET, nothing stored"| S
+  S -->|"MigrationView"| B
+  M -->|"the one-time key alone, added there by a person; Finish: the checklist travels"| N["new host: arrived.json"]
+  N -->|"its server reads it"| B2["Settings → Instance on the new instance"]
+  B -. "nothing answers: frozen; a redirect: the new address" .-> B2
+```
+
+```mermaid
+sequenceDiagram
+  participant O as Operator (root, SSH)
+  participant M as yulius instance migrate (old host)
+  participant D as systemd (old host)
+  participant Y as Old yulius.service
+  participant T as yulius instance migrate-target (new host)
+  participant S as New yulius.service
+  participant G as GitHub
+  O->>M: sudo yulius instance migrate root@new-host
+  M->>T: one-time key, this build, facts (release, space, disks, ports)
+  M->>Y: is the new URL's callback registered? (loopback listener, CLI key)
+  Y->>G: token endpoint, App credentials, a made-up code, the new callback URL
+  G->>Y: registered or missing
+  M->>O: Plan: what a person must do (the App's link and values), then "Proceed?"
+  M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
+  loop warm passes, the old instance runs
+    M->>T: marker of the staged copy (stage id, streams, last stream)
+    M->>M: receipts follow the marker, sync the data directory
+    M->>T: a pass: every entry without a matching receipt
+    T->>M: marker: entries installed and synced
+    M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
+  end
+  M->>D: systemctl freeze yulius.service
+  M->>T: the frozen pass: what changed, and every path the old host holds
+  T->>T: install, remove what is not among those paths
+  T->>M: inventory of the copy
+  alt inventories differ or a step fails
+    M->>D: systemctl thaw (the old instance runs on)
+  else equal
+    M->>T: mark the copy, finish host setup, start
+    T->>S: systemctl enable, start, wait for the build to answer
+    alt not healthy
+      M->>T: stop and disable
+      M->>D: systemctl thaw
+    else healthy
+      M->>D: systemctl disable (stays frozen)
+      S->>S: first start: queue the tasks that were live
+      M->>M: old proxy redirects to the new URL (X-Yulius-Moved-To: laptops' CLI follows)
+      M->>T: is the callback registered by now?
+      T->>S: the same question (loopback listener, CLI key)
+      S->>G: token endpoint, as above
+      M->>T: remove the key, enable the firewall
+    end
+  end
 ```
 
 ## Agent primitives
@@ -3002,6 +3389,10 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
+  Stop remembers its time and settles after a prompt that is being applied, and a prompt read
+  after it is not a new turn
+  ([ADR-0299](decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).

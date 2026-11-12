@@ -77,12 +77,45 @@ watching, steering and unblocking.
   are in every task's environment and in CD runs' (dev: all; production: those its `[cd.<name>]`
   names, SPEC-278). The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
+- **Resource limits fit the host** (SPEC-459): how many sessions, CI jobs and CI runs per
+  sandbox run at once, a sandbox's memory and disk quota, and the disk a deploy may fill are
+  sized from the host's CPUs, memory and data disk, with no number in the service unit. Settings
+  → Instance → Resource limits shows the host, each value, where it comes from (host-sized, the
+  unit, a setting) and the formula; the superadmin saves a number there (it wins over the unit),
+  in force at once except the sandbox memory, which waits for a restart. A number pinned on a
+  host of another size is noticed: the page and the start log name it, the host it was
+  configured on and the host-sized value, and one click takes the host-sized values or keeps the
+  numbers. After `yulius instance import` the first start does that by itself.
 - **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
   yulius instance import` pauses every Yulius process, announces the exact size, and streams the
   whole instance (database, keys, sandboxes with uncommitted work and Claude sessions, installed
   packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
   it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
   and disabled. A copy can also go to a file and be installed later.
+- **Move the instance to another host with one command** (SPEC-460): `sudo yulius instance migrate
+  root@new-host` on the old host checks and sets up the new one (a data disk, the old host's
+  packages and apt sources, software outside apt, the unit with its settings and key files, the
+  update helper, Caddy, ufw), copies the data while the old instance still runs (SPEC-465: in
+  passes into a staged copy, resumable after a broken link), freezes it only to send what changed
+  since, proves the copy (entries, bytes and a fingerprint per folder, equal on both hosts),
+  starts the new instance, redirects the old URL and removes its own key. The estimated freeze is
+  shown before it begins and `--max-downtime <minutes>` bounds it. People are asked only in the
+  plan, before anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any
+  failure before the new instance runs thaws the old one; `--abort` goes back. Tasks that were
+  live come back by themselves on the new host. A superadmin can also move from **Settings →
+  Instance → Move to another host** (SPEC-470): the plan with everything a person has to do (and
+  the key line to add on the new host), "Run migration" behind the host typed by hand, the
+  checklist as it grows, and an abort that says what it does; root runs the same command through
+  a request file, as it installs updates, once root has enabled that helper. While the instance
+  is frozen the page says so and keeps trying, and the new instance's page shows the finished
+  checklist.
+- **The instance knows whether GitHub accepts its address** (SPEC-466): after a move to another
+  URL GitHub sign-in needs the new callback URL in the GitHub App, which only a person can add.
+  Yulius asks GitHub whether it is there, and Settings → Instance (card Address) gives the one link
+  and the two values to paste until it is; the move's plan checks the new URL before the cutover,
+  and the sign-in page says why GitHub sign-in cannot complete meanwhile (the password works). The
+  card also says where the instance came from and what its first start did with the tasks.
+  `yulius remote` on a laptop follows the old URL's redirect to the new one by itself.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -168,8 +201,12 @@ watching, steering and unblocking.
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
-  (npm's `stable` by default) reaches every new or resumed session within about an hour, with no
-  one signing in again (SPEC-421). Task intake splits mixed requests, holds scope changes and chains
+  (npm's `latest` by default) reaches every new or resumed session within about an hour and a
+  running task when its turn ends, with no one signing in again; a release that does not know
+  Yulius's default model is never used, and Settings, Instance shows the version, the channel
+  and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
+  Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
+  Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,
@@ -212,10 +249,20 @@ watching, steering and unblocking.
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
   subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
-  under Needs you. Its Capacity card says what
+  under Needs you. A subscription out of a model's usage credits (the default model, Fable, runs
+  on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
+  wait for the reset by themselves, the pool sends it no such task until then whatever its
+  5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
+  allowance as "Fable this week", and a task of another model can still be run on it. When
+  Claude does not say when such a limit ends and no other subscription can take the task,
+  Yulius tries it once more after the provider's next usage reading. Refused again, the task
+  waits for another subscription's reset when one is known, and otherwise asks a person
+  instead of trying on; that request ends by itself once the task's agent works again or
+  Yulius takes the task on after all (SPEC-464). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
-  Max", "personal") and see the email of its Claude account wherever it is named. Connecting one
+  Max", "personal") and see the email of its Claude account wherever it is named; when Claude
+  does not share it, they type it in place under the name (SPEC-463). Connecting one
   is the first step on a fresh instance: until a Claude account is usable, Home, the composer and
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
@@ -420,7 +467,11 @@ watching, steering and unblocking.
   restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
   new version is built finishes first, and new deploys are refused until the update installed, so an
   update never cuts a deploy (SPEC-342). **Restart…** on the Instance page restarts the server
-  the same way without installing anything (SPEC-432). A task session whose Yulius tools Claude
+  the same way without installing anything (SPEC-432). Sessions live in a systemd unit of their
+  own, so the restart keeps them on every systemd; on a host not set up for that, where the
+  server could not start again while a session runs (systemd 258 and later), Restart and Update
+  now are refused with the fix, `sudo yulius host setup`, instead of taking the instance down
+  (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
 

@@ -303,6 +303,7 @@ pub(crate) async fn add_account(
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok(account)

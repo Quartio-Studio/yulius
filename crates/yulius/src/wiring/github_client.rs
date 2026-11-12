@@ -196,6 +196,36 @@ impl GitHubPort for GitHubAdapter {
         })
     }
 
+    async fn callback_registered(
+        &self,
+        app: &GitHubAppConfig,
+        redirect_uri: &str,
+    ) -> AppResult<bool> {
+        let told = self
+            .client(app)?
+            .callback_registered(redirect_uri)
+            .await
+            .map_err(|err| match err {
+                // What a superadmin reads as the reason: GitHub's own code, and what it means
+                // for the one a broken App gives.
+                GitHubError::OAuth(code) if code == "incorrect_client_credentials" => {
+                    AppError::Upstream(format!(
+                        "GitHub answered `{code}`: it does not accept the App's client id and \
+                         secret"
+                    ))
+                }
+                GitHubError::OAuth(code) => AppError::Upstream(format!("GitHub answered `{code}`")),
+                other => map_err(other),
+            })?;
+        told.ok_or_else(|| {
+            AppError::Upstream(
+                "GitHub does not say whether a callback URL is registered for this App: it \
+                 takes one that cannot be registered too"
+                    .into(),
+            )
+        })
+    }
+
     async fn refresh_token(
         &self,
         app: &GitHubAppConfig,

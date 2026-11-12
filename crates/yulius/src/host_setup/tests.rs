@@ -8,12 +8,17 @@ use yulius_sandbox::docker_status::{ENGINE_MODULES, MODULES_FILE, modules_file_c
 
 use super::{
     Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE_FILE, Options, Out,
-    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed, summary,
+    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, lacks_namespaces, passed, summary,
 };
+
+mod session_units;
 
 const DATA: &str = "/var/lib/yulius";
 const EXE: &str = "/usr/local/bin/yulius";
 const SERVICE_UID: u32 = 999;
+const APPARMOR_D: &str = "/etc/apparmor.d";
+
+mod bwrap_userns;
 
 /// A unit's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +45,11 @@ struct Fake {
     helper: bool,
     /// `yulius.service` runs.
     service_active: bool,
+    /// Whether the sessions unit runs (SPEC-458): started by the setup, asked with `is-active`.
+    sessions_active: bool,
+    /// Whether systemd has loaded the server unit's sessions drop-in: after a `daemon-reload`
+    /// that found it, not for files copied in by hand.
+    drop_in_loaded: bool,
     /// The smoke test fails.
     smoke_fails: bool,
     /// apt's package lists know Docker's repository (an `apt-get update` after its source).
@@ -56,6 +66,50 @@ struct Fake {
     containerd_tasks: usize,
     /// Files whose write fails as on a read-only `/etc` (the update helper's, #674).
     read_only: BTreeSet<PathBuf>,
+    /// Files that take one more write and are read-only after it.
+    write_once: BTreeSet<PathBuf>,
+    /// AppArmor profiles the kernel holds, by name (SPEC-456).
+    profiles: BTreeMap<String, Profile>,
+    /// `apparmor_parser` cannot read a profile (no `abi/4.0`).
+    parser_fails: bool,
+    /// Commands that fail, by the first words of their line: the exit code (`None`: it cannot
+    /// be started) and what they say.
+    failing: Vec<(&'static str, Option<i32>, &'static str)>,
+}
+
+/// A loaded AppArmor profile, as far as bwrap's start depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Profile {
+    /// It attaches to `/usr/bin/bwrap`.
+    bwrap: bool,
+    /// `flags=(unconfined)`: what bwrap starts keeps its capabilities.
+    unconfined: bool,
+    /// It allows `userns`.
+    userns: bool,
+    /// It attaches by a glob for many programs: AppArmor prefers a profile that names the path.
+    broad: bool,
+}
+
+/// The profiles a file declares, read as the measurements need them (not the item's own parser).
+fn profiles_in(text: &str) -> Vec<(String, Profile)> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("profile "))
+        .map(|header| {
+            let name = header.split(' ').next().unwrap_or_default().to_owned();
+            let profile = Profile {
+                // The last two are spellings the item's own reading does not know.
+                bwrap: [" /usr/bin/bwrap ", " /{usr,}/bin/bwrap ", " /usr/bin/* "]
+                    .iter()
+                    .any(|path| header.contains(path)),
+                broad: header.contains(" /usr/bin/* "),
+                unconfined: header.contains("flags=(unconfined)"),
+                userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
+                    .iter()
+                    .any(|rule| text.contains(rule)),
+            };
+            (name, profile)
+        })
+        .collect()
 }
 
 impl Fake {
@@ -72,6 +126,8 @@ impl Fake {
             modprobe_fails: false,
             helper: true,
             service_active: false,
+            sessions_active: false,
+            drop_in_loaded: false,
             smoke_fails: false,
             docker_lists: false,
             systemd_down: false,
@@ -80,9 +136,17 @@ impl Fake {
             docker_ps_fails: false,
             containerd_tasks: 0,
             read_only: BTreeSet::new(),
+            write_once: BTreeSet::new(),
+            profiles: BTreeMap::new(),
+            parser_fails: false,
+            failing: Vec::new(),
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
+        for dir in ["/", "/usr", "/usr/local", "/usr/local/bin"] {
+            fake.files
+                .insert(PathBuf::from(dir), (String::new(), 0, 0o040_755));
+        }
         fake.file(
             "/etc/passwd",
             "root:x:0:0:root:/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n",
@@ -172,6 +236,71 @@ impl Fake {
         for unit in self.units.values_mut() {
             unit.active = unit.enabled;
         }
+        // AppArmor's unit loads every file of its directory that no `disable/` link names.
+        self.profiles.clear();
+        self.load_directory();
+    }
+
+    /// `apparmor_parser -r /etc/apparmor.d`: what a boot loads. `false` when it refuses a file
+    /// (one whose text says `# broken`); the others are loaded all the same.
+    fn load_directory(&mut self) -> bool {
+        let enabled: Vec<PathBuf> = self
+            .files
+            .keys()
+            .filter(|p| p.parent() == Some(Path::new(APPARMOR_D)))
+            .cloned()
+            .collect();
+        let mut read = true;
+        for file in enabled {
+            if self.files[&file].0.contains("# broken") {
+                read = false;
+            } else {
+                self.load_profiles(&file);
+            }
+        }
+        read
+    }
+
+    /// `apparmor_parser -r <file>`: `false` when a `disable/` link makes it skip the file.
+    fn load_profiles(&mut self, file: &Path) -> bool {
+        let name = file.file_name().unwrap_or_default();
+        if self
+            .links
+            .contains_key(&Path::new(APPARMOR_D).join("disable").join(name))
+        {
+            return false;
+        }
+        let text = self.files.get(file).map(|(t, _, _)| t.clone());
+        self.profiles.extend(profiles_in(&text.unwrap_or_default()));
+        true
+    }
+
+    /// What `bwrap --unshare-user … mount` does as the service user, as measured on Ubuntu
+    /// 24.04 and 26.04 and Debian 12 and 13 (SPEC-456, Context).
+    fn bwrap_proof(&self) -> Result<(), &'static str> {
+        let says = |path: &str, value: &str| self.text(path).is_some_and(|t| t.trim() == value);
+        if says("/proc/sys/user/max_user_namespaces", "0") {
+            return Err("bwrap: Creating new namespace failed: No space left on device");
+        }
+        if !says("/sys/module/apparmor/parameters/enabled", "Y") {
+            return Ok(());
+        }
+        let restricted = says(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            "1",
+        );
+        let attached: Vec<&Profile> = self.profiles.values().filter(|p| p.bwrap).collect();
+        // A profile that names the path outweighs a glob for many programs.
+        let named: Vec<&Profile> = attached.iter().copied().filter(|p| !p.broad).collect();
+        let attached = if named.is_empty() { attached } else { named };
+        match attached.as_slice() {
+            // Its children run under a profile that denies every capability.
+            [one] if !one.unconfined => Err("mount: /tmp: permission denied."),
+            [one] if one.userns || !restricted => Ok(()),
+            // No profile, or two that cancel each other: bwrap runs unconfined.
+            _ if restricted => Err("bwrap: setting up uid map: Permission denied"),
+            _ => Ok(()),
+        }
     }
 
     fn ran(&self, prefix: &str) -> bool {
@@ -213,6 +342,9 @@ impl Host for Fake {
             path.to_path_buf(),
             (content.to_owned(), 0, 0o100_000 | mode),
         );
+        if self.write_once.remove(path) {
+            self.read_only.insert(path.to_path_buf());
+        }
         Ok(())
     }
 
@@ -265,6 +397,20 @@ impl Host for Fake {
         let line = cmd.argv.join(" ");
         self.log.push(line.clone());
         let argv: Vec<&str> = cmd.argv.iter().map(String::as_str).collect();
+        let failing = self.failing.iter().find(|f| {
+            line.strip_prefix(f.0)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        });
+        if let Some((_, code, why)) = failing {
+            return match code {
+                Some(code) => Ok(Out {
+                    code: *code,
+                    stdout: String::new(),
+                    stderr: (*why).to_owned(),
+                }),
+                None => Err((*why).to_owned()),
+            };
+        }
         if self.systemd_down && argv.first() == Some(&"systemctl") {
             return Ok(Out {
                 code: 1,
@@ -478,8 +624,39 @@ impl Host for Fake {
                     ok("LoadState=not-found\nReadWritePaths=\n")
                 }
             }
-            ["systemctl", "daemon-reload"] => ok(""),
+            ["systemctl", "daemon-reload"] => {
+                self.drop_in_loaded = self
+                    .files
+                    .keys()
+                    .any(|path| path.ends_with("20-yulius-sessions.conf"));
+                ok("")
+            }
+            ["systemctl", "show", service, "--property=Wants", "--value"] => {
+                let stem = service.trim_end_matches(".service");
+                if self.drop_in_loaded {
+                    ok(&format!(
+                        "network-online.target {stem}-sandboxes.service {stem}-adopt.service\n"
+                    ))
+                } else {
+                    ok("network-online.target\n")
+                }
+            }
             ["systemctl", "enable", service] if service.ends_with(".service") => ok(""),
+            ["systemctl", "start", unit] if unit.ends_with("-sandboxes.service") => {
+                self.sessions_active = true;
+                ok("")
+            }
+            ["systemctl", "is-active", unit] if unit.ends_with("-sandboxes.service") => {
+                if self.sessions_active {
+                    ok("active\n")
+                } else {
+                    Out {
+                        code: 3,
+                        stdout: "inactive\n".into(),
+                        stderr: String::new(),
+                    }
+                }
+            }
             ["systemctl", "start", service] if service.ends_with(".service") => {
                 self.service_active = true;
                 ok("")
@@ -528,6 +705,125 @@ impl Host for Fake {
                 "--data-dir",
                 DATA,
             ] => ok(""),
+            [
+                "/usr/sbin/runuser",
+                "-u",
+                "yulius",
+                "--",
+                "bwrap",
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--unshare-net",
+                "--dev-bind",
+                "/",
+                "/",
+                "--cap-add",
+                "ALL",
+                "--chdir",
+                "/",
+                "--",
+                "mount",
+                "-t",
+                "tmpfs",
+                "none",
+                "/tmp",
+            ] => {
+                assert!(
+                    !cmd.show,
+                    "the proof's output is the item's, not the terminal's"
+                );
+                match self.bwrap_proof() {
+                    Ok(()) => ok(""),
+                    Err(why) => fail(1, why),
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-r", APPARMOR_D] => {
+                // BNS-012: a cold cache and many profiles take longer than a command's usual
+                // bound.
+                assert_eq!(cmd.timeout, std::time::Duration::from_secs(300));
+                if self.parser_fails {
+                    fail(1, "AppArmor parser error: Could not open 'abi/4.0'")
+                } else if self.load_directory() {
+                    ok("")
+                } else {
+                    fail(
+                        1,
+                        "AppArmor parser error: syntax error, unexpected end of file",
+                    )
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-r", file] => {
+                if !self.has(file) {
+                    fail(1, &format!("File {file} not found, skipping..."))
+                } else if self.parser_fails {
+                    fail(
+                        1,
+                        &format!(
+                            "AppArmor parser error for {file} in profile {file} at line 3: Could \
+                             not open 'abi/4.0': No such file or directory"
+                        ),
+                    )
+                } else if self
+                    .text(file)
+                    .is_some_and(|text| text.contains("# broken"))
+                {
+                    fail(
+                        1,
+                        &format!("AppArmor parser error for {file} at line 1: syntax error"),
+                    )
+                } else if self.load_profiles(Path::new(file)) {
+                    ok("")
+                } else {
+                    ok(&format!(
+                        "Skipping profile in {APPARMOR_D}/disable: {file}\n"
+                    ))
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-R", file]
+                if self
+                    .text(file)
+                    .is_some_and(|text| text.contains("# broken")) =>
+            {
+                fail(
+                    1,
+                    &format!("AppArmor parser error for {file} at line 1: syntax error"),
+                )
+            }
+            ["/usr/sbin/apparmor_parser", "-R", file] => {
+                let names = profiles_in(self.text(file).unwrap_or_default());
+                let mut missing = false;
+                for (name, _) in names {
+                    missing |= self.profiles.remove(&name).is_none();
+                }
+                if missing {
+                    fail(
+                        254,
+                        "apparmor_parser: Unable to remove \"bwrap\".  Profile doesn't exist",
+                    )
+                } else {
+                    ok("")
+                }
+            }
+            ["ln", "-s", target, link] => {
+                if self.links.contains_key(Path::new(link)) {
+                    fail(
+                        1,
+                        &format!("ln: failed to create symbolic link '{link}': File exists"),
+                    )
+                } else {
+                    self.links
+                        .insert(PathBuf::from(link), PathBuf::from(target));
+                    ok("")
+                }
+            }
+            ["rm", "-f", file] => {
+                self.files.remove(Path::new(file));
+                self.links.remove(Path::new(file));
+                ok("")
+            }
             [EXE, "doctor", "--docker-smoke", "--data-dir", DATA] => {
                 if self.smoke_fails {
                     fail(1, "FAIL docker run --rm hello-world")
@@ -1402,6 +1698,56 @@ fn an_import_makes_only_the_user_and_its_ids() {
     assert!(fake.ran("usermod"), "{:#?}", fake.log);
     assert!(!fake.ran("apt-get"), "{:#?}", fake.log);
     assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
+}
+
+/// SPEC-460 MIG-024: a move runs the host's items before the copy, the rest before it starts the
+/// service itself, and the running service's items after; together they are the whole setup.
+#[test]
+fn a_move_runs_the_setup_in_three_parts() {
+    let whole: Vec<String> = run(&mut Fake::fresh(), Mode::Setup)
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+
+    let mut fake = Fake::fresh();
+    let host = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).host_items();
+    assert!(passed(&host), "{host:#?}");
+    let names: Vec<&str> = host.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names.last(), Some(&"bwrap namespaces"), "{names:?}");
+    assert!(!names.contains(&"yulius.service") && !names.contains(&"sandbox base"));
+    // Nothing of the instance yet: no unit, no base, no start.
+    assert!(!fake.has(UNIT_FILE), "{:#?}", fake.log);
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+
+    // Up to the base, with what the host part did found done; nothing is started.
+    let before = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).before_start();
+    assert!(passed(&before), "{before:#?}");
+    let names: Vec<&str> = before.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names.last(), Some(&"sandbox base"), "{names:?}");
+    assert!(fake.has(UNIT_FILE));
+    // The server is not started. Its sessions unit is (SPEC-458): a keeper that holds no session
+    // without the server, and that the server's start would pull in anyway.
+    assert!(
+        !fake.ran("systemctl start yulius.service"),
+        "{:#?}",
+        fake.log
+    );
+    assert_eq!(
+        names,
+        whole[..names.len()],
+        "the same items in the same order"
+    );
+
+    // The caller starts the service; the rest follows.
+    fake.service_active = true;
+    let after = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).after_start();
+    let names: Vec<&str> = after.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, whole[before.len()..], "{after:#?}");
+    assert_eq!(
+        outcome(&after, "yulius running"),
+        HostOutcome::Ok,
+        "{after:#?}"
+    );
 }
 
 /// SPEC-398 VSH-004 (#677): the setup hands the data directory and the service name to privileged

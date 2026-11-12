@@ -269,8 +269,10 @@ enum Command {
         /// The reverse proxy's secret file (as for `serve`): checked, never shown.
         #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
         proxy_secret_file: Option<PathBuf>,
-        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421).
-        #[arg(long, env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421), unless
+        /// one was chosen in Settings, Instance.
+        #[arg(long, env = "YULIUS_CLAUDE_UPDATES",
+              default_value = yulius::wiring::sandbox::DEFAULT_CHANNEL,
               value_parser = yulius::wiring::sandbox::parse_channel)]
         claude_updates: yulius_domain::agent_cli::Channel,
     },
@@ -295,6 +297,9 @@ enum Command {
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+    /// Root helper: run the move Settings → Instance asked for (yulius-migrate.service).
+    #[command(name = "migrate-helper", hide = true)]
+    MigrateHelper(Box<yulius::migrate_helper::MoveHelperArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -339,6 +344,70 @@ enum InstanceAction {
         /// exported one's name).
         #[arg(long)]
         user: Option<String>,
+    },
+    /// Move the whole instance to another host with one command: check and set up the new
+    /// host, carry every setting and key, copy the data while this instance runs, freeze it
+    /// only to send what changed, prove the copy, start the new instance, redirect the old
+    /// URL. Run it on the old host; run it again to continue.
+    Migrate {
+        /// The new host, as ssh takes it: `root@new-host`.
+        target: Option<String>,
+        /// The new host's SSH port.
+        #[arg(long = "ssh-port", default_value_t = 22)]
+        ssh_port: u16,
+        /// The new public URL (default: the old one, or the same form for the new address).
+        #[arg(long)]
+        public_url: Option<String>,
+        /// A blank disk of the new host for the data directory; twice for a mirror.
+        #[arg(long = "data-disk")]
+        data_disk: Vec<String>,
+        /// Do not ask before moving.
+        #[arg(long)]
+        yes: bool,
+        /// The longest freeze to begin, in minutes: while the estimate is above it the move
+        /// copies again, and after five such passes it stops without freezing.
+        #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+        max_downtime: Option<u64>,
+        /// Never sign in to the new host as root does (root's own keys, agent and ssh
+        /// configuration, a password): reach it with the move's one-time key alone, and show
+        /// the key's line for a person to add there. The move helper runs the command so.
+        #[arg(long = "no-sign-in")]
+        no_sign_in: bool,
+        /// The id of the request this run answers (the move helper sets it): it is written
+        /// into the status, so that readers tell this run's checklist from another's.
+        #[arg(long = "request-id", value_name = "ID", value_parser = request_id)]
+        request_id: Option<String>,
+        /// Print the recorded move and its checklist.
+        #[arg(long, conflicts_with_all = ["abort", "target"])]
+        status: bool,
+        /// Go back to this host: stop the new instance, undo the redirect, thaw and enable the
+        /// old one.
+        #[arg(long, conflicts_with = "target")]
+        abort: bool,
+        /// Data directory.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data_dir: PathBuf,
+        /// The server's systemd unit.
+        #[arg(long, default_value = "yulius.service")]
+        service: String,
+        /// The update helper's unit.
+        #[arg(long, default_value = "yulius-update.service")]
+        update_service: String,
+        /// Where the move keeps its key and state.
+        #[arg(long, default_value = "/var/lib/yulius-migrate")]
+        state_dir: PathBuf,
+    },
+    /// A move's steps on the new host; run by `yulius instance migrate` over SSH.
+    #[command(hide = true)]
+    MigrateTarget {
+        /// Install the copy arriving on standard input.
+        #[arg(long)]
+        receive: bool,
     },
 }
 
@@ -517,6 +586,14 @@ enum HostAction {
         )]
         update_state: PathBuf,
     },
+    /// Move the sessions an earlier layout left in the server unit's own cgroup into its
+    /// sessions unit. Run as root by `<unit>-adopt.service` before every start of the server.
+    #[command(hide = true)]
+    AdoptSessions {
+        /// The server's systemd unit.
+        #[arg(long, default_value = "yulius.service")]
+        service: String,
+    },
 }
 
 fn host(action: HostAction) -> ExitCode {
@@ -562,6 +639,9 @@ fn host(action: HostAction) -> ExitCode {
             },
             json,
         ),
+        HostAction::AdoptSessions { service } => {
+            yulius::host_setup::session_units::adopt_main(&service)
+        }
     }
 }
 
@@ -792,6 +872,50 @@ fn main() -> ExitCode {
             data_dir,
             user,
         }),
+        Command::Instance {
+            action:
+                InstanceAction::Migrate {
+                    target,
+                    ssh_port,
+                    public_url,
+                    data_disk,
+                    yes,
+                    max_downtime,
+                    no_sign_in,
+                    request_id,
+                    status,
+                    abort,
+                    data_dir,
+                    service,
+                    update_service,
+                    state_dir,
+                },
+        } => yulius::instance::migrate::main(
+            &yulius::instance::migrate::Options {
+                target,
+                port: ssh_port,
+                public_url,
+                data_disks: data_disk,
+                yes,
+                data_dir,
+                service,
+                update_service,
+                state_dir,
+                max_downtime,
+                no_sign_in,
+                request: request_id,
+            },
+            if status {
+                yulius::instance::migrate::Action::Status
+            } else if abort {
+                yulius::instance::migrate::Action::Abort
+            } else {
+                yulius::instance::migrate::Action::Run
+            },
+        ),
+        Command::Instance {
+            action: InstanceAction::MigrateTarget { receive },
+        } => yulius::instance::migrate::target::main(receive),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");
             if commit.is_empty() {
@@ -802,6 +926,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::UpdateHelper(args) => yulius::update_helper::main(&args),
+        Command::MigrateHelper(args) => yulius::migrate_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),
         Command::Backup { data_dir, dest } => run_async(yulius::serve::backup(data_dir, dest)),
     }
@@ -826,6 +951,182 @@ where
         Err(err) => {
             eprintln!("yulius: {err}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// A request's id as the move helper passes it: the request's own rule.
+fn request_id(text: &str) -> Result<String, String> {
+    if yulius_app::migration::rules::valid_id(text) {
+        Ok(text.to_owned())
+    } else {
+        Err("8 to 64 letters, digits or hyphens".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser as _};
+    use yulius::migrate_helper::{MoveHelperArgs, command_args};
+    use yulius_contracts::migrate::{MoveAction, MoveRequest};
+
+    use super::{Cli, Command, InstanceAction};
+
+    /// SPEC-470 MVB-004: what the move helper runs is the command's own syntax. Each value of a
+    /// request arrives as the option it is meant for, a plan says no `--yes`, a move does, and
+    /// an abort names nothing of the request.
+    #[test]
+    fn the_move_helpers_arguments_are_the_commands_own() -> Result<(), Box<dyn std::error::Error>> {
+        let args = MoveHelperArgs {
+            data_dir: "/srv/yulius".into(),
+            state_dir: "/srv/yulius-migrate".into(),
+            service: "yulius-b.service".into(),
+            update_service: "yulius-b-update.service".into(),
+            targets: Vec::new(),
+            systemctl: "systemctl".into(),
+            program: None,
+        };
+        let request = |action| MoveRequest {
+            version: 1,
+            id: "0123abcd-request".into(),
+            action,
+            target: Some("root@new.example".into()),
+            ssh_port: Some(2222),
+            public_url: Some("https://new.example".into()),
+            data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            requested_at: 0,
+        };
+        let parsed = |request: &MoveRequest| {
+            let argv = std::iter::once("yulius".to_owned()).chain(command_args(&args, request));
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        for (action, says_yes) in [(MoveAction::Plan, false), (MoveAction::Move, true)] {
+            let Command::Instance {
+                action:
+                    InstanceAction::Migrate {
+                        target,
+                        ssh_port,
+                        public_url,
+                        data_disk,
+                        max_downtime,
+                        no_sign_in,
+                        request_id,
+                        yes,
+                        status,
+                        abort,
+                        data_dir,
+                        service,
+                        update_service,
+                        state_dir,
+                    },
+            } = parsed(&request(action))?
+            else {
+                return Err("not `instance migrate`".into());
+            };
+            assert_eq!(target.as_deref(), Some("root@new.example"));
+            assert_eq!(ssh_port, 2222);
+            assert_eq!(public_url.as_deref(), Some("https://new.example"));
+            assert_eq!(data_disk, ["/dev/vdc", "/dev/vdd"]);
+            assert_eq!(yes, says_yes, "{action:?}");
+            // A request has no field for a bound on the freeze: the command decides by itself
+            // when to freeze (SPEC-465), as it does without `--max-downtime`.
+            assert_eq!(max_downtime, None);
+            // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
+            assert!(no_sign_in, "{action:?}");
+            // And says which request it answers, for the checklist it writes.
+            assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
+            assert!(!status && !abort);
+            assert_eq!(data_dir, std::path::Path::new("/srv/yulius"));
+            assert_eq!(service, "yulius-b.service");
+            assert_eq!(update_service, "yulius-b-update.service");
+            assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        }
+        let abort = MoveRequest {
+            target: None,
+            ssh_port: None,
+            public_url: None,
+            data_disks: Vec::new(),
+            ..request(MoveAction::Abort)
+        };
+        let Command::Instance {
+            action:
+                InstanceAction::Migrate {
+                    target,
+                    yes,
+                    abort,
+                    no_sign_in,
+                    request_id,
+                    service,
+                    state_dir,
+                    ..
+                },
+        } = parsed(&abort)?
+        else {
+            return Err("not `instance migrate`".into());
+        };
+        assert!(abort && !yes && no_sign_in);
+        assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
+        assert_eq!(target, None);
+        assert_eq!(service, "yulius-b.service");
+        assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        // An id is the request's own form: nothing else reaches the status through it.
+        for bad in ["short", "with space-0123", "0123abcd/../x", ""] {
+            let refused = Cli::try_parse_from([
+                "yulius",
+                "instance",
+                "migrate",
+                &format!("--request-id={bad}"),
+                "--",
+                "root@new.example",
+            ]);
+            assert!(refused.is_err(), "{bad:?} was taken as a request's id");
+        }
+        // The helper itself is a command of this binary, with its unit's defaults.
+        let Command::MigrateHelper(helper) = Cli::try_parse_from([
+            "yulius",
+            "migrate-helper",
+            "--targets",
+            "a.example,b.example",
+        ])?
+        .command
+        else {
+            return Err("not `migrate-helper`".into());
+        };
+        assert_eq!(helper.targets, ["a.example", "b.example"]);
+        assert_eq!(helper.update_service, "yulius-update.service");
+        Ok(())
+    }
+
+    /// SPEC-451 WRP-002: every subcommand documented "In a task's session" gets through the
+    /// agent's `yulius` wrapper at `/yulius/bin`, which is first on a session's `PATH`, and
+    /// every command the wrapper passes is a subcommand.
+    #[test]
+    fn the_agent_wrapper_passes_every_session_command() {
+        let shim = yulius_app::identity::agent_yulius_shim(std::path::Path::new("/bin/yulius"));
+        let passed: Vec<&str> = shim
+            .lines()
+            .find_map(|line| line.trim().split_once(") exec "))
+            .map(|(names, _)| names.split('|').collect())
+            .unwrap_or_default();
+        let cli = Cli::command();
+        for name in &passed {
+            assert!(
+                cli.find_subcommand(name).is_some(),
+                "{name} is no subcommand"
+            );
+        }
+        let session: Vec<String> = cli
+            .get_subcommands()
+            .filter(|command| {
+                command
+                    .get_about()
+                    .is_some_and(|about| about.to_string().starts_with("In a task's session"))
+            })
+            .map(|command| command.get_name().to_owned())
+            .collect();
+        assert!(session.len() >= 3, "{session:?}");
+        for name in &session {
+            assert!(passed.contains(&name.as_str()), "{name} not in {passed:?}");
         }
     }
 }

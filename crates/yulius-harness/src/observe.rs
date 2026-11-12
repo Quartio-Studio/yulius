@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{LimitScope, TokenUsage};
 
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
@@ -61,6 +61,9 @@ pub enum Observed {
         /// Length of the limited window in minutes — 300 for the five-hour session, 10080 for
         /// the weekly one — when the provider said which.
         window_minutes: Option<u32>,
+        /// What the limit binds: the subscription, or the models of one family (a per-model
+        /// weekly cap, or the model's allowance of usage credits; SPEC-464).
+        scope: LimitScope,
         /// When Claude Code recorded it (the record's `timestamp`), if parseable: tells a new
         /// limit from one in a conversation's history (SPEC-074 SUP-002).
         at: Option<Timestamp>,
@@ -269,6 +272,10 @@ impl ActiveTime {
     }
 }
 
+/// Maximum bytes kept of the Claude Code version a transcript names
+/// ([`UsageAccumulator::note_cli_version`]).
+pub const CLI_VERSION_BYTES: usize = 64;
+
 /// Folds observations of one attempt into usage totals without double counting.
 ///
 /// Usage is summed once per `message.id`; repeated lines of the same message refine it
@@ -282,6 +289,9 @@ pub struct UsageAccumulator {
     seen_order: VecDeque<String>,
     limit: Option<LimitSignal>,
     model: Option<String>,
+    /// The CLI version the records of the session's own thread name, latest last (SPEC-461
+    /// CCM-011).
+    cli_version: Option<String>,
     malformed: u64,
     /// Claude Code's turn records (`turn_duration`): one per turn of the session.
     turn_records: u64,
@@ -357,6 +367,11 @@ impl UsageAccumulator {
             }
             Observed::TurnInterrupted { at: Some(at) } => self.active.close(*at),
             Observed::BackgroundStarted { at: Some(at), .. } => self.active.seen(*at),
+            // The Claude Code that wrote the session's lines: a resumed run names its own.
+            Observed::SessionMeta {
+                version: Some(version),
+                ..
+            } => self.note_cli_version(version),
             Observed::Malformed => self.malformed += 1,
             _ => {}
         }
@@ -429,6 +444,28 @@ impl UsageAccumulator {
     #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    /// The CLI version the latest record of the session's own thread names, if any (Claude Code
+    /// writes its own version on every record).
+    #[must_use]
+    pub fn cli_version(&self) -> Option<&str> {
+        self.cli_version.as_deref()
+    }
+
+    /// A record of the session's own thread names `version`
+    /// ([`crate::claude::observe_versioned`]): the session runs it from here on. The agent writes
+    /// its own transcript, where a line may be megabytes, and the version is kept per run and
+    /// shown: at most [`CLI_VERSION_BYTES`] of it are kept, cut on a character boundary. A
+    /// version that is no plain `X.Y.Z` is kept as it is.
+    pub fn note_cli_version(&mut self, version: &str) {
+        if self.cli_version.as_deref() == Some(version) {
+            return;
+        }
+        let version = crate::json::shorten(version, CLI_VERSION_BYTES);
+        if self.cli_version.as_deref() != Some(version.as_str()) {
+            self.cli_version = Some(version);
+        }
     }
 
     /// Number of malformed lines seen (a diagnostic; never fatal).
@@ -516,12 +553,14 @@ mod tests {
                 resets_at: None,
                 message: "first".into(),
                 window_minutes: None,
+                scope: LimitScope::Account,
                 at: None,
             },
             Observed::LimitReached {
                 resets_at: Some(Timestamp(5)),
                 message: "limit".into(),
                 window_minutes: Some(300),
+                scope: LimitScope::Account,
                 at: None,
             },
         ]);
@@ -638,6 +677,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: Some(Timestamp(120 * S)),
         });
         // Lines after the limit do not extend the closed turn.
@@ -705,6 +745,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: Some(Timestamp(60 * S)),
         });
         assert_eq!((acc.usage().input, acc.usage().output), (Some(13), Some(7)));

@@ -177,6 +177,7 @@ async fn fixture_full(
                 updated_at: Timestamp(1),
                 email: None,
                 email_checked_at: None,
+                email_typed: false,
             })
             .await?;
     }
@@ -333,7 +334,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     // The default model and effort (SPEC-023 DEF-004).
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]"
+        "[--model claude-fable-5-2 --effort high]"
     );
     assert_eq!(printed(&screen, "token")?, TOKEN);
     let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
@@ -520,7 +521,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort max]"
+        "[--resume after-clear --model claude-fable-5-2 --effort high]"
     );
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
@@ -543,7 +544,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort max]"
+        "[--resume after-clear --model claude-fable-5-2 --effort high]"
     );
     f.h.app.end_all_shells().await;
     Ok(())
@@ -749,7 +750,7 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]",
+        "[--model claude-fable-5-2 --effort high]",
         "a fresh conversation"
     );
     f.h.app.end_all_shells().await;
@@ -786,7 +787,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]"
+        "[--model claude-fable-5-2 --effort high]"
     );
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
@@ -1127,7 +1128,7 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume kept --model claude-fable-5-2 --effort max]",
+        "[--resume kept --model claude-fable-5-2 --effort high]",
         "the same conversation"
     );
     f.h.app.end_all_shells().await;
@@ -1275,6 +1276,7 @@ async fn a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription() -> Test
                 updated_at: Timestamp(1),
                 email: None,
                 email_checked_at: None,
+                email_typed: false,
             })
             .await?;
     }
@@ -1305,6 +1307,7 @@ async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let resp = open_cockpit(&f, &f.alice).await?;
@@ -1428,6 +1431,7 @@ pub(crate) async fn contained_harness()
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok((h, recorder, alice))
@@ -2541,6 +2545,7 @@ pub(crate) async fn insert_account(h: &Harness, id: &str, token: &str, used: f64
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok(())
@@ -2654,7 +2659,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(printed(&screen, "interrupted")?, "1");
@@ -2673,6 +2678,70 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
     let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
     assert!(record.contains("\"account\":\"acc-b\""), "{record}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-464 UCL-008: the Superagent runs the default model. Refused for that model's usage
+/// credits (the record of Claude Code 2.1.322, with the allowance's reset), it moves like at any
+/// usage limit, and the limit is kept as the model's on its subscription: the week keeps its
+/// reading and no limit of the whole subscription is recorded.
+#[tokio::test]
+async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    let refusal = transcript_record(
+        "assistant",
+        "refused",
+        Some("u1"),
+        6,
+        &json!({"isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected",
+                "resetsAt": 1_791_400_000, "rateLimitType": "seven_day_overage_included",
+                "overageStatus": "rejected", "overageDisabledReason": "out_of_credits",
+                "isUsingOverage": false}},
+            "message": {"id": "msg_refused", "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+    );
+    std::fs::write(
+        &transcript,
+        [prompt_record("u1", None, 5), refusal].concat(),
+    )?;
+
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(
+        !stepped.contains("refused") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert_eq!(
+        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        "{usage}"
+    );
+    assert_eq!(usage["secondary"]["used_percent"], 5.0, "{usage}");
+    assert_eq!(usage["limit_reached"], false, "{usage}");
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -2921,7 +2990,7 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
     );
     assert_eq!(
         printed(&screen, "interrupted")?,
@@ -2975,7 +3044,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     assert_eq!(printed(&screen, "token")?, TOKEN);
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
     );
     // Opened again later, it still resumes the conversation.
     socket
@@ -4005,7 +4074,7 @@ async fn a_superagent_started_before_an_update_restarts_resuming_its_conversatio
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(
@@ -4390,7 +4459,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation"
     );
     let fresh = link_state(&f, &f.alice).await?;

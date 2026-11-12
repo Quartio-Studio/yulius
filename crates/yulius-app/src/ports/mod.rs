@@ -1,5 +1,6 @@
 //! Ports implemented by adapters and injected at composition.
 
+pub mod agent_cli;
 pub mod browser;
 pub mod egress;
 pub mod git;
@@ -8,6 +9,7 @@ pub mod guests;
 pub mod harness;
 pub mod intake;
 pub mod isolation;
+pub mod migration;
 pub mod session;
 pub mod session_docs;
 pub mod store;

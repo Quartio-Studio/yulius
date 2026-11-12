@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -397,6 +397,9 @@ pub struct Manager {
     sandboxes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SandboxState>>>>,
     build: Mutex<BuildState>,
     building: AtomicBool,
+    /// The disk quota in force (bytes; 0: none): the configuration's until
+    /// [`Manager::set_disk_quota`] changes it.
+    disk_max: AtomicU64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -462,6 +465,7 @@ impl Manager {
     pub fn new(config: IsolationConfig) -> Arc<Self> {
         Arc::new(Self {
             bases: Bases::new(&config.data_dir),
+            disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
             config,
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
@@ -473,6 +477,17 @@ impl Manager {
     #[must_use]
     pub fn config(&self) -> &IsolationConfig {
         &self.config
+    }
+
+    /// The soft disk quota per sandbox in force (bytes); `None`: none.
+    fn disk_max(&self) -> Option<u64> {
+        Some(self.disk_max.load(Ordering::Relaxed)).filter(|bytes| *bytes > 0)
+    }
+
+    /// Changes the soft disk quota per sandbox (bytes; `None` or 0: none) while the manager
+    /// runs (SPEC-459 HSL-006): the next check of a sandbox compares against it.
+    pub fn set_disk_quota(&self, quota: Option<u64>) {
+        self.disk_max.store(quota.unwrap_or(0), Ordering::Relaxed);
     }
 
     fn state_dir(&self, sandbox: &str) -> PathBuf {
@@ -629,7 +644,9 @@ impl Manager {
 
     /// Keeps `sandbox`'s front serving in the mode it should (SPEC-196 DKL-003): started when the
     /// holder has none or it ended, replaced when the mode changed. An engine's other settings
-    /// change only with a new holder, so a running engine is never cut for them.
+    /// change only with a new holder, so a running engine is never cut for them; but a front
+    /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
+    /// is replaced, since it could start no engine again.
     async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
         let request = state
             .request
@@ -643,7 +660,15 @@ impl Manager {
             .front
             .as_ref()
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
-        let serve = match front_action(current, self.front_mode(&request, &live.record)) {
+        let wanted = self.front_mode(&request, &live.record);
+        // Only an engine front that runs is asked for its group: one file read per tick.
+        let moved = current.is_some_and(|(front, running)| running && front.mode == "engine")
+            && engine_group_moved(
+                served_engine_group(&StatePaths::new(self.state_dir(sandbox))).as_deref(),
+                &wanted,
+                Path::exists,
+            );
+        let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
                 // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
@@ -993,7 +1018,7 @@ impl Manager {
                 state.request = Some(sandbox.clone());
             }
             if let Some(refusal) = self.quota_refusal(sandbox, &mut state).await {
-                let limit = self.config.disk_max.unwrap_or(u64::MAX);
+                let limit = self.disk_max().unwrap_or(u64::MAX);
                 let without_production = state.usage.as_ref().map_or(u64::MAX, |(usage, _)| {
                     let production = usage
                         .largest
@@ -1663,7 +1688,7 @@ impl Manager {
         request: &SandboxRequest,
         state: &mut SandboxState,
     ) -> Option<PrepareError> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let (usage, at) = state.usage.as_ref()?;
         if usage.bytes <= limit {
             return None;
@@ -1686,10 +1711,7 @@ impl Manager {
 
     fn refresh_usage(self: &Arc<Self>, sandbox: &str, state: &mut SandboxState) {
         // A production holder's files are measured with its sandbox's (SPEC-279 PDE-006).
-        if self.config.disk_max.is_none()
-            || state.measuring
-            || production_sandbox(sandbox).is_some()
-        {
+        if self.disk_max().is_none() || state.measuring || production_sandbox(sandbox).is_some() {
             return;
         }
         let Some(request) = state.request.clone() else {
@@ -1855,7 +1877,7 @@ impl Manager {
     /// The last measured usage and the quota (bytes); `None` before the first measurement or
     /// without a quota.
     pub async fn disk(&self, sandbox: &str) -> Option<(u64, u64)> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
         state.usage.as_ref().map(|(usage, _)| (usage.bytes, limit))
@@ -1874,7 +1896,7 @@ impl Manager {
 
     /// Measures a sandbox now and keeps the reading (after space was freed).
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
         let production = self.sysroot(&production_holder(&request.id));
         let usage =
@@ -1937,7 +1959,15 @@ fn holder_stops(
 /// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
 /// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
 /// a running engine.
-fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe) -> FrontAction {
+///
+/// `moved` ([`engine_group_moved`]): the group an engine front starts its engine in is gone,
+/// because the sandbox's groups moved to another unit (SPEC-458 LAY-005). The move ended the
+/// engine, so replacing its front cuts nothing, and the next engine starts in the group of now.
+fn front_action(
+    current: Option<(&DockerFrontRecord, bool)>,
+    wanted: DockerServe,
+    moved: bool,
+) -> FrontAction {
     let running = current
         .filter(|(_, running)| *running)
         .map(|(front, _)| front);
@@ -1946,6 +1976,9 @@ fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe
         _ => None,
     };
     match running {
+        Some(front) if moved && front.mode == "engine" && wanted.kind() == "engine" => {
+            FrontAction::Replace(wanted)
+        }
         Some(front) if front.mode == wanted.kind() && front.reason.as_ref() == reason => {
             FrontAction::Keep
         }
@@ -1956,6 +1989,35 @@ fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe
         }
         Some(_) => FrontAction::Replace(wanted),
         None => FrontAction::Start(wanted),
+    }
+}
+
+/// The group the front of `paths` starts its engine in, from the spec it was started with;
+/// `None` for a front that serves no engine of its own, or without a readable spec.
+fn served_engine_group(paths: &StatePaths) -> Option<String> {
+    match read_json::<DockerFrontSpec>(&paths.docker_spec())
+        .ok()?
+        .serve
+    {
+        DockerServe::Engine { engine } => Some(engine.cgroup),
+        _ => None,
+    }
+}
+
+/// Whether a front that starts its engine in `served` does so in a group that is gone while the
+/// sandbox's engine group is another one now (`wanted`): the sandbox's groups moved to another
+/// unit (ADR-0298). A group that is still there (`exists`) may hold a running engine and is
+/// never given up.
+fn engine_group_moved(
+    served: Option<&str>,
+    wanted: &DockerServe,
+    exists: impl Fn(&Path) -> bool,
+) -> bool {
+    match (served, wanted) {
+        (Some(served), DockerServe::Engine { engine }) => {
+            served != engine.cgroup && !exists(Path::new(served))
+        }
+        _ => false,
     }
 }
 
@@ -2516,41 +2578,125 @@ while True:
         };
         let running = front("engine", None);
         assert_eq!(
-            front_action(Some((&running, true)), engine()),
+            front_action(Some((&running, true)), engine(), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&running, false)), engine()),
+            front_action(Some((&running, false)), engine(), false),
             FrontAction::Start(engine())
         );
-        assert_eq!(front_action(None, engine()), FrontAction::Start(engine()));
         assert_eq!(
-            front_action(Some((&running, true)), refuse("off")),
+            front_action(None, engine(), false),
+            FrontAction::Start(engine())
+        );
+        assert_eq!(
+            front_action(Some((&running, true)), refuse("off"), false),
             FrontAction::Replace(refuse("off"))
         );
         let refusing = front("refuse", Some("off"));
         assert_eq!(
-            front_action(Some((&refusing, true)), refuse("off")),
+            front_action(Some((&refusing, true)), refuse("off"), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), refuse("other")),
+            front_action(Some((&refusing, true)), refuse("other"), false),
             FrontAction::Replace(refuse("other"))
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), engine()),
+            front_action(Some((&refusing, true)), engine(), false),
             FrontAction::Replace(engine())
         );
         // SPEC-199 review round 1 (nit): `dockerd` gone from the sandbox's system for a moment
         // (a docker.io → docker-ce swap) never cuts a running engine and its containers.
         assert_eq!(
-            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD)),
+            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(None, refuse(DOCKER_NO_DOCKERD)),
+            front_action(None, refuse(DOCKER_NO_DOCKERD), false),
             FrontAction::Start(refuse(DOCKER_NO_DOCKERD))
         );
+        // SPEC-458 LAY-005: the sandbox's groups moved to another unit, where the engine was
+        // ended: a front that would start the next engine in the group that is gone is replaced.
+        assert_eq!(
+            front_action(Some((&running, true)), engine(), true),
+            FrontAction::Replace(engine())
+        );
+        assert_eq!(
+            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD), true),
+            FrontAction::Keep,
+            "only an engine front that stays an engine front is replaced for its group"
+        );
+        assert_eq!(
+            front_action(Some((&refusing, true)), refuse("off"), true),
+            FrontAction::Keep
+        );
+    }
+
+    /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given
+    /// another group than the sandbox's engine group now and that group is gone. One that is
+    /// still there may hold a running engine, which is never cut.
+    #[test]
+    fn an_engine_group_has_moved_only_when_the_fronts_own_is_gone() {
+        let wanted = DockerServe::Engine {
+            engine: EngineSpec {
+                command: vec!["/y".into()],
+                cgroup: "/new/sandboxes/s1/engine".into(),
+                idle_secs: 300,
+            },
+        };
+        let gone = |_: &Path| false;
+        let there = |_: &Path| true;
+        let old = Some("/old/sandboxes/s1/engine");
+        assert!(engine_group_moved(old, &wanted, gone));
+        assert!(!engine_group_moved(old, &wanted, there));
+        assert!(!engine_group_moved(
+            Some("/new/sandboxes/s1/engine"),
+            &wanted,
+            gone
+        ));
+        assert!(!engine_group_moved(None, &wanted, gone));
+        let refuse = DockerServe::Refuse {
+            reason: "off".into(),
+        };
+        assert!(!engine_group_moved(old, &refuse, gone));
+    }
+
+    /// The group a front was given is read from the spec it was started with.
+    #[test]
+    fn the_group_a_front_serves_is_read_from_its_spec() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let paths = StatePaths::new(dir.path().to_path_buf());
+        assert_eq!(served_engine_group(&paths), None, "no spec");
+        let mut spec = DockerFrontSpec {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            state_dir: dir.path().to_string_lossy().into_owned(),
+            holder_pid: 7,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/old/sandboxes/s1/system".into()),
+            serve: DockerServe::Engine {
+                engine: EngineSpec {
+                    command: vec!["/y".into()],
+                    cgroup: "/old/sandboxes/s1/engine".into(),
+                    idle_secs: 300,
+                },
+            },
+            bridge_forwards: Vec::new(),
+        };
+        write_json(&paths.docker_spec(), &spec)?;
+        assert_eq!(
+            served_engine_group(&paths).as_deref(),
+            Some("/old/sandboxes/s1/engine")
+        );
+        spec.serve = DockerServe::Refuse {
+            reason: "off".into(),
+        };
+        write_json(&paths.docker_spec(), &spec)?;
+        assert_eq!(served_engine_group(&paths), None, "not an engine front");
+        Ok(())
     }
 
     /// SPEC-196 DKL-004, review round 1 (medium): a run needing the directory is tried at most
@@ -2881,6 +3027,42 @@ while True:
             manager.quota_refusal(&request, &mut state).await,
             Some(PrepareError::OverQuota { .. })
         ));
+        Ok(())
+    }
+
+    /// SPEC-459 HSL-006: the quota is changed while the manager runs. A sandbox over the old
+    /// quota is let in under a bigger one, refused again under a smaller one, and reports the
+    /// quota in force; without a quota nothing is refused or reported.
+    #[tokio::test]
+    async fn a_changed_quota_applies_to_the_next_check() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 100);
+        let request = request(data.path());
+        manager.set_usage("s1", 500).await;
+        let refused = |manager: Arc<Manager>, request: SandboxRequest| async move {
+            let entry = manager.entry("s1");
+            let mut state = entry.lock().await;
+            manager.quota_refusal(&request, &mut state).await
+        };
+        assert!(refused(manager.clone(), request.clone()).await.is_some());
+        assert_eq!(manager.disk("s1").await, Some((500, 100)));
+
+        manager.set_disk_quota(Some(1_000));
+        assert!(refused(manager.clone(), request.clone()).await.is_none());
+        assert_eq!(manager.disk("s1").await, Some((500, 1_000)));
+
+        manager.set_disk_quota(Some(400));
+        assert_eq!(
+            refused(manager.clone(), request.clone()).await,
+            Some(PrepareError::OverQuota {
+                used: human(500),
+                limit: human(400),
+            })
+        );
+
+        manager.set_disk_quota(None);
+        assert!(refused(manager.clone(), request.clone()).await.is_none());
+        assert_eq!(manager.disk("s1").await, None);
         Ok(())
     }
 

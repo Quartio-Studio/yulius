@@ -4,6 +4,299 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-12
+
+- Moving from Settings → Instance: three notes of the review that approved it, answered after the
+  merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
+  recorded" over the checklist of a move that was aborted or finished: it says the last move is
+  over. Whose a checklist is, is no longer guessed from its time: the helper passes the request's
+  id to the command (`--request-id`), which writes it into `status.json`, so a run's own checklist
+  is known exactly, also when another run wrote one in the same second or the run was refused
+  after a line that says why. The helper's record of the requests it handled survives a damaged
+  part, and is not written over when it cannot be read.
+- A subscription Claude refuses for good while its usage is being stored stays "needs a new
+  sign-in" (SPEC-464's follow-up, task #449, #1211). A usage write stores the status it read
+  together with the usage; one that had read `ok` just before the refusal stored `ok` over it,
+  so the pool placed a task there once more. The refusal's write now takes the lock every usage
+  write takes. In the same change, the reason the audit log gives when Yulius answers a "send
+  the task a message" request by taking the task on (`task.needs_you.resolved`) holds for a
+  refused subscription as for a usage limit.
+
+- A superadmin moves the instance to another host from Settings → Instance (SPEC-470, task #447,
+  ADR-0305; slice D of the move). The card **Move to another host** takes the new host, its SSH
+  port, a public URL and data disks and shows the plan of `yulius instance migrate`: first the line
+  of the move's one-time key to add on the new host, then the checklist, with what a person has to
+  do repeated first. **Run migration…** names the host that root will give the instance's data to
+  and needs its name typed; it is the plan that was shown (the same values, at most an hour old).
+  The card then shows the phases and the checklist as it grows, the copy that runs while Yulius
+  keeps working included (SPEC-465); while the instance is frozen for the last changes it says so
+  and keeps trying; on the new instance it shows the finished checklist, and when the old address
+  redirects it links there. **Abort…** says what it does and stops a run in flight. Root runs the
+  command through a request file and a path unit, as it installs updates: `yulius migrate-helper`
+  (units `yulius-migrate.path` and `yulius-migrate.service` in `deploy/systemd`) takes the request
+  only from the data directory's owner, with the exact fields, fresh and once, never while an
+  update runs, checks every value again and never answers an abort's question for a person. It runs
+  the command with the new `--no-sign-in`: such a move never signs in as root does (root's keys,
+  its ssh configuration, a password), so it reaches only a host where a person added the move's
+  key. Root installs it on purpose, since it lets the service user ask for a move; the operations
+  guide says what that allows and how to pin the hosts. A move carries the helper's units and
+  enables them on the new host as they were on the old one. Updates and moves refuse each other,
+  and every plan, move and abort is audited. Real moves asked from the page between two hosts
+  found, and this change fixes, a defect of the command: `yulius instance migrate --abort` after a
+  plan that ended with the key to add failed on the new host and left the key there (the abort now
+  brings the build that removes it). They also showed that six quick requests leave a path unit
+  failed under systemd's default start limit, so the helper's unit sets none (the update helper's
+  units have that limit: #1201).
+
+## 2026-11-11
+
+- A subscription out of usage credits for its model no longer stops tasks while other
+  subscriptions have capacity (SPEC-464, task #449, ADR-0301, #1172). Fable 5.2, the default
+  model since 2026-11-10, runs on a weekly allowance of usage credits beside the 5-hour and weekly
+  windows. When it ran out, Claude Code said "You're out of usage credits. /model to switch
+  models." and paused the goal; Yulius did not read that as a usage limit, left the task there
+  and asked a person to send "continue". It is now a usage limit of that model: the task moves to
+  a subscription that can run it, in the same session, or waits and resumes at the reset by
+  itself. The limit is kept as the model's own ("Fable this week" on the subscription's card)
+  until the reset Claude named; it used to be stored as the week at 100 %, and the next usage
+  reading wiped it, so the pool sent tasks back to the exhausted subscription. A subscription
+  reads "Limit reached" while the default model cannot run on it, and "Run #N on…" still lets a
+  task of another model go there. The goal pause that follows a usage limit opens no Needs you,
+  unless the move past the limit is refused and the session stays there. When Claude names no
+  reset (or one further ahead than a window lasts, which is not believed), the limit ends with
+  the provider's next reading; a task with nowhere else to go is tried once more, and refused
+  again it waits for another subscription's reset when one is known, or asks a person, instead
+  of being restarted at every reading; that request ends by itself when its agent works again
+  or Yulius takes the task on at a limit (moves it past the limit, or pauses it to resume it).
+  The API's `usage` gains `limit_reached` and `limit_resets_at` (a limit of the whole
+  subscription). A limit a person lifts early (bought
+  credits) stays until its reset or a new sign-in for now; the Subscriptions page's manual
+  refresh is task #451.
+- The restart of a running task on a newer Claude Code keeps a goal a person set and a draft in
+  the prompt box, and tells nobody twice (SPEC-468, task #452: the two minors and seven nits the
+  last review of SPEC-461 left open). A prompt-mode session in which a person set a goal of
+  their own (`/goal …`) keeps its version while that goal is open, since Yulius could not follow
+  the goal across a restart (Claude Code restores it by itself; what the review saw lost was the
+  test agent's goal and Yulius's own reading). So does a session with a draft in its prompt box
+  (typed since its last prompt was sent), not only one typed into in the last minute; a prompt
+  Yulius holds for its person's choice counts, since Claude Code keeps it in the box, and so
+  does a message Yulius types until it is submitted. An idle session that is restarted reads
+  "Continuing" and then as before, with no "Working" in between and no second "Your turn"
+  notification. Two turn ends that decide at once make one restart, and the breaker watches it.
+  While running tasks are no longer moved to a version, the card and a task's info promise it
+  only at the task's next start, and the card says when the binary in use could not be read for
+  its models. The model a transcript names is cut as its Claude Code version is. The gate's
+  block case of the move has its test. Not covered, and reported: a prompt entered while the
+  agent works waits in Claude Code's queue, and a restart at that turn's end still loses it
+  (#1204; the review ran the real Claude Code to see it); after a move to another subscription
+  Yulius no longer knows a goal a person set in a prompt-mode session until Claude Code records
+  its next verdict (#1182), and such a move loses a queued prompt too (#1194).
+- A move copies while the instance runs and freezes only for the changes (SPEC-465, task #445,
+  ADR-0303; SPEC-460's MIG-032). `sudo yulius instance migrate root@new-host` now copies the data
+  directory in passes into a staged copy on the new host while the old instance runs, then
+  freezes, sends what changed since, removes what no longer exists and proves the whole copy as
+  before. Changes are never judged by size and time: the old host keeps a receipt for every entry
+  the new host took in and synced (a digest of its metadata, its inode number and its inode's
+  change time) and sends again whatever has none that matches, also a file rewritten in place
+  within the same second or with its time set back. The checklist shows the estimated freeze
+  before it begins; `--max-downtime <minutes>` makes the move copy again while the estimate is
+  above it and stop without freezing after five such passes. A pass cut by a broken link or a
+  killed command is continued by the same command, and nothing the new host acknowledged is sent
+  twice. The copy reads as root while the sandboxes run and never follows a link out of the data
+  directory; after a restart of the old host, or when its clock was set back, the receipts are
+  dropped and everything is sent into the staged copy again. The operations guide §7 describes
+  it.
+- A task whose session works again after a goal pause leaves Needs you by itself (SPEC-469, task
+  #453, fixes #1183, ADR-0304). When Claude Code stops retrying a goal ("Goal paused · the request
+  was rate limited", "Goal paused after 3 automatic retries"), Yulius asks a person to send the
+  task a message. That request ended only when a person typed, so a session that Claude Code
+  woke, or that Yulius restarted, kept "Needs you: Send the task a message…" while its agent
+  worked (task #154 of another project: 33 minutes into its turn). It now ends at the agent's
+  first work after the pause, whatever woke the session, and the task reads Working. A woken turn
+  the API refuses again keeps the request, and a request the agent made itself stays. Tasks an
+  older Yulius left in that state lose the request at the first start with this change.
+- The instance move's last review findings are fixed (SPEC-467, task #450; the command is
+  SPEC-460's). An instance that systemd does not report frozen as a whole right after the freeze
+  is no longer left frozen behind "is not running any more": it is thawed (the sessions unit of
+  SPEC-458 with the server's) and the line says what systemd said. A run that goes on from a
+  recorded start never ends well with both instances running: whatever unit of the old instance
+  runs unfrozen beside a new instance that reports the build is frozen again, to stay, and the
+  server's unit disabled (a `FAIL` line with the reason and the commands when it cannot be;
+  nothing is thawed there, a slow freeze is left on its way), and a new host that cannot be
+  reached or does not answer is told from a new instance that does not run ("run the command
+  again when the new host answers", not `--abort`, and no second request for the key). A finish
+  that was done but not recorded is found done by the key it deleted, instead of "Run the command
+  again" on every run. `yulius instance export` leaves a `.yulius-limits-adapt` out and neither
+  host counts it, so a move from a host that still holds that mark proves its copy. The
+  operations guide §7 says which run ignores Ctrl-C, and the decisions index lists 0297 in its
+  place and 0219 once. Two things the review found that were there before are issues #1178 and
+  #1179.
+- A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
+  Production's subscriptions read "email unknown" (Claude gave Yulius no email for their
+  `claude setup-token` sign-ins, as ADR-0185 feared), so the address went into the name. On the Subscriptions page the
+  email line now has a pencil like the name: Enter or leaving the field saves, Escape cancels,
+  Enter in the empty field removes it. A card can read "Agent TEAM" over its address. A typed
+  email stays when the subscription signs in again, and nothing says Claude confirmed it: the
+  toast after a sign-in names only an email Claude gave. `PATCH /api/admin/accounts/{id}` takes
+  `email` beside an optional `label`, and `Account` carries `email_typed`. Also fixed on that
+  page, for the name too: a list read (after a save, a removal or an update) could draw over a
+  field being typed in and save what was half typed, and an update that came while a field was
+  open could stay undrawn; a click or a tap on Remove, Sign in again or a pencil was lost when
+  leaving a field showed its refusal (#1174); switching to another window saved what was half
+  typed; a late answer to a name saved with Enter took the keyboard from the field the person
+  had gone on to; and the keyboard left a subscription's pencil when its usage was read again
+  or, after a rename that moved its card, could land on another subscription's control.
+- A session that works on after a restart shows the Claude Code it runs with the first record
+  it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
+  records only, and a session that redoes an interrupted turn by itself writes none for hours:
+  task info showed the previous session's version meanwhile. Every record of the session's own
+  thread names the version now (an idle session resumed with nothing typed still names it at
+  its next prompt). Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry and on a real host with npm's 2.1.311
+  (the doctor fails, the server installs 2.1.322 by itself two minutes after its start).
+- Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
+  task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
+  a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
+  instance now asks GitHub, with its own App credentials and a made-up code, whether its callback
+  is registered: at start, on demand, and while someone looks at an answer that is not
+  "registered". Settings → Instance has the card **Address**: when the callback is missing, one
+  link to the App's settings and the two values to paste, read again until GitHub accepts it; after
+  a move, where the instance came from, when, and what its first start did with the tasks. The
+  sign-in page says why GitHub sign-in cannot complete and opens the password. `yulius instance
+  migrate` asks the running instance over its loopback listener, so its plan checks the new URL's
+  callback before the cutover (`ok` when registered, else the exact link and values) and its last
+  checklist asks the new instance again. `yulius remote` on a laptop follows the old URL's
+  redirect: it moves the saved sign-in to the new URL, says so in one line and repeats the call;
+  no other redirect is followed. Claude Code's own MCP connection still has to be added again.
+- A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
+  ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
+  again while one session ran, so a restart or an update took the instance down until every
+  session was ended by hand (production, 2026-11-11). Sessions and sandboxes now live in a unit
+  of their own, `yulius-sandboxes.service`, which a restart of the server never touches, and a
+  root step before every start moves what an earlier layout left in the server's unit. `sudo
+  yulius host setup` writes the units and restarts nothing. Until a host has them, Restart… and
+  Update now are refused there with the reason instead of stopping the server, and `yulius
+  doctor` and `yulius host check` name the missing setup. **On a host with systemd 258 or later,
+  put the three units in place before the update that brings this** (`docs/operations.md` §8,
+  "Upgrading to sessions in their own unit", with the way back if it was skipped). Sandbox Docker
+  engines end once at that first restart and start again on demand.
+- A task that starts while the server starts up is no longer shown as stopped, and a refused
+  restart no longer breaks a task whose run is alive (SPEC-458, from task #439). The start-up
+  sweep rested a task whose launch it had itself begun; and Restart on a task that still had a
+  live run was refused only after its status had changed, so the task ended as "failed" beside a
+  running agent that no button reached. A start is now refused before anything changes, a run
+  that no server holds is settled first, and Stop ends a run that is still on record.
+- Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
+  #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
+  npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant
+  Fable 5.1. Yulius now follows npm's `latest`, reads each release for the models the composer
+  offers before it becomes current and refuses one without the default model, and on `stable`
+  takes `latest`'s release when stable's does not know it. Settings, Instance has a Claude Code
+  card: the version sandboxes run, npm's newest releases, the last check, "Check now", the
+  channel (Latest, Stable, Off) changed there without editing the unit, a red banner with the
+  fix while the default model is unknown, and the tasks still on an older version. `yulius
+  doctor` fails on it too. A running task moves to the new Claude Code when its turn ends, in
+  the same session, and a task's info shows the model it asks for, the models that answered and
+  the Claude Code each session ran. A version a session cannot continue on (the restart fails,
+  or the restarted session ends or stays silent before it starts) gets no other running session,
+  and the card names the task. Also fixed: an idle task a person moved to another subscription
+  read "working" until its next turn.
+- One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
+  instance migrate root@new-host` on the old host. It plans first and asks people only there (the
+  SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new
+  host like the old one (data disk as ext4 or an mdadm mirror, third-party apt sources and the
+  manual package list fitted to the new release, coreutils flavour, `/usr/local`, unowned `/opt`,
+  root's Rust toolchain, the unit with its drop-ins and key files, the update helper, Caddy for
+  the new host name, ufw), copies the data while the old instance is frozen, starts the new
+  instance only when both hosts count the same copy (entries, bytes and a fingerprint per folder),
+  redirects the old URL and removes its own key. A failure before the new instance runs thaws the
+  old one; a new instance that does not come up is stopped first. `--status` shows the checklist,
+  `--abort` goes back, and the same command continues a move that stopped. On the new host the
+  tasks that were live come back by themselves. The operations guide §7 describes it. To come:
+  a warm copy (the freeze still takes the whole copy), the GitHub App check and the Settings →
+  Instance button.
+- `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
+  task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
+  the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot
+  be read, or frames a site a value was filled into. A value filled anywhere but a password field
+  (a text field, a cross-origin frame, a field that cuts it), or edited as it is typed there, also
+  refuses every page of that site until Yulius restarts; a revealed password is refused. Password
+  sign-ins keep screenshots working. This covers a task's agent and both Superagents. An edit in
+  place already defeats the text redactor in `browser_snapshot` (on `dev` before; reported on
+  #1113).
+- A tool chosen while its sandbox's page loads opens in that sandbox (SPEC-450 SSC-007, task
+  #432). The Shell, Superagent or another tool opened before a task's page had its sandbox opened
+  for no sandbox: a Shell saying "Open a sandbox first." without the keyboard, or the Global
+  Superagent. It now waits, shown pressed, and opens there; choosing it again, hiding the tools
+  or leaving that sandbox cancels it. Found by the `e2e` job on the faster host, together with
+  three test-only races (production protection, the left-composer onboarding test, the phone
+  drawer's row measurement).
+- `yulius host setup` lets bwrap create user namespaces (SPEC-456, task #438, ADR-0296). Ubuntu
+  since 24.04 allows them only to programs with an AppArmor rule, and production ran on one
+  written by hand. The new item "bwrap namespaces" starts bwrap as the service user and, where
+  that fails, writes and loads `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables
+  the package's `bwrap-userns-restrict` with a link, never editing its file. A hand-written rule
+  that works is adopted and left alone; Debian and hosts without AppArmor get nothing. `yulius
+  host check` (the update helper's re-check, Settings → Instance) and `yulius doctor --contained`
+  ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
+  starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
+  after a release upgrade from 24.04 to 26.04. A follow-up (#1165) makes the check and the
+  dry run name a kernel limit on user namespaces (`user.max_user_namespaces` or
+  `kernel.unprivileged_userns_clone` set to 0) like setup does. A second one (#1165, #1177) finds
+  a person's profile for bwrap in a spelling Yulius does not read (an alternation, a pattern, an
+  `alias`, a variable) by what it does: setup loads `/etc/apparmor.d` as a boot does beside its
+  own profile and proves bwrap then; where bwrap does not start it proves once more without
+  Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
+  whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
+  the other. A third one lets Yulius's own profile from an earlier run give way in the same
+  manner to a person's profile in a plain spelling (the old host's hand-written rule copied
+  to a host that setup had prepared), and a proof that fails no longer rewrites a file of
+  Yulius's that the run did not write. A last one answers that review's notes: a profile of
+  Yulius's that a person disabled by its link but AppArmor still holds is unloaded, two
+  profiles that are both on disk are named as such while bwrap still starts, and a refused
+  unload or reload is reported as what the parser said.
+- Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
+  jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
+  defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
+  and data disk (the 12-CPU VM keeps its numbers; a 64-CPU, 755 GiB, 3.5 TB host gets 34, 12, 4,
+  875 GB, 175 GB). Settings → Instance → Resource limits shows each value, its source (host-sized,
+  unit, settings) and its formula, and the superadmin changes it there without a unit edit; all
+  but the sandbox memory apply without a restart. Every pinned number remembers the host it was
+  configured on: on a host that differs by a quarter or more the start log and the page say which
+  limits no longer fit and offer the host-sized values, and after `yulius instance import` the
+  first start takes them by itself (`limits.adapted` in the audit log). Migration 0051; the API is
+  `/api/admin/limits*`. Operators: see "Resource limits" in `docs/operations.md`.
+- A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
+  host a goal task could stay Working for good after Claude Code recorded its goal as met: the
+  transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had
+  just opened. A task without a goal could stay Working the same way when the Stop had read it
+  before the watcher's prompt. The watcher's prompt and a clean Stop now take the task's turn
+  order (ADR-0234), and the Stop settles the task as it reads after that. This was the third
+  report of `task_done::a_goal_the_tui_dropped_is_submitted_again` timing out in the full suite
+  (#1066): it failed 2 of 48 runs under probe delays and passes 96 of 96 with the fix.
+- Nothing is typed into the Editor before its file is in it (SPEC-452, task #434, #1087). The
+  editor is made with no model, so it shows no text to type into while the first file's read and
+  live join are on their way. Before, Monaco's own empty model took that typing, the file's model
+  replaced it (the text was lost) and Monaco threw "Model is disposed!" twice. The quarantined
+  e2e "a folder chosen while the worktrees are read…" runs again: it types once the tab is open,
+  and moves the disk once the server has the typing (a look that got there first took the disk's
+  text as the saved one, and no conflict was asked).
+- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
+  `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is
+  reserved and suggests one that works (`APP_<NAME>`), instead of the same bare refusal for every
+  name tried.
+- The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
+  5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
+  one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
+  and the `task_create` tool now names the real defaults (it said "default Opus"); both are held to
+  the launch constants by tests. Production gets this with the next promotion and update.
+- `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
+  `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
+  so both commands the briefing names printed its usage line and exited 2. It now passes them too,
+  its usage line lists all four, and a test fails when a new "In a task's session" subcommand is
+  left out of it. Running sessions see the new wrapper once the updated server starts any run.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier

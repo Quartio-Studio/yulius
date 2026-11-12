@@ -1,13 +1,15 @@
 //! `yulius instance export` (SPEC-329 EXP-001..007): freeze, plan the exact length, announce it,
 //! stream the archive to stdout, thaw (or keep frozen for a move).
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal as _, Write};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -15,11 +17,12 @@ use signal_hook::iterator::Signals;
 use sha2::{Digest as _, Sha256};
 
 use super::archive::{
-    Entry, Kind, Writer, check_entry, ending_len, headers, padded, plain_file_len,
+    Entry, Kind, Writer, check_entry, ending_len, headers, padded, path_digest, plain_file_len,
 };
 use super::freeze::{self, Freeze};
-use super::walk::{self, Skipped};
-use super::{IdRange, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED, Service};
+use super::receipts::{self, Digest, Ledger};
+use super::walk::{self, Seen, Skipped};
+use super::{IdRange, KEPT, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED, Service};
 
 /// Options of `yulius instance export`.
 #[derive(Debug, Clone)]
@@ -37,7 +40,7 @@ pub struct ExportOptions {
 /// The planned archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Plan {
-    /// Entries under `data`.
+    /// Entries under `data` in the stream.
     pub entries: u64,
     /// The archive's exact length.
     pub total: u64,
@@ -46,6 +49,8 @@ pub struct Plan {
     /// SHA-256 of every entry's headers (path, kind, size, owners, mode, time, attributes): the
     /// stream must find the same, or the directory changed after the plan.
     pub fingerprint: [u8; 32],
+    /// Every path the directory holds, sent or not (a pass of a move; 0 for a whole copy).
+    pub kept: u64,
 }
 
 /// Walks `root` once and computes the archive's exact length.
@@ -53,23 +58,134 @@ pub struct Plan {
 /// # Errors
 /// A directory or file that cannot be read, or an entry the reader would refuse.
 pub fn plan(root: &Path) -> io::Result<Plan> {
+    plan_observed(root, &mut |_| {})
+}
+
+/// [`plan`], showing every planned entry to `observe` (a move counts its inventory from them,
+/// SPEC-460 MIG-031, without another walk).
+///
+/// # Errors
+/// As [`plan`].
+pub fn plan_observed(root: &Path, observe: &mut dyn FnMut(&Entry)) -> io::Result<Plan> {
+    plan_pass(root, None, observe)
+}
+
+/// Which links of a file must travel with it: when a file with several links is sent, the new
+/// host makes a new file of it, and its other links there would keep the old one.
+#[derive(Default)]
+struct Relinked(HashSet<(u64, u64)>);
+
+impl Relinked {
+    /// Whether the new host holds `seen` as it is, by `ledger`: its path and state.
+    fn held(
+        &self,
+        ledger: &dyn Ledger,
+        seen: &Seen<'_>,
+        headers: &[u8],
+    ) -> Option<(Digest, Digest)> {
+        let path = path_digest(&seen.entry.path);
+        let state = receipts::state(headers, seen.ino, seen.ctime);
+        let relinked = matches!(seen.entry.kind, Kind::HardLink { .. })
+            && self.0.contains(&(seen.dev, seen.ino));
+        (!relinked && ledger.held(&path, &state)).then_some((path, state))
+    }
+
+    /// `seen` is sent as a file.
+    fn sent(&mut self, seen: &Seen<'_>) {
+        if seen.nlink > 1 && matches!(seen.entry.kind, Kind::File { .. }) {
+            self.0.insert((seen.dev, seen.ino));
+        }
+    }
+}
+
+/// The entry that lists the paths an exact pass keeps.
+fn kept_entry(paths: u64) -> Entry {
+    Entry {
+        path: KEPT.to_vec(),
+        kind: Kind::File { size: paths * 16 },
+        mode: 0o600,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        xattrs: Vec::new(),
+    }
+}
+
+/// [`plan_observed`] for an exact pass of a move (SPEC-465 WCP-007): with `ledger`, only the
+/// entries the new host does not hold are planned into the stream, followed by the digests of
+/// every path. `observe` still sees every entry.
+///
+/// # Errors
+/// As [`plan`].
+pub fn plan_pass(
+    root: &Path,
+    ledger: Option<&dyn Ledger>,
+    observe: &mut dyn FnMut(&Entry),
+) -> io::Result<Plan> {
     let mut entries = 0u64;
+    let mut kept = 0u64;
     let mut bytes = 0u64;
     let mut fingerprint = Sha256::new();
-    let skipped = walk::walk(root, &mut |e, _| {
+    let mut relinked = Relinked::default();
+    let skipped = walk::walk_seen(root, false, &walk::copied, &mut |seen| {
+        let e = seen.entry;
         check_entry(e)?;
+        observe(e);
         let h = headers(e);
         fingerprint.update(&h);
+        if let Some(ledger) = ledger {
+            kept += 1;
+            let held = relinked.held(ledger, seen, &h).is_some();
+            fingerprint.update([u8::from(held)]);
+            if held {
+                return Ok(true);
+            }
+            relinked.sent(seen);
+        }
         entries += 1;
         bytes += h.len() as u64 + padded(e.size());
-        Ok(())
+        Ok(true)
     })?;
+    let list = ledger.map_or(0, |_| kept_entry(kept).archived_len());
     Ok(Plan {
         entries,
-        total: plain_file_len(MANIFEST_LEN) + bytes + ending_len(),
+        total: plain_file_len(MANIFEST_LEN) + bytes + list + ending_len(),
         skipped,
         fingerprint: fingerprint.finalize().into(),
+        kept: ledger.map_or(0, |_| kept),
     })
+}
+
+/// `e` with the archive path it happened at, still of its kind.
+fn at(path: &[u8], e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{}: {e}", String::from_utf8_lossy(path)))
+}
+
+/// Opens the file at `disk` for reading: never through a link, and never what took a file's
+/// place (a FIFO would be waited on, a device opened); such a path is gone ([`walk::gone`]).
+/// The file itself is opened as any program opens it, so a lease on it is waited for.
+fn open(disk: &Path) -> io::Result<File> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        // A handle on whatever the name leads to: it opens nothing and waits for nothing.
+        let handle = File::options()
+            .read(true)
+            .custom_flags((nix::fcntl::OFlag::O_PATH | nix::fcntl::OFlag::O_NOFOLLOW).bits())
+            .open(disk)?;
+        if !handle.metadata()?.is_file() {
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::NXIO.raw_os_error(),
+            ));
+        }
+        // That very file, whatever its name leads to by now.
+        File::open(format!("/proc/self/fd/{}", handle.as_raw_fd()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    File::options()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+        .open(disk)
 }
 
 /// Streams the archive of `root` to `out`: `manifest` (with `plan`'s totals) first, then the
@@ -87,11 +203,11 @@ pub fn send(
     tick: &mut dyn FnMut(u64),
     before_end: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<u64> {
-    let mut manifest = manifest.clone();
-    manifest.total_bytes = plan.total;
-    manifest.entries = plan.entries;
+    send_pass(root, plan, manifest, out, None, tick, before_end)
+}
+
+fn head(manifest: &Manifest, w: &mut Writer<impl Write>) -> io::Result<()> {
     let content = manifest.to_bytes().map_err(io::Error::other)?;
-    let mut w = Writer::new(out);
     let head = Entry {
         path: MANIFEST.to_vec(),
         kind: Kind::File { size: MANIFEST_LEN },
@@ -101,31 +217,264 @@ pub fn send(
         mtime: i64::try_from(manifest.created_at).unwrap_or(0),
         xattrs: Vec::new(),
     };
-    w.entry(&head, Some(&mut content.as_slice()), |_| {})?;
-    let limit = plan.total - ending_len();
+    w.entry(&head, Some(&mut content.as_slice()), |_| {})
+}
+
+/// [`send`] for an exact pass of a move planned with [`plan_pass`] (SPEC-465 WCP-007): with
+/// `ledger`, the entries the new host holds are left out and recorded as kept, each sent entry
+/// is recorded before it leaves, and the stream ends with the digests of every path. The
+/// ledger is sealed before the checksum.
+///
+/// # Errors
+/// As [`send`].
+pub fn send_pass(
+    root: &Path,
+    plan: &Plan,
+    manifest: &Manifest,
+    out: impl Write,
+    mut ledger: Option<&mut dyn Ledger>,
+    tick: &mut dyn FnMut(u64),
+    before_end: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<u64> {
+    let mut manifest = manifest.clone();
+    manifest.total_bytes = plan.total;
+    manifest.entries = plan.entries;
+    if let Some(pass) = &mut manifest.pass {
+        pass.kept = plan.kept;
+    }
+    let mut w = Writer::new(out);
+    head(&manifest, &mut w)?;
+    let list = ledger
+        .as_ref()
+        .map_or(0, |_| kept_entry(plan.kept).archived_len());
+    let limit = plan.total - ending_len() - list;
     let mut fingerprint = Sha256::new();
-    walk::walk(root, &mut |e, disk| {
-        fingerprint.update(headers(e));
+    let mut relinked = Relinked::default();
+    let mut paths: Vec<u8> = Vec::new();
+    walk::walk_seen(root, false, &walk::copied, &mut |seen| {
+        let (e, disk) = (seen.entry, seen.disk);
+        let h = headers(e);
+        fingerprint.update(&h);
+        if let Some(ledger) = ledger.as_deref_mut() {
+            paths.extend_from_slice(&path_digest(&e.path));
+            let held = relinked.held(ledger, seen, &h);
+            fingerprint.update([u8::from(held.is_some())]);
+            if let Some((path, state)) = held {
+                ledger.kept(path, state)?;
+                return Ok(true);
+            }
+            relinked.sent(seen);
+        }
         if w.written() + e.archived_len() > limit {
             return Err(drifted());
         }
-        if let Kind::File { .. } = e.kind {
-            let mut file = File::options()
-                .read(true)
-                .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-                .open(disk)?;
-            w.entry(e, Some(&mut file), &mut *tick)
-        } else {
-            w.entry(e, None, &mut *tick)
+        if let Some(ledger) = ledger.as_deref_mut() {
+            ledger.sending(path_digest(&e.path), w.sum())?;
         }
+        if let Kind::File { .. } = e.kind {
+            let mut file = open(disk)?;
+            w.entry(e, Some(&mut file), &mut *tick)?;
+        } else {
+            w.entry(e, None, &mut *tick)?;
+        }
+        Ok(true)
     })?;
     let same: [u8; 32] = fingerprint.finalize().into();
-    if w.written() != limit || same != plan.fingerprint {
+    if w.written() != limit || same != plan.fingerprint || paths.len() as u64 != plan.kept * 16 {
         // No trailer: the reader sees an incomplete copy.
         return Err(drifted());
     }
+    if let Some(ledger) = ledger {
+        w.entry(&kept_entry(plan.kept), Some(&mut paths.as_slice()), |_| {})?;
+        ledger.seal()?;
+    }
     before_end()?;
     w.finish()
+}
+
+/// What a live pass did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Sent {
+    /// Entries the walk found.
+    pub walked: u64,
+    /// Entries sent.
+    pub sent: u64,
+    /// The stream's length.
+    pub bytes: u64,
+    /// Paths that were gone when they were looked at or opened.
+    pub vanished: u64,
+    /// Files that ended early while they were read (sent padded, to be sent again).
+    pub torn: u64,
+    /// Sockets, FIFOs and devices left out.
+    pub special: u64,
+    /// The time spent sending entries; the rest of the pass was the walk.
+    pub sending: Duration,
+    /// The part of `sending` that went to entries that earned no receipt: the next pass sends
+    /// them again whether they change or not.
+    pub unearned: Duration,
+    /// For each entry sent, in the stream's order: how long sending it took, in units of
+    /// [`TOOK`]; 0 for one that earned no receipt (its time is in `unearned`).
+    pub took: Vec<u32>,
+}
+
+/// The unit of [`Sent::took`].
+pub const TOOK: Duration = Duration::from_micros(100);
+
+impl Sent {
+    /// The time that went to the entries numbered `deferred` among those sent: what the new
+    /// host says it could not install (a warm pass removes no directory). They earned a
+    /// receipt here and lose it, so every pass sends them again, like what is in `unearned`.
+    #[must_use]
+    pub fn waiting(&self, deferred: &[u64]) -> Duration {
+        let units: u64 = deferred
+            .iter()
+            .filter_map(|at| self.took.get(usize::try_from(*at).ok()?))
+            .map(|took| u64::from(*took))
+            .sum();
+        Duration::from_micros(units.saturating_mul(TOOK.as_micros() as u64))
+    }
+}
+
+/// Whether an entry last changed at `ctime` is old enough at a pass that began at `began` to
+/// earn a receipt (SPEC-465 WCP-003): any later change gets a later change time, also on a
+/// filesystem that keeps whole seconds.
+fn settled(ctime: (i64, i64), began: (i64, i64)) -> bool {
+    (ctime.0 + RACY_SECS, ctime.1) <= began
+}
+
+/// How long before a pass an entry must have changed last to earn a receipt.
+pub const RACY_SECS: i64 = 2;
+
+fn same_inode(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    (
+        a.dev(),
+        a.ino(),
+        a.ctime(),
+        a.ctime_nsec(),
+        a.len(),
+        a.mtime(),
+    ) == (
+        b.dev(),
+        b.ino(),
+        b.ctime(),
+        b.ctime_nsec(),
+        b.len(),
+        b.mtime(),
+    )
+}
+
+/// Streams a warm pass of a move: `root` as it is while the instance runs (SPEC-465 WCP-002,
+/// WCP-003). One walk: the entries `ledger` says the new host holds are left out; a path that is
+/// gone is left out; a file's header is its open file's stat and exactly that many bytes
+/// follow. An entry earns a receipt when its stat did not move while it was read, it lies on
+/// `root`'s filesystem and it last changed [`RACY_SECS`] before `began`: the caller syncs that
+/// filesystem after it read the clock, before the call. `manifest` names the pass; its totals
+/// stay estimates. The ledger is sealed before the checksum.
+///
+/// # Errors
+/// A read or write error that is not a path being gone, or a record `ledger` cannot keep.
+pub fn send_live(
+    root: &Path,
+    manifest: &Manifest,
+    out: impl Write,
+    ledger: &mut dyn Ledger,
+    began: (i64, i64),
+    tick: &mut dyn FnMut(u64),
+) -> io::Result<Sent> {
+    let mut w = Writer::new(out);
+    head(manifest, &mut w)?;
+    let mut sent = Sent::default();
+    let mut relinked = Relinked::default();
+    let mut root_dev = None;
+    let skipped = walk::walk_seen(root, true, &walk::copied, &mut |seen| {
+        let e = seen.entry;
+        sent.walked += 1;
+        let here = *root_dev.get_or_insert(seen.dev) == seen.dev;
+        if relinked.held(ledger, seen, &headers(e)).is_some() {
+            return Ok(true);
+        }
+        let started = Instant::now();
+        let path = path_digest(&e.path);
+        let earned = if let Kind::File { .. } = e.kind {
+            let opened = open(seen.disk).and_then(|file| Ok((file.metadata()?, file)));
+            let (meta, mut file) = match opened {
+                Ok((meta, file)) if meta.is_file() => (meta, file),
+                // Gone, or something else took its place since the walk looked.
+                Ok(_) => {
+                    sent.vanished += 1;
+                    return Ok(false);
+                }
+                Err(err) if walk::gone(&err) => {
+                    sent.vanished += 1;
+                    return Ok(false);
+                }
+                Err(err) => return Err(at(&e.path, err)),
+            };
+            // The header is the open file's own: what is read is that file's content.
+            let kind = Kind::File { size: meta.len() };
+            let e = walk::described(e.path.clone(), kind, &meta, walk::xattrs_of(&file)?);
+            check_entry(&e)?;
+            ledger.sending(path, w.sum())?;
+            let torn = w.entry_torn(&e, &mut file, &mut *tick)?;
+            sent.torn += u64::from(torn);
+            if meta.nlink() > 1 {
+                relinked.0.insert((meta.dev(), meta.ino()));
+            }
+            let still = !torn
+                && (meta.dev(), meta.ino()) == (seen.dev, seen.ino)
+                && same_inode(&meta, &file.metadata()?);
+            let ctime = (meta.ctime(), meta.ctime_nsec());
+            (still && settled(ctime, began))
+                .then(|| receipts::state(&headers(&e), meta.ino(), ctime))
+        } else {
+            check_entry(e)?;
+            ledger.sending(path, w.sum())?;
+            w.entry(e, None, &mut *tick)?;
+            let still = std::fs::symlink_metadata(seen.disk).is_ok_and(|now| {
+                (now.dev(), now.ino(), now.ctime(), now.ctime_nsec())
+                    == (seen.dev, seen.ino, seen.ctime.0, seen.ctime.1)
+            });
+            (still && settled(seen.ctime, began))
+                .then(|| receipts::state(&headers(e), seen.ino, seen.ctime))
+        };
+        let earned = earned.filter(|_| here);
+        if let Some(state) = earned {
+            ledger.earned(state)?;
+        }
+        sent.sent += 1;
+        let took = started.elapsed();
+        sent.sending += took;
+        if earned.is_none() {
+            sent.unearned += took;
+            sent.took.push(0);
+        } else {
+            let units = took.as_micros() / TOOK.as_micros();
+            sent.took.push(u32::try_from(units).unwrap_or(u32::MAX));
+        }
+        Ok(true)
+    })?;
+    sent.vanished += skipped.vanished;
+    sent.special = skipped.special;
+    ledger.seal()?;
+    sent.bytes = w.finish()?;
+    Ok(sent)
+}
+
+/// Syncs the filesystem that holds `root`: every dirty page is written and write-protected, so
+/// a later write through a mapping stamps its file again (SPEC-465 WCP-003).
+///
+/// # Errors
+/// The directory cannot be opened or the filesystem cannot be synced.
+pub fn sync(root: &Path) -> io::Result<()> {
+    let dir = File::open(root)?;
+    #[cfg(target_os = "linux")]
+    rustix::fs::syncfs(&dir)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        dir.sync_all()?;
+        rustix::fs::sync();
+    }
+    Ok(())
 }
 
 fn drifted() -> io::Error {
@@ -136,7 +485,7 @@ fn drifted() -> io::Error {
 }
 
 /// The facts of the instance at `data_dir` for its manifest.
-fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
+pub(crate) fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
     let meta = std::fs::metadata(data_dir)
         .map_err(|e| format!("cannot read {}: {e}", data_dir.display()))?;
     let passwd = super::read_text(Path::new("/etc/passwd")).unwrap_or_default();
@@ -178,6 +527,7 @@ fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
         },
         subuid: range("/etc/subuid"),
         subgid: range("/etc/subgid"),
+        pass: None,
     })
 }
 
@@ -215,13 +565,14 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
         Ok(signals) => signals,
         Err(e) => return refused(&format!("cannot watch signals: {e}")),
     };
-    let (watched, unit) = (Arc::clone(&state), opts.service.clone());
+    let frozen = Arc::new(Mutex::new(Vec::new()));
+    let (watched, thawed) = (Arc::clone(&state), Arc::clone(&frozen));
     std::thread::spawn(move || {
         if let Some(signal) = signals.forever().next() {
             eprintln!(
                 "\nyulius instance export: stopped by signal {signal}; the copy is incomplete"
             );
-            match freeze::on_signal(&watched, &mut freeze::System, &unit) {
+            match freeze::on_signal(&watched, &mut freeze::System, &thawed) {
                 freeze::Signal::LeaveToMain => {}
                 freeze::Signal::Exit(why) => {
                     if let Some(why) = why {
@@ -243,6 +594,9 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
             return refused(&why);
         }
     };
+    if let Ok(mut units) = frozen.lock() {
+        *units = held.frozen();
+    }
     let ours = if held.ours() {
         freeze::THAW
     } else {
@@ -257,12 +611,17 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
             std::thread::park();
         }
     }
+    let thaw = if held.covered().is_empty() {
+        opts.service.clone()
+    } else {
+        held.covered().join(" ")
+    };
     match (result, opts.move_out) {
         (Ok(()), true) => match held.keep_for_move() {
             Ok(()) => {
                 eprintln!(
                     "{unit} stays frozen and is disabled, so it does not start beside the new \
-                     instance. To run it here again: `sudo systemctl thaw {unit} && sudo \
+                     instance. To run it here again: `sudo systemctl thaw {thaw} && sudo \
                      systemctl enable {unit}`.",
                     unit = opts.service
                 );

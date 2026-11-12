@@ -40,13 +40,13 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/setup/status` | → `{"setup_required": bool, "github_configured": bool}` (`github_configured`: the instance has a GitHub App; until then the sign-in page offers only the password, SPEC-422) |
+| GET | `/api/setup/status` | → `{"setup_required": bool, "github_configured": bool, "github_callback_missing": bool}` (`github_configured`: the instance has a GitHub App; until then the sign-in page offers only the password, SPEC-422. `github_callback_missing`: GitHub is known to refuse this instance's sign-in callback, after a move to another URL until the App holds it; the page says so and opens the password. Reading it while the answer is not "registered" and due (30 s old, longer the longer it stays the same) makes the server ask GitHub again, SPEC-466) |
 | POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. 422 when the repeat differs or the password has fewer than 8 characters (`the password needs at least 8 characters`; SPEC-242). Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
-| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422) |
+| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422). What the instance knows of its sign-in callback never stops a start, and a start asks GitHub nothing (SPEC-466) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
 | POST | `/api/auth/logout` | → 204 |
 | GET | `/api/me` | → `Me`; a playground's guest's `user` has `"login": "<name> (guest)"` and `"guest": {"sandbox_id", "slug", "expires_at"}` (SPEC-410) |
@@ -308,7 +308,7 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false,"prepared?":false,"start_at?":"<RFC 3339>"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-fable-5-2` and without `effort` at `max` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). With `"prepared": true` the task waits as `prepared` until Start now, and with `start_at` (implies prepared; at most 60 s past and 366 days ahead, else 422) until that time, shown as `start_at` (TSK-019, SPEC-105; 422 together with `after_task_id`, `start_rule` or `supertask`, 429 beyond 32 prepared tasks in the sandbox). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false,"prepared?":false,"start_at?":"<RFC 3339>"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-fable-5-2` and without `effort` at `high` (none for Haiku; SPEC-023, SPEC-462); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). With `"prepared": true` the task waits as `prepared` until Start now, and with `start_at` (implies prepared; at most 60 s past and 366 days ahead, else 422) until that time, shown as `start_at` (TSK-019, SPEC-105; 422 together with `after_task_id`, `start_rule` or `supertask`, 429 beyond 32 prepared tasks in the sandbox). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool,"supertask":bool}`: whether a new task mixes separate workstreams (TSK-011; prompts of 40 words or more), and whether to propose it as a supertask (SPEC-188, ADR-0152): Jev is sure it is broad work and the verdict is not `several`. Both questions are asked at once, each within 2.5 s. `checked` says whether Jev answered either; it is false — the verdict `one`, `supertask` false — for prompts under 3 words, without a Jev key and when Jev fails or is slow |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured, or `claude_account_required` when no Claude account is usable (none connected, or every one must sign in again; SPEC-246), 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does, a `prepared` one whatever its time (409 otherwise, also while onboarding blocks the sandbox's tasks). Cancel it with `/stop` |
@@ -410,14 +410,23 @@ TaskDetail = TaskSummary + {
   "account_email?": "…",
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_email?","account_id (proposed)","launch_kind","state",
-                                  "started_at","ended_at","exit_code","exit_reason"}],
+                                  "started_at","ended_at","exit_code","exit_reason","model?","cli_version?"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
-  "request": "the whole request, queued messages included", "started": false
+  "request": "the whole request, queued messages included", "started": false,
+  "model": "claude-fable-5-2", "model_default": true, "effort?": "high",
+  "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322", "cli_moves_stopped": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
+
+`model` and `effort` are what the task asks Claude Code for (its own, else Yulius's default:
+`model_default`); what answered is `metrics.models` and each attempt's `model`, read from the
+transcripts. `cli_version` is the Claude Code version the latest session's transcript names (each
+attempt has its own), and `cli_moves_to` the newer version a running session is restarted on when
+its turn ends (SPEC-461), or only at its next start when `cli_moves_stopped` is true (running
+tasks are no longer moved to that version, SPEC-468); a restart for it is no entry of `switches`.
 
 `wall_ms` is how long the task's sessions were open, idle included. `active_ms`, the tokens and
 `turns` come from each run's transcript (SPEC-087): active time is the union of its turns' spans
@@ -769,7 +778,7 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   every new integration and production head is tested once per commit. The integration branch's
   configuration applies; while it has none, a pull request that adds CI is tested with its own
   (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
-  by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (default 2) execute at once, each in its own job
+  by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
   checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
   (names the failed job and exit code), `error` (errors and cancellations), linking to
@@ -1347,10 +1356,10 @@ resolves to nothing, the run gets the server without that variable or token.
   it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
-    <newest conversation>] --model claude-fable-5-2 --effort max [--dangerously-skip-permissions]`
+    <newest conversation>] --model claude-fable-5-2 --effort high [--dangerously-skip-permissions]`
     (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
-    for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
+    (no per-model weekly cap binds the default model) and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
     terminal's environment (Git as the caller); no Yulius lifecycle hooks, status line or briefing:
     its `--settings` hold only the `PostToolUse` redaction hook and `disabledMcpjsonServers`
     (SPEC-147, SPEC-095). It
@@ -1411,7 +1420,7 @@ resolves to nothing, the run gets the server without that variable or token.
     (SPEC-427, ADR-0271), started when none runs or when its host sandbox is no longer one the
     caller can work in (concurrent calls start one), as `claude [--resume <newest conversation>]
     --settings '{"disableAllHooks":true,"outputStyle":"Concise"}' --setting-sources ""
-    --strict-mcp-config --tools "" --model claude-fable-5-2 --effort max
+    --strict-mcp-config --tools "" --model claude-fable-5-2 --effort high
     [--dangerously-skip-permissions]` in `users/<id>/superagent/work` with
     `CLAUDE_CONFIG_DIR=users/<id>/superagent/.claude` and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` naming
     a script that refuses every command, contained in a bubblewrap root of that folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools
@@ -1464,7 +1473,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
-| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"?, "email"?}` → `Account`, at least one of the two: `label` (trimmed, 1–80 printable chars) renames the subscription (SPEC-244); `email` (a string, trimmed: one `@` with text on both sides, no whitespace or control characters, at most 254 characters) is the email an administrator types for it, and `""` removes that email (SPEC-463, ADR-0300). Both are checked before either is written, and a request with neither (`null` counts as not given) is `invalid` (422). The Subscriptions page edits both in place. Audited `account.updated` with the new name and `email=set` or `email=removed`, never the address. The pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204, also while tasks use it (SPEC-447 MOV-003): it is deleted first, so nothing chooses it again; Done tasks' idle sessions on it are closed (`closed`, as archiving does, SPEC-057) and every other task with a run on it moves to another subscription in the same session or waits for one (its terminal says so; with nothing usable left it is under Needs you), so every run on it ends (a launch that chose it just before chooses again). It answers once the Done sessions are closed; the moves go on after the answer, each waiting for a start or switch under way. A task its person paused, or whose move is refused, is stopped instead, saying why. Cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
@@ -1474,6 +1483,10 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
+| GET | `/api/admin/instance/address` | superadmin | → `InstanceAddress` `{"public_url", "github": GitHubCallback\|null, "moved": {"from\|null", "to\|null", "at", "queued", "left", "failed"}\|null}` (SPEC-466): `github` is whether GitHub accepts the instance's sign-in callback, `null` without a GitHub App: `{"state": "registered\|missing\|unknown", "reason\|null", "callback_url", "homepage_url", "settings_url", "checked_at\|null"}` (`reason`: why the answer is unknown; `settings_url`: the App's settings page, `https://github.com/organizations/<owner>/settings/apps/<slug>` or `https://github.com/settings/apps/<slug>`). `moved` is what the first start after `yulius instance migrate` recorded (`moved.json`): the old and new URL, when, and the tasks put back in the queue, left stopped and not queued. Reading an answer that is not "registered" and due makes the server ask GitHub again in the background: 30 s after the last answer, and once eleven answers in a row said the same twice as long with each further one, up to 4 minutes; a demand (`…/check`, `/internal/github-callback`) or a changed answer makes it 30 s again. A GitHub sign-in that completes makes the answer `registered` without a question: GitHub exchanged a code for the callback |
+| POST | `/api/admin/instance/address/check` | superadmin | asks GitHub now → `InstanceAddress` |
+| GET | `/api/admin/instance/migration` | superadmin | → `MigrationView` (SPEC-470): a move to another host asked from Settings → Instance, computed from the root move helper's files on every read and stored nowhere. `{"public_url", "helper_installed", "update_running", "request": {"id", "action", "state": "requested"\|"unanswered", "requested_at"}\|null, "run": MigrationRun\|null, "move": MigrationMove\|null, "arrived": {"id", "target", "from"\|null, "to"\|null, "finished_at", "lines"}\|null, "can": {"plan", "move", "abort"}}`. `helper_installed`: systemd says the helper's path unit waits (asked at most every 10 s). `request`: written and not taken by the helper yet (`unanswered` after 20 s; from 5 s on a read writes the same request again, because a change of the file that comes while the helper ends another run starts nothing; a request the helper took, or one older than 15 minutes, is removed; no copy of the data directory takes it along). `MigrationRun` = the helper's report: `{"id", "action": "plan"\|"move"\|"abort", "target"\|null, "ssh_port"\|null, "public_url"\|null, "data_disks", "state": "running"\|"ended"\|"refused"\|"lost", "exit_code"\|null, "error"\|null, "started_at", "updated_at", "ended_at"\|null}` (`lost`: running, and its heartbeat is more than 60 s old; `exit_code`: the command's, 0 nothing failed, 1 a step failed, 2 refused before anything changed, `null` when a signal ended it; `error`: why the helper refused, or the command's last words when it ended before its checklist). `MigrationMove` = the command's status: `{"id", "target", "phase": "Plan"\|"Prepare"\|"Copy"\|"Cutover"\|"Finish"\|"Abort"\|"done"\|"aborted", "lines": [{"name", "outcome": "ok"\|"changed"\|"manual"\|"failed", "detail"}], "public_key"\|null, "new_url"\|null, "updated_at", "by_command", "earlier"}` (`public_key`: the one-time key's public line while a person has to add it to root's `authorized_keys` on the new host; `by_command`: written after the helper's last run ended, that is by `yulius instance migrate` run on the host; `earlier`: neither the command line's nor the helper's last run's own. A run's own checklist is the one that names its request (the helper passes the request's id to the command, which writes it into its status); any other one that was not written after that run ended is `earlier`: the move that is recorded, or the last one when its phase is `done` or `aborted`, never what that run found. While a run has written no checklist of its own, an earlier one is not shown: `move` is `null`). `arrived`: the finished checklist of the move that brought the instance to this host. `can`: what a `POST` would accept now |
+| POST | `/api/admin/instance/migration` | superadmin | `{"action": "plan"\|"move"\|"abort", "target", "ssh_port" (22), "public_url"\|null, "data_disks": […], "confirm"}` → 202 `MigrationView`: writes the request for the root helper (`<data>/migrate/request.json`), which runs `yulius instance migrate --no-sign-in`: its plan, the move (`--yes`) or `--abort`, reaching the new host with the move's one-time key alone, never as root signs in. 422 for a value outside the rules (`target` is `root@host` or `host` as ssh takes it, `ssh_port` 1–65535, `public_url` `https://host` with nothing after it, at most two different `data_disks` under `/dev/`; an abort names none of them) and for a `move` whose `confirm` is not the target's host; 409 without the helper, while an update or restart runs, while a request waits or a run is in flight (an `abort` may arrive during a plan or a move: it stops it), for a `move` unless the helper's last run was a plan of the same values that ended without a failed line and without a key to add at most an hour ago (or a move of the same values that stopped: it is continued), and for an `abort` with nothing recorded. Audited `migration.planned`, `migration.started`, `migration.aborted` (the actor, the host, the request's id and values) before the request is written, and `migration.unwritten` when it then cannot be. Asks are taken one at a time. While a request waits or a run is in flight, `POST /api/admin/update` and `/api/admin/restart` answer 409 |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
@@ -1481,10 +1494,15 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/connections` | signed in | → `{"troubles":[{"id","limit":"share|relay|proxy","sandbox_id"|null,"sandbox_name"|null,"since_ms","held","max","refused","holders":[…]}]}`, oldest first: the open connection troubles of the sandboxes the person can view and of the egress proxy itself (SPEC-361, ADR-0246) |
 | GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
 | POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
-| POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
+| POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, for any other commit, or where the server's unit would not start again while sessions run ("… would not start again: …; nothing was stopped", SPEC-458: nothing is built and no task pauses) |
 | POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: the build stops (ADR-0283), nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
-| POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, or while a run is open (SPEC-432) |
+| POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, while a run is open (SPEC-432), or where the server's unit would not start again while sessions run (SPEC-458, as for an update) |
+| GET | `/api/admin/limits` | superadmin | → `LimitsView` `{"host": {"cpus", "memory_bytes", "disk_bytes"}, "limits": [LimitView]}` (SPEC-459): the six resource limits (`max_sessions`, `ci_max_jobs`, `ci_lanes`, `sandbox_memory_gb`, `sandbox_disk_gb`, `cd_run_disk_gb`). `LimitView` = `{"key", "label", "env", "suffix": ""\|"GiB"\|"GB", "value", "source": "default"\|"unit"\|"settings", "host_sized", "formula", "unit_value"\|null, "setting": {"value"\|null, "set_by", "set_at"}\|null, "configured_on": host\|null, "stale", "min", "max", "live", "restart_needed"}`: `stale` = the pinned number in force was configured on a host of another size and is not what this one would get; `setting.value: null` = host-sized saved here, overruling the unit. 409 before the server loaded its limits |
+| PUT | `/api/admin/limits/{key}` | superadmin | `{"value": n}` pins the limit (it wins over the unit's `YULIUS_*` variable); `{"value": null}` makes it host-sized whatever the unit says → `LimitsView`. In force at once (sessions: queued tasks start; CI jobs: running ones finish), the sandbox memory at the next restart (`restart_needed`). 422 outside `min`…`max` (the message names the range; sandbox memory at most the host's) and for a body without `value` or with anything but a whole number or `null`, 404 for an unknown key. Audited `limits.set`. Every change answers 409 when the saved limits could not be read at this start, or were no limits document (nothing is written over them; see operations.md, "Resource limits") |
+| DELETE | `/api/admin/limits/{key}` | superadmin | forgets the setting: the unit's value is in force again, else the host-sized one → `LimitsView`. Audited `limits.removed` |
+| POST | `/api/admin/limits/adapt` | superadmin | host-sized for every `stale` limit (as `PUT … {"value": null}` for each) → `LimitsView`. Audited `limits.adapted` |
+| POST | `/api/admin/limits/keep` | superadmin | keeps every `stale` limit's number and records it for this host → `LimitsView`. Audited `limits.kept` |
 | GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
 | PUT | `/api/admin/jev` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `JevKeyView`: sealed with the master key, used by task intake at once (ADM-002) |
 | DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |
@@ -1499,6 +1517,9 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null","last_auto|null","kept":[{"id","slug","removed_at|null","bytes|null","purge_requested"}]}` (`last_auto`: the last automatic round since the start; `kept`: removed sandboxes whose files stay, SPEC-276): what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
 | POST | `/api/admin/leftovers/scan` | superadmin | rescans in the background → `LeftoversView`; 409 while a scan or deletion runs |
 | POST | `/api/admin/leftovers/delete` | superadmin | `{"ids":[…]}` or `{"all_safe":true}` → `LeftoversView`, deleting in the background (`job`); 409 while a scan or deletion runs, 422 for unknown ids or nothing to delete |
+| GET | `/api/admin/claude-code` | superadmin | → `ClaudeCodeView` `{"managed","unmanaged","channel","channel_source":"settings|config","config_channel","channel_set_by","channel_set_at","version","source":"yulius|host","host_version","latest","stable","checked_at","checking","result":"installed|up_to_date|refused|failed|null","result_text","default_model","models_read","models_unread","unknown_models":[…],"problem","fix","refused":[{"version","missing":[…]}],"behind":[{"sandbox","number","title","version"}],"moves_stopped"}`: the Claude Code isolated sandboxes run, npm's `latest` and `stable` at the last check and what it did, the offered models that version does not know (`problem` and `fix` while the default model is among them), the releases refused for it, and the running tasks still on an older version (SPEC-461); `moves_stopped` is the sentence why running tasks are no longer moved to that version (a session could not continue on it), else null (while it is set, a task of `behind` gets that version at its next start only); `models_unread` is the sentence the card shows when Yulius keeps Claude Code current and the binary in use could not be read for its models, else null (SPEC-468); `managed: false` with `unmanaged` saying why where Yulius keeps nothing current |
+| POST | `/api/admin/claude-code/check` | superadmin | → 202 `ClaudeCodeView` with `checking: true`: starts a check of npm now (a check that runs is the check); 409 where sandboxes are not isolated |
+| PUT | `/api/admin/claude-code/channel` | superadmin | `{"channel": "latest"\|"stable"\|"off"\|null}` → `ClaudeCodeView`: follows the channel from now on, stored (it wins over `YULIUS_CLAUDE_UPDATES`; `null` follows the server's configuration again; the field must be present), applied without a restart (the next run binds as it says, a check runs at once), audited `claude_code.channel`; 422 for another channel, 409 where sandboxes are not isolated |
 | GET | `/api/admin/sandbox-docker` | superadmin | → `SandboxDockerView` `{"ok","detail","isolated","base","host_dockerd","rebuild","own_engines","own_engine_fix","host_check","smoke"}`: whether sandboxes get Docker (SPEC-203) |
 | POST | `/api/admin/sandbox-docker/smoke` | superadmin | → 202 `SandboxDockerView`: starts the Docker smoke test; 409 while one runs or when sandboxes are not isolated |
 
@@ -1509,19 +1530,35 @@ Account = {"id","provider","label",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"weekly_opus":{…}|null,"weekly_sonnet":{…}|null,
+           "weekly_fable":{…}|null,
+           "limit_reached":false,"limit_resets_at":"…|null",
            "observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0,
-  "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
+  "email":"…|null","email_typed":false,"plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
-per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
-never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
-ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
+per-model weekly caps when the plan has them. `weekly_fable` is the weekly allowance of usage
+credits the Fable models run on: no reading shows it, so it is `null` until Claude reports it used
+up, then at 100 until its `resets_at` (SPEC-464). Its `resets_at` is `null` when Claude did not
+say when it ends, or named a time further ahead than a window lasts: the next provider's reading
+of the subscription ends it then. `status` is `limited` while the default model cannot run on the
+subscription: a limit Claude reported is in effect, or a window that binds that model is at 100.
+`limit_reached` is a limit Claude reported for the whole subscription, which binds every model
+until `limit_resets_at` (`null` when Claude did not say when). A task of another model can still
+be moved to a subscription that is `limited` only by the default model's own window
+(`POST /api/tasks/{tid}/switch` goes by what binds the task's own model). Unknown usage is
+`null`, never zero. Credentials are never returned. `email` is the email of the Claude account
+behind the subscription (SPEC-244, ADR-0185). After a sign-in stores a credential, Yulius reads
+it from Claude's profile
 (`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round
 reads it once for subscriptions signed in before. It is `null` until Claude gives one: Claude may
 refuse the profile to a `setup-token` sign-in, and the page then reads "email unknown" until the
-next sign-in. A new sign-in drops the previous email. Emails are for administrators (UI-022).
+next sign-in. A new sign-in drops the previous email. An administrator can type the email
+instead (`PATCH` above; SPEC-463, ADR-0300): `email_typed` is then `true`, a new sign-in keeps
+it and Claude's answer never replaces it. Removing it makes the background round ask Claude
+again. A typed email is not verified, so nothing presents it as Claude's word: the toast after a
+sign-in names only an email Claude gave. Emails are for administrators (UI-022).
 `StatusAccount.email`, `CapacityAccount.email`, `TaskDetail.account_email`,
 `attempts[].account_email` and `tokens_by_account[].account_email` are present only for an
 instance administrator or the superadmin, and only when known. A task summary (lists, events)
@@ -1641,8 +1678,10 @@ sum the headroom below 98 % over subscriptions with known use (`null` when none 
 hour of readings); `runs_out_at` is when the weekly headroom runs out at `burn_24h`, walking through
 each subscription's weekly reset, if within 7 days; `paused_hours_7d` / `active_hours_7d` are
 task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + paused) ÷ active)⌉ and
-`add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
-available. `id` and `in_use_by` are for instance administrators only.
+`add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `available` (the count and each account's)
+is for a task of the default model: its own weekly window counts beside the 5-hour and weekly ones
+(SPEC-464). `resumes_at` is set while no subscription is available: the earliest known reset that
+makes one available for such a task. `id` and `in_use_by` are for instance administrators only.
 
 The `*_per_day` lists and `tokens.per_day` are seven rolling 24-hour periods, oldest first, the last
 ending now (SPEC-110). A run's tokens count in each period by the share of its lifetime (start to
@@ -1686,7 +1725,11 @@ is a regression, with its reasons. The internal
 listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
 helper's health check, `GET /internal/healthz` (and `GET /healthz` on the public one) → `ok`, and
 `GET /internal/leftovers`, `POST /internal/leftovers/scan` and `…/delete` for `yulius leftovers`,
-with `Authorization: Bearer <the key in <data>/leftovers-cli.key>` (401 otherwise).
+with `Authorization: Bearer <the key in <data>/leftovers-cli.key>` (401 otherwise). The same key
+opens `GET /internal/github-callback[?public_url=https://host]` for `yulius instance migrate`
+(SPEC-466): the server asks GitHub now whether it accepts the sign-in callback of that public URL
+(its own without one, whose kept answer it replaces) → `{"github": GitHubCallback|null}` as in
+`GET /api/admin/instance/address`; 422 for a `public_url` that is not `https://host`.
 
 ## Secrets vault
 
@@ -1728,7 +1771,7 @@ after an unlock.
 | Method | Path | Body → Response |
 | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"\|"personal"), enabled, shadowed_by?, hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the project's secrets, every global one and the caller's own personal ones (`enabled`: it reaches this project's runs; `shadowed_by`: the scope whose secret of the same name wins, project > personal > global, [ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md); `has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance"\|"personal", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance (global): instance administrators; personal: the caller's own, which needs work access. A global or personal secret starts switched on for `{sid}`. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name exists in its scope; 429 past 200 secrets reaching the project |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance"\|"personal", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance (global): instance administrators; personal: the caller's own, which needs work access. A global or personal secret starts switched on for `{sid}`. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name; under the reserved `ANTHROPIC_` only `ANTHROPIC_API_KEY_<NAME>` and `ANTHROPIC_AUTH_TOKEN_<NAME>`, ADR-0292); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name exists in its scope; 429 past 200 secrets reaching the project |
 | PUT | `/api/sandboxes/{sid}/agent-secrets/{id}/enabled` | `{enabled: bool}` → `AgentSecret`: switches a global secret (instance administrators, 403 otherwise) or the caller's own personal one (needs work access on the project) on or off for the project; 422 for a project secret; 429 past 200 secrets reaching the project. Audited `vault.agent.enable` / `vault.agent.disable` |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
@@ -1886,7 +1929,10 @@ task; other hooks answer as usual.
   ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
   secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
   it kept from before production secrets became exclusive, which only the egress proxy still uses
-  (SPEC-405).
+  (SPEC-405). Pixels are not redacted, so `browser_screenshot` is a tool error pointing to
+  `browser_snapshot` while the page shows an agent secret, cannot be read or frames a site a value
+  was filled into, and, after a fill of a value (not a user name or TOTP code) outside a password
+  field or edited in place, on every page of that host until Yulius restarts (SPEC-450).
 - MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
   Superagent, not run without asking where approvals apply) → `{created, file, deleted, hosts: [], link, next, warning?}`:
   Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored

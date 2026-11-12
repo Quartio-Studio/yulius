@@ -343,6 +343,7 @@ fn snapshot(acc: &UsageAccumulator) -> UsageSnapshot {
     UsageSnapshot {
         tokens: acc.usage(),
         model: acc.model().map(str::to_owned),
+        cli_version: acc.cli_version().map(str::to_owned),
         turns: acc.turns(),
         active_ms: acc.active().total_ms(),
         turn_open_since: acc.active().open_since(),
@@ -390,9 +391,13 @@ impl TranscriptWatch for Watch {
             if !self.since.keep(&line) {
                 continue;
             }
-            let observed = match self.harness {
-                Harness::ClaudeCode => claude::observe_line(&line),
+            let (observed, version) = match self.harness {
+                Harness::ClaudeCode => claude::observe_versioned(&line),
             };
+            // Every record of the run's own thread names its Claude Code (SPEC-461 CCM-011).
+            if let Some(version) = version {
+                self.acc.note_cli_version(&version);
+            }
             self.acc.observe_all(observed.iter());
             for o in observed {
                 match o {
@@ -447,11 +452,13 @@ impl TranscriptWatch for Watch {
                         resets_at,
                         message,
                         window_minutes,
+                        scope,
                         at,
                     } => out.push(Observation::LimitReached {
                         resets_at,
                         message,
                         window_minutes,
+                        scope,
                         at,
                     }),
                     Observed::AccessLost { message, at } => {
@@ -605,6 +612,76 @@ mod tests {
             only_yulius: None,
         })?;
         assert_eq!(style(&config)?, "Concise");
+        Ok(())
+    }
+
+    /// The lines of a session whose first run (Claude Code 2.1.311) got a prompt, and whose
+    /// second run was resumed at 11:56:37 on 2.1.322 with nothing typed: the structure of the
+    /// records a real session wrote on 2026-11-11 (its texts are made up). The resumed process
+    /// writes a meta record, an attachment and its answers; no prompt record for hours.
+    fn resumed_without_a_prompt() -> [&'static str; 7] {
+        [
+            r#"{"parentUuid":null,"isSidechain":false,"promptId":"p1","type":"user","message":{"role":"user","content":"Fix the bug"},"uuid":"u1","timestamp":"2026-11-11T11:28:42.782Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.311","gitBranch":"b","slug":"s"}"#,
+            r#"{"parentUuid":"u1","isSidechain":false,"message":{"model":"claude-fable-5-2","id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"On it."}],"stop_reason":"tool_use","usage":{"input_tokens":3,"output_tokens":5}},"type":"assistant","uuid":"a1","timestamp":"2026-11-11T11:28:50.000Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.311"}"#,
+            r#"{"type":"last-prompt","lastPrompt":"Fix the bug","sessionId":"s1"}"#,
+            r#"{"type":"mode","mode":"default","sessionId":"s1"}"#,
+            r#"{"parentUuid":"a1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"Continue from where you left off."}]},"isMeta":true,"uuid":"u2","timestamp":"2026-11-11T11:56:37.389Z","turnPosition":{"promptIndex":3,"turnIndex":4},"userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322","gitBranch":"b","slug":"s"}"#,
+            r#"{"parentUuid":"u2","isSidechain":false,"attachment":{"type":"remote_session_change","url":null,"commit":"c","pr":"p","sendUserFileHint":false,"managedCommit":false,"managedPr":false},"type":"attachment","uuid":"at1","timestamp":"2026-11-11T11:56:37.692Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322"}"#,
+            r#"{"parentUuid":"at1","isSidechain":false,"message":{"model":"claude-fable-5-2","id":"msg_2","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"hm","signature":"x"}],"stop_reason":"tool_use","usage":{"input_tokens":4,"output_tokens":9}},"type":"assistant","uuid":"a2","timestamp":"2026-11-11T11:57:36.901Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322"}"#,
+        ]
+    }
+
+    /// SPEC-461 CCM-011 (found with a real session's transcript after the merge): a run that
+    /// was resumed with nothing typed names its Claude Code with the first record it writes,
+    /// not with its next prompt, which may be hours away; and never the earlier run's.
+    #[test]
+    fn a_run_resumed_with_nothing_typed_names_its_claude_code_at_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let lines = resumed_without_a_prompt();
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s1.jsonl");
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let ran_on = |watch: &dyn TranscriptWatch| watch.usage().cli_version;
+
+        // The first run, watched from the start.
+        std::fs::write(&path, format!("{}\n", lines[..4].join("\n")))?;
+        let mut first = adapter.watch(Harness::ClaudeCode, &path, WatchFrom::Start)?;
+        first.poll()?;
+        assert_eq!(ran_on(first.as_ref()).as_deref(), Some("2.1.311"));
+
+        // The resumed run reads its own lines: before it wrote one, it names nothing.
+        let started =
+            claude::record_time(r#"{"timestamp":"2026-11-11T11:56:36.000Z"}"#).ok_or("a time")?;
+        let mut resumed = adapter.watch(Harness::ClaudeCode, &path, WatchFrom::Since(started))?;
+        resumed.poll()?;
+        assert_eq!(ran_on(resumed.as_ref()), None, "the earlier run's version");
+
+        // Its first record is no prompt, and names the version.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path)?;
+        std::io::Write::write_all(&mut file, format!("{}\n", lines[4]).as_bytes())?;
+        resumed.poll()?;
+        assert_eq!(ran_on(resumed.as_ref()).as_deref(), Some("2.1.322"));
+        std::io::Write::write_all(&mut file, format!("{}\n", lines[5..].join("\n")).as_bytes())?;
+        resumed.poll()?;
+        assert_eq!(ran_on(resumed.as_ref()).as_deref(), Some("2.1.322"));
+
+        // A recount of a run's window says the same, from that window's lines only.
+        let counted = recount::count_run(&path, Some(started), None)?.ok_or("the transcript")?;
+        assert_eq!(counted.cli_version(), Some("2.1.322"));
+        let first = recount::count_run(&path, None, Some(started))?.ok_or("the transcript")?;
+        assert_eq!(
+            first.cli_version(),
+            Some("2.1.311"),
+            "the later run's version"
+        );
+        let between =
+            claude::record_time(r#"{"timestamp":"2026-11-11T11:40:00.000Z"}"#).ok_or("a time")?;
+        let idle = recount::count_run(&path, Some(between), Some(started))?.ok_or("transcript")?;
+        assert_eq!(
+            idle.cli_version(),
+            None,
+            "a window without a line names nothing"
+        );
         Ok(())
     }
 }

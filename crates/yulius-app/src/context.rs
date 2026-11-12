@@ -71,6 +71,16 @@ pub struct AppConfig {
     /// reads input, before the task is flagged (the sum of the typed goal's submit waits,
     /// SPEC-117 ONE-001). Tests shorten it.
     pub launch_goal_ms: u64,
+    /// How long a session restarted on a newer Claude Code gets to start there (its
+    /// SessionStart hook) before that version gets no other running session (SPEC-461 CCM-013).
+    /// Tests shorten it.
+    pub claude_code_start_ms: u64,
+    /// How long a turn's end may take to decide whether its session restarts on a newer Claude
+    /// Code (SPEC-461 CCM-013): the decision is made inside the Stop hook's request, whose
+    /// client gives up after 5 s and lets the session work on, so one that would take longer
+    /// (the turn's lines not read yet, a slow look at the session's processes) is left to a
+    /// later turn's end. Tests shorten it.
+    pub claude_code_decision_ms: u64,
     /// How long the Superagent's request to start a task in another sandbox waits for its
     /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
     /// shorten it.
@@ -138,6 +148,8 @@ impl AppConfig {
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
                 .unwrap_or(300_000),
             launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),
+            claude_code_start_ms: 120_000,
+            claude_code_decision_ms: 3_500,
             cross_request_wait_ms: u64::try_from(
                 crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
             )
@@ -252,12 +264,20 @@ pub struct App {
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
+    /// The root move helper's files (SPEC-470); unset: no move is asked from this server.
+    pub(crate) move_helper: OnceLock<Arc<dyn crate::ports::migration::MoveHelper>>,
+    /// One ask for a move at a time: what it finds and what it writes belong together.
+    pub(crate) move_asks: tokio::sync::Mutex<()>,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
     pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
     pub(crate) ci: crate::ci::CiState,
+    /// The resource limits in force (SPEC-459): sessions, CI jobs and lanes, a CD run's disk.
+    pub(crate) limits: crate::limits::LimitState,
     /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
+    /// The Claude Code sandboxes get (SPEC-461); unset: runs use the host's as it is.
+    pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
@@ -279,6 +299,8 @@ pub struct App {
     pub(crate) upkeeps: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
     /// The egress proxy's and the sandbox relays' open connection troubles (SPEC-361).
     pub(crate) connection_health: Arc<yulius_domain::connection_health::ConnectionHealth>,
+    /// GitHub's last answer about the instance's sign-in callback (SPEC-466).
+    pub(crate) github_callback: crate::github_callback::CallbackKept,
 }
 
 impl App {
@@ -291,8 +313,10 @@ impl App {
             .collect();
         let events = EventBus::new(1024);
         let connection_health = crate::connection_health::connection_health(events.clone());
+        let limits = crate::limits::LimitState::new(&config);
         Arc::new(Self {
             instance_tag,
+            limits,
             config,
             deps,
             events,
@@ -321,9 +345,12 @@ impl App {
             vidoc: OnceLock::new(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
+            move_helper: OnceLock::new(),
+            move_asks: tokio::sync::Mutex::new(()),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
+            agent_cli: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
@@ -334,6 +361,7 @@ impl App {
             purging: Mutex::default(),
             upkeeps: Mutex::default(),
             connection_health,
+            github_callback: crate::github_callback::CallbackKept::default(),
         })
     }
 

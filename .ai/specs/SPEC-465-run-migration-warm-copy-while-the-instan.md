@@ -1,0 +1,496 @@
+---
+yulius-task: 7883fa00-dceb-4dac-a7b9-8bf425e35271
+status: done
+---
+
+# SPEC-465: Run migration: warm copy while the instance runs, a freeze that sends only the changes
+
+Status: done
+Date: 2026-11-12
+Owner: Yulius task #445 (slice B of #442)
+Scope authorization: task #445, asked by the project's owner: "Make the freeze of `yulius instance
+migrate` short: copy the data while the old instance still runs, then freeze and send only what
+changed." It implements SPEC-460's requirement MIG-032.
+
+## Goal
+
+`sudo yulius instance migrate root@new-host` copies the data directory while the old instance
+runs, in one or more passes into a staged copy on the new host, and freezes the old instance only
+for the entries that changed since they were last sent, the removal of what no longer exists, the
+proof (MIG-031) and the start. The estimated freeze is shown before it begins, `--max-downtime`
+bounds it, and a pass that was cut is continued by the same command.
+
+## Context
+
+- SPEC-460 (task #442, ADR-0297) delivered the command with a frozen full copy. Production's move
+  on 2026-11-11 was frozen for 54 minutes (275.8 GiB, 6,388,083 entries, bound by the old disk's
+  IOPS on small files). MIG-032 names the warm copy as slice B.
+- The transport is the export's own archive (SPEC-329, ADR-0222): `walk.rs` (archive order,
+  hard links to their first path), `archive.rs` (pax stream with a SHA-256 trailer), `export.rs`
+  (plan the exact length, then stream), `extract.rs` (O_NOFOLLOW handles, id remapping),
+  `import.rs` (checks, the marker `.yulius-import-incomplete`). `rsync` stays rejected
+  (ADR-0297): its quick check compares size and time.
+- The move's proof is the inventory (`inventory.rs`): entries, bytes and a fingerprint of every
+  entry's headers per top-level folder, counted on both hosts. It compares metadata, not content,
+  so a warm copy must never skip an entry whose content the new host does not hold.
+- Task #442 sketched the design the request repeats: receipts on the old host (a digest of an
+  entry's archive headers, its inode change time and number), bound to a stage id in the new
+  host's marker. This spec uses it and changes two points, each for a case the sketch misses
+  (Decisions): receipts are a map from a path to its last state, and a receipt needs a change time
+  older than the pass's own start.
+- Since #442's commit `2866a890` the sandbox base is built while preparing (`Part::BeforeStart`),
+  before anything is copied or frozen; the request's "after the first pass" was written before
+  that commit.
+- Tasks #446, #447 and #450 change `migrate.rs` and its tests in parallel.
+
+## Requirements
+
+Passes
+
+- WCP-001 **Warm passes.** After Prepare the move enters the phase `Copy`: it streams the data
+  directory to the new host while the old instance runs. The first pass of a staged copy sends
+  every entry; a later pass sends only entries the new host does not hold in their current state.
+  A run always ends its warm passes with a pass that began with receipts (a delta pass), so the
+  freeze never follows a full pass directly.
+- WCP-002 **Live reads.** A warm pass walks once. A path that vanished is left out (with what is
+  below it). A file's header comes from the open file's own stat, exactly that many bytes follow,
+  padded with zeros when the file shrank while it was read. What replaced a file between the walk
+  and the open (a link, a FIFO, a device) is never opened or followed. The walk runs as root
+  while the sandboxes' processes write, so it never follows a name out of the data directory: it
+  holds every directory it is in open, opens each in the one that holds it without following a
+  link, and names every entry through that open directory; a directory that is no longer the one
+  the walk looked at is left out. The manifest says the pass was read live; its totals are
+  estimates, so the importer checks the stream's checksum and not its length.
+- WCP-003 **Receipts.** The old host keeps, for every path it sent, the state the new host holds:
+  a 16-byte digest of the entry's archive headers, its inode's change time in nanoseconds and its
+  inode number. A pass skips an entry only when the receipt of its path is that digest. An entry
+  earns a receipt only when (a) its stat was the same before and after it was read, (b) its change
+  time is at least 2 s older than the start of the pass, which begins by syncing the data
+  directory's filesystem (so a later write through a mapping is stamped too: true of a
+  filesystem that writes back to a disk, as ext4, xfs and btrfs do, and not of tmpfs, which is
+  no place for a data directory), (c) it lies on that
+  filesystem, and (d) the new host acknowledged it after syncing its own filesystem. Sending a
+  path revokes the receipt it had. When a file with several links is sent, every other link of it
+  is sent in the same pass.
+- WCP-004 **Changes are never found by size and time.** A file rewritten in place within the same
+  second, a file whose modification time was set back, and a path that holds another file again
+  after its directory was swapped away and back are sent again.
+- WCP-005 **The staged copy.** The new host's marker `.yulius-import-incomplete` holds the stage
+  id, the count of streams taken in and what the last one installed. A pass is accepted only
+  into an empty data directory (it creates the stage) or into the stage whose id and count it
+  names. The marker names a stream before its first entry and says that nothing is known of the
+  copy until that stream is closed, so a receive that dies (a kill, a power cut) is found. A
+  marker without that stage id is an unfinished copy and is removed before the first pass, as
+  today. `Request::Mark` removes the marker once the copy is proven, so a copy that was started
+  is never a staged copy.
+- WCP-006 **Binding.** Receipts live in `<state>/copy/` on the old host with the stage id and the
+  count of streams. Before every pass the old host asks the new host for its marker: equal id and
+  count continue; a count one ahead with the pending stream's nonce is adopted (WCP-011). A
+  stream that was never closed, a pass that removed paths and then broke, and one whose
+  directories' times could not be put back leave nothing known: the stage goes on without
+  receipts, and the next pass sends everything into it. Anything else (no marker, another id,
+  another count, another stream) drops the receipts and the staged copy, and the next pass is a
+  full one into a new stage.
+- WCP-016 **Where receipts hold.** Receipts and the journal are believed only in the boot they
+  were written in and while the clock was not set back. An inode's times are not written with
+  its data, so after a crash of the old host a file may hold newer content than its change time
+  says; and a clock that goes back by 2 s or more can stamp a later change with the time of what
+  was copied. `stage.json` records the boot's id and the furthest the clock was ahead of the
+  boot's own time when a pass began; another boot, or a clock 1.5 s or more behind that, drops
+  the receipts. The stage goes on, the move says why, and the next pass sends everything into
+  it. A frozen pass is never planned on such receipts: the old instance is thawed and the next
+  run copies warm again.
+
+The frozen pass
+
+- WCP-007 **Exact delta.** The frozen pass is planned and streamed as today (exact length, the
+  stream must match the plan, checksum and length checked by the importer). It sends the entries
+  without a matching receipt and then the digests of every path the old host holds.
+- WCP-008 **Deletions.** After the checksum matched, the new host removes everything in the staged
+  copy whose path is not among those digests, except the names a copy never carries
+  (`walk::LEFT_OUT`) and its marker. A warm pass removes nothing.
+- WCP-009 **Extraction onto a staged copy.** An entry replaces what is at its path: a file by a
+  directory, and in the frozen pass a directory (with everything below) by a file, link or
+  whiteout. In a warm pass an entry that would need a directory removed is not installed and gets
+  no receipt (it waits for the frozen pass). A hard link may name a file of an earlier pass. A
+  directory that is sent again loses the restorable attributes the entry no longer carries. A
+  directory that is not sent keeps its time when an entry below it is written or removed.
+- WCP-010 **Proof.** MIG-031's proof runs over the whole staged copy after the frozen pass,
+  unchanged: the new instance starts only when both inventories are equal.
+
+Resume and bound
+
+- WCP-011 **Resumable.** A pass cut by a broken link or a killed command leaves the staged copy
+  and the receipts usable: the new host syncs and records how many entries of the stream it
+  installed, with the stream's nonce and the stream's digest at that entry; the old host adopts
+  the receipts of exactly those entries when the digest matches its own record, and revokes the
+  receipts of the paths it sent after them. Running the same command again continues: no
+  acknowledged entry is sent again. A link that breaks leaves the new host's end of the stream
+  open (for hours, until TCP gives up): the next run's look at the marker tells that receive to
+  close its stream and waits for it, so what arrived counts.
+- WCP-012 **Estimate.** After each delta pass the checklist shows the estimated freeze (item
+  `downtime`) before anything freezes: four counts of the tree at the measured rate (two on each
+  host), the time to send what will have changed since the pass began (the last pass's sending
+  time, scaled by how long changes gathered for it; the time for entries that earned no receipt
+  or that the new host could not install counts in full, since every pass sends them), the new
+  host's sync and the start (30 s: the
+  mark, the unit's start and its first answer took 10 to 21 s between two emulated hosts).
+  The plan shows what is known then: the copy's size and time at the link's rate, the bound, and
+  a first estimate of the freeze: the entries of the data directory's filesystem counted four
+  times at the rate of a sample (what a walk reaches in 2 s, walked again and timed, so that the
+  rate is the one of cached metadata, as the passes find it), and the start.
+- WCP-013 **`--max-downtime <minutes>`.** While the estimate is above the bound the move copies
+  again instead of freezing; after 5 delta passes in a run it stops without freezing, says so in
+  a failed line (exit 1) and leaves the staged copy for the next run. Without the option it
+  copies again while the changes alone would take more than 60 s to send (same limit of passes),
+  then freezes.
+- WCP-014 **Before the freeze.** The sandbox base is built and the new host proven ready while
+  preparing, before the first pass (as since SPEC-460's `2866a890`); the freeze holds the delta,
+  the deletions, the proof and the start.
+- WCP-015 **Guards.** The plan refuses an old data directory that holds one of the marker's
+  names. A rerun does not ask again for the room the staged copy already takes. The freeze is
+  not begun when the old instance reports another build than when the plan looked (an update
+  during the copy): the staged copy stays for a run with that build. A copy whose proof fails is
+  dropped with its receipts. `--abort` closes a stream still being received and names the copy
+  left on the new host, which holds every secret, also when the old host has dropped what it
+  knew of it (the move's state records that a copy was begun).
+
+## Design
+
+- **Stream.** A pass is an export stream whose manifest carries `pass`: the stage id, the pass's
+  number (the count of acknowledged passes it builds on), a nonce, whether it was read live and,
+  for the frozen pass, the count of kept paths. A frozen pass carries the entry
+  `yulius-export.kept` (16 bytes per path: the first half of the SHA-256 of its archive path)
+  after the last data entry. `yulius instance import` refuses a stream with `pass`.
+- **A live walk** (`instance/walk.rs`). Each directory is opened with `O_NOFOLLOW` through the
+  open directory above it and checked to be the inode the walk looked at; its entries are named
+  `/proc/self/fd/<n>/<name>`, so every look at an entry resolves one name in a directory that
+  cannot be swapped. A file is reached through an `O_PATH` handle, checked to be a regular file,
+  and then opened plainly through that handle. The frozen walks read by path as before.
+- **Receipts** (`instance/receipts.rs`). `<state>/copy/stage.json` holds the stage id, the count,
+  the valid length of the log, the pending stream, the boot and the clock's lead (WCP-016);
+  `receipts` is a log of 32-byte records
+  (path digest, state digest; a zero state revokes); `pending` is the journal of the stream in
+  flight, 40 bytes per sent entry in stream order (the stream's digest before the entry, path,
+  state), written before the entry is sent and completed after it; `pending.kept` lists what a
+  frozen pass left alone. A frozen pass that completed replaces the log by `pending.kept`: after
+  its deletions the receipts are exactly the entries that were skipped.
+- **Acknowledgment.** The importer rewrites the marker before the first entry (the stream's
+  nonce, "nothing known"), counts installed entries and remembers the stream's digest at the last
+  two entry boundaries. At the end of a stream, complete or not, it sets the directories' times,
+  syncs the filesystem and rewrites the marker atomically. The old host never trusts the reply
+  alone: it asks for the marker (`Request::Stage`) and reconciles.
+- **A receive whose sender is gone.** The receive reads its stream on a thread of its own; when
+  no bytes come for a second it looks for `receive.stop` beside its lock. `Request::Stage` writes
+  that file when the lock is held (one run at a time on the old host: whoever asks, the stream's
+  sender is gone), waits until the receive has closed its stream (bounded, 30 minutes) and takes
+  the file back. A new stream waits two minutes for the one before it, then fails.
+- **Flow.** Plan (the marker is read with the facts, receipts are reconciled) → Prepare (the
+  data directory keeps this move's stage) → Copy (warm passes, estimate, bound) → Cutover (freeze,
+  frozen pass, proof, mark, start) → Finish. A signal during the warm passes ends the command;
+  nothing is frozen yet.
+- **States.** A staged copy is `staged` (owner: the move; exit: proven and marked, or dropped on a
+  mismatch); a pass is `pending` on the old host until the marker names it, then `acknowledged`
+  or `revoked`.
+
+## Plan
+
+- [x] Spec SPEC-465 and ADR-0303 for the warm copy
+- [x] Receipts on the old host: the map of what the new host holds, the journal of a stream, adoption
+- [x] Passes in the export: a live walk that tolerates change, an exact delta with the kept paths
+- [x] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
+- [x] The import of a pass: stage marker, acknowledged prefix, deletions, sync
+- [x] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
+- [x] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer
+- [x] A real move between two hosts (QEMU guests) with changes during the copy
+- [x] Independent review answered, gates green
+- [x] After the merge: the review's last wording notes, a move from an Ubuntu 24.04 host
+
+## Acceptance criteria
+
+- Between two fake hosts with the real export, import and inventory: a move with files changed,
+  added, deleted and replaced (file to directory and back, a broken hard link) between the passes
+  ends with exit 0, both inventories equal, the copy's content equal to the old tree, and the
+  events in this order: `before_start` < first pass < `downtime` line < freeze < frozen pass <
+  proof < mark < start.
+- A file whose content changes with the same size and the same modification time is sent again;
+  an unchanged file is not (the second pass's stream does not hold it).
+- A directory swapped away and back, whose path held another file in the pass between, is sent
+  again.
+- A file that shrinks while a warm pass reads it is installed padded, gets no receipt and is sent
+  again; a path that vanishes during the walk does not fail the pass.
+- A pass cut after some entries: the next run sends none of the acknowledged ones again and
+  completes; with the marker removed on the new host the next pass is a full one into a new stage.
+- With `--max-downtime` below the estimate the move copies again, then ends with exit 1 and a
+  failed `downtime` line; the old unit was never frozen and the staged copy is kept. With a bound
+  above the estimate it freezes after the first delta pass.
+- After a rolled-back move (the new instance did not come up) the copy on the new host has no
+  marker and the next run refuses it, as today.
+- A receive that died mid-stream (only the marker written before its first entry is left): the
+  old host drops its receipts, keeps the stage, and the next pass sends every entry. A receive
+  that holds its lock is told to stop by a look at the marker, which waits for it.
+- An old instance that reports another build before the freeze than in the plan is not frozen.
+- A plain `yulius instance export | import` is unchanged (its tests pass untouched), and `import`
+  refuses a pass.
+- A directory that is replaced by a link to a place outside the data directory while a warm pass
+  walks it is not entered, and a file whose directory was replaced is read where the walk listed
+  it: no stream carries a file from outside.
+- After a restart of the old host, or with a clock set back by 2 s, the next pass sends every
+  entry into the same staged copy and the move says why; set back just before the freeze, the
+  frozen pass is not sent and the old instance is thawed.
+- A pass whose directories' times could not be put back on the new host leaves "nothing known",
+  and the next pass sends everything.
+- `--abort` after a proof that differed names the copy on the new host.
+- A directory that became a large file is sent by every warm pass (the new host leaves it out
+  until the freeze); its time is in the estimate in full.
+
+## Test plan
+
+- Unit tests: `instance::receipts` (state digest, held, revoke, adoption of a prefix, a foreign
+  nonce, another boot, a clock set back, a completed frozen pass replacing the log, reload from
+  disk); `instance::walk` (change time and inode seen, a vanished path tolerated, the first path
+  of a link forgotten, a directory swapped for a link under a live walk); `instance::archive`
+  (the kept entry, digests at entry boundaries, a padded live file); `instance::export` (each
+  case of WCP-002..004 and WCP-007 against an in-memory ledger, also one that swaps a directory
+  for a link at a chosen entry; the time sent without a receipt); `instance::extract` (each case
+  of WCP-009, the deletions of WCP-008); `instance::import` (stage marker, refusal of another
+  stage or count, a cut stream's acknowledgment, the marker before the first entry, directory
+  times that cannot be set, the plain import refusing a pass);
+  `instance::migrate::target` (the staged copy kept or removed by the data-directory step, the
+  marker read once no stream is received, the stop word, the watched stream).
+- Flow tests (`instance::migrate::tests::flow`): the acceptance criteria, with the existing moves
+  updated to the new order of events.
+- CLI test: `--max-downtime` is parsed and refused when 0.
+- Gates: `scripts/dev ci`; `yulius security-scan` (Vidoc is off for this project: disabled, not
+  passed).
+- Real hosts: two QEMU guests as in SPEC-460's Evidence, with files written during the passes;
+  a power cut of each host, a clock set back, a mount inside the data directory, a file under a
+  lease and a very deep tree among them. Not testable here: production's size (the walk rate at
+  6.4 million entries is measured on a synthetic tree), a link that breaks by itself, two
+  physical machines.
+
+## Decisions
+
+- ADR-0303 records the lasting ones: the warm copy extends the export's stream instead of adding
+  another transport; receipts are a map from path to state and are granted only for entries older
+  than the pass; a cut stream is acknowledged by its installed prefix; a warm pass never removes;
+  the frozen pass carries the kept paths.
+- **A map, not a set of digests** (differs from #442's sketch). With a set, a directory that is
+  swapped away, replaced and swapped back returns its files to their old paths with their old
+  change times: the old digests match although the new host now holds the files of the pass in
+  between. Keyed by path, a receipt is revoked when its path is sent again.
+- **Older than the pass, not than the read** (differs from the sketch's "2 s before it was
+  read"). A write through a shared mapping stamps the inode only at the first write to a clean
+  page, so a file read between two such writes keeps its change time. The pass syncs the
+  filesystem first, which write-protects every mapped page; a write after that is stamped after
+  the pass's start, and the receipt's rule sees it. The price is that entries changed during a
+  pass are sent again by the next one.
+- **Two walks while frozen, as today.** One walk that keeps the delta in memory would save one
+  count of the tree, but needs a second code path when the delta is large. Left for a follow-up
+  if a measured freeze asks for it.
+- **The base stays in Prepare** (WCP-014): a host that cannot run sandboxes fails before hours of
+  copying, as SPEC-460's acceptance criterion asks.
+- **A bound that cannot be met fails** (exit 1) rather than ending as `manual`: a script that
+  asked for a bounded move must not read exit 0 as "moved".
+- **A stream is marked before it is taken in.** A receive that is killed leaves files half
+  written and directories' times moved, which no receipt would find until the proof fails in the
+  freeze. Restoring that state after a crash needs a journal on the new host; saying "nothing is
+  known" before the first entry and taking it back at the end needs one more write of the marker.
+- **A receive is told to stop by a file beside its lock**, not by an idle timeout (a pass that
+  finds little to send writes nothing for minutes while it walks) and not by a signal (process
+  ids are reused, and the reads would have to be interruptible).
+- **One pull request.** The change is one concern (MIG-032) whose parts are not useful alone; it
+  is built in the plan's slices, each with its tests.
+- **Receipts end with the boot** (from the review). Keeping them across a restart would need a
+  digest of every file's content in the receipt and a second read of the whole tree to check it,
+  which is the copy again. A restart of the old host during a move is rare; it costs one full
+  pass into the staged copy that is already there.
+- **The clock is watched by its lead over the boot's own time**, not by comparing two readings
+  of the wall clock: the lead does not move with the clock's pace or with time spent suspended,
+  only when the clock is set. The highest lead at which a pass began is kept, so a step forward
+  and a later step back are found too. 1.5 s is below the 2 s a later change needs to be
+  mistaken and above a leap second.
+- **A live walk names entries through `/proc/self/fd`** rather than by `openat` calls
+  throughout: every existing look (`lstat`, `readlink`, the attribute calls, which have no
+  directory-relative form before Linux 6.13) stays as it is, and only the name's prefix changes.
+  Measured on 300,000 files it costs nothing (about 400,000 entries a second either way). The
+  frozen walks keep reading by path: nothing writes then, and the plain export is unchanged.
+
+## Evidence
+
+Head of the gate: `1939fae4` (2026-11-12), which holds `dev` up to `cfc11cd6`; the commit after
+it changed this document only, and that head was merged as pull request #1198. The follow-up
+after the merge (`49a6e237`: two lines of the cutover, with their test) was gated again with
+this document's last changes: exit 0, nextest 3829 run, 3829 passed, 16 skipped.
+
+- `scripts/dev ci`: exit 0; nextest 3800 run, 3800 passed, 16 skipped; clippy with `-D
+  warnings`, the macOS compile, the repository contracts, `cargo deny` (advisories, bans,
+  licenses, sources ok), `cargo shear` (no issues), doctests and docs.
+- `cargo test -p yulius --lib instance::`: 311 tests pass, 95 of them new in this change
+  (receipts 20, export 14, extraction 6, import 14, the new host's steps 6, whole moves 23, walk
+  6, archive 3, the estimate and the sample 2, the progress line 1). `cli::instance_migrate…`
+  passes with `--max-downtime` in the help and `0` or a word refused (exit 2). Forty runs in a
+  row under `cargo test`: no failure (SPEC-460's lock test failed 1 of 40 before it waited for a
+  forked child's copy of the lock to close; nextest, which the gate runs, was not affected).
+- Mutation checks: 32 single changes of the new behavior by the author, each run against the
+  instance tests and reverted, and the second reviewer's own (seven for the fixes of the first
+  review, three and two runs more for the fixes of its own findings); every one fails at least
+  one test at the merged head, the last of them (the waiting entries not handed to the estimate)
+  only since `ef00e48e` added its test (the two-second rule, the state without the change time,
+  links not sent together, a sent path not revoked, a cut prefix adopted without its digest, an
+  acknowledgment without the sync, no marker before the first entry, "nothing known" not
+  honoured, the boot or the clock not compared, the clock's lead read after the sync, a wrong
+  unit or an empty boot id in the real reading, the bound ignored, nothing removed, a warm pass
+  removing a directory, no padding, a directory's attributes kept, the stage id not compared,
+  the update guard off, a vanished path fatal, the stop word not written or not heard, an abort
+  that closes no stream or names no copy, the marker's second name accepted, a link read as a
+  file, a walk by path, a marker that stays "known" when times could not be set, an open that
+  does not wait, a freeze after a pass that lost its receipts, the waiting entries not handed to
+  the estimate).
+- The second reviewer also ran 400 live passes beside 605,722 swaps of a directory for a link
+  to a place outside the tree: no stream held a file from outside and no pass failed; with the
+  walk by path the same test held one in 22 of 400 passes.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
+  passed.
+- A walk that holds its directories open against one by path, on 302,482 entries (release
+  build, three rounds each): 0.72 to 0.76 s against 0.74 to 0.78 s, about 400,000 entries a
+  second either way.
+- Real hosts: two Ubuntu 26.04.1 guests (QEMU, kernel 7.0, systemd 259, 16 CPUs, 12 GiB), the old
+  one with an instance from `yulius host setup`, 20,000 files of 1 to 8 KiB in 100 directories,
+  eight files of 40 MiB, a hard link, a link and a `user.` attribute; the new one fresh. Writers
+  ran where a sandbox's processes run, so the freeze stopped them, about 16 rounds a second: 64
+  bytes through a shared mapping of a 16 MiB file (never synced by the writer), a 4 KiB file
+  rewritten in place with its time set back, an append, a file created and one removed, two
+  directories swapped every 40 rounds, a path flipped between a directory with a child and a
+  file every 60 rounds, a hard-linked pair remade every 25 rounds.
+  - At `5108d2d1`: pass 1 was cut by killing the command after 9,130 entries (the new host
+    closed the stream at 8,947). The rerun with a bound it could not meet then sent 11,257 of
+    20,192 entries (none of the 8,947), five passes of 10 to 12 entries in 3 to 4 s each, and
+    ended `FAIL downtime … above --max-downtime 1 after 5 passes … Nothing was frozen`, exit 1,
+    the unit running. The next run sent 18 of 20,193 entries, froze at 19:17:17, sent 18 of
+    20,199 entries (16.4 MiB) frozen, proved the copy at 19:17:24 ("20199 entries and 423.8 MiB
+    in 13 folders, the same on both hosts") and the new instance answered by 19:17:34, 17 s
+    after the freeze; exit 0. (Between these runs both guests were killed; that build still
+    believed its receipts after a restart, which WCP-016 ended.)
+  - At `4118ba24`: the link went silent in pass 1 (packets dropped after 8,757 entries): `Timeout,
+    server … not responding` after 2 min 14 s, exit 1; when packets flowed again the new host's
+    receive closed its stream at 6,965 entries, which the next run adopted. That run's receive
+    was killed 6 s into its stream: its marker, written before the first entry, said "nothing
+    known", and the run after sent everything again into the same stage. Its own connection was
+    then black-holed for good: the receive and its `zstd` lingered for 2 min 40 s until the next
+    run's look at the marker wrote `receive.stop`; the receive closed its stream 0.74 s later
+    (5,339 entries), the run sent 14,872 of 19,990 entries, then 12, said `downtime about 41 s
+    frozen`, froze at 20:37:01, sent 18 of 19,995 entries, removed 204 that had been deleted on
+    the old host meanwhile, proved the copy at 20:37:13 and the new instance answered by
+    20:37:34, 33 s after the freeze; exit 0.
+  - After both moves the SHA-256 of every file under `sandboxes/` (20,025 and 19,823 files, the
+    mapped file, the file rewritten in place, the swapped directories and the hard-linked pair
+    among them) and of `master.key` was equal on both hosts; so were type, owner, mode, time,
+    link text, link count and size of every entry but the time of `sandboxes/` itself, which the
+    new instance's Docker smoke changed after the proof; the attribute was there; the writers'
+    counter was the same on both. `--abort --yes` after each move (the new instance stopped
+    first) brought the old unit back and named the copy left on the new host.
+  - At `124cb733` (the fixes of the first review), with `dev`'s sessions unit: the old host set
+    up again by this build (`yulius-sandboxes.service`, restarted on systemd 259), the writers
+    in `yulius.slice/yulius-sandboxes.service/sandboxes/churn`, and beside them a process that
+    renames a directory of 800 files away and puts a link to `/etc` in its place, and back,
+    every 4 ms (about 46,000 times). Pass 1 sent 20,794 entries (399.3 MiB) in 32 s, pass 2
+    sent 819 of 20,795 in 6 s; the command was killed. The old guest was killed and booted (a
+    power cut). The same command: `this host was restarted since the last pass … everything is
+    sent into the staged copy again`, pass 3 sent 20,795 of 20,795, pass 4 sent 18; it was
+    killed in the cutover, just after the freeze. The old host's clock was set back by 30 s.
+    The same command refused in its plan (exit 2): `yulius.service is frozen … systemctl thaw
+    yulius-sandboxes.service yulius.service`; after that thaw it said `this host's clock was
+    set back since a pass began … everything is sent into the staged copy again`, pass 5 sent
+    20,794 of 20,794 in 35 s, pass 6 sent 819; both units frozen; the frozen pass sent 24 of
+    20,801 entries (16.8 MiB) in 5 s; the copy was proven 7 s after the freeze and the new
+    instance listened about 21 s after it; exit 0. The SHA-256 of all 20,624 files was equal on
+    both hosts. The swapped directory was a link to `/etc` at the moment of the freeze and is
+    that link on the new host; no file of `/etc` was in the copy after any pass or at the end.
+    One pass of the build before the fix (`2e407d22`) beside the same process staged none
+    either: the moment between the walk's look at a directory and its listing is microseconds,
+    which the tests and the reviewer's 400 passes hit on purpose.
+  - At `4a7fe6f4` (every fix of the review; after it only merges of `dev`), the same
+    setup and four more things in the data directory: a tmpfs mounted inside it (51 files, 30
+    MiB), a tree 1,500 directories deep while the command's shell allowed 1,024 open files, a
+    file under a write lease whose holder never gives it up (`lease-break-time` 5 s), and a
+    1 MiB file for the crash that WCP-016 is about. Pass 1 sent 22,352 entries (435.4 MiB) in
+    60 s (the kernel asked the holder for the lease, the pass went on 5 s later); pass 2 sent
+    868 of 22,350: `867 of 868 entries installed and synced; 1 wait for the freeze`, and
+    `downtime about 44 s frozen: … what changes meanwhile takes about 3 s to send (3 s of it for
+    entries that every pass sends: they change all the time, lie on another filesystem, or wait
+    for the freeze behind a directory)`; the command was killed. Then 4 KiB of the 1 MiB file
+    were rewritten in place with `fdatasync` and the guest was killed 120 ms later. After the
+    boot the file had the new content (another SHA-256) under its old change time, old
+    modification time and old size: what a receipt from before the restart would have matched.
+    The same command: `this host was restarted since the last pass … everything is sent into
+    the staged copy again`, pass 3 sent 22,350 of 22,350 in 57 s, pass 4 sent 67 (46.6 MiB, the
+    mounted files among them); `downtime about 41 s frozen`; both units frozen at 00:20:42; the
+    frozen pass sent 70 of 22,355 entries (47.0 MiB) in 7 s and removed 802; `copy proven 22355
+    entries and 416.0 MiB in 13 folders, the same on both hosts` at 00:20:53; the new host's
+    adopt step ran and `yulius.service` listened at 00:21:03.9, 22 s after the freeze; the
+    contained doctor and the Docker smoke passed; exit 0, "changed 11, left alone 42, manual 5,
+    failed 0". The SHA-256 of all 20,678 files under `sandboxes/` and of `master.key` was equal
+    on both hosts: the crashed file with its new content, the 51 files of the mount (plain
+    files on the new host), the file at the bottom of the deep tree, the leased file. Type,
+    owner, mode, time, link text, link count and size of 22,290 entries were equal but the time
+    of `sandboxes/` itself; no file of `/etc` was in the copy.
+  - At `1939fae4` (the merge of SPEC-467, by which no pass sends the limits mark an import
+    leaves at the top of a data directory): the old host held such a mark, as production does
+    (8 bytes, a time of 2023). Pass 1 sent 22,299 entries in 49 s, pass 2 sent 18; both units
+    frozen at 00:53:02; the frozen pass sent 18 of 22,304 entries; `copy proven 22304 entries
+    and 386.0 MiB in 13 folders, the same on both hosts` at 00:53:15; the new instance listened
+    at 00:53:29, 27 s after the freeze; exit 0. The mark is in no pass's count, the old host's
+    is untouched, and the new instance's first start used the one the import wrote. The
+    SHA-256 of all 20,627 files was equal on both hosts.
+  - At `f15d586d` (the tree of `dev` after the merge of #1198), from Ubuntu 24.04.5 (kernel 6.8,
+    systemd 255) to Ubuntu 26.04.1, with a build made in an Ubuntu 24.04 container for its C
+    library: the plan (`old host ubuntu 24.04 …`, `new host ubuntu 26.04, systemd 259 …`), the
+    new host prepared from the old one's packages, pass 1 with 20,196 entries (438.6 MiB) in
+    38 s, pass 2 with 816; the command was killed and the old guest killed and booted (a power
+    cut). The same command: `this host was restarted since the last pass … everything is sent
+    into the staged copy again`, pass 3 with 20,196 of 20,196, pass 4 with 816; `downtime about
+    42 s frozen`; both units frozen at 02:35:31; the frozen pass sent 20 of 21,002 entries;
+    `copy proven 21002 entries and 423.8 MiB in 13 folders, the same on both hosts` at 02:35:39;
+    the new instance listened at 02:35:49.6, 18 s after the freeze; exit 0. The SHA-256 of all
+    20,826 files was equal on both hosts, and so was the metadata of 20,937 entries but the
+    time of `sandboxes/` itself; no file of `/etc` was in the copy.
+  - At `2e407d22` the plan alone said: "then it is frozen for about 54 s: up to 224698 entries
+    are counted four times (about 36848 a second here, twice on each host) …", exit 0, nothing
+    changed.
+- Production's size, on a synthetic tree (6,406,409 entries, 200-byte files, metadata cached, a
+  64-CPU host with NVMe; a throwaway program over the crate's own functions at `2c92bdd0`, not
+  in the repository): one count of the tree 18.3 s; a first pass with every entry read 73.9 s;
+  adopting 6.4 million receipts 1.2 s (a log of 195 MiB), loading them 0.6 s; a pass that finds
+  nothing changed 19.9 s; the frozen pass's plan 25.6 s and stream 22.6 s with 97 MiB of kept
+  paths; 544 MiB of memory at most. So the old host's share of a freeze of production's 6.4
+  million entries is about 50 s on such a disk, where the copy of 2026-11-11 was frozen for 54
+  minutes.
+- Independent review: two fresh read-only sessions. The first (of `aebe2051`) was cut off
+  before its report; its notes held nine findings, two of them major (a walk over the running
+  instance followed a link put in a directory's place; receipts were believed after a restart
+  of the old host), all fixed with tests written first (`5099f9bf`, `df6be170`, `a28d44f2`,
+  `18809c30`, `aeb8e64b`, `124cb733`; one was SPEC-460's and fixed in `2c92bdd0`). The second
+  verified each of those fixes with its own mutations. It was cut off once as well, at
+  `124cb733`, with three findings in its notes (fixed in `d4ce9beb`, `bc653491`), and then
+  reported three times: two minor findings and seven notes at `bc653491` (fixed in `5389761e`,
+  `c2f39946`, `656f79fc`); `APPROVE de8df9d1` with three notes (answered by `ef00e48e` and this
+  section); and, after two clean merges of `dev` and one with conflicts (`1939fae4`: SPEC-467
+  changed the walk's rule of what a copy leaves out and added tests of the freeze, which the
+  warm passes now follow), `APPROVE c5944704`, the head that was merged, with two notes on
+  wording: two lines of the cutover still said "nothing is copied" after a warm copy
+  (`49a6e237`), and two sentences of this section (corrected here). One finding lies outside
+  this change (the plan's disk-space check counts an unfinished copy that Prepare removes, on
+  `dev` before it): issue #1191.
+
+Not tested here:
+
+- Two physical machines and a link that breaks by itself: the guests share one host; the link
+  was cut with packet filters and by killing processes.
+- Production's data (275.8 GiB, real sandboxes, overlay whiteouts and subordinate owners under
+  load) and a count of its 6.4 million entries with cold metadata on its disk: the guests held
+  0.4 GiB, and the measurement above had the metadata cached, as the passes before a freeze
+  leave it. Owners outside the service user's ids and whiteouts are covered by the earlier
+  tests of the export and by SPEC-460's real runs, not again here.
+- A clock that is set back and forward again between two looks of the move is not found, by
+  design (ADR-0303).

@@ -6,7 +6,7 @@
 //! - every attempt records exactly one terminal outcome;
 //! - a record that says "running" is never respawned automatically after a restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -44,8 +44,8 @@ use crate::usage_json;
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// The provider's short (session) window in minutes; longer limits are the secondary window.
-const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
+/// A usage window that is used up, in percent.
+const FULL_PERCENT: f64 = 100.0;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -128,12 +128,19 @@ pub struct TaskRuntime {
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
     /// switches and pauses, not the transcript (SPEC-002 §7.5).
     pub(crate) hooks_seen: AtomicBool,
-    /// Last seen limit reset time (ms, 0 = unknown).
-    pub limit_resets_at: AtomicI64,
     /// The current run's last turn ended at a usage limit: no prompt or agent work since
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
+    /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
+    /// word that the session stays there (SPEC-464 UCL-007).
+    pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
+    /// When Claude Code recorded that limit (ms, 0 = unknown): what was audited at or after it
+    /// is this limit's (SPEC-464 UCL-007).
+    pub(crate) limit_at_ms: AtomicI64,
+    /// The limits nothing says the end of that left the task with nowhere to go: how often in a
+    /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
+    pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -148,6 +155,28 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
+    /// person's message, a pull request's news (`type_into_session`). It counts as a draft
+    /// until its submit, which Claude Code makes at Yulius's own Enter. The wait in Claude
+    /// Code's queue while a turn runs comes after that and is not known here (SPEC-468
+    /// CCF-011, issue #1204).
+    pub(crate) message_typed_ms: AtomicI64,
+    /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
+    /// launch, or the last prompt submitted from it. What was typed after that may still sit
+    /// there (SPEC-468 CCF-010, CCF-011).
+    pub(crate) box_emptied_ms: AtomicI64,
+    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
+    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
+    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
+    /// nothing (SPEC-468 CCF-010).
+    pub(crate) submit_emptied_ms: AtomicI64,
+    /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
+    /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
+    /// for days) leaves this set until the run's next prompt is answered, which then counts as
+    /// the held one going on: the session reads as holding a draft until the prompt after
+    /// that is submitted, never as holding none. A new run holds none
+    /// ([`Self::prompt_box_starts_empty`]).
+    pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -163,7 +192,9 @@ pub struct TaskRuntime {
     pub(crate) turn_end_ms: AtomicI64,
     /// Orders a prompt's turn start with a later turn end: a prompt holds it from its
     /// [`Self::turn_end_ms`] check until it set Working, and a Stop or verdict takes it to move
-    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check.
+    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check. The
+    /// same for a prompt read from the transcript and its [`Self::last_stop_ms`] check, which a
+    /// clean Stop moves under it (SPEC-453 TPO-001).
     pub(crate) turn_order: tokio::sync::Mutex<()>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
@@ -208,8 +239,10 @@ pub struct TaskRuntime {
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
     pub(crate) background_agents: AtomicU32,
-    /// When (ms) a notice that asks a person to act flagged the task `needs_attention` (0 = no
-    /// such flag): the agent's work after it shows the person answered (STA-003).
+    /// When (ms) a notice that asks a person to act, or a request Yulius opened because the
+    /// session did not go on by itself (SPEC-469, SPEC-464 UCL-010), flagged the task
+    /// `needs_attention` (0 = no such flag): the agent's work after it shows the person
+    /// answered, or the session went on (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
     /// The state time (ms) of the `needs_attention` flag an agent's secret request raised (0 =
     /// none): a person's answer ends only that flag, while the task still reads it (SPEC-213).
@@ -230,6 +263,11 @@ pub struct TaskRuntime {
     /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
     /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
     pub(crate) goal_retry_armed: AtomicBool,
+    /// Yulius asked a person because the session does not go on by itself (a goal Claude Code
+    /// stopped retrying, or a usage limit nothing says the end of, SPEC-464 UCL-010), and the
+    /// session's agent has not worked since: its next work ends that request (SPEC-469 GPW-001).
+    /// It outlives the run: a session Yulius restarts answers it too.
+    pub(crate) goal_pause_asked: AtomicBool,
     /// When Yulius last answered a Stop hook of this run, whatever it decided (ms, 0 = never).
     /// A turn that began later and closes had no Stop Yulius answered: its hook failed open
     /// (SPEC-290 GDW-001).
@@ -302,6 +340,11 @@ pub struct TaskRuntime {
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
+    /// When a restart of this task's session on a newer Claude Code was last refused before it
+    /// started (ms, 0 = never): the next one waits [`SWITCH_COOLDOWN_MS`] too. Apart from
+    /// `switch_refused_ms`: a refused restart keeps no subscription switch waiting, and is
+    /// neither shown nor recorded (SPEC-461 CCM-013).
+    pub(crate) claude_move_refused_ms: AtomicI64,
     /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
     /// session counts as its second stage.
     pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
@@ -366,6 +409,22 @@ impl TaskRuntime {
         }
     }
 
+    /// When something was last typed into the session's prompt box (ms, 0 = never): a person's
+    /// keystroke, or a message Yulius typed for Claude Code to submit (SPEC-468 CCF-010,
+    /// CCF-011).
+    pub(crate) fn last_typed_ms(&self) -> i64 {
+        self.typed_at_ms
+            .load(Ordering::SeqCst)
+            .max(self.message_typed_ms.load(Ordering::SeqCst))
+    }
+
+    /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
+    /// in the run before went with that run's hook client; SPEC-468 CCF-010).
+    pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
+        self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
+        self.prompt_held.store(false, Ordering::SeqCst);
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
@@ -379,12 +438,18 @@ impl TaskRuntime {
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
-            limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
+            limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
+            limit_at_ms: AtomicI64::new(0),
+            blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
+            message_typed_ms: AtomicI64::new(0),
+            box_emptied_ms: AtomicI64::new(0),
+            submit_emptied_ms: AtomicI64::new(0),
+            prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
@@ -426,6 +491,7 @@ impl TaskRuntime {
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
             goal_retry_armed: AtomicBool::new(false),
+            goal_pause_asked: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
             ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
@@ -440,6 +506,7 @@ impl TaskRuntime {
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
+            claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
@@ -483,6 +550,17 @@ impl TaskRuntime {
     pub(crate) fn end_turn(&self, _now: Timestamp) {
         self.turn_started_ms.store(0, Ordering::SeqCst);
     }
+
+    /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
+    /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
+    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
+        if let Ok(mut pause) = self.limit_goal_pause.lock() {
+            *pause = crate::goal_retry::LimitGoalPause::None;
+        }
+        self.limit_at_ms
+            .store(at.map_or(0, |at| at.0), Ordering::SeqCst);
+        self.at_limit.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Longest gap between live metrics saves of a run in progress (#31).
@@ -507,11 +585,59 @@ pub enum RunStart {
     AfterLimit,
 }
 
+/// What an idle session is after a switch that types nothing into it (a person's move of an idle
+/// task, SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): its launch gives
+/// the task this back, so it never reads Working, which viewers would take for work and a
+/// person's notifications for news (SPEC-468 CCF-008).
+///
+/// No turn can begin in the new run before its launch gives the task this: nothing is typed
+/// into it, and nobody can type before it is attached, which comes after. A prompt sent right
+/// after that sets the task working through its hook, as any prompt does.
+#[derive(Debug, Clone, Copy)]
+struct IdleRest {
+    /// What the task read: waiting, or done.
+    activity: Activity,
+    /// Whether Claude Code last recorded the session's goal as unfinished (SPEC-429): in the
+    /// same session, with nothing typed, that is still what its agent left.
+    goal_unfinished: bool,
+}
+
+/// The statuses of a task whose run lives, starts or ends.
+const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
+    TaskStatus::Starting,
+    TaskStatus::Switching,
+    TaskStatus::Stopping,
+    TaskStatus::Running,
+];
+
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     launch: tokio::sync::Mutex<()>,
+    /// The task the one launch under `launch` works on: `Starting` with no run on record yet,
+    /// which the start-up reconciliation must not take for a dead server's (SPEC-458 RUN-001).
+    launching: Mutex<Option<TaskId>>,
+}
+
+/// Names the task being launched until dropped (SPEC-458 RUN-001).
+struct Launching<'a>(&'a Mutex<Option<TaskId>>);
+
+impl<'a> Launching<'a> {
+    fn start(slot: &'a Mutex<Option<TaskId>>, task: &TaskId) -> Self {
+        if let Ok(mut launching) = slot.lock() {
+            *launching = Some(task.clone());
+        }
+        Self(slot)
+    }
+}
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut launching) = self.0.lock() {
+            *launching = None;
+        }
+    }
 }
 
 /// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
@@ -593,7 +719,7 @@ fn launch_goal_settled(run_dir: &Path) {
 const SESSION_STARTED_FILE: &str = "session-started";
 
 /// Whether the session of the run in `run_dir` started.
-fn session_started_marked(run_dir: &Path) -> bool {
+pub(crate) fn session_started_marked(run_dir: &Path) -> bool {
     run_dir.join(SESSION_STARTED_FILE).exists()
 }
 
@@ -1119,22 +1245,25 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None)
+            self.start_run_if(task_id, start, account, None, None)
                 .await
                 .map(|_| ())
         })
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
-    /// under the launch lock: `false` when it no longer has it, so nothing was done.
+    /// under the launch lock: `false` when it no longer has it, so nothing was done. With
+    /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
         only: Option<TaskStatus>,
+        rest: Option<IdleRest>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
+            self.settle_resting_run(task_id).await?;
             let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
@@ -1167,7 +1296,7 @@ impl App {
             let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
-            let full = held || live >= self.config.max_live_sessions || self.update_holds_starts();
+            let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -1194,7 +1323,9 @@ impl App {
                 }
                 return Ok(true);
             }
-            let result = self.launch_attempt(&task, start, account).await;
+            let launching = Launching::start(&self.supervisor.launching, &task.id);
+            let result = self.launch_attempt(&task, start, account, rest).await;
+            drop(launching);
             drop(guard);
             if let Err(err) = &result {
                 let reason = crate::account_gate::fail_reason(err);
@@ -1229,6 +1360,7 @@ impl App {
         task: &TaskRecord,
         start: RunStart,
         requested: Option<AccountId>,
+        rest: Option<IdleRest>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let relaunch = start.clone();
@@ -1526,6 +1658,7 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
@@ -1537,7 +1670,7 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(&task, relaunch, None)).await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -1615,13 +1748,16 @@ impl App {
         } else {
             TaskEvent::Spawned
         };
+        // A run works from its launch on, except a session that was idle and got nothing typed:
+        // it is idle again (SPEC-468 CCF-008).
+        let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
                 .transition_task(
                     &task.id,
                     Some(current.status),
                     next,
-                    Some(Activity::Working),
+                    Some(activity),
                     self.now(),
                 )
                 .await?;
@@ -1631,9 +1767,17 @@ impl App {
                 .await?;
         }
         // Typing from now on, once viewers can write to this run, is a person's draft in it
-        // (SPEC-068).
+        // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        runtime.prompt_box_starts_empty(self.now().0);
         self.attach_run(&task.id, &attempt, &host_token).await?;
+        // The new run learns its goal from its own lines, and an idle one writes none: what the
+        // old run read of the goal still says what the agent left.
+        if let Some(rest) = rest {
+            runtime
+                .goal_unfinished
+                .store(rest.goal_unfinished, Ordering::SeqCst);
+        }
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
@@ -2387,6 +2531,69 @@ impl App {
         Ok(())
     }
 
+    /// Whether this server holds the task's run: attached, watched, its end being recorded, or
+    /// being launched (between the run's record and its attach it is none of the first three).
+    async fn holds_run(&self, task_id: &TaskId) -> bool {
+        let launching = self
+            .supervisor
+            .launching
+            .lock()
+            .is_ok_and(|launching| launching.as_ref() == Some(task_id));
+        if launching {
+            return true;
+        }
+        let runtime = self.runtime(task_id);
+        runtime.has_run().await
+            || runtime.watcher_alive.load(Ordering::SeqCst)
+            || *runtime.finalizing.borrow() > 0
+    }
+
+    /// Before a start (SPEC-458 RUN-002, #439): a resting task with a run still on record. A run
+    /// this server holds lives on, so the start is refused before anything changes: started all
+    /// the same it would be refused later, as "task already has a live run", and leave the task
+    /// `failed_precondition` with that run going on. A run no server holds is settled as after a
+    /// restart (ADR-0050): ended and counted, or killed and, once proven gone, recorded lost.
+    ///
+    /// # Errors
+    /// `Conflict` while the run lives on or cannot be ended.
+    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        let store = &self.deps.store;
+        let Some(task) = store.task(task_id).await? else {
+            return Ok(());
+        };
+        if !task.status.is_resting() {
+            return Ok(());
+        }
+        let Some(run) = store.live_attempt(task_id).await? else {
+            return Ok(());
+        };
+        if self.holds_run(task_id).await {
+            return Err(AppError::Conflict(
+                "the task still has a live run: stop it first".into(),
+            ));
+        }
+        self.settle_unheld_run(task_id, &run.id).await
+    }
+
+    /// Settles a live run on record that this server holds no connection to (ADR-0050).
+    ///
+    /// # Errors
+    /// `Conflict` when the run could not be ended: it stays live.
+    async fn settle_unheld_run(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+    ) -> AppResult<()> {
+        tracing::warn!(task = %task_id, run = %attempt_id, "settling a live run no server holds");
+        self.resolve_lost_connection(task_id, attempt_id).await;
+        match self.deps.store.attempt(attempt_id).await? {
+            Some(run) if !run.state.is_terminal() => Err(AppError::Conflict(
+                "the task's run could not be ended; try again".into(),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     async fn resolve_lost_connection(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
@@ -2560,8 +2767,10 @@ impl App {
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
+        let mut session_started = true;
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
             save_screen(&runtime.hub, Path::new(&attempt.run_dir));
+            session_started = session_started_marked(Path::new(&attempt.run_dir));
         }
         let state = if intent.is_some() {
             AttemptState::Killed
@@ -2613,6 +2822,10 @@ impl App {
             return; // another observer already recorded the outcome
         }
         runtime.clear_start_counters(attempt_id);
+        // A session restarted on a newer Claude Code that ended by itself before it started
+        // there: that version gets no other session (SPEC-461 CCM-013).
+        self.claude_code_run_ended(task_id, attempt_id, session_started, intent.is_none())
+            .await;
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -2792,7 +3005,7 @@ impl App {
         }
         for task in crate::supertask::start_order(free) {
             let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions {
+            if live >= self.max_live_sessions() {
                 return;
             }
             let has_lineage = self
@@ -2810,7 +3023,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued))
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -3013,6 +3226,22 @@ impl App {
             }
             return Ok(true);
         }
+        // A resting task with a run still on record (SPEC-458 RUN-003, #439): the stop ends that
+        // run instead of answering "task is …" and leaving it. One no server holds is settled as
+        // after a restart (ADR-0050).
+        if task.status.is_resting()
+            && let Some(run) = store.live_attempt(task_id).await?
+        {
+            if !self.holds_run(task_id).await {
+                self.settle_unheld_run(task_id, &run.id).await?;
+                return Ok(true);
+            }
+            if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                replace_intent(&mut intent, Some(EndIntent::Cancel), SwitchEnd::Stopped);
+            }
+            self.end_stopped_run(task_id).await;
+            return Ok(true);
+        }
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
             || task.status == TaskStatus::Prepared
@@ -3114,39 +3343,24 @@ impl App {
             .await
     }
 
-    /// Records a usage limit the CLI reported on `account`: what the CLI was told is the
-    /// account's state (ROT-009), the limited window full until its reset, even when the
-    /// provider's usage request does not answer. Shared by tasks and the Cockpit (SPEC-074).
+    /// Records a usage limit the CLI reported on `account` to a session that runs a model of
+    /// `family`: what the CLI was told is the account's state (ROT-009), the limited window full
+    /// until its reset, even when the provider's usage request does not answer. A limit of one
+    /// model family fills that family's own window, never the subscription's week (SPEC-464,
+    /// [`AccountUsage::record_limit`]). Shared by tasks and the Cockpit (SPEC-074).
     pub(crate) async fn record_limit(
         &self,
         account: &AccountId,
-        resets_at: Option<Timestamp>,
-        window_minutes: Option<u32>,
+        limit: ReportedLimit,
+        family: ModelFamily,
     ) {
-        let mut usage = match self.deps.store.account(account).await {
-            Ok(Some(a)) => a
-                .usage_json
-                .as_deref()
-                .map(usage_json::from_json)
-                .unwrap_or_default(),
-            _ => AccountUsage::default(),
-        };
-        usage.limit_reached = true;
-        usage.limit_resets_at = resets_at;
-        usage.observed_at = Some(self.now());
-        let full = |minutes: u32| UsageWindow {
-            used_percent: Some(100.0),
-            window_minutes: Some(minutes),
-            resets_at,
-        };
-        match window_minutes {
-            Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
-                usage.primary = Some(full(minutes));
-            }
-            Some(minutes) => usage.secondary = Some(full(minutes)),
-            None => {}
-        }
-        self.record_account_usage(account, &usage).await;
+        crate::race::reached(crate::race::Point::LimitRecord, Path::new(account.as_str()));
+        let now = self.now();
+        self.change_account_usage(account, |mut usage| {
+            usage.record_limit(limit, family, now);
+            Some(usage)
+        })
+        .await;
     }
 
     /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`
@@ -3253,6 +3467,12 @@ impl App {
         }
         // A paused task that moves to another subscription is no longer paused.
         self.end_pause(task_id, "switched").await;
+        // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
+        // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
+        if matches!(start, RunStart::AfterLimit) {
+            self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Moved)
+                .await;
+        }
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
@@ -3279,13 +3499,19 @@ impl App {
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
         let fresh = matches!(start, RunStart::Fresh { .. });
-        runtime.hub.notice(if fresh {
-            "↻ Yulius starts a fresh session for this task…"
-        } else if elsewhere {
-            "↻ Yulius continues this session on another Claude subscription…"
+        // A restart for a newer Claude Code says that, in its one line (SPEC-461 CCM-013).
+        let for_claude_code = reason == crate::claude_code::MOVE_REASON;
+        if for_claude_code {
+            runtime.hub.notice(self.claude_code_move_notice());
         } else {
-            "↻ Yulius continues this session…"
-        });
+            runtime.hub.notice(if fresh {
+                "↻ Yulius starts a fresh session for this task…"
+            } else if elsewhere {
+                "↻ Yulius continues this session on another Claude subscription…"
+            } else {
+                "↻ Yulius continues this session…"
+            });
+        }
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
@@ -3370,7 +3596,23 @@ impl App {
             crate::race::Point::SwitchLaunching,
             Path::new(task_id.as_str()),
         );
-        match self.start_run_if(task_id, start, account, Some(from)).await {
+        // A prompt-mode session that was idle and gets nothing typed is idle again once it
+        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): no turn
+        // would end to say so, and it reads as it did, from its launch on (SPEC-468 CCF-008).
+        let rest = task
+            .activity
+            .filter(|activity| {
+                activity.is_idle()
+                    && task.status == TaskStatus::Running
+                    && task.mode == TaskMode::Prompt
+                    && matches!(start, RunStart::Resume { prompt: None })
+            })
+            .map(|activity| IdleRest {
+                activity,
+                goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
+            });
+        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
             Ok(false)
@@ -3392,12 +3634,18 @@ impl App {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
-                    runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    runtime.hub.notice(if fresh {
-                        "↻ The task continues in a fresh session."
+                    if for_claude_code {
+                        runtime.claude_move_refused_ms.store(0, Ordering::SeqCst);
                     } else {
-                        "↻ The session continues where it left off."
-                    });
+                        runtime.switch_refused_ms.store(0, Ordering::SeqCst);
+                    }
+                    if !for_claude_code {
+                        runtime.hub.notice(if fresh {
+                            "↻ The task continues in a fresh session."
+                        } else {
+                            "↻ The session continues where it left off."
+                        });
+                    }
                 }
                 Ok(())
             }
@@ -3546,8 +3794,20 @@ impl App {
     }
 
     /// Whether a switch of `task` was refused so recently that an automatic one waits.
-    pub(crate) fn switch_cooling(&self, task: &TaskId) -> bool {
+    #[must_use]
+    pub fn switch_cooling(&self, task: &TaskId) -> bool {
         let at = self.runtime(task).switch_refused_ms.load(Ordering::SeqCst);
+        at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
+    }
+
+    /// Whether a restart of `task`'s session on a newer Claude Code was refused so recently
+    /// that the next one waits (SPEC-461 CCM-013).
+    #[must_use]
+    pub fn claude_move_cooling(&self, task: &TaskId) -> bool {
+        let at = self
+            .runtime(task)
+            .claude_move_refused_ms
+            .load(Ordering::SeqCst);
         at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
     }
 
@@ -3560,6 +3820,16 @@ impl App {
         err: &AppError,
     ) {
         let message = err.public_message();
+        // A restart for a newer Claude Code that cannot start now is no switch of subscriptions
+        // and nothing a person must read: it has its own wait, is neither shown nor recorded,
+        // and a later turn's end tries again (SPEC-461 CCM-013).
+        if reason == crate::claude_code::MOVE_REASON {
+            self.runtime(&task.id)
+                .claude_move_refused_ms
+                .store(self.now().0, Ordering::SeqCst);
+            tracing::warn!(task = %task.id, error = %err, "restart on the newer Claude Code refused; the running session stays");
+            return;
+        }
         // A repeat of an automatic switch inside the cooldown is only logged: one record and
         // one notice per cooldown, not one per retry.
         let repeat = reason != "manual" && self.switch_cooling(&task.id);
@@ -3567,6 +3837,8 @@ impl App {
             .switch_refused_ms
             .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        // At a usage limit the session stays at Claude Code's refusal (SPEC-464 UCL-007).
+        self.limit_move_refused(task).await;
         if repeat {
             return;
         }
@@ -3655,7 +3927,28 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn reconcile(self: &Arc<Self>) -> AppResult<()> {
+        self.reconcile_lost().await.map(|_| ())
+    }
+
+    /// [`App::reconcile`], returning the tasks whose runs were lost, each with the status it had:
+    /// what the first start after a move brings back (SPEC-460 MIG-050).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn reconcile_lost(self: &Arc<Self>) -> AppResult<Vec<(TaskId, TaskStatus)>> {
         let store = &self.deps.store;
+        // What the server before this one left live. Only these can be without a run for its
+        // death: a task this server starts meanwhile (the queue does, as soon as a lost run frees
+        // a slot) is `Starting` with no run on record until its launch records one (SPEC-458
+        // RUN-001, #439).
+        let left: HashSet<TaskId> = store
+            .tasks_with_status(&LIVE_WITH_A_RUN)
+            .await?
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        let mut held_again = HashSet::new();
+        let mut lost = Vec::new();
         for attempt in store.live_attempts().await? {
             let host_token: Option<[u8; 32]> = self
                 .deps
@@ -3743,9 +4036,16 @@ impl App {
                 if launch_goal_pending(run_dir) {
                     self.spawn_goal_watch(&attempt.task_id, &attempt.id, run_dir);
                 }
+                held_again.insert(attempt.task_id.clone());
                 continue;
             }
-            match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+            let inspection = self.deps.session_host.inspect(Path::new(&attempt.run_dir));
+            if !matches!(inspection, RunInspection::Exited(_))
+                && let Ok(Some(task)) = store.task(&attempt.task_id).await
+            {
+                lost.push((task.id, task.status));
+            }
+            match inspection {
                 // It ended while Yulius was down: no watcher of this process read it, so its
                 // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
@@ -3774,17 +4074,21 @@ impl App {
                 }
             }
         }
-        // Tasks that claim to be starting/switching/stopping without a live attempt.
-        for task in store
-            .tasks_with_status(&[
-                TaskStatus::Starting,
-                TaskStatus::Switching,
-                TaskStatus::Stopping,
-                TaskStatus::Running,
-            ])
-            .await?
-        {
-            if store.live_attempt(&task.id).await?.is_none() {
+        crate::race::reached(crate::race::Point::ReconcileSweep, &self.config.data_dir);
+        // Tasks that claim to be starting/switching/stopping without a live attempt: those the
+        // dead server left so. One whose run this server holds again, or which it is launching,
+        // is this server's: its own code moves it on.
+        for task in store.tasks_with_status(&LIVE_WITH_A_RUN).await? {
+            if !left.contains(&task.id) || held_again.contains(&task.id) {
+                continue;
+            }
+            // Asked before the run: a launch records its run before it stops being the launch.
+            let launching = self
+                .supervisor
+                .launching
+                .lock()
+                .is_ok_and(|launching| launching.as_ref() == Some(&task.id));
+            if !launching && store.live_attempt(&task.id).await?.is_none() {
                 let next = task
                     .status
                     .after_loss(task.activity, StopReason::ServerLost)
@@ -3792,14 +4096,21 @@ impl App {
                 let _ = store
                     .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
+                lost.push((task.id, task.status));
             }
         }
         self.drain_queue().await;
-        Ok(())
+        Ok(lost)
     }
 
-    /// Account usage update from transcripts or providers.
+    /// Account usage update from transcripts or providers. The subscription reads `limited`
+    /// while the default model cannot run on it: a limit Claude reported is in effect, or a
+    /// window that binds that model is used up (SPEC-464).
     pub(crate) async fn record_account_usage(&self, account: &AccountId, usage: &AccountUsage) {
+        let now = self.now();
+        // A per-model window whose reset passed says nothing about the one that began.
+        let usage = &usage.without_reset_model_windows(now);
+        let family = crate::capacity::default_family();
         // A reading never makes a subscription that needs a new sign-in usable again: a
         // cancelled one can still report usage (or a late transcript line can), and only a
         // sign-in proves it works.
@@ -3814,11 +4125,15 @@ impl App {
             }
             _ => None,
         };
+        crate::race::reached(
+            crate::race::Point::UsageStatusRead,
+            Path::new(account.as_str()),
+        );
         // Nor does it erase why it needs one (SPEC-447 MOV-005).
         let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
         let status = if let Some((status, _)) = needs_sign_in {
             status
-        } else if usage.limit_in_effect(self.now()) {
+        } else if usage.exhausted_for(now, FULL_PERCENT, family) {
             AccountStatus::Limited
         } else {
             AccountStatus::Ok
@@ -3827,19 +4142,13 @@ impl App {
         let _ = self
             .deps
             .store
-            .set_account_state(
-                account,
-                status,
-                Some(&json),
-                kept_error.as_deref(),
-                self.now(),
-            )
+            .set_account_state(account, status, Some(&json), kept_error.as_deref(), now)
             .await;
         // New usage may let paused tasks resume, or pause the pool (ROT-010).
         self.capacity_changed();
         // At or above the threshold: tasks on this account rotate at their next turn boundary
         // (ROT-003); with hooks the Stop hook decides this itself.
-        if usage.exhausted(self.now(), rotation::THRESHOLD)
+        if usage.exhausted(now, rotation::THRESHOLD)
             && let Ok(live) = self.deps.store.live_attempts().await
         {
             for attempt in live
@@ -3855,8 +4164,16 @@ impl App {
 
     /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
     /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left.
+    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
+    /// finishes first, so that it never stores what it read before this.
     pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+        crate::race::reached(
+            crate::race::Point::AccessLostRecord,
+            Path::new(account.as_str()),
+        );
+        // Under the lock every write of the subscription's usage takes: such a write reads the
+        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let _writing = self.capacity.usage_writes.lock().await;
         if let Err(err) = self
             .deps
             .store
@@ -3944,12 +4261,17 @@ impl App {
         let Some(worktree) = task.worktree_path.clone().map(PathBuf::from) else {
             return;
         };
+        // A request for a goal pause that is still open (made before this server started) is
+        // answered by this run's work, like one made while it is watched (SPEC-469 GPW-004).
+        self.watch_goal_pause_request(&task_id).await;
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
         let mut spec_synced = std::time::Instant::now();
         let mut saved: Option<UsageSnapshot> = None;
         let mut saved_at = Timestamp(0);
+        // The Claude Code version the run's lines name, as last recorded (SPEC-461 CCM-011).
+        let mut cli_version: Option<String> = None;
         // After a restart, the transcript the reattached run already wrote is history until the
         // first poll reaches its end: it is reduced to its final state, not replayed event by
         // event (TSK-014; a replayed prompt used to put a finished task back to Working after
@@ -4053,6 +4375,20 @@ impl App {
             if let Ok(mut u) = runtime.usage.lock() {
                 *u = usage.clone();
             }
+            // Which Claude Code runs this session is kept as soon as a line names it: the task's
+            // info shows it, and the turn's end moves a session on an older one (SPEC-461).
+            if usage.cli_version.is_some() && usage.cli_version != cli_version {
+                cli_version.clone_from(&usage.cli_version);
+                if let Some(version) = &cli_version
+                    && let Err(err) = self
+                        .deps
+                        .store
+                        .set_run_cli_version(&attempt.id, &task_id, version, self.now())
+                        .await
+                {
+                    tracing::debug!(error = %err, task = %task_id, "the run's Claude Code version was not recorded");
+                }
+            }
             if w.caught_up()
                 && let Ok(mut read) = runtime.usage_read.lock()
             {
@@ -4079,6 +4415,10 @@ impl App {
                         && facts.limit_pending
                     {
                         self.on_observation(&task_id, &attempt, limit).await;
+                        // The goal pause Claude Code wrote at that limit is the limit's too.
+                        if let Some(notice) = &facts.limit_goal_pause {
+                            self.goal_retry_observed(&task_id, false, notice).await;
+                        }
                     } else if !facts.limit_pending {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
@@ -4115,36 +4455,50 @@ impl App {
         observation: Observation,
     ) {
         let runtime = self.runtime(task_id);
+        // The model answered: a later limit nothing says the end of is no repeat of an earlier
+        // one, and has its own retry (SPEC-464 UCL-010).
+        if model_answered(&observation)
+            && let Ok(mut blind) = runtime.blind_limits.lock()
+        {
+            blind.answered();
+        }
         match observation {
             Observation::LimitReached {
                 resets_at,
                 message,
                 window_minutes,
-                ..
+                scope,
+                at,
             } => {
-                tracing::info!(task = %task_id, %message, "usage limit reached");
+                tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_cut_the_turn(at);
+                let limit = ReportedLimit {
+                    scope,
+                    window_minutes,
+                    resets_at,
+                };
+                let blind = limit.without_an_end(self.now());
                 if let Some(account) = &attempt.account_id {
-                    self.record_limit(account, resets_at, window_minutes).await;
+                    let family = self.task_family(task_id).await;
+                    self.record_limit(account, limit, family).await;
                 }
-                runtime
-                    .limit_resets_at
-                    .store(resets_at.map_or(0, |t| t.0), Ordering::SeqCst);
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
-                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+                tokio::spawn(async move {
+                    app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+                        .await;
+                });
             }
-            Observation::AccessLost { message, .. } => {
+            Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
                 // new sign-in, so nothing is placed on it again and its usage is no longer read
                 // back to `ok`. The cut turn then moves on like a limit's, to the next working
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
-                runtime.limit_resets_at.store(0, Ordering::SeqCst);
+                runtime.limit_cut_the_turn(at);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
                     refused = match self.deps.store.account(account).await {
@@ -4176,10 +4530,17 @@ impl App {
                 if !wake {
                     runtime.goal_achieved.store(false, Ordering::SeqCst);
                 }
-                // A prompt of a turn whose clean Stop already came is not a new turn.
+                // A prompt of a turn whose clean Stop already came is not a new turn. Held until
+                // Working is set, so a clean Stop arriving meanwhile opens its verdict wait, or
+                // settles, after this prompt started its turn (SPEC-453 TPO-001).
+                let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
                 }
+                crate::race::reached(
+                    crate::race::Point::UserTurnChecked,
+                    Path::new(task_id.as_str()),
+                );
                 // A prompt reached the agent while its turn or prompt was held for capacity:
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).
@@ -4222,6 +4583,8 @@ impl App {
                 // A sub-agent's turn end (no time) leaves the session at its limit.
                 if at.is_some() {
                     runtime.at_limit.store(false, Ordering::SeqCst);
+                    // The session answered: a goal pause before it asks nobody any more.
+                    self.goal_pause_overtaken(task_id).await;
                 }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -4256,6 +4619,8 @@ impl App {
                     self.cut_turn_continued(task_id, at).await;
                 }
                 runtime.at_limit.store(false, Ordering::SeqCst);
+                // The agent works: a goal pause before it asks nobody any more (SPEC-469).
+                self.goal_pause_overtaken(task_id).await;
                 self.agent_worked(task_id, at).await;
             }
             Observation::GoalRetry { armed, notice } => {
@@ -4288,6 +4653,18 @@ impl App {
         task_id: &TaskId,
         current: Option<AccountId>,
         trigger: Trigger,
+    ) {
+        self.rotate_at(task_id, current, trigger, false).await;
+    }
+
+    /// [`Self::rotate`]; `blind` says the limit that asks for it is a model's that nothing says
+    /// the end of (SPEC-464 UCL-010).
+    async fn rotate_at(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        current: Option<AccountId>,
+        trigger: Trigger,
+        blind: bool,
     ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
@@ -4322,18 +4699,55 @@ impl App {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
-            Decision::Wait { .. } => {
-                let kind = if limit {
-                    PauseKind::Limit
+            Decision::Wait { until } => {
+                // A model's limit nothing says the end of, with nowhere to go: the task is
+                // tried again by itself only so often (SPEC-464 UCL-010). After that it waits
+                // for a reset that is known, off this subscription, or asks a person.
+                if blind && limit {
+                    let next = self
+                        .runtime(task_id)
+                        .blind_limits
+                        .lock()
+                        .map_or(crate::moves::BlindWait::Pause, |mut blind| {
+                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                        });
+                    if next == crate::moves::BlindWait::AskAPerson {
+                        self.limit_without_end(&task).await;
+                        return;
+                    }
+                }
+                let paused = if limit {
+                    let paused = self
+                        .pause_task(task_id, PauseKind::Limit, current, None)
+                        .await;
+                    // The pool resumes a task that waits at its limit by itself: a request
+                    // that says it does not go on by itself is answered, as at a move past
+                    // the limit (SPEC-464 UCL-007).
+                    if paused.is_ok() {
+                        self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
+                            .await;
+                    }
+                    paused
                 } else {
-                    PauseKind::Turn
+                    self.pause_task(task_id, PauseKind::Turn, current, None)
+                        .await
                 };
-                if let Err(err) = self.pause_task(task_id, kind, current, None).await {
+                if let Err(err) = paused {
                     tracing::warn!(error = %err, task = %task_id, "could not pause the task");
                 }
             }
         }
     }
+}
+
+/// Whether `observation` shows the model answered in the session: a record of its own work or of
+/// its turn's end, not one Claude Code writes itself for a refusal, and not a sub-agent's turn
+/// end (which carries no time).
+fn model_answered(observation: &Observation) -> bool {
+    matches!(
+        observation,
+        Observation::AgentWork { .. } | Observation::TurnComplete { at: Some(_) }
+    )
 }
 
 /// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
@@ -4401,6 +4815,42 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-464 UCL-010: only the model's own records say it answered. A turn's work (a tool
+    /// call) and its end both do; a refusal Claude Code writes itself, a prompt and a
+    /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.
+    #[test]
+    fn the_models_own_records_say_it_answered() {
+        use super::{Observation, Timestamp, model_answered};
+        use yulius_domain::usage::LimitScope;
+        let at = Some(Timestamp(1_000));
+        assert!(model_answered(&Observation::AgentWork { at }));
+        assert!(model_answered(&Observation::AgentWork { at: None }));
+        assert!(model_answered(&Observation::TurnComplete { at }));
+        assert!(!model_answered(&Observation::TurnComplete { at: None }));
+        assert!(!model_answered(&Observation::UserTurn { at, wake: false }));
+        assert!(!model_answered(&Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at,
+        }));
+    }
+
+    /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
+    /// in the run before went with that run's hook client, so the new run's first prompt is a
+    /// submit, not that prompt sent again.
+    #[test]
+    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+        use std::sync::atomic::Ordering;
+        let runtime = super::TaskRuntime::new();
+        runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
+        runtime.prompt_held.store(true, Ordering::SeqCst);
+        runtime.prompt_box_starts_empty(7_000);
+        assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
+        assert!(!runtime.prompt_held.load(Ordering::SeqCst));
+    }
+
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
     /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
     /// is idle, terminate without an interrupt.

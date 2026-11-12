@@ -213,6 +213,7 @@ async fn fixture_with_task(
             updated_at: now,
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let hash = h.app.deps.crypto.sha256_hex(TOKEN.as_bytes());

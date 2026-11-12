@@ -278,15 +278,25 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
     let mut checks = Vec::new();
     match resolve(&IsolationArgs::default(), data_dir, &exe, 8081) {
-        Ok(config) => checks.push(check(
-            "sandbox isolation",
-            Level::Ok,
-            format!(
-                "namespace holder available (ids {}–{} mapped, egress through slirp4netns)",
-                config.uid.sub_start,
-                config.uid.sub_start + config.uid.count - 1
-            ),
-        )),
+        Ok(config) => {
+            checks.push(check(
+                "sandbox isolation",
+                Level::Ok,
+                format!(
+                    "namespace holder available (ids {}–{} mapped, egress through slirp4netns)",
+                    config.uid.sub_start,
+                    config.uid.sub_start + config.uid.count - 1
+                ),
+            ));
+            let mapper = yulius_sandbox::userns::Mapper {
+                bwrap: config.bwrap,
+                newuidmap: config.newuidmap,
+                newgidmap: config.newgidmap,
+                uid: config.uid,
+                gid: config.gid,
+            };
+            checks.push(namespaces_check(mapper.probe()));
+        }
         Err(missing) => checks.push(check(
             "sandbox isolation",
             Level::Warn,
@@ -327,6 +337,14 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     let delegation = delegation_check();
     let delegated = delegation.level == Level::Ok;
     checks.push(delegation);
+    checks.extend(restart_check(
+        SERVICE,
+        &crate::restart_safety::read(
+            Path::new(yulius_sandbox::cgroup::CGROUP_ROOT),
+            SERVICE,
+            &|args: &[&str]| output_of(Path::new("systemctl"), args),
+        ),
+    ));
     let setting = if std::env::var("YULIUS_SANDBOX_DOCKER").as_deref() == Ok("off") {
         Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
     } else {
@@ -337,6 +355,36 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
         &yulius_sandbox::docker_status::own_engines(data_dir),
     ));
     checks
+}
+
+/// Whether a sandbox's namespace starts here (SPEC-456 BNS-009): the programs being installed
+/// does not say so where AppArmor restricts user namespaces (Ubuntu since 24.04).
+fn namespaces_check(proof: std::io::Result<()>) -> Check {
+    const NAME: &str = "sandbox namespaces";
+    match proof {
+        Ok(()) => check(
+            NAME,
+            Level::Ok,
+            "bwrap starts a user namespace with mapped ids and mounts in it",
+        ),
+        Err(error) => {
+            let error = error.to_string();
+            let said: Vec<&str> = error
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            check(
+                NAME,
+                Level::Fail,
+                format!(
+                    "sandboxes cannot start: {}. Run `sudo yulius host setup`: its item \"bwrap \
+                     namespaces\" writes the AppArmor rule bwrap needs, or names the cause",
+                    said.join("; ")
+                ),
+            )
+        }
+    }
 }
 
 /// The "sandbox Docker" verdict (SPEC-203 HST-013, one function for the doctor, the host setup
@@ -369,6 +417,68 @@ fn docker_checks(
         ));
     }
     checks
+}
+
+/// The server's unit on a host set up by `yulius host setup`.
+const SERVICE: &str = "yulius.service";
+
+/// SPEC-458 HST-002: whether a restart of the server keeps its sessions. No line on a machine
+/// without the unit.
+fn restart_check(service: &str, facts: &crate::restart_safety::Facts) -> Option<Check> {
+    const NAME: &str = "restart with sessions";
+    if !facts.loaded {
+        return None;
+    }
+    if facts.adopt_wired {
+        let sessions = yulius_sandbox::units::sessions_unit(service).unwrap_or_default();
+        if !facts.sessions_active {
+            // The units are written, but the one the sessions should live in does not run.
+            let refused = if crate::restart_safety::blocker(service, facts).is_some() {
+                "; sessions run in its own group now, so Restart and Update now are refused"
+            } else {
+                ""
+            };
+            return Some(check(
+                NAME,
+                Level::Warn,
+                format!(
+                    "{sessions} is not running, so {service} keeps its sessions in its own \
+                     group, and it has to run for them to be moved out before a start{refused}: \
+                     start it (`sudo systemctl start {sessions}`) or see why it does not \
+                     (`systemctl status {sessions}`), then restart {service}"
+                ),
+            ));
+        }
+        let detail = if facts.sessions_in_unit {
+            format!("the next restart of {service} moves its sessions to {sessions} and keeps them")
+        } else {
+            format!("sessions live in {sessions}: a restart of {service} keeps them")
+        };
+        return Some(check(NAME, Level::Ok, detail));
+    }
+    let systemd = facts
+        .systemd
+        .map_or_else(|| "unknown".to_owned(), |version| version.to_string());
+    let effect = match crate::restart_safety::blocker(service, facts) {
+        Some(_) => "sessions run there now, so Restart and Update now are refused",
+        None if facts
+            .systemd
+            .is_some_and(|v| v < crate::restart_safety::FIRST_AFFECTED) =>
+        {
+            "this systemd still restarts it"
+        }
+        None => "a restart while sessions run would leave the server down",
+    };
+    Some(check(
+        NAME,
+        Level::Warn,
+        format!(
+            "sessions live in {service}'s own group, where systemd {first} and later cannot start \
+             the unit again while one runs (this host: systemd {systemd}; {effect}): run `sudo \
+             yulius host setup`",
+            first = crate::restart_safety::FIRST_AFFECTED
+        ),
+    ))
 }
 
 fn delegation_check() -> Check {
@@ -444,7 +554,7 @@ fn browser_display_checks() -> Vec<Check> {
 }
 
 /// The whole stdout of a short command (at most 1 MiB), when it succeeds in time.
-fn output_of(program: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn output_of(program: &Path, args: &[&str]) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -503,6 +613,24 @@ pub fn proxy_secret_check(path: &Path) -> Check {
     }
 }
 
+/// What isolated runs bind (SPEC-421): Yulius's up-to-date copy of Claude Code or the host's;
+/// a failure when it does not know Yulius's default model, with the fix (SPEC-461 CCM-007).
+#[must_use]
+pub fn claude_code_check(
+    root: &Path,
+    host_dir: Option<&Path>,
+    claude_updates: yulius_domain::agent_cli::Channel,
+) -> Check {
+    use crate::wiring::claude_service::{Health, doctor_line};
+    let (health, detail) = doctor_line(root, host_dir, claude_updates);
+    let level = match health {
+        Health::Ok => Level::Ok,
+        Health::Warn => Level::Warn,
+        Health::Fail => Level::Fail,
+    };
+    check("Claude Code in sandboxes", level, detail)
+}
+
 /// `yulius doctor`: prints the checks; exits 1 when any check fails.
 pub fn doctor(
     data_dir: &Path,
@@ -513,15 +641,10 @@ pub fn doctor(
 ) -> ExitCode {
     let mut checks = run_checks(data_dir, contained, extra);
     if contained {
-        // What isolated runs bind (SPEC-421): Yulius's up-to-date copy or the host's.
-        checks.push(check(
-            "Claude Code in sandboxes",
-            Level::Ok,
-            crate::wiring::claude_cli::describe(
-                &data_dir.join("claude-code"),
-                crate::wiring::sandbox::agent_cli_dir().as_deref(),
-                claude_updates,
-            ),
+        checks.push(claude_code_check(
+            &data_dir.join("claude-code"),
+            crate::wiring::sandbox::agent_cli_dir().as_deref(),
+            claude_updates,
         ));
     }
     checks.extend(proxy_secret_file.map(proxy_secret_check));
@@ -543,10 +666,117 @@ pub fn doctor(
 #[cfg(test)]
 mod tests {
     use super::{
-        GH_INSTALL_URL, Level, docker_checks, github_cli_check, proxy_secret_check, run_checks,
-        version_of, visible_when_contained,
+        GH_INSTALL_URL, Level, docker_checks, github_cli_check, namespaces_check,
+        proxy_secret_check, restart_check, run_checks, version_of, visible_when_contained,
     };
+    use crate::restart_safety::Facts;
     use std::path::{Path, PathBuf};
+
+    fn restart_line(systemd: Option<u32>, sessions_in_unit: bool, adopt_wired: bool) -> String {
+        restart_line_with(systemd, sessions_in_unit, adopt_wired, adopt_wired)
+    }
+
+    fn restart_line_with(
+        systemd: Option<u32>,
+        sessions_in_unit: bool,
+        adopt_wired: bool,
+        sessions_active: bool,
+    ) -> String {
+        let facts = Facts {
+            systemd,
+            loaded: true,
+            sessions_in_unit,
+            adopt_wired,
+            sessions_active,
+        };
+        restart_check("yulius.service", &facts)
+            .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_restart_line_warns_while_sessions_live_in_the_servers_unit() {
+        let down = restart_line(Some(259), true, false);
+        assert!(down.starts_with("Warn restart with sessions: "), "{down}");
+        assert!(down.contains("this host: systemd 259"), "{down}");
+        assert!(
+            down.contains("Restart and Update now are refused"),
+            "{down}"
+        );
+        assert!(down.contains("`sudo yulius host setup`"), "{down}");
+        let idle = restart_line(Some(259), false, false);
+        assert!(idle.contains("would leave the server down"), "{idle}");
+        let old = restart_line(Some(255), true, false);
+        assert!(old.starts_with("Warn "), "{old}");
+        assert!(old.contains("this systemd still restarts it"), "{old}");
+        assert!(restart_line(None, true, false).contains("systemd unknown"));
+    }
+
+    /// Review of SPEC-458 (low): the units being written is not the sessions unit running.
+    #[test]
+    fn the_restart_line_warns_when_the_sessions_unit_does_not_run() {
+        for sessions_in_unit in [true, false] {
+            let down = restart_line_with(Some(259), sessions_in_unit, true, false);
+            assert!(down.starts_with("Warn restart with sessions: "), "{down}");
+            assert!(
+                down.contains("yulius-sandboxes.service is not running"),
+                "{down}"
+            );
+            assert!(
+                down.contains("systemctl status yulius-sandboxes.service"),
+                "{down}"
+            );
+        }
+        let refused = restart_line_with(Some(259), true, true, false);
+        assert!(
+            refused.contains("Restart and Update now are refused"),
+            "{refused}"
+        );
+        let old = restart_line_with(Some(255), true, true, false);
+        assert!(!old.contains("are refused"), "{old}");
+    }
+
+    #[test]
+    fn the_restart_line_is_fine_with_the_sessions_unit_and_absent_without_the_unit() {
+        let set_up = restart_line(Some(259), false, true);
+        assert_eq!(
+            set_up,
+            "Ok restart with sessions: sessions live in yulius-sandboxes.service: a restart of \
+             yulius.service keeps them"
+        );
+        let first = restart_line(Some(259), true, true);
+        assert!(first.starts_with("Ok "), "{first}");
+        assert!(
+            first.contains("the next restart of yulius.service moves"),
+            "{first}"
+        );
+        assert!(restart_check("yulius.service", &Facts::default()).is_none());
+    }
+
+    #[test]
+    fn a_namespace_that_starts_is_ok_and_one_that_does_not_fails_with_the_fix() {
+        let works = namespaces_check(Ok(()));
+        assert_eq!(works.name, "sandbox namespaces");
+        assert_eq!(works.level, Level::Ok, "{}", works.detail);
+        assert_eq!(
+            works.detail,
+            "bwrap starts a user namespace with mapped ids and mounts in it"
+        );
+        // What Ubuntu 24.04 says without the AppArmor rule (SPEC-456): two lines from bwrap.
+        let denied = namespaces_check(Err(std::io::Error::other(
+            "bwrap did not start its namespace: bwrap: setting up uid map: Permission denied\n\
+             bwrap: read from sync pipe failed",
+        )));
+        assert_eq!(denied.name, "sandbox namespaces");
+        assert_eq!(denied.level, Level::Fail);
+        assert_eq!(
+            denied.detail,
+            "sandboxes cannot start: bwrap did not start its namespace: bwrap: setting up uid \
+             map: Permission denied; bwrap: read from sync pipe failed. Run `sudo yulius host \
+             setup`: its item \"bwrap namespaces\" writes the AppArmor rule bwrap needs, or \
+             names the cause"
+        );
+    }
 
     #[test]
     fn the_proxy_secret_check_never_shows_the_secret() -> Result<(), Box<dyn std::error::Error>> {

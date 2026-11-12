@@ -8,6 +8,8 @@ use axum::serve::ListenerExt as _;
 use clap::Args;
 use tokio::net::{TcpListener, TcpStream};
 use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::limits::UnitLimits;
+use yulius_domain::limits::Limit;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::{MasterKeyCrypto, write_private};
 
@@ -43,9 +45,10 @@ pub struct ServeArgs {
     /// Internal listener address (must be loopback).
     #[arg(long, env = "YULIUS_INTERNAL_BIND", default_value = "127.0.0.1:8081")]
     pub internal_bind: SocketAddr,
-    /// Maximum concurrently live agent sessions.
-    #[arg(long, env = "YULIUS_MAX_SESSIONS", default_value_t = 8)]
-    pub max_live_sessions: u32,
+    /// Maximum concurrently live agent sessions (default: sized from the host's CPUs and
+    /// memory, SPEC-459; Settings → Instance shows and changes it).
+    #[arg(long, env = "YULIUS_MAX_SESSIONS")]
+    pub max_live_sessions: Option<u32>,
     /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_CPUS` in its environment;
     /// SPEC-082). Default: a third of a sandbox's CPUs, at least 2.
     #[arg(long, env = "YULIUS_AGENT_CPUS",
@@ -148,6 +151,14 @@ pub struct ServeArgs {
         default_value = "/var/lib/yulius-update"
     )]
     pub update_state_dir: PathBuf,
+    /// The move helper's state directory (`yulius migrate-helper`, SPEC-470): where a move asked
+    /// from Settings → Instance reports, and where a move to this host left its checklist.
+    #[arg(
+        long,
+        env = "YULIUS_MIGRATE_STATE",
+        default_value = "/var/lib/yulius-migrate"
+    )]
+    pub migrate_state_dir: PathBuf,
     /// Minutes between automatic checks of `main` (0: only "Check now").
     #[arg(long, env = "YULIUS_UPDATE_CHECK_MINUTES", default_value_t = 60)]
     pub update_check_minutes: u64,
@@ -155,14 +166,16 @@ pub struct ServeArgs {
     /// require checks then wait for GitHub's checks again).
     #[arg(long, env = "YULIUS_CI", default_value = "on", value_parser = ["on", "off"])]
     pub ci: String,
-    /// CI jobs running at once on this machine, across all sandboxes.
-    #[arg(long, env = "YULIUS_CI_MAX_JOBS", default_value_t = 4,
+    /// CI jobs running at once on this machine, across all sandboxes (default: sized from the
+    /// host's CPUs).
+    #[arg(long, env = "YULIUS_CI_MAX_JOBS",
           value_parser = clap::value_parser!(u32).range(1..=64))]
-    pub ci_max_jobs: u32,
-    /// CI runs of one sandbox executing at once, each in its own job checkouts.
-    #[arg(long, env = "YULIUS_CI_LANES", default_value_t = 2,
+    pub ci_max_jobs: Option<u32>,
+    /// CI runs of one sandbox executing at once, each in its own job checkouts (default: sized
+    /// from the host's CPUs).
+    #[arg(long, env = "YULIUS_CI_LANES",
           value_parser = clap::value_parser!(u32).range(1..=8))]
-    pub ci_lanes: u32,
+    pub ci_lanes: Option<u32>,
     /// Wall-clock limit of one CI job, in minutes.
     #[arg(long, env = "YULIUS_CI_JOB_TIMEOUT_MIN", default_value_t = 30,
           value_parser = clap::value_parser!(u64).range(1..=360))]
@@ -172,9 +185,9 @@ pub struct ServeArgs {
           value_parser = clap::value_parser!(u64).range(10..=3600))]
     pub ci_poll_secs: u64,
     /// Disk a CD or environment run's files and cache may use, in GB; a run past it is stopped.
-    #[arg(long, env = "YULIUS_CD_RUN_DISK_GB", default_value_t = 20,
+    #[arg(long, env = "YULIUS_CD_RUN_DISK_GB",
           value_parser = clap::value_parser!(u64).range(1..=10_000))]
-    pub cd_run_disk_gb: u64,
+    pub cd_run_disk_gb: Option<u64>,
     /// Sandbox isolation (SPEC-002 ADR-22).
     #[command(flatten)]
     pub isolation: crate::wiring::sandbox::IsolationArgs,
@@ -430,6 +443,22 @@ pub fn check_socket_paths(data_dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// What the unit pins (SPEC-459): the limits its arguments or `YULIUS_*` variables name. The
+/// others are sized from the host.
+fn unit_limits(args: &ServeArgs) -> UnitLimits {
+    [
+        (Limit::Sessions, args.max_live_sessions.map(u64::from)),
+        (Limit::CiJobs, args.ci_max_jobs.map(u64::from)),
+        (Limit::CiLanes, args.ci_lanes.map(u64::from)),
+        (Limit::SandboxMemory, args.isolation.memory_gb),
+        (Limit::SandboxDisk, args.isolation.disk_gb),
+        (Limit::CdRunDisk, args.cd_run_disk_gb),
+    ]
+    .into_iter()
+    .filter_map(|(limit, value)| Some((limit, value?)))
+    .collect()
+}
+
 /// Builds the application over the data directory.
 pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     prepare_data_dir(&args.data_dir)?;
@@ -440,17 +469,22 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot resolve executable: {e}"))?;
     let internal_url = format!("http://{}", args.internal_bind);
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
-    config.max_live_sessions = args.max_live_sessions;
+    // The numbers until `App::load_limits` sizes the limits from the host (SPEC-459).
+    let fixed = |limit: Limit| u32::try_from(limit.fixed()).unwrap_or(u32::MAX);
+    config.max_live_sessions = args.max_live_sessions.unwrap_or(fixed(Limit::Sessions));
     config.agent_cpus = args.agent_cpus;
     config.contained = args.contained;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
     config.ci = yulius_app::ci::CiSettings {
         enabled: args.ci == "on",
-        max_jobs: args.ci_max_jobs,
-        lanes: args.ci_lanes,
+        max_jobs: args.ci_max_jobs.unwrap_or(fixed(Limit::CiJobs)),
+        lanes: args.ci_lanes.unwrap_or(fixed(Limit::CiLanes)),
         job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
-        run_disk_max: args.cd_run_disk_gb.saturating_mul(1_000_000_000),
+        run_disk_max: args
+            .cd_run_disk_gb
+            .unwrap_or(Limit::CdRunDisk.fixed())
+            .saturating_mul(1_000_000_000),
     };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.proxy_secret = crate::wiring::proxy::load(args.proxy_secret_file.as_deref());
@@ -479,6 +513,14 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     app.set_intake(intake_services(args));
     app.set_vidoc(vidoc_services(args));
     app.set_updates(update_services(args)?);
+    // The move helper is named after the unit this server runs in (SPEC-470 MVB-007).
+    let move_unit = crate::restart_safety::this_service()
+        .and_then(|service| yulius_sandbox::units::migrate_path_unit(&service));
+    app.set_move_helper(Arc::new(crate::wiring::migrate_files::FileMoveHelper::new(
+        &args.data_dir,
+        args.migrate_state_dir.clone(),
+        move_unit,
+    )));
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
     }
@@ -503,8 +545,16 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     app.restore_person_pauses().await;
     app.load_jev_key().await;
     app.load_vidoc_key().await;
+    // The limits in force (SPEC-459): host-sized, the unit's or the saved setting's; sandboxes
+    // are built with the memory and disk quota they resolve to.
+    let limits = app.load_limits(unit_limits(&args)).await;
+    let sized = crate::wiring::sandbox::IsolationArgs {
+        memory_gb: limits.memory_gb,
+        disk_gb: Some(limits.disk_gb),
+        ..args.isolation.clone()
+    };
     let isolation =
-        crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;
+        crate::wiring::sandbox::install(&app, &sized, args.internal_bind.port()).await?;
     app.cleanup_stale_logins().await;
     match app.reconcile_environment_runs().await {
         Ok(0) => {}
@@ -668,6 +718,74 @@ mod tests {
         };
         assert!(only("1024").is_ok());
         assert!(only("1025").is_err());
+        Ok(())
+    }
+
+    /// The arguments as `yulius serve <given>` reads them, without the environment (a CI job
+    /// sets `YULIUS_CI` and more).
+    fn parsed(given: &[&str]) -> Result<ServeArgs, Box<dyn std::error::Error>> {
+        use clap::FromArgMatches as _;
+        let command = Serve::command().mut_args(|arg| arg.env(clap::builder::Resettable::Reset));
+        let matches = command.try_get_matches_from([&["serve"], given].concat())?;
+        Ok(Serve::from_arg_matches(&matches)?.args)
+    }
+
+    /// SPEC-459 HSL-001: a limit the unit does not name is left to the host's size, so none of
+    /// the six has a default of its own, and each reads the variable the Settings page names.
+    #[test]
+    fn a_limit_the_unit_does_not_name_is_left_to_the_host() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let command = Serve::command();
+        for limit in Limit::ALL {
+            let arg = command
+                .get_arguments()
+                .find(|arg| arg.get_env().is_some_and(|env| env == limit.env()))
+                .ok_or_else(|| format!("no argument reads {}", limit.env()))?;
+            assert!(
+                arg.get_default_values().is_empty(),
+                "{} has a fixed default",
+                limit.env()
+            );
+        }
+        assert!(unit_limits(&parsed(&[])?).is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_units_numbers_are_its_pins() -> Result<(), Box<dyn std::error::Error>> {
+        let args = parsed(&[
+            "--max-live-sessions",
+            "8",
+            "--sandbox-memory-gb",
+            "38",
+            "--sandbox-disk-gb",
+            "300",
+        ])?;
+        assert_eq!(
+            unit_limits(&args),
+            UnitLimits::from([
+                (Limit::Sessions, 8),
+                (Limit::SandboxMemory, 38),
+                (Limit::SandboxDisk, 300),
+            ])
+        );
+        let args = parsed(&[
+            "--ci-max-jobs",
+            "12",
+            "--ci-lanes",
+            "4",
+            "--cd-run-disk-gb",
+            "50",
+        ])?;
+        assert_eq!(
+            unit_limits(&args),
+            UnitLimits::from([
+                (Limit::CiJobs, 12),
+                (Limit::CiLanes, 4),
+                (Limit::CdRunDisk, 50),
+            ])
+        );
+        assert!(parsed(&["--ci-max-jobs", "65"]).is_err());
         Ok(())
     }
 

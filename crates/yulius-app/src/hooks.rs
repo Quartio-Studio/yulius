@@ -233,6 +233,50 @@ impl App {
         input: &HookInput,
         sent: i64,
     ) -> AppResult<HookReply> {
+        if event != events::USER_PROMPT_SUBMIT {
+            return self.answer_event(ctx, event, input, sent).await;
+        }
+        // A prompt submitted from the session's prompt box empties it: what was typed before
+        // it is no draft any more (SPEC-468 CCF-010). Claude Code runs this hook at the Enter,
+        // also for a prompt entered while a turn runs (seen with 2.1.322), so the hook's time
+        // is when the box was emptied. Once per submit, as of its first request: a prompt that
+        // is held (an update, a pause, no subscription with room) is sent again every few
+        // seconds, stamped anew, until it goes on, and what a person types meanwhile is a
+        // draft.
+        let runtime = self.runtime(&ctx.task.id);
+        let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
+        let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
+        if from_box && !sent_again {
+            runtime.submit_emptied_ms.store(sent, Ordering::SeqCst);
+        }
+        let reply = self.answer_event(ctx, event, input, sent).await;
+        // A prompt that is held stays held through an answer that fails: the hook client, once
+        // it holds, asks again after one (and fails open only at a first request).
+        let held = matches!(reply, Ok(HookReply::Hold { .. })) || (sent_again && reply.is_err());
+        // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
+        // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,
+        // and Claude Code puts its text back into the box, so that submit emptied nothing.
+        let blocked = matches!(
+            &reply,
+            Ok(HookReply::Output(output))
+                if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
+        );
+        if from_box && !held && !blocked {
+            let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
+            runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+        }
+        runtime.prompt_held.store(held, Ordering::SeqCst);
+        reply
+    }
+
+    /// [`Self::answer_hook`], for every event alike.
+    async fn answer_event(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        event: &str,
+        input: &HookInput,
+        sent: i64,
+    ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
         self.runtime(&ctx.task.id)
@@ -455,6 +499,8 @@ impl App {
             .session_started
             .store(true, Ordering::SeqCst);
         crate::supervisor::mark_session_started(Path::new(&ctx.attempt.run_dir));
+        // A session restarted on a newer Claude Code that got here runs on it (SPEC-461).
+        self.claude_code_run_started(&ctx.task.id, &ctx.attempt.id);
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,
@@ -796,6 +842,38 @@ impl App {
             } else {
                 false
             };
+        // A session that works on after this boundary (a gate's block, its goal) and runs an
+        // older Claude Code than runs get now restarts on the newer one here, as a move to
+        // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
+        // reasons, and its goal again. An idle session moves once its turn has settled.
+        // A goal that is achieved, or not set, is not typed again for it: such a session waits
+        // for its next start. Nor while a goal its person set in a prompt-mode session is open,
+        // which Yulius could not follow across the restart: that session stays, and the gate
+        // blocks as usual (SPEC-468 CCF-001). A goal known by now saves the look at the session;
+        // one set in this very turn may not be read yet, so it is asked again after the look,
+        // which reads the turn's lines.
+        let works_on = !self.keeps_own_goal(task)
+            && (gate_continues || {
+                let runtime = self.runtime(&task.id);
+                task.mode == TaskMode::Goal
+                    && runtime.goal_open.load(Ordering::SeqCst)
+                    && !runtime.goal_achieved.load(Ordering::SeqCst)
+            });
+        if matches!(decision.0, Decision::Stay)
+            && works_on
+            && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+            && !self.keeps_own_goal(task)
+        {
+            let continuation = gate_continues.then(|| reasons.join("\n\n"));
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            let run = (ctx.attempt.id.clone(), current.clone());
+            tokio::spawn(async move {
+                app.move_to_claude_code(&task_id, run, version, continuation)
+                    .await;
+            });
+            return Ok(self.hold_for(&task.id));
+        }
         let stays = match decision {
             (Decision::Stay, _) => true,
             (Decision::Switch { .. }, _) if busy => true,

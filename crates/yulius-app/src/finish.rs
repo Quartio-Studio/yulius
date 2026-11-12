@@ -95,8 +95,19 @@ pub struct TranscriptFacts {
     /// (SPEC-146 GWR-003).
     pub goal_recorded: bool,
     /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
-    /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
+    /// prompt, agent work or an interrupt; an armed retry also ends with the goal, and spent
+    /// retries with the session's own answer (SPEC-469).
     pub goal_retry: Option<GoalRetryFact>,
+    /// Claude Code's notice of a goal pause it made at the pending usage limit or refused
+    /// subscription (SPEC-464 UCL-007): the limit's, not a pause nobody handles, unless Yulius
+    /// cannot take the task on from there. Until the next turn or limit.
+    pub limit_goal_pause: Option<String>,
+    /// When the session's agent first worked (a line of the model's own, or its answer) after
+    /// Claude Code last stopped retrying the goal or a usage limit last cut its turn, or first
+    /// worked at all when what was read holds neither: a request made because the session did
+    /// not go on by itself is answered (SPEC-469 GPW-004, SPEC-464 UCL-010). A prompt alone, a
+    /// sub-agent's answer and work without a time are no such work.
+    pub worked_since_goal_pause: Option<yulius_domain::time::Timestamp>,
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
     pub turn_closed_at: Option<yulius_domain::time::Timestamp>,
@@ -131,6 +142,7 @@ impl TranscriptFacts {
             Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 // Claude Code's own wake-up keeps an achieved goal.
                 if !wake {
                     self.goal_achieved = Some(false);
@@ -149,17 +161,37 @@ impl TranscriptFacts {
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
+                if !self.limit_pending {
+                    self.limit_goal_pause = None;
+                }
+                // The session's own answer: the model works, so a pause before it is over.
+                if let Some(at) = at {
+                    self.worked_since_goal_pause.get_or_insert(*at);
+                    if matches!(self.goal_retry, Some(GoalRetryFact::Stopped(_))) {
+                        self.goal_retry = None;
+                    }
+                }
             }
             Observation::TurnInterrupted { .. } => {
                 self.turn_open = Some(false);
                 self.goal_retry = None;
             }
+            // A pause at a usage limit or a refused subscription is the limit's (SPEC-464
+            // UCL-007): nobody is asked to send a message for it while Yulius takes the task on.
+            Observation::GoalRetry {
+                armed: false,
+                notice,
+            } if self.limit_pending => self.limit_goal_pause = Some(notice.clone()),
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry = Some(if *armed {
                     GoalRetryFact::Armed
                 } else {
                     GoalRetryFact::Stopped(notice.clone())
                 });
+                // Work before the pause does not answer it.
+                if !armed {
+                    self.worked_since_goal_pause = None;
+                }
             }
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
             Observation::ContextFull => {
@@ -180,6 +212,11 @@ impl TranscriptFacts {
             // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
+                self.limit_goal_pause = None;
+                // Work before the limit answers no request made at it: its goal pause's (the
+                // notice follows this record, SPEC-464 UCL-007), or one for a limit nothing
+                // says the end of (UCL-010). SPEC-469's rule for a pause.
+                self.worked_since_goal_pause = None;
             }
             Observation::Session { .. }
             | Observation::CompactFailed
@@ -188,11 +225,15 @@ impl TranscriptFacts {
             | Observation::BackgroundResumable { .. } => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
-            Observation::AgentWork { .. } => {
+            Observation::AgentWork { at } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 self.context_full = false;
                 self.limit_pending = false;
+                if let Some(at) = at {
+                    self.worked_since_goal_pause.get_or_insert(*at);
+                }
             }
         }
     }
@@ -494,6 +535,16 @@ pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
         .is_some_and(|p| !p.is_empty() && !p.starts_with('<') && !is_compact_command(p))
 }
 
+/// Whether a `UserPromptSubmit` prompt came through the session's prompt box, typed by a person
+/// or by Yulius (a command like `/compact` too), which a submit empties; Claude Code's own
+/// wake-ups (they start with `<`) do not pass through it (SPEC-468 CCF-010).
+#[must_use]
+pub fn from_prompt_box(prompt: Option<&str>) -> bool {
+    prompt
+        .map(str::trim_start)
+        .is_some_and(|p| !p.is_empty() && !p.starts_with('<'))
+}
+
 /// Whether a submitted prompt starts a turn of the agent: anything but the compaction command,
 /// after which Claude Code compacts the conversation and runs no turn, so nothing would ever end
 /// it (SPEC-085 STT-005).
@@ -561,6 +612,19 @@ pub(crate) fn waited_turn_settles(activity: Option<Activity>, achieved: bool) ->
     }
 }
 
+/// Whether the flag raised at `noticed_ms` (a notice's, or a goal pause's) is the one the task
+/// still reads: it reads Needs you, and has since no later than that time. A status change
+/// replaces a flag without a word, and one raised afterwards is another matter's, which the
+/// agent's work does not answer (SPEC-469).
+#[must_use]
+pub(crate) fn noticed_flag_stands(
+    activity: Option<Activity>,
+    state_at: yulius_domain::time::Timestamp,
+    noticed_ms: i64,
+) -> bool {
+    activity == Some(Activity::NeedsAttention) && state_at.0 <= noticed_ms
+}
+
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -579,8 +643,18 @@ impl App {
     /// hook that runs after this one, so the hook cannot wait for it).
     pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
-        let stop_ms = self.now().0;
-        runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+        crate::race::reached(
+            crate::race::Point::StopClean,
+            std::path::Path::new(task.id.as_str()),
+        );
+        // After a prompt the transcript watcher is applying: it passed its last-Stop check and
+        // starts its turn first (SPEC-453 TPO-001).
+        let stop_ms = {
+            let _order = runtime.turn_order.lock().await;
+            let stop_ms = self.now().0;
+            runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+            stop_ms
+        };
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
         {
@@ -590,7 +664,11 @@ impl App {
             return Ok(());
         }
         runtime.verdict_stop_ms.clear();
-        self.settle_clean_turn(task).await
+        // That prompt set Working by now: the Stop settles the task as it is, not as it was read
+        // on arrival (the copy if the store fails; SPEC-453 TPO-002).
+        let current = self.deps.store.task(&task.id).await.ok().flatten();
+        self.settle_clean_turn(current.as_ref().unwrap_or(task))
+            .await
     }
 
     /// A clean turn's end: Done when the goal is achieved, waiting otherwise (TSK-014). Its
@@ -609,6 +687,9 @@ impl App {
             if next == Activity::Done {
                 app.drain_queue().await;
             }
+            // The turn is settled: an idle session on an older Claude Code restarts on the one
+            // runs get now (SPEC-461 CCM-013).
+            app.move_idle_to_newer_claude_code(&task_id).await;
         });
         Ok(())
     }
@@ -757,6 +838,7 @@ impl App {
         if task.status != TaskStatus::Running {
             return;
         }
+        let notice_ms = self.standing_notice_ms(&task).await;
         let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
         match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
             Some(next) => self.resume_working(&task, next).await,
@@ -764,6 +846,31 @@ impl App {
             None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
             None => {}
         }
+    }
+
+    /// When the flag that the agent's work answers was raised (a notice's, or a goal pause's;
+    /// `notice_attention_ms`), or 0 when there is none or `task` no longer reads that flag
+    /// ([`noticed_flag_stands`]). A time that went stale is dropped, so that later work answers no
+    /// other flag; a state that cannot be read answers nothing this time and drops nothing.
+    pub(crate) async fn standing_notice_ms(&self, task: &TaskRecord) -> i64 {
+        let runtime = self.runtime(&task.id);
+        let noticed_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        if noticed_ms == 0 {
+            return 0;
+        }
+        let Ok(Some(times)) = self.deps.store.task_times(&task.id).await else {
+            return 0;
+        };
+        if noticed_flag_stands(task.activity, times.state_at, noticed_ms) {
+            return noticed_ms;
+        }
+        let _ = runtime.notice_attention_ms.compare_exchange(
+            noticed_ms,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        0
     }
 
     /// The session goes on although the task read idle or flagged: it is `next` (Working).
@@ -870,11 +977,30 @@ impl App {
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
-        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+        // The agent worked after Claude Code's last goal pause while nobody watched: the request
+        // made for that pause is answered (SPEC-469 GPW-004).
+        if facts.worked_since_goal_pause.is_some() {
+            self.goal_pause_overtaken(task_id).await;
+        }
+        let Ok(Some(mut task)) = self.deps.store.task(task_id).await else {
             return;
         };
         if task.status != TaskStatus::Running {
             return;
+        }
+        // So is the flag that pause raised, as it is while Yulius watches (STA-003): the task
+        // follows its session, Working while the turn is open, settled below once it closed.
+        let flagged_ms = self.standing_notice_ms(&task).await;
+        if task.activity == Some(Activity::NeedsAttention)
+            && activity_on_work(task.activity, facts.worked_since_goal_pause, 0, flagged_ms)
+                == Some(Activity::Working)
+        {
+            match self.set_task_activity(&task, Activity::Working).await {
+                Ok(()) => task.activity = Some(Activity::Working),
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error = %err, "could not follow a session past its goal pause");
+                }
+            }
         }
         runtime.goal_retry_armed.store(
             facts.goal_retry == Some(GoalRetryFact::Armed),
@@ -1329,20 +1455,24 @@ impl App {
         self.background_work_now(task_id).await == Some(true)
     }
 
+    /// Whether the task's last turn end waits for background agents, or its transcript names
+    /// live Monitors or agents launched or resumable and not ended (BGW-004, BGW-006).
+    fn background_agents_now(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
+            || {
+                let live = self.live_launches_of(task_id);
+                live.monitors > 0 || live.agents_pending > 0
+            }
+    }
+
     /// Whether anything of the task's agent runs in the background right now: background agents
     /// its last turn end said it waits for, live Monitors, agents launched or resumable and not
     /// ended (BGW-004, BGW-006), or shells a fresh probe finds (`yulius wait` alone does not
     /// count, DSK-102). `None` when the probe gives no answer; a task without a live agent
     /// process has none.
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
-        if self
-            .existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
-            || {
-                let live = self.live_launches_of(task_id);
-                live.monitors > 0 || live.agents_pending > 0
-            }
-        {
+        if self.background_agents_now(task_id) {
             return Some(true);
         }
         let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
@@ -1353,6 +1483,26 @@ impl App {
         let probe = tokio::task::spawn_blocking(move || host.background_shells(pid));
         match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
             Ok(Ok(Some(n))) => Some(n > 0),
+            _ => None,
+        }
+    }
+
+    /// [`Self::background_work_now`], counting also a shell that only runs `yulius wait`: the
+    /// agent waits there for Yulius's news (its checks, a deploy, an armed merge) and would never
+    /// hear it if its session were restarted (SPEC-461 CCM-013). One look at the processes;
+    /// `None` when it gives no answer.
+    pub(crate) async fn background_or_wait_now(&self, task_id: &TaskId) -> Option<bool> {
+        if self.background_agents_now(task_id) {
+            return Some(true);
+        }
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let Some(pid) = attempt.and_then(|attempt| attempt.child_pid) else {
+            return Some(false);
+        };
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(Some(found))) => Some(found.shells > 0 || found.waits > 0),
             _ => None,
         }
     }
@@ -1377,6 +1527,15 @@ impl App {
             .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
     }
 
+    /// Whether Claude Code last recorded the task's goal as set or not met yet, as its transcript
+    /// was read so far: the goal is open, and its session works on after a clean Stop. Public
+    /// for tests, which hold a goal turn until the goal was read.
+    #[must_use]
+    pub fn goal_is_open(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.goal_open.load(Ordering::SeqCst))
+    }
+
     /// Whether Claude Code last recorded the task's goal as set, not met or failed (SPEC-429
     /// ANS-002).
     pub(crate) fn goal_unfinished(&self, task_id: &TaskId) -> bool {
@@ -1389,6 +1548,7 @@ impl App {
 mod tests {
     use super::*;
     use yulius_domain::time::Timestamp;
+    use yulius_domain::usage::LimitScope;
 
     fn reduce(observations: &[Observation]) -> TranscriptFacts {
         let mut facts = TranscriptFacts::default();
@@ -1449,6 +1609,75 @@ mod tests {
         }
     }
 
+    /// SPEC-464 UCL-007: Claude Code answers the refusal of a model for its usage credits with
+    /// "Goal paused · the request was rate limited". After a usage limit, or a refused
+    /// subscription, of the same turn that pause is the limit's: the replay keeps the limit and
+    /// asks nobody. With no limit before it, it is a pause nobody handles, as before; and a
+    /// limit a later turn overtook does not hide that turn's pause.
+    #[test]
+    fn a_goal_pause_at_a_usage_limit_is_the_limits() {
+        let paused = Observation::GoalRetry {
+            armed: false,
+            notice: "Goal paused · the request was rate limited".into(),
+        };
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits. /model to switch models.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at: Some(Timestamp(2)),
+        };
+        let refused = Observation::AccessLost {
+            message: "Your organization has disabled Claude subscription access".into(),
+            at: Some(Timestamp(2)),
+        };
+        let notice = Some("Goal paused · the request was rate limited".to_owned());
+        for cut in [limit.clone(), refused] {
+            let facts = reduce(&[PROMPT, cut.clone(), paused.clone(), ENDED]);
+            assert_eq!(facts.goal_retry, None, "{cut:?}");
+            assert!(facts.limit_pending, "{cut:?}");
+            // Kept beside the limit: it needs a person if Yulius cannot take the task on.
+            assert_eq!(facts.limit_goal_pause, notice, "{cut:?}");
+        }
+        let alone = reduce(&[PROMPT, paused.clone(), ENDED]);
+        assert_eq!(
+            alone.goal_retry,
+            Some(GoalRetryFact::Stopped(
+                "Goal paused · the request was rate limited".into()
+            ))
+        );
+        assert_eq!(alone.limit_goal_pause, None);
+        let later = reduce(&[PROMPT, limit.clone(), ENDED, PROMPT, paused.clone(), ENDED]);
+        assert!(later.goal_retry.is_some() && !later.limit_pending);
+        assert_eq!(later.limit_goal_pause, None);
+        // The next turn, or a new limit, ends a pause held at the limit before it.
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(3)),
+        };
+        for next in [PROMPT, work.clone(), limit.clone()] {
+            let facts = reduce(&[PROMPT, limit.clone(), paused.clone(), ENDED, next.clone()]);
+            assert_eq!(facts.limit_goal_pause, None, "{next:?}");
+        }
+        // SPEC-469 for a request made at a limit (its goal pause's, or one for a limit nothing
+        // says the end of, with or without a notice): work before the limit answers nothing,
+        // work after it does.
+        let earlier = Observation::AgentWork {
+            at: Some(Timestamp(1)),
+        };
+        for cut in [vec![limit.clone(), paused.clone()], vec![limit.clone()]] {
+            let mut read = vec![PROMPT, earlier.clone(), PROMPT];
+            read.extend(cut);
+            read.push(ENDED);
+            assert_eq!(reduce(&read).worked_since_goal_pause, None, "{read:?}");
+            read.push(work.clone());
+            assert_eq!(
+                reduce(&read).worked_since_goal_pause,
+                Some(Timestamp(3)),
+                "{read:?}"
+            );
+        }
+    }
+
     /// SPEC-333: a replay keeps the retry Claude Code armed over the record that closes the error
     /// turn, and its spent retries with Claude Code's words, until a prompt, agent work or an
     /// interrupt comes after them; an armed retry also ends with the goal.
@@ -1500,6 +1729,120 @@ mod tests {
     const WORK: Observation = Observation::AgentWork {
         at: Some(Timestamp(2)),
     };
+
+    /// SPEC-469 GPW-004: a replay says when the session's agent first worked after Claude Code's
+    /// last goal pause (or first worked at all, in a run with no pause: the pause was an earlier
+    /// run's). Its own line or its answer is such work, and ends the pause's last word. A prompt
+    /// alone, a sub-agent's answer (no time), work without a time and work before the pause are
+    /// not; an armed retry is no pause.
+    #[test]
+    fn a_replay_says_when_the_agent_first_worked_after_the_last_goal_pause() {
+        let wake = Observation::UserTurn {
+            at: Some(Timestamp(2)),
+            wake: true,
+        };
+        let work_at = |ms| Observation::AgentWork {
+            at: Some(Timestamp(ms)),
+        };
+        let answer_at = |ms| Observation::TurnComplete {
+            at: Some(Timestamp(ms)),
+        };
+        let sub_agent = Observation::TurnComplete { at: None };
+        let worked = |observations: &[Observation]| reduce(observations).worked_since_goal_pause;
+        for work in [work_at(3), answer_at(3)] {
+            let woken = reduce(&[PROMPT, retry(false), ENDED, wake.clone(), work.clone()]);
+            assert_eq!(
+                woken.worked_since_goal_pause,
+                Some(Timestamp(3)),
+                "{work:?}"
+            );
+            // With no prompt seen either (a hidden continuation): the pause is not the last word.
+            let hidden = reduce(&[PROMPT, retry(false), ENDED, work.clone()]);
+            assert_eq!(
+                (hidden.worked_since_goal_pause, hidden.goal_retry),
+                (Some(Timestamp(3)), None),
+                "{work:?}"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone()]),
+                Some(Timestamp(3)),
+                "a run after the pause"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone(), retry(false), ENDED]),
+                None,
+                "work before the pause"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone(), retry(true), ENDED]),
+                Some(Timestamp(3)),
+                "an armed retry is no pause"
+            );
+        }
+        // The first work after the pause, not the last: a flag raised later is not its own.
+        assert_eq!(
+            worked(&[
+                PROMPT,
+                work_at(2),
+                retry(false),
+                ENDED,
+                work_at(5),
+                answer_at(9)
+            ]),
+            Some(Timestamp(5))
+        );
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED]), None);
+        assert_eq!(
+            worked(&[PROMPT, retry(false), ENDED, wake.clone(), ENDED]),
+            None,
+            "a woken turn the API refused again"
+        );
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED, PROMPT]), None);
+        assert_eq!(
+            worked(&[PROMPT, retry(false), ENDED, wake.clone(), sub_agent]),
+            None
+        );
+        let untimed = Observation::AgentWork { at: None };
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED, wake, untimed]), None);
+        assert_eq!(worked(&[]), None);
+        // An answer before the pause leaves the pause the last word (a failed goal check).
+        let checked = reduce(&[PROMPT, answer_at(3), retry(false), ENDED]);
+        assert!(matches!(
+            checked.goal_retry,
+            Some(GoalRetryFact::Stopped(_))
+        ));
+        // An armed retry is Claude Code's to end: the answer of another turn does not.
+        let armed = reduce(&[PROMPT, retry(true), ENDED, answer_at(3)]);
+        assert_eq!(armed.goal_retry, Some(GoalRetryFact::Armed));
+    }
+
+    /// SPEC-469 (review round 1): the time of a flag that work answers holds only while the task
+    /// reads that flag: Needs you, since no later than the time remembered. A flag replaced by a
+    /// status change, or one raised afterwards, is not answered by it.
+    #[test]
+    fn a_remembered_flag_stands_only_while_the_task_reads_it() {
+        use Activity as A;
+        assert!(noticed_flag_stands(
+            Some(A::NeedsAttention),
+            Timestamp(100),
+            100
+        ));
+        assert!(noticed_flag_stands(
+            Some(A::NeedsAttention),
+            Timestamp(100),
+            107
+        ));
+        assert!(
+            !noticed_flag_stands(Some(A::NeedsAttention), Timestamp(200), 107),
+            "flagged again later"
+        );
+        for replaced in [Some(A::Working), Some(A::Waiting), Some(A::Done), None] {
+            assert!(
+                !noticed_flag_stands(replaced, Timestamp(100), 107),
+                "{replaced:?}"
+            );
+        }
+    }
 
     /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
     /// next prompt.
@@ -1599,6 +1942,8 @@ mod tests {
                 goal_unfinished: false,
                 goal_recorded: true,
                 goal_retry: None,
+                limit_goal_pause: None,
+                worked_since_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
             }
@@ -1628,6 +1973,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         }]);
         // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
@@ -1915,6 +2261,24 @@ mod tests {
         assert!(!is_typed_prompt(None));
     }
 
+    /// SPEC-468 CCF-010: a prompt a person or Yulius submitted came through the prompt box and
+    /// emptied it, a command that starts no work too; Claude Code's own wake-up did not.
+    #[test]
+    fn prompts_from_the_prompt_box_are_told_from_wakeups() {
+        for typed in [
+            "more tests please",
+            "/goal Ship it",
+            "/compact keep the plan",
+        ] {
+            assert!(from_prompt_box(Some(typed)), "{typed}");
+        }
+        assert!(!from_prompt_box(Some(
+            "<task-notification>\n<task-id>b1</task-id>"
+        )));
+        assert!(!from_prompt_box(Some("   ")));
+        assert!(!from_prompt_box(None), "a hook without its prompt");
+    }
+
     /// SPEC-085 STT-005: `/compact` typed into the session (its `UserPromptSubmit`, should Claude
     /// Code run it) neither starts work nor takes back an achieved goal; a prompt typed after it
     /// does.
@@ -1943,6 +2307,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         };
         assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);

@@ -8,6 +8,8 @@ failOnPageErrors();
 // terminal at once, without a button; "+" opens more, each in its own tab.
 
 async function openShellPanel(screen: Screen): Promise<void> {
+  // Task #12's page first: a tool opened before the page has its sandbox waits for it (SPEC-450).
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
 }
@@ -150,6 +152,166 @@ test('the Shell of a sandbox first visited with it open leaves the keyboard on t
   // The Shell focused as its terminal was shown: the timers queued before this one ran.
   await browser.evaluate(() => new Promise((resolve) => { setTimeout(() => resolve(true), 0); }));
   expect(await browser.evaluate(() => Boolean(document.activeElement?.closest('.term-views')))).toBe(false);
+});
+
+// SPEC-450 (the e2e job of #1113's pull request): a sandbox's page that still loads is not the
+// tools' context yet. The Shell chosen then was the one outside a sandbox ("Open a sandbox first."),
+// shown again for the page without the keyboard; it waits for its sandbox and opens as chosen.
+const studioTasks = '&hold=/api/sandboxes/sb_studio/tasks';
+const studioLoading = (screen: Screen) => expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+/** The rail's Shell, chosen while the page is held (openShellPanel is for a page that is there). */
+async function chooseShell(screen: Screen) {
+  await screen.getByRole('button', /^Show tools/).click();
+  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  await shell.click();
+  return shell;
+}
+const releaseHeld = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+
+test('the Shell chosen while its sandbox’s page loads opens there with the keyboard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('a tool chosen twice while its sandbox’s page loads does not open', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await shell.click();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('a tool chosen while its sandbox’s page loads does not open once the tools are hidden', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  await expect(await chooseShell(screen)).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await screen.getByRole('button', /^Hide tools/).click();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+});
+
+// On the way in from a page outside a sandbox (only the Superagent in the rail) the tools show
+// while the sandbox's page loads, and could not be chosen. The one chosen last opens there.
+test('the tool chosen last on the way into a sandbox opens there', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings', studioTasks));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await screen.getByRole('button', /^Show tools/).click();
+  const tools = screen.getByRole('navigation', 'Tools');
+  await expect(tools.getByRole('button', 'Superagent')).toBeVisible();
+  await expect(tools.getByRole('button', 'Shell')).toBeHidden();
+
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/12'; });
+  await studioLoading(screen);
+  await tools.getByRole('button', 'Shell').click();
+  await expect(tools.getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'true');
+  await tools.getByRole('button', 'Notes').click();
+  await expect(tools.getByRole('button', 'Notes')).toHaveAttribute('aria-pressed', 'true');
+  await expect(tools.getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(browser.locator('.panel .panel-title')).toHaveText('Notes');
+  await expect(tools.getByRole('button', 'Notes')).toHaveAttribute('aria-pressed', 'true');
+});
+
+// Review of SPEC-450 SSC-007: the tool waits for the sandbox whose page loaded when it was chosen,
+// and for no other: it opened a Shell in the sandbox the person went to instead.
+test('a tool chosen for a sandbox left while its page loads does not open in another', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+
+  await releaseHeld(browser);
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+});
+
+// Review of SPEC-450 SSC-007: the wait is for the sandbox, not for the page: another page of
+// that sandbox starting to load keeps the tool chosen.
+test('a tool chosen while its sandbox’s page loads opens beside the page shown in the end', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/11'; });
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/11$/);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#11 3D model viewer');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+});
+
+// Review of SPEC-450 SSC-007: with the pages of two sandboxes loading, the tool waits for the one
+// whose page started loading last, and another sandbox's page starting to load ends its wait.
+test('a tool waits for the sandbox whose page started loading last', async ({ app, browser, screen }) => {
+  type Held = { __yuliusMock: { holdPath: string; heldWaiting?: number; asked?: Record<string, number> } };
+  // The reads of both sandboxes' tasks asked so far wait at the hold (a read's latency comes
+  // before it, so the held path changes only once they are there).
+  const allHeld = () => expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Held).__yuliusMock;
+    const asked = db.asked ?? {};
+    return (asked['/api/sandboxes/sb_studio/tasks'] ?? 0) + (asked['/api/sandboxes/sb_product/tasks'] ?? 0) - (db.heldWaiting ?? 0);
+  }), { message: 'every read of the tasks waits at the hold' }).toBe(0);
+  const hold = (path: 'sb_studio' | 'sb_product') => (path === 'sb_studio'
+    ? browser.evaluate(() => { (window as unknown as Held).__yuliusMock.holdPath = '/api/sandboxes/sb_studio/tasks'; })
+    : browser.evaluate(() => { (window as unknown as Held).__yuliusMock.holdPath = '/api/sandboxes/sb_product/tasks'; }));
+  const sandboxes = screen.getByRole('navigation', 'Sandboxes');
+
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await allHeld();
+
+  // Product's page starts loading: the Shell chosen for studio is not wanted there.
+  await hold('sb_product');
+  await browser.evaluate(() => { window.location.hash = '#/s/product/t/4'; });
+  await expect(sandboxes.getByRole('link', /^product\b/)).toHaveAttribute('aria-current', 'page');
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+  await allHeld();
+
+  // Back to studio, its page loading again: the Shell chosen now waits for studio, not product.
+  await hold('sb_studio');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/12'; });
+  await studioLoading(screen);
+  await shell.click();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
 });
 
 // SPEC-434 MTB-002/004: the terminal tabs move as the sandbox and Notes tabs do, and keep their order.

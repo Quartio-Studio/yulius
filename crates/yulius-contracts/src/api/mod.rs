@@ -15,6 +15,7 @@ pub mod guests;
 pub mod intake;
 pub mod leftovers;
 pub mod mcp;
+pub mod migration;
 pub mod notes;
 pub mod sandboxes;
 pub mod secrets;

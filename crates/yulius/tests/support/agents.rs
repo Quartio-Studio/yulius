@@ -28,6 +28,12 @@ pub struct FakeAgentOptions {
     /// The record after `limit_after` turns is a lapsed subscription's refusal, not a usage
     /// limit (`--access-lost`).
     pub access_lost: bool,
+    /// The record after `limit_after` turns is the refusal of a model whose usage credits are
+    /// used up, as Claude Code 2.1.311 writes it (`--credits-out`).
+    pub credits_out: bool,
+    /// That refusal says, as Claude Code 2.1.322's does, that the model's allowance resets this
+    /// many seconds ahead (`--credits-reset-s`).
+    pub credits_reset_s: Option<u64>,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
     /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
@@ -82,6 +88,23 @@ pub struct FakeAgentOptions {
     /// With `goal_api_errors`: the goal is cleared while the first retry is armed
     /// (`--goal-cleared-on-retry`).
     pub goal_cleared_on_retry: bool,
+    /// With `goal_api_errors`: only a new session meets them. A session Yulius resumes works, as
+    /// when the API answers again by then.
+    pub api_recovers_on_resume: bool,
+    /// A session Yulius resumes starts with the line Claude Code writes itself when it resumes
+    /// with nothing to answer, "No response requested." (`--no-response-line`).
+    pub no_response_line: bool,
+    /// The session whose goal was paused is woken once this file exists, as Claude Code wakes an
+    /// idle session when background work ends, and its turn works (`--paused-wake-file`).
+    pub paused_wake_file: Option<PathBuf>,
+    /// With `paused_wake_file`: the API refuses the woken turn again (`--paused-wake-dies`).
+    pub paused_wake_dies: bool,
+    /// With `paused_wake_file`: the session goes on with no prompt anyone sees, a hidden
+    /// continuation with no prompt hook (`--paused-wake-hidden`).
+    pub paused_wake_hidden: bool,
+    /// With `goal_api_errors`: the notice that pauses the goal is written only once this file
+    /// exists (`--pause-hold-file`).
+    pub pause_hold_file: Option<PathBuf>,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
@@ -119,6 +142,24 @@ pub struct FakeAgentOptions {
     pub answers_first_message: bool,
     /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
     pub trust_prompt: bool,
+    /// The transcript's records name the Claude Code version read from this file at each start
+    /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
+    pub cli_version_file: Option<PathBuf>,
+    /// Planning a launch fails while this file exists: the run cannot be started at all (a
+    /// harness, MCP or isolation error), after a switch's preflight passed.
+    pub fail_launch_file: Option<PathBuf>,
+    /// While this file exists the agent exits at once when it starts (`--exit-at-start-file`),
+    /// like a release that cannot start or cannot resume a session.
+    pub exit_at_start_file: Option<PathBuf>,
+    /// While this file exists the agent stays at its start without starting its session
+    /// (`--stuck-at-start-file`), like a release that opens on a dialog nobody answers.
+    pub stuck_at_start_file: Option<PathBuf>,
+    /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
+    pub turn_hold_file: Option<PathBuf>,
+    /// The agent writes a meta record, no prompt, with its version at each start, as a real
+    /// Claude Code may before any prompt when it resumes an interrupted turn
+    /// (`--resume-record`).
+    pub resume_record: bool,
 }
 
 /// See the module docs.
@@ -144,6 +185,16 @@ impl FakeAgentHarness {
 
 impl HarnessPort for FakeAgentHarness {
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
+        if self
+            .options
+            .fail_launch_file
+            .as_ref()
+            .is_some_and(|file| file.exists())
+        {
+            return Err(yulius_app::error::AppError::Conflict(
+                "the agent CLI did not start".into(),
+            ));
+        }
         let mut plan = self.inner.plan(launch)?;
         // Tests read what each launch asked for from its run directory.
         let _ = std::fs::write(
@@ -160,6 +211,7 @@ impl HarnessPort for FakeAgentHarness {
             }
             yulius_app::ports::harness::SessionMode::New { .. } => None,
         };
+        let resumed_session = resumed.is_some();
         let session = plan
             .session_id
             .clone()
@@ -197,8 +249,27 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.access_lost {
             argv.push("--access-lost".into());
         }
+        if self.options.credits_out {
+            argv.push("--credits-out".into());
+        }
+        if let Some(seconds) = self.options.credits_reset_s {
+            argv.extend(["--credits-reset-s".into(), seconds.to_string()]);
+        }
         if self.options.tui {
             argv.push("--tui".into());
+        }
+        for (flag, path) in [
+            ("--cli-version-file", &self.options.cli_version_file),
+            ("--exit-at-start-file", &self.options.exit_at_start_file),
+            ("--stuck-at-start-file", &self.options.stuck_at_start_file),
+            ("--turn-hold-file", &self.options.turn_hold_file),
+        ] {
+            if let Some(path) = path {
+                argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
+            }
+        }
+        if self.options.resume_record {
+            argv.push("--resume-record".into());
         }
         if self.options.hooks {
             argv.extend([
@@ -245,8 +316,33 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.goal_continue_dies {
             argv.push("--goal-continue-dies".into());
         }
-        if let Some(n) = self.options.goal_api_errors {
+        let api_errors = self
+            .options
+            .goal_api_errors
+            .filter(|_| !(self.options.api_recovers_on_resume && resumed_session));
+        if let Some(n) = api_errors {
             argv.extend(["--goal-api-errors".into(), n.to_string()]);
+        }
+        if self.options.no_response_line && resumed_session {
+            argv.push("--no-response-line".into());
+        }
+        if let Some(file) = &self.options.paused_wake_file {
+            argv.extend([
+                "--paused-wake-file".into(),
+                file.to_string_lossy().into_owned(),
+            ]);
+        }
+        if self.options.paused_wake_dies {
+            argv.push("--paused-wake-dies".into());
+        }
+        if self.options.paused_wake_hidden {
+            argv.push("--paused-wake-hidden".into());
+        }
+        if let Some(file) = &self.options.pause_hold_file {
+            argv.extend([
+                "--pause-hold-file".into(),
+                file.to_string_lossy().into_owned(),
+            ]);
         }
         if let Some(ms) = self.options.goal_retry_ms {
             argv.extend(["--goal-retry-ms".into(), ms.to_string()]);
@@ -419,8 +515,10 @@ pub fn limit_resume_problems(run_dir: &Path, data: &Path) -> Vec<String> {
                 dirs.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl")
                 && path.components().any(|c| c.as_os_str() == "projects")
-                && std::fs::read_to_string(&path)
-                    .is_ok_and(|text| text.contains("usage_limit_reached"))
+                && std::fs::read_to_string(&path).is_ok_and(|text| {
+                    text.contains("usage_limit_reached")
+                        || text.contains("model_requires_usage_credits")
+                })
             {
                 problems.push(format!("a limit record left in {}", path.display()));
             }

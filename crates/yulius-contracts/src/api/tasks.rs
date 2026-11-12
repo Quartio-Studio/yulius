@@ -368,6 +368,13 @@ pub struct AttemptView {
     pub exit_code: Option<i32>,
     /// Exit reason.
     pub exit_reason: Option<String>,
+    /// The model that answered in this run, as its transcript names it (absent while unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The Claude Code version this run's transcript names (SPEC-461 CCM-011; absent while
+    /// unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
 }
 
 /// A task step.
@@ -473,6 +480,28 @@ pub struct TaskDetail {
     /// Whether the task ever had a run or a provider session; until then it takes queued
     /// messages while it waits (SPEC-052 QMS-001).
     pub started: bool,
+    /// The model the task asks for (`--model`): its own, or Yulius's default when it names none
+    /// (SPEC-461 CCM-012). What answered is `metrics.models`.
+    #[serde(default)]
+    pub model: String,
+    /// Whether that is Yulius's default, the task naming none.
+    #[serde(default)]
+    pub model_default: bool,
+    /// The effort it asks for (`--effort`): its own, else the default; absent for a model that
+    /// takes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The Claude Code version of its latest session that names one (absent while unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
+    /// The newer Claude Code version its running session moves to at the end of its turn
+    /// (SPEC-461 CCM-013); absent when it runs the version new runs get, or does not run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_moves_to: Option<String>,
+    /// Running tasks are no longer moved to that version (a session could not continue on it):
+    /// this one gets it at its next start, not when its turn ends (SPEC-468 CCF-003).
+    #[serde(default)]
+    pub cli_moves_stopped: bool,
 }
 
 /// `POST /api/tasks/{tid}/queued-messages` (SPEC-052 QMS-001).

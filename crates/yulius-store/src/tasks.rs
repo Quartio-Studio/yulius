@@ -5,8 +5,8 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord, PersonPause,
-    ProviderSessionRecord, RecountOutcome, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
-    TaskTimes,
+    ProviderSessionRecord, RecountOutcome, RunFacts, SwitchDecisionRecord, TaskMode, TaskOrigin,
+    TaskRecord, TaskTimes,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -1091,6 +1091,101 @@ impl TaskStore for SqliteStore {
                 .prepare("SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE task_id = ?1")
                 .map_err(db)?;
             let rows = stmt.query_map([t], metrics_from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn set_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (a, t, v) = (
+            attempt.as_str().to_owned(),
+            task.as_str().to_owned(),
+            version.to_owned(),
+        );
+        self.call(move |c| {
+            // The run's figures may not be saved yet: the row is made for the version alone.
+            c.execute(
+                "INSERT INTO metrics (attempt_id, task_id, cli_version, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(attempt_id) DO UPDATE SET cli_version = excluded.cli_version",
+                params![a, t, v, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn assume_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (a, t, v) = (
+            attempt.as_str().to_owned(),
+            task.as_str().to_owned(),
+            version.to_owned(),
+        );
+        self.call(move |c| {
+            // One statement: the transcript's word, written at any moment, is never replaced.
+            c.execute(
+                "INSERT INTO metrics (attempt_id, task_id, cli_version, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(attempt_id) DO UPDATE SET cli_version = excluded.cli_version \
+                 WHERE metrics.cli_version IS NULL",
+                params![a, t, v, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>> {
+        let t = task.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare("SELECT attempt_id, model, cli_version FROM metrics WHERE task_id = ?1")
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([t], |r| {
+                    let attempt: String = r.get(0)?;
+                    Ok(RunFacts {
+                        attempt: parse_id("attempt id", &attempt, AttemptId::parse)?,
+                        model: r.get(1)?,
+                        cli_version: r.get(2)?,
+                    })
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn live_cli_versions(&self) -> AppResult<Vec<(TaskId, String)>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT a.task_id, m.cli_version FROM attempts a \
+                     JOIN metrics m ON m.attempt_id = a.id \
+                     WHERE a.state IN ('spawning', 'live') AND m.cli_version IS NOT NULL \
+                     ORDER BY a.started_at",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |r| {
+                    let task: String = r.get(0)?;
+                    Ok((parse_id("task id", &task, TaskId::parse)?, r.get(1)?))
+                })
+                .map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await

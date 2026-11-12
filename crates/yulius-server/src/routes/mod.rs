@@ -1,6 +1,7 @@
 //! Route tables.
 
 mod accounts;
+mod address;
 mod admin;
 mod analytics;
 mod automations;
@@ -15,8 +16,10 @@ mod guests;
 mod imports;
 mod internal;
 mod leftovers;
+mod limits;
 mod mcp;
 mod mcp_servers;
+mod migration;
 mod notes;
 mod previews;
 mod projects;
@@ -246,6 +249,23 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
+        // The instance's address: whether GitHub accepts its sign-in callback, the last move
+        // (SPEC-466).
+        .route("/api/admin/instance/address", get(address::view))
+        .route("/api/admin/instance/address/check", post(address::check))
+        // A move to another host asked from Settings → Instance (SPEC-470).
+        .route(
+            "/api/admin/instance/migration",
+            get(migration::view).post(migration::ask),
+        )
+        // The instance's resource limits (SPEC-459).
+        .route("/api/admin/limits", get(limits::view))
+        .route("/api/admin/limits/adapt", post(limits::adapt))
+        .route("/api/admin/limits/keep", post(limits::keep))
+        .route(
+            "/api/admin/limits/{key}",
+            put(limits::set).delete(limits::remove),
+        )
         // The instance Vidoc key (SPEC-195 VDK-002).
         .route(
             "/api/admin/vidoc",
@@ -257,6 +277,16 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         // The instance Vidoc switch (SPEC-356 VIO-001).
         .route("/api/admin/vidoc/enabled", put(updates::set_vidoc_enabled))
         .route("/api/admin/vidoc/test", post(updates::test_vidoc))
+        // The Claude Code sandboxes get (SPEC-461).
+        .route("/api/admin/claude-code", get(updates::claude_code))
+        .route(
+            "/api/admin/claude-code/check",
+            post(updates::check_claude_code),
+        )
+        .route(
+            "/api/admin/claude-code/channel",
+            put(updates::set_claude_channel),
+        )
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
         .route("/api/sandboxes", post(projects::create))
@@ -468,6 +498,7 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
         .route("/internal/leftovers", get(leftovers::cli_view))
         .route("/internal/leftovers/scan", post(leftovers::cli_scan))
         .route("/internal/leftovers/delete", post(leftovers::cli_delete))
+        .route("/internal/github-callback", get(address::cli_callback))
         .route("/internal/preview-tls", get(previews::tls_ask))
         .route("/browser/welcome", get(internal::browser_welcome))
         .route(

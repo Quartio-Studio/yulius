@@ -86,6 +86,12 @@ pub enum Point {
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
+    /// The transcript watcher (SPEC-453): a prompt it read passed its last-Stop check under the
+    /// turn lock; nothing of the new turn is set yet. The path is the task id.
+    UserTurnChecked,
+    /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not taken the turn lock to
+    /// remember when, or settled the turn, yet. The path is the task id.
+    StopClean,
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,
@@ -110,6 +116,45 @@ pub enum Point {
     /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
     /// attempt is not recorded yet. The path is the task id.
     AccountChosen,
+    /// `launch_attempt` (SPEC-458): the run's attempt is recorded; its host is not started or
+    /// attached yet. The path is the task id.
+    RunRecorded,
+    /// The start-up reconciliation (SPEC-458): every run on record was gone through; the sweep
+    /// of tasks without a run has not begun. The path is the data directory.
+    ReconcileSweep,
+    /// A change of a subscription's stored usage (SPEC-464: a provider's reading, a session's
+    /// reading, a limit Claude reported): the stored usage was read under the lock such changes
+    /// take; nothing is written yet. The path is the account id.
+    UsageRead,
+    /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
+    /// stored usage is not read yet. The path is the account id.
+    LimitRecord,
+    /// A subscription's usage is about to be stored (SPEC-464, #1211): its status was read, to
+    /// be stored with the usage; nothing is written yet. The path is the account id.
+    UsageStatusRead,
+    /// A subscription Claude refused for good is about to be marked as needing a new sign-in
+    /// (#1211): nothing is read or written yet. The path is the account id.
+    AccessLostRecord,
+    /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
+    /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
+    /// the task id.
+    ClaudeMoveProbed,
+    /// A turn's end decided to restart its session on a newer Claude Code (SPEC-468); the
+    /// restart is not registered or asked for yet. The path is the task id.
+    ClaudeMoveDecided,
+    /// A restart on a newer Claude Code (SPEC-461) launched the session's new run; the version
+    /// that run is taken to run until its transcript names one is not written yet. The path is
+    /// the task id.
+    ClaudeMoveRestarted,
+    /// A session's start was noticed (its SessionStart hook; SPEC-468): a restart on a newer
+    /// Claude Code that waited for it is off the breaker's watch. The path is the task id.
+    ClaudeMoveStarted,
+    /// A settled turn (SPEC-461) decided whether its idle session restarts on a newer Claude
+    /// Code, and made that restart if so. The path is the task id.
+    ClaudeMoveSettled,
+    /// The time a session restarted on a newer Claude Code had to start there passed (SPEC-461),
+    /// and whether that version gets other sessions was decided. The path is the task id.
+    ClaudeMoveStartJudged,
 }
 
 #[cfg(feature = "test-support")]

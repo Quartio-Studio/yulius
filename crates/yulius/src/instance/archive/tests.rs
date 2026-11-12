@@ -249,3 +249,71 @@ fn an_entry_the_reader_would_refuse_is_refused_when_planned() {
     e.xattrs = vec![(b"user.big".to_vec(), vec![b'x'; (MAX_PAX + 1) as usize])];
     assert!(check_entry(&e).is_err());
 }
+
+#[test]
+fn the_writer_and_the_reader_name_the_same_digest_at_every_entry() -> TestResult {
+    let entries = sample();
+    let mut out = Vec::new();
+    let mut w = Writer::new(&mut out);
+    let mut sums = Vec::new();
+    for e in &entries {
+        sums.push(w.sum());
+        let data = content(e);
+        w.entry(e, Some(&mut data.as_slice()), |_| {})?;
+    }
+    sums.push(w.sum());
+    w.finish()?;
+    assert!(sums.windows(2).all(|pair| pair[0] != pair[1]));
+
+    let mut r = Reader::new(out.as_slice());
+    let mut at = 0;
+    loop {
+        // Where the writer stood before its next entry, whatever was read of the last one.
+        r.end_entry()?;
+        assert_eq!(r.sum(), sums[at], "before entry {at}");
+        if let Item::End = r.next_item()? {
+            break;
+        }
+        at += 1;
+    }
+    assert_eq!(at, entries.len());
+    Ok(())
+}
+
+#[test]
+fn a_file_that_ends_early_in_a_live_read_is_padded_to_its_header() -> TestResult {
+    let e = entry(b"data/f", Kind::File { size: 700 });
+    let mut out = Vec::new();
+    let mut w = Writer::new(&mut out);
+    // It shrank to 300 bytes after its header was written.
+    assert!(w.entry_torn(&e, &mut [7u8; 300].as_slice(), |_| {})?);
+    // It grew: nothing beyond its header's size is sent.
+    assert!(!w.entry_torn(&e, &mut [9u8; 900].as_slice(), |_| {})?);
+    let total = w.finish()?;
+    assert_eq!(total, 2 * e.archived_len() + ending_len());
+
+    let mut r = Reader::new(out.as_slice());
+    let mut read = |fill: u8, real: usize| -> io::Result<()> {
+        let Item::Entry(back) = r.next_item()? else {
+            return Err(io::Error::other("no entry"));
+        };
+        assert_eq!(back, e);
+        let mut data = Vec::new();
+        r.data_reader().read_to_end(&mut data)?;
+        assert_eq!(data.len(), 700);
+        assert!(data[..real].iter().all(|&b| b == fill));
+        assert!(data[real..].iter().all(|&b| b == 0));
+        Ok(())
+    };
+    read(7, 300)?;
+    read(9, 700)?;
+    assert!(matches!(r.next_item()?, Item::End));
+    Ok(())
+}
+
+#[test]
+fn a_path_digest_is_the_first_half_of_its_sha256() {
+    let digest = path_digest(b"data/a");
+    assert_eq!(digest[..], Sha256::digest(b"data/a")[..16]);
+    assert_ne!(digest, path_digest(b"data/b"));
+}

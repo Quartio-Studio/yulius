@@ -12,14 +12,22 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
-// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
+// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), claude_hold_read=1 (the Claude Code
+// card's reads are answered late, once `__yuliusMock.claude.releaseRead()` is called), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
 // guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
+// move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
+// no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
+// preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
+// here by a move | a move run on the host is recorded | a move whose helper stopped reporting | the helper never
+// takes a request | the helper refuses it),
+// movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
+import { plausibleEmail } from './format.js';
 import { parsePrompt } from './promptparts.js';
 import { apply as applyOp, transform as transformOp, isNoop as noopOp, replacement } from './livetext.js';
 
@@ -170,6 +178,14 @@ function seed(params) {
     // `update=1` there is none until the update's), `docker=legacy` (sandboxes not isolated);
     // `smoke=fail` (the smoke's pull fails).
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
+    // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
+    // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
+    // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
+    // model, and running tasks are no longer moved to it), `claude=failed` (the last check
+    // failed), `claude=unread` (the binary could not be read for its models), `claude=unmanaged`
+    // (sandboxes are not isolated). `version` is what new runs get, `previous` what studio's #12
+    // and #10 still run.
+    claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
     // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
@@ -182,6 +198,19 @@ function seed(params) {
     // sessionStorage, so a reload's first read lists them as the server still would.
     connections: savedConnections(),
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
+    // Resource limits (SPEC-459): `limits=moved` is a 64-CPU host whose unit still pins two
+    // numbers sized for the 12-CPU one it came from. A test sets `failAfterSave` for a save
+    // that is applied and answers 500 (its audit entry failed).
+    // The instance's address (SPEC-466): `callback=missing|unknown` is GitHub's answer about the
+    // sign-in callback (a test changes `address.state`), `callback=fixed` a callback added on
+    // GitHub meanwhile (missing in the first setup status, whose read makes the server ask again:
+    // registered from then on), `moved=1` a move's report; `answered` counts the answers given,
+    // past a hold.
+    address: { state: params.get('callback') === 'fixed' ? 'missing' : params.get('callback') || 'registered', fixedOnRead: params.get('callback') === 'fixed', moved: params.get('moved') === '1', answered: 0 },
+    limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
+    // The move to another host (SPEC-470): `move=…` (see the header). A test changes `stepMs` (the
+    // pace of the helper and the command) and `ackMs` (when an untaken request is "unanswered").
+    migration: migrationState(params.get('move') || ''),
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
@@ -190,12 +219,14 @@ function seed(params) {
     // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
     failedReads: 0,
-    holdPath: params.get('hold') || null,
-    holdPostPath: params.get('holdpost') || null,
-    // failpost=<path> does the same to POST requests, to show how an action says it failed;
-    // `failedPosts` counts them.
+    // failpost=<path> answers 500 to POST requests of that path, to show how an action says it
+    // failed; `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
     failedPosts: 0,
+    // hold=<path> keeps GET requests of that path waiting until `release()`, and holdpost=<path>
+    // its POST, PATCH and PUT requests.
+    holdPath: params.get('hold') || null,
+    holdPostPath: params.get('holdpost') || null,
 
     nextId: 100,
     // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
@@ -292,7 +323,7 @@ function seed(params) {
     { id: 'acc_c2', provider: 'anthropic', email: 'team@example.com', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', email: 'ops@example.com', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'Your organization has disabled Claude subscription access for Claude Code', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', email: 'pawel@example.com', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, weekly_fable: { used_percent: 100.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', email: null, label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   seededDb = db;
@@ -360,6 +391,9 @@ function seed(params) {
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
   // `hold=frames` keeps the sandbox Chrome's picture back instead.
   if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  // `claude_hold_read=1`: the Claude Code card's reads are answered late, the page's first included
+  // (see the route).
+  if (params.get('claude_hold_read') === '1') db.claude.holdRead = new Promise((resolve) => { db.claude.releaseRead = resolve; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -605,15 +639,22 @@ const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].
 /** Whether the mock's person administers the instance: subscription emails are theirs (UI-022). */
 const isAdmin = (db) => Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
 
+/** The Claude Code a mock task's session runs: studio's #12 and #10 started before the last
+ * release (SPEC-461 CCM-013), every other on the version new runs get. */
+const taskCli = (db, task) => (CLI_BEHIND.has(task.id) ? db.claude.previous : db.claude.version);
+const CLI_BEHIND = new Set(['tsk_studio_12', 'tsk_studio_10']);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
   const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
+  const cli = ran ? taskCli(db, task) : null;
+  const answered = task.number === 6 ? null : task.model;
   return {
     ...summary(task),
     ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal', ...(answered ? { model: answered } : {}), ...(cli ? { cli_version: cli } : {}) }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -624,6 +665,13 @@ function detail(db, task) {
     switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
     request: task.prompt ?? task.title,
     started: hasStarted(task),
+    // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
+    model: task.model || 'claude-fable-5-2',
+    model_default: !task.model || task.effort === 'default',
+    ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
+    ...(cli ? { cli_version: cli } : {}),
+    ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
+    cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
   };
 }
 
@@ -800,7 +848,11 @@ function checkNewPassword(body) {
   if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
   if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
 }
-route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired, github_configured: db.me.instance.github_configured }));
+route('GET', '/api/setup/status', ({ db }) => {
+  const missing = db.me.instance.github_configured && db.address.state === 'missing';
+  if (missing && db.address.fixedOnRead) db.address.state = 'registered';
+  return { setup_required: db.setupRequired, github_configured: db.me.instance.github_configured, github_callback_missing: missing };
+});
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
@@ -830,12 +882,14 @@ const needClaude = (db) => {
 route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
-// page that asked can be left before it answers (#581).
+// page that asked can be left before it answers (#581). `recoveryAnswered` counts the answers: a
+// read asked earlier (`asked`) and still on its way would wait at a hold set now.
 route('GET', '/api/auth/recovery', async ({ db }) => {
   if (db.holdRecovery) {
     db.recoveryWaiting = (db.recoveryWaiting || 0) + 1;
     try { await db.holdRecovery; } finally { db.recoveryWaiting -= 1; }
   }
+  db.recoveryAnswered = (db.recoveryAnswered || 0) + 1;
   return clone(db.recovery);
 });
 route('POST', '/api/auth/recover', ({ db, body }) => {
@@ -3334,6 +3388,8 @@ route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
 
 // Project variables (SPEC-275): non-secret values in plain.
 const RESERVED_VARIABLE = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|LANG|LANGUAGE|PWD|OLDPWD|TMPDIR|TMP|TEMP|PORT|HOSTNAME|EDITOR|VISUAL|PAGER|IFS|PS1|PS2|PROMPT_COMMAND|ENV|BASH_ENV|CDPATH|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|DISABLE_AUTOUPDATER)$|^(YULIUS_|CLAUDE_|ANTHROPIC_|GIT_|SSL_|NODE_|NPM_CONFIG_|LD_|DYLD_|XDG_|LC_|BASH_|ZSH_)/;
+// A person's own Anthropic keys stay allowed under the reserved ANTHROPIC_ (ADR-0292).
+const reservedVariable = (name) => RESERVED_VARIABLE.test(name) && !(/^ANTHROPIC_(API_KEY|AUTH_TOKEN)_[A-Z0-9_]+$/.test(name) && !name.endsWith('_FILE'));
 const variablesOf = (db, sandbox) => {
   // sandbox-3 (read access) starts with one, for the reader's view.
   db.variables = db.variables || { sb_three: [{ name: 'APP_REGION', value: 'eu-west-1', description: 'Where the app runs', updated_by: 'anna-q', updated_at: new Date().toISOString() }] };
@@ -3355,7 +3411,7 @@ route('PUT', `/api/sandboxes/${ID}/variables`, ({ db, p, body }) => {
   if (inputs.length > 200) fail(422, 'invalid', 'at most 200 variables at once');
   const seen = new Set();
   for (const input of inputs) {
-    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || RESERVED_VARIABLE.test(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || reservedVariable(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
     if (seen.has(input.name)) fail(422, 'invalid', `${input.name} is given twice`);
     seen.add(input.name);
     if (new TextEncoder().encode(input.value || '').length > 4096) fail(422, 'invalid', `${input.name}: the value is longer than 4096 bytes`);
@@ -3810,13 +3866,23 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  // Only the name: the pool has no priorities or switches (F 2026-10-10).
-  if (Object.keys(body).some((key) => key !== 'label')) fail(422, 'invalid', 'unknown field; only `label` can change');
-  if (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
-  // Tasks name their subscription by label here (the server joins by id): a rename follows.
-  const previous = account.label;
-  account.label = body.label.trim();
-  for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
+  // The name, the email an administrator types, or both (SPEC-463 EML-003): the pool has no
+  // priorities or switches (F 2026-10-10). Both are checked before either is written.
+  if (Object.keys(body).some((key) => key !== 'label' && key !== 'email')) fail(422, 'invalid', 'unknown field; only `label` and `email` can change');
+  const given = (key) => body[key] !== undefined && body[key] !== null;
+  if (!given('label') && !given('email')) fail(422, 'invalid', 'nothing to change: give `label`, `email` or both');
+  if (given('label') && (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80))) fail(422, 'invalid', 'label must be 1–80 characters');
+  // An address by the server's rule; an empty email removes it.
+  const email = given('email') && typeof body.email === 'string' ? body.email.trim() : null;
+  if (given('email') && (email === null || (email !== '' && !plausibleEmail(email)))) fail(422, 'invalid', 'email must be an address like name@example.com, at most 254 characters (empty removes it)');
+  if (given('label')) {
+    // Tasks name their subscription by label here (the server joins by id): a rename follows.
+    const previous = account.label;
+    account.label = body.label.trim();
+    for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
+  }
+  // A typed email is marked, so nothing says Claude confirmed it (EML-006).
+  if (given('email')) Object.assign(account, { email: email || null, email_typed: Boolean(email) });
   emit(db, { type: 'account.updated', account });
   return account;
 });
@@ -4431,6 +4497,115 @@ function sandboxDockerView(db) {
   return { ...base, ok: true, isolated: true, host_dockerd: true, base: { id: 'base-9', dockerd: true }, host_check: hostCheck, detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use; `sudo yulius doctor --docker-smoke` proves it on this host' };
 }
 
+// The Claude Code sandboxes run (SPEC-461 CCM-008..CCM-010).
+const CLAUDE_DEFAULT_MODEL = 'claude-fable-5-2';
+const CLAUDE_HOST_FIX = 'Yulius installs a release that knows it at its next check (every hour, or "Check now" in Settings, Instance, Claude Code); to fix it at once, install one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.';
+
+function claudeState(mode) {
+  const base = { mode, channel: 'latest', chosen: null, configChannel: 'latest', version: '2.1.322', previous: '2.1.311', source: 'yulius', host: '2.1.311', latest: '2.1.322', stable: '2.1.311', checkedAt: Date.now() - 12 * MIN, checking: false, result: 'installed', unknown: [], refused: [], error: null, movesStopped: null };
+  if (mode === 'incident') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: null, checkedAt: null, latest: null, stable: null, unknown: [CLAUDE_DEFAULT_MODEL] };
+  if (mode === 'ahead') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: 'refused', unknown: [CLAUDE_DEFAULT_MODEL], refused: [{ version: '2.1.322', missing: [CLAUDE_DEFAULT_MODEL] }] };
+  if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: the session of task #9 ended as it restarted on it. Sessions that start or continue still get it; choose Off to run the host’s Claude Code instead.' };
+  if (mode === 'failed') return { ...base, result: 'failed', error: 'registry.npmjs.org is unreachable' };
+  if (mode === 'unread') return { ...base, result: 'up_to_date', unread: true };
+  return base;
+}
+
+function claudeView(db) {
+  const c = db.claude;
+  if (c.mode === 'unmanaged') {
+    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, models_unread: null, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
+  }
+  const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
+  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
+  const resultText = {
+    installed: `Installed ${c.version}: new runs use it.`,
+    up_to_date: `Up to date: runs get ${c.version}.`,
+    refused: `Refused, nothing was installed: ${c.refused.map((r) => gap(r.version, r.missing)).join('; ')}.`,
+    failed: `The check failed: ${c.error}.`,
+  }[c.result] || null;
+  const newestRefused = c.refused.length && c.refused[c.refused.length - 1].version === c.latest ? c.latest : null;
+  const off = c.channel === 'off';
+  return {
+    managed: true, unmanaged: null,
+    channel: c.channel, channel_source: c.chosen ? 'settings' : 'config', config_channel: c.configChannel,
+    channel_set_by: c.chosen ? c.chosen.by : null, channel_set_at: c.chosen ? c.chosen.at : null,
+    version: off ? c.host : c.version, source: off ? 'host' : c.source, host_version: c.host,
+    latest: c.latest, stable: c.stable, checked_at: c.checkedAt ? new Date(c.checkedAt).toISOString() : null,
+    checking: c.checking, result: off ? null : c.result, result_text: off ? null : resultText,
+    default_model: CLAUDE_DEFAULT_MODEL, models_read: !c.unread, unknown_models: c.unknown,
+    models_unread: c.unread ? `The binary of Claude Code ${c.version} could not be read for the models it knows, so whether it knows ${CLAUDE_DEFAULT_MODEL}, Yulius's default model, is not known. It is read again whenever this page is opened; \`yulius doctor --contained\` names the install.` : null,
+    problem: lacksDefault ? `Claude Code ${c.version} does not know ${CLAUDE_DEFAULT_MODEL}, Yulius's default model: tasks still ask for it by id, but what a session picks by itself (its model picker, a model alias, its subagents) is an older model.` : null,
+    fix: !lacksDefault ? null
+      : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, does not): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`
+        : off ? 'Claude Code updates are off: choose Latest in Settings, Instance, Claude Code, or install a newer one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.'
+          : CLAUDE_HOST_FIX,
+    refused: c.result === 'refused' ? c.refused : [],
+    // Running tasks whose session started before the release (CCM-013).
+    behind: db.tasks.filter((t) => CLI_BEHIND.has(t.id) && t.status === 'running' && c.previous !== c.version)
+      .map((t) => ({ sandbox: t.sandbox_id.slice(3), number: t.number, title: t.title, version: c.previous })),
+    moves_stopped: c.movesStopped,
+  };
+}
+
+/** A mock check takes two seconds: the incident's ends with 2.1.322 installed, any other up to date. */
+function claudeCheck(db) {
+  const c = db.claude;
+  if (c.checking || c.channel === 'off') return;
+  c.checking = true;
+  later(() => {
+    c.checking = false;
+    c.checkedAt = Date.now();
+    c.latest = c.latest || '2.1.322';
+    c.stable = c.stable || '2.1.311';
+    if (c.mode === 'ahead') return;
+    if (c.unknown.includes(CLAUDE_DEFAULT_MODEL)) {
+      Object.assign(c, { previous: c.version, version: '2.1.322', source: 'yulius', unknown: [], refused: [], result: 'installed', error: null });
+    } else {
+      Object.assign(c, { result: 'up_to_date', error: null });
+    }
+  }, 2000);
+}
+
+route('GET', '/api/admin/claude-code', async ({ db }) => {
+  superadminOnly(db);
+  const view = claudeView(db);
+  // A test can keep a read's answer back (`claude.holdRead = promise`, or `claude_hold_read=1`
+  // with `claude.releaseRead()`): the view is read when it is asked and answered when the promise
+  // resolves, as an answer that is slow on the wire; when the promise is rejected the read fails
+  // (500). `readsHeld` counts the answers kept back now, and `lateAnswers` lists what each late
+  // answer said (its channel, and whether a check ran), so a test sees that it is the older word.
+  const hold = db.claude.holdRead;
+  if (hold) {
+    db.claude.readsHeld = (db.claude.readsHeld || 0) + 1;
+    let lost = false;
+    try { await hold; } catch { lost = true; } finally { db.claude.readsHeld -= 1; }
+    if (lost) fail(500, 'internal', 'the mock failed this read');
+    db.claude.lateAnswers = [...(db.claude.lateAnswers || []), `${view.channel}${view.checking ? ', checking' : ''}`];
+  }
+  return view;
+});
+route('POST', '/api/admin/claude-code/check', ({ db }) => {
+  superadminOnly(db);
+  if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
+  claudeCheck(db);
+  return json(202, claudeView(db));
+});
+route('PUT', '/api/admin/claude-code/channel', ({ db, body }) => {
+  superadminOnly(db);
+  if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
+  // `claude_channel_fail=1`: the change is refused, until a test clears `claude.channelFails`.
+  if (db.claude.channelFails) fail(500, 'internal', 'the mock refused this change');
+  const channel = body ? body.channel : null;
+  if (channel !== null && !['latest', 'stable', 'off'].includes(channel)) fail(422, 'invalid', 'the channel must be latest, stable or off');
+  const c = db.claude;
+  c.channel = channel || c.configChannel;
+  c.chosen = channel ? { by: db.me.user.login, at: new Date().toISOString() } : null;
+  // A channel change is checked at once.
+  claudeCheck(db);
+  return claudeView(db);
+});
+
 route('GET', '/api/admin/sandbox-docker', ({ db }) => { superadminOnly(db); return sandboxDockerView(db); });
 route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {
   superadminOnly(db);
@@ -4530,6 +4705,425 @@ route('POST', '/api/admin/leftovers/delete', ({ db, body }) => {
   return leftoversView(db);
 });
 
+// Resource limits (SPEC-459): the server's formulas on this mock's host.
+const LIMITS_HOST = { cpus: 64, memory_bytes: 755 * 1024 ** 3, disk_bytes: 3500e9 };
+const LIMITS_OLD_HOST = { cpus: 12, memory_bytes: 47 * 1024 ** 3, disk_bytes: 387e9 };
+const LIMITS = [
+  { key: 'max_sessions', label: 'Live sessions', env: 'YULIUS_MAX_SESSIONS', suffix: '', min: 1, max: 1024, formula: 'half the CPUs plus 2, at most one per 2 GiB of memory, at least 2', sized: (c, m) => Math.max(2, Math.min(Math.floor(c / 2) + 2, Math.floor(m / 2))) },
+  { key: 'ci_max_jobs', label: 'CI jobs at once', env: 'YULIUS_CI_MAX_JOBS', suffix: '', min: 1, max: 64, formula: 'a sixth of the CPUs plus 2, at most 64', sized: (c) => Math.min(64, Math.floor(c / 6) + 2) },
+  { key: 'ci_lanes', label: 'CI runs at once per sandbox', env: 'YULIUS_CI_LANES', suffix: '', min: 1, max: 8, formula: 'one per 32 CPUs plus 2, at most 8', sized: (c) => Math.min(8, Math.floor(c / 32) + 2) },
+  { key: 'sandbox_memory_gb', label: 'Sandbox memory', env: 'YULIUS_SANDBOX_MEMORY_GB', suffix: 'GiB', min: 1, max: 755, restart: true, formula: 'the host\u2019s memory minus an eighth (at least 4 GiB kept back), at least 2 GiB', sized: (c, m) => Math.max(2, Math.floor(m - Math.max(m / 8, 4))) },
+  { key: 'sandbox_disk_gb', label: 'Sandbox disk quota', env: 'YULIUS_SANDBOX_DISK_GB', suffix: 'GB', min: 0, max: 1000000, formula: 'a quarter of the data disk, at least 100 GB, at most half the disk', sized: (c, m, d) => Math.max(1, Math.min(Math.max(Math.floor(d / 4), 100), Math.floor(d / 2))) },
+  { key: 'cd_run_disk_gb', label: 'CD run disk', env: 'YULIUS_CD_RUN_DISK_GB', suffix: 'GB', min: 1, max: 10000, formula: 'a twentieth of the data disk, at least 20 GB, at most half the disk', sized: (c, m, d) => Math.max(1, Math.min(Math.max(Math.floor(d / 20), 20), Math.floor(d / 2))) },
+];
+function limitView(db, l) {
+  const state = db.limits;
+  const hostSized = l.sized(LIMITS_HOST.cpus, LIMITS_HOST.memory_bytes / 1024 ** 3, LIMITS_HOST.disk_bytes / 1e9);
+  const saved = state.settings[l.key] || null;
+  const unit = state.unit[l.key] ?? null;
+  const pinned = saved ? saved.value : unit;
+  const source = saved && saved.value !== null ? 'settings' : !saved && unit !== null ? 'unit' : 'default';
+  const value = source === 'default' ? hostSized : pinned;
+  // A unit value was recorded on the old host until it is kept; a setting is saved on this one.
+  const configuredOn = source === 'unit' ? (state.kept ? LIMITS_HOST : LIMITS_OLD_HOST) : source === 'settings' ? LIMITS_HOST : null;
+  return {
+    key: l.key, label: l.label, env: l.env, suffix: l.suffix, value, source, host_sized: hostSized, formula: l.formula, unit_value: unit,
+    setting: saved ? { value: saved.value, set_by: saved.by, set_at: saved.at } : null,
+    configured_on: configuredOn, stale: configuredOn === LIMITS_OLD_HOST && value !== hostSized,
+    min: l.min, max: l.max, live: !l.restart, restart_needed: Boolean(l.restart) && value !== state.runningMemory,
+  };
+}
+const limitsView = (db) => ({ host: clone(LIMITS_HOST), limits: LIMITS.map((l) => limitView(db, l)) });
+function limitOf(key) {
+  const l = LIMITS.find((x) => x.key === key);
+  if (!l) fail(404, 'not_found', 'no such limit');
+  return l;
+}
+// The instance's address (SPEC-466 MVC-010): GitHub's answer about the sign-in callback, what to
+// register in the App, and the last move.
+const addressView = (db) => ({
+  public_url: ORIGIN,
+  github: db.me.instance.github_configured ? {
+    state: db.address.state,
+    reason: db.address.state === 'unknown' ? 'GitHub: timed out' : null,
+    callback_url: `${ORIGIN}/api/auth/github/callback`,
+    homepage_url: ORIGIN,
+    settings_url: 'https://github.com/organizations/Quartio-Studio/settings/apps/yulius-quartio-studio',
+    checked_at: new Date().toISOString(),
+  } : null,
+  moved: db.address.moved ? { from: 'https://old.yulius.example', to: ORIGIN, at: '2026-11-11T10:04:00Z', queued: 7, left: 2, failed: 1 } : null,
+});
+route('GET', '/api/admin/instance/address', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
+route('POST', '/api/admin/instance/address/check', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
+
+// The move to another host (SPEC-470 MVB-020, MVB-021): the root helper and its command are played
+// here. A request is taken after half a step, a checklist grows a line every half step, and a
+// move freezes the mock at its cutover (nothing answers, as `goOffline`) until the page has
+// asked twice in vain; then the new instance answers at this address, or (`move=redirect`) this
+// address redirects, or (`move=rollback`) the old instance answers again.
+const MOVE_API = '/api/admin/instance/migration';
+const MOVE_ID = '7c1e09ab';
+const MOVE_KEY = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9mVGhlTW9ja0tleUZvclRoZU1vdmVPbmx5 yulius-migrate-${MOVE_ID}`;
+const MOVE_ADDRESS = '185.189.47.160';
+const moveLine = (name, outcome, detail) => ({ name, outcome, detail });
+
+function migrationState(mode) {
+  return {
+    mode, helper: mode !== 'nohelper', stepMs: 500, ackMs: 20000, plans: 0, serial: 0,
+    request: null,
+    // `lost`: a move whose helper was killed while it prepared the new host.
+    run: mode === 'lost' ? {
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
+    } : null,
+    moving: mode === 'cli' || mode === 'lost' ? {
+      id: MOVE_ID, target: 'root@new.yulius.example', phase: 'Prepare', public_key: null, new_url: 'https://new.yulius.example',
+      updated_at: iso(4 * MIN), by_command: mode === 'cli',
+      lines: [moveLine('old host', 'ok', 'ubuntu 24.04, x86_64, 12 CPUs, 47.0 GiB of memory'), moveLine('packages', 'changed', 'installed 43 packages of the old host')],
+    } : null,
+    arrived: mode === 'arrived' ? {
+      id: MOVE_ID, target: `root@${MOVE_ADDRESS}`, from: 'https://old.yulius.example', to: ORIGIN, finished_at: iso(2 * HOUR),
+      lines: movePlanLines({ target: `root@${MOVE_ADDRESS}`, public_url: ORIGIN, data_disks: [] }).concat(moveFinishLines(ORIGIN)),
+    } : null,
+    frozen: false, redirects: false, missed: 0,
+    // What the page has read of a running command, by phase: a move goes on to its freeze only
+    // once its Prepare phase was read, so a test sees it whatever the pace.
+    seen: {},
+    // `holdReads = true`: each read answers what it saw when it arrived, once `releaseReads()`
+    // lets it go (`holds` are those waiting).
+    holdReads: false, holds: [],
+    // `holdAt = 'Prepare' | 'Copy' | 'frozen'`: a move stays in its preparation, in its copy
+    // (the instance answers), or frozen, for as long as a test looks at that state; any other
+    // value lets it go on.
+    holdAt: null,
+    // `probeHangs = true`: while frozen, a request that follows no redirect is never answered.
+    probeHangs: false,
+  };
+}
+
+/** The plan's checklist for `values`. */
+function movePlanLines(values) {
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const host = url.replace('https://', '');
+  const disks = values.data_disks || [];
+  return [
+    moveLine('old host', 'ok', 'ubuntu 24.04, x86_64, 12 CPUs, 47.0 GiB of memory; yulius.service runs as yulius with 275.8 GiB used where its data is'),
+    moveLine('one-time key', 'ok', `signs in to ${values.target} (its host key: SHA256:abcDEF123 (ED25519))`),
+    moveLine('yulius build', 'changed', 'copied this build to /var/lib/yulius-migrate/yulius'),
+    moveLine('new host', 'ok', `ubuntu 26.04, x86_64, systemd 259, 64 CPUs, 755.0 GiB of memory, at ${MOVE_ADDRESS}`),
+    moveLine('disk space', 'ok', disks.length
+      ? `will make ${disks.length === 2 ? 'a mirror' : 'ext4'} of ${disks.join(' and ')} for the data directory (275.8 GiB to copy)`
+      : '1.8 TiB free where the data directory goes, at most 275.8 GiB to copy'),
+    moveLine('link', 'ok', '112.0 MiB/s to the new host'),
+    moveLine('downtime', 'ok', 'the instance runs during the copy (about 42 min for up to 275.8 GiB at that rate); then it is frozen for about 9 min: up to 6388083 entries are counted four times (about 55000 a second here, twice on each host), what changed during the last pass is sent, and the new instance starts. It is measured again before the freeze'),
+    moveLine('public URL', 'manual', `${url} (was ${ORIGIN}): ${host} leads to nowhere, not to ${MOVE_ADDRESS}. Change its DNS record when the checklist says the new instance runs (lower its TTL now)`),
+    moveLine('GitHub App', 'manual', `GitHub does not accept the new sign-in address yet: open https://github.com/organizations/Quartio-Studio/settings/apps/yulius-quartio-studio and add the callback URL ${url}/api/auth/github/callback and the homepage ${url}`),
+    moveLine('packages', 'ok', '43 packages of the old host are installed while preparing'),
+    moveLine('settings', 'ok', 'carries the unit with 2 drop-ins and 3 key, environment and other files'),
+    moveLine('update helper', 'ok', 'its units and the installed commit are carried'),
+    moveLine('move helper', 'ok', 'its units are carried, and its path unit is enabled on the new host as it is here'),
+    moveLine('reverse proxy', 'ok', `Caddy’s configuration is carried for ${host}`),
+    moveLine('firewall', 'ok', 'ufw’s rules are carried and enabled at the end'),
+  ];
+}
+
+const MOVE_PREPARE = [
+  moveLine('packages', 'changed', 'installed 43 packages of the old host'),
+  moveLine('software', 'changed', 'copied 1.2 GiB outside apt'),
+  moveLine('unit', 'changed', 'wrote the unit, 2 drop-ins and the environment file'),
+  moveLine('reverse proxy', 'changed', 'Caddy serves the new host name'),
+];
+// The warm copy (SPEC-465): passes while the instance runs, then the estimate it measured.
+const MOVE_COPY = [
+  moveLine('copy', 'changed', 'pass 1: 6388083 of 6388083 entries sent (275.8 GiB) in 42 min while the instance runs; the new host: 6388083 changed entries installed; checksum as announced'),
+  moveLine('copy', 'changed', 'pass 2: 1204 of 6388083 entries sent (310.4 MiB) in 2 min while the instance runs; the new host: 1204 changed entries installed; checksum as announced'),
+  moveLine('downtime', 'ok', 'about 9 min frozen: the entries are counted four times (116 s each, twice on each host), what changes meanwhile takes about 6 s to send, the new host’s sync 3 s, and the start about 20 s'),
+];
+const MOVE_CUTOVER = [
+  moveLine('old instance', 'changed', 'yulius.service is frozen: every Yulius process is paused until the new one runs'),
+  moveLine('copy', 'changed', 'the frozen pass: 37 of 6388083 entries sent (2.1 MiB); the new host: 37 changed entries installed, 0 removed that the old host no longer holds; checksum and length as announced'),
+  moveLine('copy proven', 'ok', '6388083 entries and 275.8 GiB in 14 folders, the same on both hosts'),
+  moveLine('new instance', 'changed', 'yulius.service runs build 9c1e7d3'),
+  moveLine('old instance', 'changed', 'yulius.service stays frozen and is disabled: it never runs beside the new one'),
+];
+function moveFinishLines(url) {
+  return [
+    moveLine('HTTPS', 'ok', `${url} answers from the new host`),
+    moveLine('tasks', 'ok', '7 tasks that were live are back in the queue'),
+    moveLine('one-time key', 'changed', 'removed from the new host’s authorized_keys'),
+    moveLine('one-time key (old host)', 'changed', 'deleted'),
+    moveLine('remote clients', 'manual', `laptops point at the old URL: \`yulius remote\` follows the old URL’s redirect by itself while the old host answers; in Claude Code \`claude mcp remove yulius\`, then \`claude mcp add --transport http yulius ${url}/mcp\``),
+    moveLine('old host', 'manual', 'it keeps a frozen copy with master.key and every secret. `sudo yulius instance migrate --abort` here goes back, once the new instance is stopped on the new host'),
+  ];
+}
+
+function moveCan(m) {
+  const waiting = Boolean(m.request && m.request.state === 'requested');
+  const running = Boolean(m.run && m.run.state === 'running');
+  const lines = m.moving ? m.moving.lines : [];
+  const ended = m.run && m.run.state === 'ended';
+  const planned = ended && m.run.action === 'plan' && m.run.exit_code === 0 && m.moving && !m.moving.public_key && !lines.some((l) => l.outcome === 'failed');
+  const lost = Boolean(m.run && m.run.state === 'lost');
+  const stopped = (ended && m.run.action === 'move' && m.run.exit_code !== 0) || (lost && m.run.action === 'move');
+  const recorded = running ? m.run.action !== 'abort'
+    : Boolean(lost || (m.moving && !['done', 'aborted'].includes(m.moving.phase)) || (ended && m.run.exit_code !== 0));
+  return {
+    plan: m.helper && !waiting && !running,
+    move: m.helper && !waiting && !running && Boolean(planned || stopped) && !(m.moving && m.moving.by_command),
+    abort: m.helper && !waiting && !(running && m.run.action === 'abort') && recorded,
+  };
+}
+
+function migrationView(db) {
+  const m = db.migration;
+  // A request nobody took for long enough is said to be unanswered.
+  if (m.request && m.request.state === 'requested' && Date.now() - m.request.at > m.ackMs) m.request.state = 'unanswered';
+  const request = m.request ? { id: m.request.id, action: m.request.action, state: m.request.state, requested_at: new Date(m.request.at).toISOString() } : null;
+  if (m.run && m.run.state === 'running' && m.moving) m.seen[m.moving.phase] = (m.seen[m.moving.phase] || 0) + 1;
+  return clone({ public_url: ORIGIN, helper_installed: m.helper, update_running: false, request, run: m.run, move: m.moving, arrived: m.arrived, can: moveCan(m) });
+}
+
+/** Plays the helper: takes the request, then walks `steps` (functions) half a step apart while its run stands. */
+function playMove(db, request, values, steps) {
+  const m = db.migration;
+  const live = () => m.run && m.run.id === request.id && m.run.state === 'running';
+  later(() => {
+    if (m.request !== request || m.mode === 'unanswered') return;
+    m.request = null;
+    const now = new Date().toISOString();
+    m.run = { id: request.id, action: request.action, ...values, state: 'running', exit_code: null, error: null, started_at: now, updated_at: now, ended_at: null };
+    if (m.mode === 'refused') {
+      // A checklist that is there stays: it is an earlier run's.
+      if (m.moving) m.moving = { ...m.moving, earlier: true };
+      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
+      return;
+    }
+    // What an earlier run recorded is not this run's: it is not shown until the command wrote
+    // its own checklist, and it is still there when the command refuses (it changes nothing).
+    const recorded = m.moving;
+    // An abort names no host: its checklist is of the move that was recorded.
+    if (recorded && recorded.target) m.lastTarget = recorded.target;
+    m.moving = null;
+    m.seen = {};
+    if (recorded && request.action !== 'abort' && values.target !== recorded.target && !['Plan', 'done', 'aborted'].includes(recorded.phase)) {
+      later(() => {
+        if (!live()) return;
+        const at = new Date().toISOString();
+        Object.assign(m.run, { state: 'ended', exit_code: 2, error: `a move to ${recorded.target} is recorded here: finish it with the same command`, updated_at: at, ended_at: at });
+        m.moving = { ...recorded, earlier: true };
+      }, m.stepMs / 2);
+      return;
+    }
+    const next = (index) => {
+      if (!live()) return;
+      if (index >= steps.length) return;
+      const wait = steps[index]();
+      // A step may ask to be tried again (the freeze waits for the page).
+      later(() => next(wait === 'again' ? index : index + 1), m.stepMs / 2);
+    };
+    later(() => next(0), m.stepMs / 2);
+  }, m.stepMs / 2);
+}
+
+function moveSay(db, phase, line) {
+  const m = db.migration;
+  const target = m.run.target || (m.moving && m.moving.target) || m.lastTarget || '';
+  if (!m.moving) m.moving = { id: MOVE_ID, target, phase, lines: [], public_key: null, new_url: null, updated_at: new Date().toISOString(), by_command: false, earlier: false };
+  m.moving.phase = phase;
+  if (line) m.moving.lines.push(line);
+  m.moving.updated_at = new Date().toISOString();
+  m.run.updated_at = m.moving.updated_at;
+}
+
+function moveEnd(db, exitCode, phase) {
+  const m = db.migration;
+  const now = new Date().toISOString();
+  Object.assign(m.run, { state: 'ended', exit_code: exitCode, updated_at: now, ended_at: now });
+  if (phase && m.moving) m.moving.phase = phase;
+}
+
+function movePlanSteps(db, values, thenSteps) {
+  const m = db.migration;
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const first = m.mode === 'key' && m.plans === 0;
+  const lines = movePlanLines(values);
+  if (m.mode === 'planfail') lines[4] = moveLine('disk space', 'failed', '12.0 GiB and 800000 inodes free where the data directory goes; the copy needs up to 275.8 GiB and 6388083 inodes. Blank disks there: /dev/vdc (1.8 TiB), /dev/vdd (1.8 TiB): name one, or two for a mirror, with --data-disk');
+  if (first) {
+    // A move asked from the page never signs in as root does: the plan ends with the line to add.
+    return [
+      () => moveSay(db, 'Plan', lines[0]),
+      () => {
+        moveSay(db, 'Plan', moveLine('one-time key', 'manual', `is not on the new host yet (its host key: SHA256:abcDEF123 (ED25519)). This run never signs in as root does (root's keys, its ssh configuration, a password): add this line to root's ~/.ssh/authorized_keys on the new host, then ask again: ${MOVE_KEY}`));
+        m.moving.public_key = MOVE_KEY;
+        m.plans += 1;
+        moveEnd(db, 0, 'Plan');
+      },
+    ];
+  }
+  const steps = lines.map((line) => () => {
+    moveSay(db, 'Plan', line);
+    // `newUrlSaid`: what the checklist names as the new URL instead (a test of what is linked).
+    if (line.name === 'public URL') m.moving.new_url = m.newUrlSaid || url;
+  });
+  steps.push(thenSteps ? () => {} : () => { m.plans += 1; moveEnd(db, m.mode === 'planfail' ? 1 : 0, 'Plan'); });
+  return thenSteps ? steps.concat(thenSteps) : steps;
+}
+
+function moveSteps(db, values) {
+  const m = db.migration;
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const steps = [];
+  for (const line of MOVE_PREPARE) {
+    steps.push(() => {
+      if (m.mode === 'fail' && line.name === 'software') {
+        moveSay(db, 'Prepare', moveLine('software', 'failed', 'the new host: tar: /usr/local: Cannot write: No space left on device'));
+        moveEnd(db, 1, 'Prepare');
+        return;
+      }
+      moveSay(db, 'Prepare', line);
+    });
+  }
+  steps.push(() => {
+    // The page reads the preparation before the copy begins.
+    if (!m.seen.Prepare || m.holdAt === 'Prepare') return 'again';
+    moveSay(db, 'Copy', MOVE_COPY[0]);
+    return undefined;
+  });
+  for (const line of MOVE_COPY.slice(1)) steps.push(() => moveSay(db, 'Copy', line));
+  steps.push(() => {
+    // The instance answers during the copy: the page reads it before anything freezes.
+    if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
+    // The cutover freezes the instance: nothing answers until the new one runs.
+    moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
+    m.frozen = true;
+    m.missed = 0;
+    db.goOffline();
+    return undefined;
+  });
+  for (const line of MOVE_CUTOVER.slice(1, 3)) steps.push(() => moveSay(db, 'Cutover', line));
+  if (m.mode === 'rollback') {
+    steps.push(() => moveSay(db, 'Cutover', moveLine('new instance', 'failed', 'yulius.service did not report the old host’s build within 120 s (`journalctl -u yulius.service` says why)')));
+    steps.push(() => moveSay(db, 'Cutover', moveLine('old instance', 'changed', 'thawed: it runs as before')));
+    steps.push(() => moveSay(db, 'Cutover', moveLine('new host', 'manual', 'the copy in /var/lib/yulius there was started and is no longer a clean copy: remove it there before running the move again')));
+    steps.push(() => {
+      // The page asked in vain while it was frozen: now the old instance answers again.
+      if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
+      moveEnd(db, 1, 'Cutover');
+      m.frozen = false;
+      db.goOnline();
+      return undefined;
+    });
+    return steps;
+  }
+  for (const line of MOVE_CUTOVER.slice(3)) steps.push(() => moveSay(db, 'Cutover', line));
+  for (const line of moveFinishLines(url)) steps.push(() => moveSay(db, 'Finish', line));
+  steps.push(() => {
+    if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
+    const lines = m.moving.lines;
+    if (m.mode === 'redirect') {
+      // The old instance stays frozen for good; its proxy redirects to the new URL.
+      moveEnd(db, 0, 'done');
+      m.redirects = true;
+      return undefined;
+    }
+    // The name leads to the new host now: the new instance answers here, with the checklist
+    // the move left it and nothing of the old host's helper.
+    Object.assign(m, { run: null, request: null, moving: null, frozen: false, arrived: { id: MOVE_ID, target: values.target, from: ORIGIN, to: url, finished_at: new Date().toISOString(), lines } });
+    db.goOnline();
+    return undefined;
+  });
+  return steps;
+}
+
+function moveAbortSteps(db) {
+  return [
+    () => moveSay(db, 'Abort', moveLine('old instance', 'changed', 'yulius.service runs here again and is enabled')),
+    () => moveSay(db, 'Abort', moveLine('one-time key', 'changed', 'removed from the new host’s authorized_keys')),
+    () => { moveEnd(db, 0, 'aborted'); },
+  ];
+}
+
+route('GET', MOVE_API, async ({ db }) => {
+  superadminOnly(db);
+  const view = migrationView(db);
+  const m = db.migration;
+  if (m.holdReads) await new Promise((resolve) => m.holds.push(resolve));
+  return view;
+});
+route('POST', MOVE_API, ({ db, body }) => {
+  superadminOnly(db);
+  const m = db.migration;
+  const action = body.action;
+  if (!['plan', 'move', 'abort'].includes(action)) fail(422, 'invalid', 'no such action');
+  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [] } : {
+    target: String(body.target || '').trim(),
+    ssh_port: body.ssh_port === undefined || body.ssh_port === null ? 22 : body.ssh_port,
+    public_url: body.public_url ? String(body.public_url).trim().replace(/\/$/, '') : null,
+    data_disks: (body.data_disks || []).map((d) => String(d).trim()).filter(Boolean),
+  };
+  if (action !== 'abort') {
+    if (!values.target) fail(422, 'invalid', 'the new host is missing');
+    if (!/^[A-Za-z0-9._:[\]-]+(@[A-Za-z0-9._:[\]-]+)?$/.test(values.target) || values.target.startsWith('-')) fail(422, 'invalid', 'the new host must be `root@host` or `host`');
+    if (values.target.includes('@') && !values.target.startsWith('root@')) fail(422, 'invalid', 'the new host is reached as root: `root@host`');
+    if (!Number.isInteger(values.ssh_port) || values.ssh_port < 1 || values.ssh_port > 65535) fail(422, 'invalid', 'the SSH port must be 1 to 65535');
+    if (values.public_url && !/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*$/.test(values.public_url)) fail(422, 'invalid', 'the public URL must be `https://host`, with nothing after it');
+    if (values.data_disks.length > 2) fail(422, 'invalid', 'data disks: one, or two for a mirror');
+    if (!values.data_disks.every((d) => /^\/dev\/[A-Za-z0-9._/-]+$/.test(d) && !d.includes('..'))) fail(422, 'invalid', 'a data disk must be a device of the new host: `/dev/…`');
+  }
+  const host = values.target ? values.target.split('@').pop() : null;
+  if (action === 'move' && body.confirm !== host) fail(422, 'invalid', 'type the new host’s name to confirm: root on this host will give this instance’s data to it');
+  if (!m.helper) fail(409, 'conflict', 'the move helper is not enabled on this server (the operations guide has its units)');
+  const can = migrationView(db).can;
+  if (m.request && m.request.state === 'requested') fail(409, 'conflict', 'another request is waiting for the move helper');
+  if (action === 'plan' && !can.plan) fail(409, 'conflict', 'a move is running: wait for its end, or abort it');
+  if (action === 'move') {
+    const same = m.run && m.run.target === values.target && m.run.ssh_port === values.ssh_port && m.run.public_url === values.public_url
+      && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
+    if (!can.move || !same) fail(409, 'conflict', 'show the plan for these values first: a move is the plan you saw');
+  }
+  if (action === 'abort' && !can.abort) fail(409, 'conflict', 'no move is recorded on this host: nothing to abort');
+  m.serial += 1;
+  const request = { id: `mock-${m.serial}-${action}`, action, state: 'requested', at: Date.now() };
+  (m.asked = m.asked || []).push({ action, ...values, confirm: body.confirm === undefined ? null : body.confirm });
+  if (action === 'abort' && m.run && m.run.state === 'running') {
+    // The helper sees the abort, stops the command (before it froze anything it just ends),
+    // then runs the abort.
+    const stopped = m.run;
+    m.request = request;
+    later(() => {
+      if (m.run === stopped && stopped.state === 'running') Object.assign(stopped, { state: 'ended', exit_code: null, ended_at: new Date().toISOString() });
+      playMove(db, request, values, moveAbortSteps(db));
+    }, m.stepMs / 2);
+    return json(202, migrationView(db));
+  }
+  m.request = request;
+  const steps = action === 'plan' ? movePlanSteps(db, values, null)
+    : action === 'move' ? movePlanSteps(db, values, moveSteps(db, values))
+      : moveAbortSteps(db);
+  playMove(db, request, values, steps);
+  return json(202, migrationView(db));
+});
+route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limitsView(db); });
+route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
+  superadminOnly(db);
+  const l = limitOf(p[0]);
+  if (!body || body.value === undefined) fail(422, 'invalid', 'missing field `value`');
+  // As the server reads it: a whole number or null, never a number in a string.
+  const { value } = body;
+  if (value !== null && !(Number.isSafeInteger(value) && value >= 0)) fail(422, 'invalid', 'value: expected a whole number or null');
+  if (value !== null && !(value >= l.min && value <= l.max)) fail(422, 'invalid', `${l.label} must be between ${l.min} and ${l.max}${l.suffix ? ` ${l.suffix}` : ''}`);
+  db.limits.settings[l.key] = { value, by: db.me.user.login, at: new Date().toISOString() };
+  if (db.limits.failAfterSave) fail(500, 'internal', 'the audit entry could not be written');
+  return limitsView(db);
+});
+route('DELETE', `/api/admin/limits/${ID}`, ({ db, p }) => { superadminOnly(db); delete db.limits.settings[limitOf(p[0]).key]; return limitsView(db); });
+route('POST', '/api/admin/limits/adapt', ({ db }) => {
+  superadminOnly(db);
+  for (const l of limitsView(db).limits.filter((x) => x.stale)) db.limits.settings[l.key] = { value: null, by: db.me.user.login, at: new Date().toISOString() };
+  return limitsView(db);
+});
+route('POST', '/api/admin/limits/keep', ({ db }) => { superadminOnly(db); db.limits.kept = true; return limitsView(db); });
+
 function jevView(db) {
   const j = db.jev;
   const source = j.key ? 'settings' : j.config ? 'config' : null;
@@ -4625,7 +5219,8 @@ route('GET', '/api/capacity', ({ db }) => {
     const known = healthy.map((a) => a.usage && a.usage[key] && a.usage[key].used_percent).filter(Number.isFinite);
     return known.length ? known.reduce((sum, used) => sum + Math.max(0, threshold - used), 0) : null;
   };
-  const isAvailable = (a) => healthy.includes(a) && ['primary', 'secondary'].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
+  // For a task of the default model: Fable's weekly allowance binds it too (SPEC-464).
+  const isAvailable = (a) => healthy.includes(a) && ['primary', 'secondary', 'weekly_fable'].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
   const paused = db.tasks.filter((t) => t.status === 'waiting_capacity');
   return {
     threshold,
@@ -4922,7 +5517,21 @@ async function handleFetch(db, url, init = {}) {
 
 async function handleFetchAfterLatency(db, url, init) {
   await delay(50 + Math.random() * 150);
-  if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
+  if (db.offline) {
+    // A frozen instance answers nothing; once the old address redirects (SPEC-470 MVB-036), a
+    // request that does not follow redirects sees an opaque one.
+    const m = db.migration;
+    if (m.frozen && new URL(url, ORIGIN).pathname === MOVE_API) m.missed += 1;
+    if (init.redirect === 'manual' && m.frozen) {
+      // Without a proxy in front, a frozen instance takes the connection and never answers
+      // (`probeHangs`): the request ends only when the page gives it up.
+      if (m.probeHangs && !m.redirects) return new Promise(() => {});
+      // The old host's proxy still answers: with its redirect once the move ended there, else
+      // that its upstream (the frozen instance) does not answer.
+      return m.redirects ? { type: 'opaqueredirect', status: 0, ok: false, text: async () => '' } : json(502, {});
+    }
+    throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
+  }
   const u = new URL(url, ORIGIN);
   const method = (init.method || 'GET').toUpperCase();
   let body = {};
@@ -4935,7 +5544,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
-  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || ((method === 'POST' || method === 'PATCH') && u.pathname === db.holdPostPath))) {
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (['POST', 'PATCH', 'PUT'].includes(method) && u.pathname === db.holdPostPath))) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }
@@ -6192,6 +6801,8 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // Lets the held reads of the move go, the oldest first (SPEC-470).
+  db.migration.releaseReads = () => { for (const resolve of db.migration.holds.splice(0)) resolve(); };
   // The event streams die without a close (a laptop asleep, a dropped proxy connection): nothing
   // more reaches them, heartbeats included; a new connection works (SPEC-191 LIV-002).
   db.silenceEvents = () => {
@@ -6301,6 +6912,8 @@ export function createMockTransport(params) {
     eventsHeartbeatMs: db.heartbeatMs,
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
+    // `movepoll=<ms>`: how often the Move to another host card reads a move in flight (SPEC-470).
+    movePollMs: params.has('movepoll') ? Number(params.get('movepoll')) : undefined,
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {

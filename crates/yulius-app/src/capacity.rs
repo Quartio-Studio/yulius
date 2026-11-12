@@ -33,7 +33,7 @@ use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelFamily, UsageWindow};
+use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageWindow};
 
 use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
@@ -77,8 +77,6 @@ const SESSION_SAMPLE_MS: i64 = 5 * 60_000;
 /// An unchanged session reading still refreshes when the usage was last seen, at most this
 /// often, so a subscription in use never looks stale (F 2026-10-11).
 const SESSION_TOUCH_MS: i64 = 60_000;
-/// Latest reset time accepted from a session reading: a week and a day ahead.
-const SESSION_RESET_MAX_MS: i64 = WEEK_MS + 24 * 3_600_000;
 
 /// The last session reading stored for a subscription.
 #[derive(Debug, Clone, Copy)]
@@ -107,6 +105,13 @@ pub struct CapacityState {
     /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
     /// follows (SPEC-246 CLA-004).
     accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
+    /// Held while a subscription's stored usage is read, changed and written back
+    /// ([`App::change_account_usage`]: a limit Claude reported, a session's reading, a
+    /// provider's reading; and a new sign-in), so none of them writes over what another stored
+    /// meanwhile: a limit recorded during a reading stays (SPEC-464 UCL-004). The write that
+    /// marks a subscription refused takes it too, so no usage write stores the status it read
+    /// before (#1211). Never held across a request to the provider.
+    pub(crate) usage_writes: tokio::sync::Mutex<()>,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -124,7 +129,7 @@ fn session_window(
         .resets_at
         .and_then(|s| s.checked_mul(1_000))
         .map(Timestamp)
-        .filter(|at| *at > now && at.millis_since(now) <= SESSION_RESET_MAX_MS);
+        .filter(|at| *at > now && at.millis_since(now) <= LIMIT_RESET_MAX_MS);
     Some(UsageWindow {
         used_percent: Some(used),
         window_minutes: Some(minutes),
@@ -175,6 +180,23 @@ fn healthy(status: AccountStatus) -> bool {
     matches!(status, AccountStatus::Ok | AccountStatus::Limited)
 }
 
+/// The family of the model a task set to `model` is launched with: the default model's when it
+/// names none (Fable 5.2, whose weekly allowance of usage credits binds it, SPEC-464). A limit
+/// Claude reports for "the model of the request" is taken as this family's: a model switched
+/// inside the session is not followed, and the next launch runs this one again.
+#[must_use]
+pub(crate) fn model_family(model: Option<&str>) -> ModelFamily {
+    ModelFamily::of(Some(
+        model.unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
+    ))
+}
+
+/// The family of the default model.
+#[must_use]
+pub(crate) fn default_family() -> ModelFamily {
+    model_family(None)
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
@@ -194,16 +216,45 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            // A task without a model runs the default, Fable 5.2: no per-model weekly cap binds.
-            family: ModelFamily::of(Some(
-                task.model
-                    .as_deref()
-                    .unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
-            )),
+            // A task without a model runs the default, Fable 5.2.
+            family: model_family(task.model.as_deref()),
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
         })
+    }
+
+    /// The family of the model the task `task_id` runs; the default model's when the task cannot
+    /// be read.
+    pub(crate) async fn task_family(&self, task_id: &TaskId) -> ModelFamily {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task)) => model_family(task.model.as_deref()),
+            _ => default_family(),
+        }
+    }
+
+    /// Reads `account`'s stored usage, changes it with `change` and stores what that gives,
+    /// under the one lock every such change takes ([`CapacityState::usage_writes`]): a limit
+    /// Claude reported, a session's reading and a provider's reading each go through here, so
+    /// none writes over what another stored meanwhile (SPEC-464 UCL-004). `None` when the
+    /// account cannot be read (nothing is stored then) or `change` gives nothing to store.
+    pub(crate) async fn change_account_usage(
+        &self,
+        account: &AccountId,
+        change: impl FnOnce(AccountUsage) -> Option<AccountUsage> + Send,
+    ) -> Option<AccountUsage> {
+        let _writing = self.capacity.usage_writes.lock().await;
+        let stored = match self.deps.store.account(account).await {
+            Ok(Some(record)) => account_usage(&record),
+            _ => return None,
+        };
+        crate::race::reached(
+            crate::race::Point::UsageRead,
+            std::path::Path::new(account.as_str()),
+        );
+        let usage = change(stored)?;
+        self.record_account_usage(account, &usage).await;
+        Some(usage)
     }
 
     /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
@@ -343,14 +394,17 @@ impl App {
         let Some(sample) = self.session_reading_due(account, five_hour, seven_day, now) else {
             return;
         };
-        let Ok(Some(record)) = self.deps.store.account(account).await else {
+        let stored = self
+            .change_account_usage(account, |mut usage| {
+                usage.primary = five_hour.or(usage.primary);
+                usage.secondary = seven_day.or(usage.secondary);
+                usage.observed_at = Some(now);
+                Some(usage)
+            })
+            .await;
+        if stored.is_none() {
             return;
-        };
-        let mut usage = account_usage(&record);
-        usage.primary = five_hour.or(usage.primary);
-        usage.secondary = seven_day.or(usage.secondary);
-        usage.observed_at = Some(now);
-        self.record_account_usage(account, &usage).await;
+        }
         if sample {
             let windows = AccountUsage {
                 primary: five_hour,
@@ -580,7 +634,16 @@ impl App {
             Trigger::Start
         };
         let input = self.rotation_input(task, current).await?;
-        let (decision, reason) = rotation::decide(&input, trigger);
+        // A subscription that refused the task again at a limit nothing says the end of is not
+        // tried again while a reset is known to wait for, whatever a reading said since
+        // (SPEC-464 UCL-010).
+        let left_out = self
+            .existing_runtime(&task.id)
+            .and_then(|rt| rt.blind_limits.lock().ok()?.refused_by().cloned());
+        let (decision, reason) = match left_out {
+            Some(account) => rotation::decide_leaving_out(&input, trigger, &account),
+            None => rotation::decide(&input, trigger),
+        };
         Ok((decision, format!("{reason:?}"), has_process))
     }
 
@@ -766,8 +829,9 @@ impl App {
         let mut available = 0_u32;
         for record in &records {
             let usage = account_usage(record);
+            // For a task of the default model: its own weekly window binds too (SPEC-464).
             let is_available = views.iter().any(|v| {
-                v.id == record.id && rotation::assess(v, now, threshold, ModelFamily::Any).is_some()
+                v.id == record.id && rotation::assess(v, now, threshold, default_family()).is_some()
             });
             if is_available {
                 available += 1;
@@ -837,7 +901,7 @@ impl App {
                 rotation::available_again(&RotationInput {
                     current: None,
                     task_provider: yulius_domain::harness::Provider::Anthropic,
-                    family: ModelFamily::Any,
+                    family: default_family(),
                     accounts: views.clone(),
                     now,
                     threshold,
@@ -931,6 +995,23 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 mod tests {
     use super::*;
 
+    /// SPEC-464: a task that names no model runs the default one, Fable, whose weekly allowance
+    /// of usage credits binds it; a task that names one is bound by that model's family.
+    #[test]
+    fn a_tasks_model_family_is_its_models_or_the_defaults() {
+        assert_eq!(default_family(), ModelFamily::Fable);
+        assert_eq!(model_family(None), ModelFamily::Fable);
+        for (model, family) in [
+            ("claude-fable-5-2", ModelFamily::Fable),
+            ("claude-fable-5-1", ModelFamily::Fable),
+            ("claude-opus-5-5", ModelFamily::Opus),
+            ("claude-sonnet-5-5", ModelFamily::Sonnet),
+            ("claude-haiku-4-5", ModelFamily::Any),
+        ] {
+            assert_eq!(model_family(Some(model)), family, "{model}");
+        }
+    }
+
     /// SPEC-398 VSH-005 (#728): a session's reading is bounded before it is stored: a percentage
     /// that is not finite or outside 0..=1000 drops the window, and a reset time in the past or
     /// more than a week and a day ahead is unknown.
@@ -960,7 +1041,7 @@ mod tests {
             assert_eq!(reading(used, Some(in_an_hour)), None, "{used}");
         }
         let past = (now.0 - 1_000) / 1_000;
-        let too_far = (now.0 + SESSION_RESET_MAX_MS + 1_000) / 1_000;
+        let too_far = (now.0 + LIMIT_RESET_MAX_MS + 1_000) / 1_000;
         for resets_at in [Some(past), Some(too_far), Some(i64::MAX), None] {
             assert_eq!(
                 reading(100.0, resets_at).and_then(|w| w.resets_at),

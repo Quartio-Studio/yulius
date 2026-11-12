@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
+use yulius_app::claude_code::ChosenChannel;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::jev_key::StoredJevKey;
 use yulius_app::model::Sealed;
@@ -260,6 +261,93 @@ impl UpdateStore for SqliteStore {
             }
             .map_err(db)?;
             // A switch that is not stored would come back on at the next start.
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn limits(&self) -> AppResult<Option<String>> {
+        self.call(|c| {
+            let doc = c
+                .query_row("SELECT limits FROM instance WHERE singleton = 1", [], |r| {
+                    r.get::<_, Option<String>>(0)
+                })
+                .optional()
+                .map_err(db)?;
+            Ok(doc.flatten())
+        })
+        .await
+    }
+
+    async fn set_limits(&self, doc: &str) -> AppResult<()> {
+        let doc = doc.to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE instance SET limits = ?1 WHERE singleton = 1",
+                    params![doc],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn claude_channel(&self) -> AppResult<Option<ChosenChannel>> {
+        self.call(|c| {
+            let row = c
+                .query_row(
+                    "SELECT claude_channel, claude_channel_set_at, claude_channel_set_by \
+                     FROM instance WHERE singleton = 1",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<i64>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(row.and_then(|(channel, at, by)| {
+                Some(ChosenChannel {
+                    channel: channel?,
+                    set_at: Timestamp(at.unwrap_or(0)),
+                    set_by: by,
+                })
+            }))
+        })
+        .await
+    }
+
+    async fn set_claude_channel(
+        &self,
+        channel: Option<(&str, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let channel = channel.map(|(channel, by)| (channel.to_owned(), by.to_owned()));
+        self.call(move |c| {
+            let changed = match channel {
+                Some((channel, by)) => c.execute(
+                    "UPDATE instance SET claude_channel = ?1, claude_channel_set_at = ?2, \
+                     claude_channel_set_by = ?3 WHERE singleton = 1",
+                    params![channel, at.0, by],
+                ),
+                None => c.execute(
+                    "UPDATE instance SET claude_channel = NULL, claude_channel_set_at = NULL, \
+                     claude_channel_set_by = NULL WHERE singleton = 1",
+                    [],
+                ),
+            }
+            .map_err(db)?;
+            // A choice that is not stored would be gone at the next start.
             if changed == 0 {
                 return Err(AppError::Conflict("the instance is not set up yet".into()));
             }

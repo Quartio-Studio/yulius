@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{LimitScope, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -215,6 +215,8 @@ pub enum Observation {
         message: String,
         /// The limited window in minutes (300 session, 10080 weekly), if known.
         window_minutes: Option<u32>,
+        /// What it binds: the subscription, or the models of one family (SPEC-464).
+        scope: LimitScope,
         /// When the CLI recorded it, if known (tells a new limit from history, SPEC-074).
         at: Option<Timestamp>,
     },
@@ -236,6 +238,8 @@ pub struct UsageSnapshot {
     pub tokens: TokenUsage,
     /// Model seen.
     pub model: Option<String>,
+    /// The agent CLI's version, as the run's lines name it (SPEC-461 CCM-011).
+    pub cli_version: Option<String>,
     /// Completed turns (Claude Code's turn records).
     pub turns: u64,
     /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
