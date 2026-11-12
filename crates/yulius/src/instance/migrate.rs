@@ -64,6 +64,8 @@ pub struct Options {
     /// configuration, a password): only the move's one-time key reaches it, and its line is
     /// shown for a person to add there. How the move helper runs the command (SPEC-470).
     pub no_sign_in: bool,
+    /// The id of the request this run answers (the move helper's): written into the status.
+    pub request: Option<String>,
 }
 
 /// What to do.
@@ -152,6 +154,10 @@ pub struct Status {
     /// The new public URL, once the plan decided it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_url: Option<String>,
+    /// The id of the request this run answers, when the move helper started it (SPEC-470
+    /// MVB-010): readers tell this run's checklist from another's by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
 }
 
 impl State {
@@ -441,6 +447,7 @@ impl<'a> Move<'a> {
             updated_at: now_secs(),
             public_key: self.key_line.clone(),
             new_url: self.state.new_url.clone(),
+            request: self.opts.request.clone(),
         };
         if let Ok(json) = serde_json::to_vec(&status) {
             let _ = write_atomic(&self.opts.state_dir.join("status.json"), &json, 0o644);

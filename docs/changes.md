@@ -23,6 +23,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
   turn's end still loses a queued prompt (#1194).
 
+- Moving from Settings → Instance: three notes of the review that approved it, answered after the
+  merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
+  recorded" over the checklist of a move that was aborted or finished: it says the last move is
+  over. Whose a checklist is, is no longer guessed from its time: the helper passes the request's
+  id to the command (`--request-id`), which writes it into `status.json`, so a run's own checklist
+  is known exactly, also when another run wrote one in the same second or the run was refused
+  after a line that says why. The helper's record of the requests it handled survives a damaged
+  part, and is not written over when it cannot be read.
 - A subscription Claude refuses for good while its usage is being stored stays "needs a new
   sign-in" (SPEC-464's follow-up, task #449, #1211). A usage write stores the status it read
   together with the usage; one that had read `ok` just before the refusal stored `ok` over it,

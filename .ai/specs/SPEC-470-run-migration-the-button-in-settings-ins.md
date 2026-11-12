@@ -5,7 +5,7 @@ status: done
 
 # SPEC-470: Run migration: the button in Settings → Instance
 
-Status: done
+Status: done (merged as #1214; the second review round's notes in a second pull request)
 Date: 2026-11-11
 Owner: Yulius task #447 (slice D of #442)
 Scope authorization: task #447, asked by the project's owner: "A superadmin starts the move from
@@ -77,25 +77,27 @@ The request and the root helper
   refused), the version, a timestamp at most 15 minutes old and 60 s ahead, and an id it has not
   acted on: every id it handled is kept in `<state>/handled` until its request would be refused
   as stale (16 minutes; at most 1024 ids), so an id is acted on once, whatever came after it. A
-  request it cannot record there is not run, and the helper ends with an error. It refuses
+  request it cannot record there is not run, and the helper ends with an error; a record that
+  is damaged in part still tells its other lines, and one that cannot be read is not written
+  over. It refuses
   while the update helper's unit runs (`active`,
   `activating` or `reloading`), and a target whose host is not in `YULIUS_MIGRATE_TARGETS` when
   the root-owned unit sets that list. A refusal changes nothing and is reported with its reason,
   which never repeats the request's content.
 - MVB-004 **It runs the command, as nobody's sign-in.** An accepted request runs this binary's
-  `instance migrate --no-sign-in`
-  with the unit's data directory, service, update service and state directory, and the request's
-  values each as one argument (`--ssh-port=`, `--public-url=`, `--data-disk=`, then `--` and the
-  target): `plan` without `--yes` (no terminal, so it ends after its plan), `move` with `--yes`,
-  `abort` as `--abort` and never with `--yes` (an abort that needs a person's word that the new
-  instance is stopped stays a command on the host). No shell; standard input is closed; the
-  command's output goes to the journal. `--no-sign-in` (a new option of the command): the
-  operator's sign-in that adds the move's key is never tried, no ssh configuration is read
-  (`-F none`), and every connection offers the one-time key alone (`IdentitiesOnly`, no agent,
-  public key only). The request is the service user's: without this, root's own keys would
-  open every host that trusts root here to it. So the first plan ends with the key line, and a
-  host is reached only once a person there added it. The helper does not touch the command's
-  checklist: a run the command refuses changes nothing (MVB-020 tells whose a checklist is).
+  `instance migrate --no-sign-in` with the unit's data directory, service, update service and
+  state directory, and the request's values each as one argument (`--request-id=`,
+  `--ssh-port=`, `--public-url=`, `--data-disk=`, then `--` and the target): `plan` without
+  `--yes` (no terminal, so it ends after its plan), `move` with `--yes`, `abort` as `--abort`
+  and never with `--yes` (an abort that needs a person's word that the new instance is stopped
+  stays a command on the host). No shell; standard input is closed; the command's output goes to
+  the journal. `--no-sign-in` (a new option of the command): the operator's sign-in that adds
+  the move's key is never tried, no ssh configuration is read (`-F none`), and every connection
+  offers the one-time key alone (`IdentitiesOnly`, no agent, public key only). The request is
+  the service user's: without this, root's own keys would open every host that trusts root here
+  to it. So the first plan ends with the key line, and a host is reached only once a person
+  there added it. The helper does not touch the command's checklist: a run the command refuses
+  changes nothing (MVB-020 tells whose a checklist is).
 - MVB-005 **It reports.** `<state>/helper.json` (0644): the request's id, action and values,
   `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
   with the reason and none of the request's values. When the command ended refused before its
@@ -120,7 +122,9 @@ The request and the root helper
 The command, for readers
 
 - MVB-010 **Status for the page.** `status.json` also holds `public_key` (the one-time key's
-  public line, while a person has to add it) and `new_url` (once the plan decided it).
+  public line, while a person has to add it), `new_url` (once the plan decided it) and
+  `request`: the id of the request the run answers (`--request-id`, which the helper passes),
+  absent for a run started on the host.
 - MVB-011 **The checklist travels.** The move's Finish leaves the finished checklist on the new
   host as `/var/lib/yulius-migrate/arrived.json` (0644, root's file in the flow's own
   directory): the lines so far, the new host's own Finish lines, and the lines the old host
@@ -139,9 +143,10 @@ Application and API
   `lost` when a running helper's heartbeat is more than 60 s old); `move` (the command's status:
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
   written after the helper's last run ended, or without any, that is by a run started on the
-  host, and `earlier` when it was written before the helper's last run started and that run
-  ended without one of its own: the recorded move's, not what the run found; while a run has
-  written none of its own, an earlier one is not shown at all); `arrived`
+  host, and `earlier` when it is neither that nor the helper's last run's own: the recorded
+  move's, not what the run found. The run's own is the one that names the run's request
+  (`request`, MVB-010), however the run ended and whatever the clock says; while a run has
+  written none of its own, another one is not shown at all); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
   `abort`: what would be accepted now). A request the helper took is removed when the view is
   read, one never taken after 15 minutes, and no copy of the data directory takes the request
@@ -174,7 +179,8 @@ Settings → Instance
   key has to be added (the first plan for a host, MVB-004): the key line with a copy button,
   what to do with it, and "Show the plan" again. A plan with a failed line offers no move. A
   checklist that is the recorded move's (`earlier`: the command refused this request) is said
-  to be that move's and is never read as what the plan found.
+  to be that move's and is never read as what the plan found; when that move is over (aborted
+  or done) it is said to be the last move's, and nothing is said to be recorded.
 - MVB-032 **Run migration.** Behind a dialog that says root on this host will give this
   instance's data (every repository, secret and key) to the named host and start it there, that
   the data is copied while the instance keeps working and what the freeze is for (what changed
@@ -253,6 +259,7 @@ Settings → Instance
 - [x] Operations guide §7 and §8, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
 - [x] Review round 1 answered: no sign-in with root's own keys, a refused run keeps the recorded checklist, the rest
+- [x] Review round 2's notes answered: a finished move's checklist is not "recorded", a refused run has none of its own, handled ids survive a damaged file
 
 ## Acceptance criteria
 
@@ -358,6 +365,18 @@ Settings → Instance
   `--max-downtime`: MIG-060 names the target, the URL and the disks, and the move then decides
   as the command does without the option (it copies again while that shortens the freeze). A
   field for it on the page is issue #1202.
+- **Review round 2** (on `d4c748a2`): approve, with one minor note and two nits in this change's
+  code. The approved head was merged (#1214) and the three are answered in a second pull
+  request, each with a test first: a commit for them before the merge would have voided the
+  approval while `dev` kept moving (it was merged in seven times). The first answer to the nit
+  about a checklist written in the second a refused run began was a rule that a refused run
+  (exit 2) has none of its own; the review of the second pull request showed that wrong (the
+  command also refuses, exit 2, after a line that says why, and that line was then read as
+  another move's). The time is no longer asked: the command writes the request's id into its
+  checklist, and the server compares ids. The 1024 ids the helper
+  keeps can be pushed out by whoever writes that many requests in 16 minutes, which is the
+  service user alone and gains it nothing (it can write a request under a new id at any time):
+  said in the code, not changed.
 - **No start limit on the helper's unit.** On a real host six requests within 10 s (the helper
   ends at once when it refuses) hit systemd's default start limit, and systemd then failed the
   path unit too: nothing was taken until root reset it, and the page said the helper was not
@@ -448,7 +467,7 @@ Settings → Instance
   Finish, the abort that brings the build, a run without a sign-in); the walk (`migrate/` is
   left out).
 - **Mutation checks** (`target/evidence/mutate.py`: one change at a time on a clean tree, the
-  part's tests run, the file restored). 185 written, 183 fail a test:
+  part's tests run, the file restored). 198 written, 196 fail a test:
 
   | Part | Written | Fail a test | Note |
   | --- | --- | --- | --- |
@@ -458,6 +477,8 @@ Settings → Instance
   | Helper | 38 | 36 | see below |
   | Command (this change's parts) | 22 | 22 | |
   | Review round 1 (command 10, helper 8, application 9, adapter 1, card 4) | 32 | 32 | 1 survived first (the repeated write without its id): an assertion added in `7ebf3937` |
+  | Review round 2's notes (application 3, helper 2, card 1) | 6 | 6 | the application's three were of a rule that the next row's replaced |
+  | The request's id (application 4, command 1, helper 1, the option 1) | 7 | 7 | |
 
   The helper's two: one pointed at a condition that the record of a taken request already
   covered, which showed that a failed record was ignored (the fix in `148f3182` removes the
@@ -528,22 +549,52 @@ Settings → Instance
   981 tests passed, 1 skipped; `instance-move.e2e.ts` 11 tests. The file ran three times in a
   row and twice pinned to one CPU after its passing states were made to hold (`df6e9db4`).
 - **Gate.** `scripts/dev ci` at `8fe8b7a4` exited 0: repository checks, `cargo check`, `fmt`,
-  `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo
-  deny`, `cargo shear`, `cargo doc`. After it come this spec's Evidence and one more merge of
-  `dev` without a conflict (`4a31c6c0`: `host setup` only; the move's and `host setup`'s tests
-  were run again on it). `dev` is merged in seven times: `32b5a46a` (a conflict in `finish()` and a variable the other side had
-  renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in `finish()`, `abort()`,
-  the flow and target tests and three documents, all resolved by hand; the test that names
-  every option of the command stopped compiling on the new `--max-downtime`, which is what it
-  is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each), `59ec8cf5` and
-  `4a31c6c0` (none).
+  `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`. After it come this spec's Evidence and one more merge of `dev`
+  without a conflict (`4a31c6c0`: `host setup` only; the move's and `host setup`'s tests were
+  run again on it). `dev` is merged in seven times: `32b5a46a` (a conflict in `finish()` and a
+  variable the other side had renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts
+  in `finish()`, `abort()`, the flow and target tests and three documents, all resolved by hand;
+  the test that names every option of the command stopped compiling on the new `--max-downtime`,
+  which is what it is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each),
+  `59ec8cf5` and `4a31c6c0` (none).
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius … nothing was scanned." Disabled, not passed.
 - **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
   helper's units have the start limit this change switches off for its own), both in code this
   change did not write; #1202 (a field for `--max-downtime` on the page).
-- **Independent review, after round 1.** The head that is merged is reviewed again; that
-  verdict is recorded with the merge, because a commit after an approval would void it.
+- **Independent review, round 2** (the same reviewer, on `d4c748a2`; its own run of the gate,
+  3911 tests passed, and of the card's e2e file, 11 of 11): approve. It checked every answer
+  to round 1 and found them to hold, and left one minor note and two nits in this change's
+  code. That head was merged as #1214 on its own green Yulius CI run.
+- **After the merge: round 2's notes**, in a second pull request, each with a test that failed
+  first. `64b8df96`: the note over an earlier checklist said "A move to … is recorded" also
+  when that move was over (e2e: an abort, then a request the helper refuses); the helper's
+  record of handled ids was taken for empty when a part of it was no text (the first request
+  ran again), and one that cannot be read was written over.
+  - The third note (a checklist another run wrote in the second a refused run began was taken
+    for the refused run's) was first answered by a rule that a refused run has none of its
+    own. The review of this pull request (the same reviewer, on `1a6c37f7`; its gate and the
+    card's e2e file green) asked for changes: the command also ends with exit 2 after a line
+    that says why, and that line then read as another move's. `65ac8ffb`, `1ff70586`: the
+    helper passes `--request-id`, the command writes it into `status.json`, and the server
+    compares ids (`a_refused_run_has_no_checklist_of_its_own` with the review's case,
+    `the_status_names_the_request_a_run_answers`, the helper's and the command's argument
+    tests).
+  - On a real host (`1ff70586`): a plan's `status.json` names the id in `helper.json`
+    (`earlier` false); a plan for another host, refused with exit 2, leaves the file naming
+    the plan before it (`earlier` true); and the review's case, a plan asked while the unit was
+    frozen: the command wrote "old host: failed: yulius.service is frozen …", ended with exit
+    2, and the view said `earlier` false.
+  - Thirteen mutations of the follow-up's fixes were written (six of the first answers, seven
+    of the id rule), each failing a test when it was run; three of the six changed the rule
+    that was replaced.
+  - Gate at `fefae0a4`: exit 0, 3954 tests run, 3954 passed, 16 skipped. The full e2e suite
+    there: 983 passed, 1 skipped, 2 failed, both in files this change does not touch and both
+    known to fail under load (#1171 `cd.e2e.ts`, #1217 `menus.e2e.ts`; the machine was shared,
+    load 11); those two files alone passed three times in a row (55 tests), and the card's
+    file passed in every run (11 tests). The suite passed whole at `3804c711` (981 tests),
+    after which no file of the page changed. Its review is recorded with its merge.
 - **Not tested.**
   - A move to another public URL behind a real reverse proxy with a certificate: the guests have
     no proxy. The card's notice for an address that redirects was shown on the real page with a

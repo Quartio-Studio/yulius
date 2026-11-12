@@ -3297,12 +3297,13 @@ request file, the helper's report and the command's `status.json` on every read,
 database travels with the copy and a row "running" would arrive on the new host as a move of that
 host. For the same reason no copy takes the request along (`migrate/` is left out of every copy, as
 `update/` is). Asks are taken one at a time and audited before the request is written; a removal
-and a repeated write name the request's id; and the checklist's time tells whose it is: one written
-before the helper's last run started is the recorded move's, not what that run found. A move needs
-the plan that was shown for the same values, and the host typed by the person. The finished
-checklist travels with the Finish step (`target::Request::Carry`, then the new host's Finish leaves
-it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in the data directory the
-running instance's user owns), so the new instance's page shows it. The page
+and a repeated write name the request's id; and the checklist itself tells whose it is: the helper
+passes the request's id to the command, which writes it into `status.json`, and one that names
+another request, or none (a run started on the host), is the recorded move's, not what the helper's
+last run found. A move needs the plan that was shown for the same values, and the host typed by the
+person. The finished checklist travels with the Finish step (`target::Request::Carry`, then the new
+host's Finish leaves it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in
+the data directory the running instance's user owns), so the new instance's page shows it. The page
 (`web/assets/instancemove.js`) keeps trying while nothing answers, and notices the old address's
 redirect with a request that follows none.
 
