@@ -317,6 +317,9 @@ pub struct TaskRuntime {
     /// this run): where it went (a turn of its own, or the queue) is written a moment later
     /// (SPEC-471 CCQ-004).
     pub(crate) prompt_passed_ms: AtomicI64,
+    /// How many prompts from the prompt box went on in this run: a turn's end that looks at
+    /// the session sees by it that one went on meanwhile (SPEC-471 CCQ-004).
+    pub(crate) prompts_passed: AtomicU64,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -512,6 +515,7 @@ impl TaskRuntime {
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
             queue: Mutex::default(),
             prompt_passed_ms: AtomicI64::new(0),
+            prompts_passed: AtomicU64::new(0),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),

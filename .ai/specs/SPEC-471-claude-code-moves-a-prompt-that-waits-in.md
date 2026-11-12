@@ -85,7 +85,7 @@ Where things are in Yulius:
 | CCQ-001 | **Yulius knows what waits in Claude Code's queue.** The watcher reads the `queue-operation` records of the run at hand: `enqueue` adds an entry, `dequeue` hands one on to a turn of its own, `remove`, `popAll` and `popOne` take one out without one. The count never goes below zero and an operation Yulius does not know changes nothing. A run starts with an empty queue: a resumed session's earlier lines are not read as the run's, and what the run before left waiting went with its process. A run reattached after a restart of the server knows the same from its own lines. |
 | CCQ-002 | **A session with something in its queue is not restarted for a newer Claude Code**, at a Stop the gate blocks or a goal session works on, and idle after a clean Stop. Every entry counts: a person's prompt, a message Yulius typed, Claude Code's own notification. The session moves at a later turn's end, once the queue is empty, or at its next start. A prompt taken into the running turn at a tool result is no longer waiting. The queue is asked after the turn end read the turn's lines, not in its first cheap check: a count the watcher has not caught up with decides nothing. |
 | CCQ-003 | **A hand-over is not rest.** From a `dequeue` until the prompt record of the turn it starts was read, the session counts as holding that entry: between the two its queue reads empty while the turn that took the prompt is not known yet. |
-| CCQ-004 | **A prompt that just went on is waited for.** Claude Code writes a waiting prompt's record once its hook returned, and the record reaches the file a moment later. A turn's end that would restart the session waits until `claude_code_queue_record_ms` (1 s by default) passed since a prompt from the prompt box last went on, and reads the transcript after that. A prompt that goes on while the turn's end looks leaves the session where it is. |
+| CCQ-004 | **A prompt that just went on keeps the session.** Claude Code writes where a prompt went (a turn of its own, or its queue) once the prompt's hook returned, and the record reaches the file a moment later. A turn's end less than `claude_code_queue_record_ms` (1 s by default) after a prompt from the prompt box went on leaves the session where it is, and so does one during whose look at the session such a prompt goes on: the record may not be in the lines read. The session moves at a later turn's end. Claude Code's own wake-ups come through no prompt box and change nothing here. |
 | CCQ-005 | **The fake agent can queue prompts as Claude Code does** (`--queue-prompts`): a line entered while an echoed turn runs gets its prompt hook at once and an `enqueue` record; a Stop that is blocked releases nothing and the turn goes on to another Stop; after the Stop that ends the turn all waiting lines are handed on with one `dequeue` each and answered in one turn, each with its `user` record (`promptSource: "queued"`), with no further prompt hook. Tests can hold the record of a waiting line, the hand-over and the start of the handed-on turn. Without the option the agent is as before. |
 | CCQ-006 | **The documents say so.** SPEC-461 CCM-013, SPEC-468 (CCF-011 and "Not in this change: the queue"), ADR-0293, the operations guide ("Running tasks"), the architecture document and the changes log say that what waits in Claude Code's queue keeps the session. |
 
@@ -95,7 +95,7 @@ Where things are in Yulius:
 - [x] The watcher counts what waits in Claude Code's queue, per run (CCQ-001)
 - [x] The fake agent queues prompts as Claude Code does (CCQ-005)
 - [x] A turn's end leaves a session with a waiting prompt where it is: the gate's block and the clean Stop (CCQ-002)
-- [ ] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)
+- [x] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)
 - [ ] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
 - [ ] Mutation checks, gate and the whole e2e suite green, evidence recorded
 - [ ] Independent review answered
@@ -131,11 +131,14 @@ Where things are in Yulius:
 - AC6 (CCQ-003). With the handed-on turn's start held after the `dequeue` record: the turn's
   end that reads an empty queue and no new turn keeps the session. Without the rule it
   restarts.
-- AC7 (CCQ-004). With the waiting prompt's record written later than the watcher's next round
-  and the turn ended right after the prompt's hook: the turn's end waits for the record and
-  keeps the session. With no wait it restarts. A prompt that goes on while the turn's end
-  looks keeps the session, and one that went on before a turn whose end comes a time later
-  does not delay it.
+- AC7 (CCQ-004). With real processes, the waiting prompt's record written eight seconds after
+  its hook, the turn ended right after that hook, and four seconds taken as the time a record
+  may need: the turn's end keeps the session though no line says a prompt waits; once the
+  record is read and the prompt answered, that turn's end restarts the session. Without the
+  rule the first end restarts it. On the test's clock: a turn's end 999 ms after a prompt went
+  on does not look at the session, one 1,000 ms after it does; a wake-up of Claude Code's own
+  in between changes nothing; a prompt that goes on while a turn's end looks keeps the
+  session however the clock moved meanwhile, and the next turn's end restarts it.
 - AC8 (CCQ-005). The fake agent's own tests: with `--queue-prompts` a line entered while a
   turn is held gets its hook and its `enqueue` record before the turn ends; a blocked Stop is
   followed by another Stop and no hand-over; after the ending Stop the records are `dequeue`,
@@ -147,19 +150,27 @@ Where things are in Yulius:
 
 - Unit, `crates/yulius-domain/src/agent_cli.rs`: the queue's count (`Queue`: add, hand on,
   take, never below zero, a hand-over until its turn; AC1, AC6), `moves_now` with a queue and
-  with a prompt not yet read (AC2, AC7), how long a turn's end waits for a prompt's record
-  (AC7).
+  with a prompt not yet read (AC2, AC7), for how long a prompt's record may be missing
+  (`record_pending`; AC7).
 - Unit, `crates/yulius-harness/src/claude.rs`: the real records' shapes (AC1);
   `crates/yulius-app/src/finish.rs`: `TranscriptFacts` folds the queue (AC1).
 - Integration with real processes, `crates/yulius/tests/claude_code_moves.rs` (`mod moves`),
   the fake agent in the real order: AC2, AC3, AC4, AC5, AC6, AC7 (the turn held with
   `--turn-hold-file`, the hand-over with `--queue-handover-file`, the handed-on turn with
   `--queue-turn-file`, the record with `--queue-record-ms`; decisions awaited at the race
-  points `ClaudeMoveProbed` and `ClaudeMoveSettled`), and AC1's resumed run and reattached run.
+  points `ClaudeMoveProbed` and `ClaudeMoveSettled`), and AC1's resumed run (a task stopped
+  with a prompt waiting, then continued) and reattached run (a second server over the same
+  data). These tests take the time of CCQ-004 as none, since the fake agent ends a turn
+  milliseconds after its prompt; the tests of that rule set it.
+- Integration with the test clock, `claude_code_moves.rs`: AC7's bound and a prompt during the
+  look (hooks to the internal listener, the look held at `ClaudeMoveProbed`).
+- `crates/yulius/src/wiring/harness.rs`: a resumed run's watch does not read the earlier
+  run's `enqueue` (AC1).
 - `tools/fake-agent/tests`: AC8.
 - Mutations, each reverted (Evidence lists them): the queue not asked; a `dequeue` or a
-  `remove` not counted; a hand-over not kept; the wait dropped; a prompt during the look not
-  asked; a new run keeping the old count; the count going below zero.
+  `remove` not counted; a hand-over not kept; the time after a prompt not asked; a prompt
+  during the look not asked; a new run keeping the old count; a replay not applied; the count
+  going below zero.
 - Checked against real artifacts: the installed Claude Code 2.1.322 against a local stub of
   the model API before the design (Context), and the watcher's code replayed over those runs'
   transcripts and over this instance's real sessions after it (Evidence).
@@ -198,14 +209,19 @@ Where things are in Yulius:
   and no turn shows. Only the prompt record ends it: the ended turn's own late lines (its
   `turn_duration`, an interrupted answer) come after the `dequeue` in the file. A hand-over
   that starts no prompt record (a command) is ended by the next prompt, one turn late.
-- **A wait, then the read, for a prompt that just went on.** No record tells Yulius where a
-  prompt went until Claude Code wrote one, about 100 ms after the hook returned. The turn's
-  end therefore waits out a bound of one second since the last prompt went on and reads then.
-  It is a bound on Claude Code's own writing, the only link there is; a machine so loaded that
-  the write takes longer loses the prompt as before. Rejected: keeping the session whenever a
-  prompt went on in the last second, which needs no wait but never moves a session whose turn
-  is shorter than that. The wait is taken only when the session is otherwise due to move, and
-  is not counted against the time the decision may take.
+- **A second after a prompt went on, the session stays.** No record tells Yulius where a
+  prompt went until Claude Code wrote one, about 100 ms after the hook returned. For one
+  second after a prompt from the prompt box went on, a turn's end therefore leaves the session
+  alone; and a prompt that goes on while a turn's end looks is counted, not timed, since a
+  look may take longer than that second. It is a bound on Claude Code's own writing, the only
+  link there is: a machine so loaded that the write takes longer than a second loses the
+  prompt as before. Rejected: the turn's end waiting out the rest of the second and reading
+  then. The decision at a Stop is made inside the hook's request, whose client gives up after
+  5 s, and already takes up to two seconds for the watcher's round; a wait on top makes a
+  session whose turn follows its prompt at once miss the decision's time under load, which
+  only looks like the same outcome. A turn of a model does not end within a second of its
+  prompt, so the rule costs nothing there; the tests' fake agent does, so its tests take the
+  time as none and the rule has tests of its own.
 - **What the test in the old order shows.**
   `a_message_yulius_typed_keeps_the_session_until_its_submit` runs with the fake agent reading
   the message after its turn. It shows the draft rule for what Yulius typed (SPEC-468
@@ -224,6 +240,7 @@ Where things are in Yulius:
   It is about when Yulius types, not about what a restart loses.
 - **Limits.** A prompt entered after the turn's end decided to restart and before the task
   reads as switching is typed into a process that ends (some milliseconds; a message's sender
-  is refused once the task reads switching). What went on is kept in memory: after a restart
-  of the server the wait of CCQ-004 knows no earlier prompt.
+  is refused once the task reads switching). When a prompt went on is kept in memory: after a
+  restart of the server CCQ-004 knows no earlier prompt. A run reattached then knows its queue
+  once its lines were read again, a moment after the server started.
 - **ADR-0293 is amended in place**, as SPEC-468 did: the rule refines that decision.

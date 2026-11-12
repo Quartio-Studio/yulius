@@ -81,6 +81,13 @@ pub struct AppConfig {
     /// (the turn's lines not read yet, a slow look at the session's processes) is left to a
     /// later turn's end. Tests shorten it.
     pub claude_code_decision_ms: u64,
+    /// How long after a prompt from a session's prompt box went on its record may still be
+    /// missing from the transcript: Claude Code writes where the prompt went (a turn of its
+    /// own, or its queue) once the prompt's hook returned, and the record reaches the file
+    /// about 100 ms later. A turn's end within this time leaves the session where it is
+    /// instead of restarting it on a newer Claude Code (SPEC-471 CCQ-004). Tests whose agent
+    /// ends a turn milliseconds after its prompt set it to none.
+    pub claude_code_queue_record_ms: u64,
     /// How long the Superagent's request to start a task in another sandbox waits for its
     /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
     /// shorten it.
@@ -150,6 +157,7 @@ impl AppConfig {
             launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),
             claude_code_start_ms: 120_000,
             claude_code_decision_ms: 3_500,
+            claude_code_queue_record_ms: 1_000,
             cross_request_wait_ms: u64::try_from(
                 crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
             )

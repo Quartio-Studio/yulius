@@ -139,8 +139,9 @@ pub struct MoveFacts {
     /// Something waits in Claude Code's queue, or was handed on to a turn not seen yet
     /// ([`Queue::holds`]): the process holds it in memory alone (SPEC-471 CCQ-002, CCQ-003).
     pub queued: bool,
-    /// A prompt went on while this turn's end looked at the session: where it went is not in
-    /// the lines the look read (SPEC-471 CCQ-004).
+    /// A prompt from the prompt box went on moments ago ([`record_pending`]), or while this
+    /// turn's end looked at the session: where it went (a turn of its own, or Claude Code's
+    /// queue) may not be in the lines read (SPEC-471 CCQ-004).
     pub prompt_unread: bool,
 }
 
@@ -203,14 +204,15 @@ impl Queue {
     }
 }
 
-/// How long a turn's end still waits before it reads the transcript, a prompt from the prompt
-/// box having last gone on `passed_ms_ago` (`None`: none did in this run), with `bound_ms`
-/// taken as the time Claude Code needs to write where the prompt went (SPEC-471 CCQ-004): the
-/// rest of that time, never more than all of it (a clock that went back).
+/// Whether the record of a prompt from the prompt box that went on `passed_ms_ago` (`None`:
+/// none did in this run) may still be missing from the transcript, with `bound_ms` taken as
+/// the time Claude Code needs to write it (SPEC-471 CCQ-004). Claude Code makes the record
+/// (the prompt's own, or its `enqueue`) once the prompt's hook returned, and the record
+/// reaches the file about 100 ms later: until then nothing says where the prompt went. A clock
+/// that went back counts as "just now".
 #[must_use]
-pub fn record_wait_ms(passed_ms_ago: Option<i64>, bound_ms: i64) -> i64 {
-    let bound = bound_ms.max(0);
-    passed_ms_ago.map_or(0, |ago| bound.saturating_sub(ago).clamp(0, bound))
+pub fn record_pending(passed_ms_ago: Option<i64>, bound_ms: i64) -> bool {
+    bound_ms > 0 && passed_ms_ago.is_some_and(|ago| ago < bound_ms)
 }
 
 /// A person who typed into a session this recently owns its prompt box: it is not restarted
@@ -681,7 +683,7 @@ mod tests {
                 prompt_unread: true,
                 ..due
             },
-            "a prompt went on while the turn's end looked",
+            "a prompt just went on, or did while the turn's end looked",
         );
         // Sent to an older version before, or stopped for another: this one is new.
         assert!(moves_now(&MoveFacts {
@@ -750,22 +752,19 @@ mod tests {
         assert!(queue.holds());
     }
 
-    /// SPEC-471 CCQ-004: a turn's end waits out the rest of the time Claude Code needs to
-    /// write where a prompt went.
+    /// SPEC-471 CCQ-004: for the time Claude Code needs to write where a prompt went, the
+    /// prompt's record may be missing from the lines a turn's end reads.
     #[test]
-    fn a_turn_end_waits_for_the_record_of_a_prompt_that_just_went_on() {
-        assert_eq!(record_wait_ms(None, 1_000), 0, "no prompt went on");
-        assert_eq!(record_wait_ms(Some(0), 1_000), 1_000);
-        assert_eq!(record_wait_ms(Some(250), 1_000), 750);
-        assert_eq!(record_wait_ms(Some(1_000), 1_000), 0);
-        assert_eq!(record_wait_ms(Some(60_000), 1_000), 0, "long ago");
-        assert_eq!(
-            record_wait_ms(Some(-5_000), 1_000),
-            1_000,
-            "the clock went back"
-        );
-        assert_eq!(record_wait_ms(Some(10), 0), 0, "no time is taken");
-        assert_eq!(record_wait_ms(Some(10), -3), 0);
+    fn the_record_of_a_prompt_that_just_went_on_may_be_missing() {
+        assert!(!record_pending(None, 1_000), "no prompt went on");
+        assert!(record_pending(Some(0), 1_000));
+        assert!(record_pending(Some(999), 1_000));
+        assert!(!record_pending(Some(1_000), 1_000), "the time is over");
+        assert!(!record_pending(Some(60_000), 1_000), "long ago");
+        assert!(record_pending(Some(-5_000), 1_000), "the clock went back");
+        assert!(!record_pending(Some(0), 0), "no time is taken");
+        assert!(!record_pending(Some(-5_000), 0));
+        assert!(!record_pending(Some(0), -3));
     }
 
     /// SPEC-468 CCF-010: a keystroke is a draft when it came after the session's prompt box was

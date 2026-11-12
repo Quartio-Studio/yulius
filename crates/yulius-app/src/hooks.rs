@@ -264,6 +264,13 @@ impl App {
         if from_box && !held && !blocked {
             let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
             runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+            // It goes on to Claude Code now, which writes where it went (a turn of its own,
+            // or its queue) only after this answer: until that record is read, a turn's end
+            // cannot tell (SPEC-471 CCQ-004).
+            runtime
+                .prompt_passed_ms
+                .store(self.now().0, Ordering::SeqCst);
+            runtime.prompts_passed.fetch_add(1, Ordering::SeqCst);
         }
         runtime.prompt_held.store(held, Ordering::SeqCst);
         reply
