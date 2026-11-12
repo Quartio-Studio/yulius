@@ -347,8 +347,12 @@ an older one.
   - *Seen on the real host and fixed in a pull request of its own (#1192).* While a channel
     change was being saved the select was off and "Use the server's" was not: a second click
     sent the request again and showed its toast twice (nothing else: the server finds the
-    channel as asked). Both controls are off until the answer is drawn, and the card is drawn
-    again after every save, whatever the answer says. The mock's `holdpost` holds a PUT too.
+    channel as asked). Both controls are off until the answer is drawn. Switching them off by
+    hand also marks the card as no longer drawn, so whatever comes next (the answer, a refusal,
+    a poll) draws it again: one reset in place of the two after an answer and after a refusal,
+    of which the first was pinned by no test (a first reviewer's session, which ended without a
+    report, left that in its experiment logs; its run of the whole e2e suite at 1c44dbde passed,
+    941 tests). The mock's `holdpost` holds a PUT too.
   - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
     Task #452 answers the third review's finding that the stored version is whatever a
     transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
@@ -469,7 +473,10 @@ an older one.
   takes another" failed first with `select off, button on`; with the fix `claude-code.e2e.ts`
   passes (8), and with every file that holds a request or shows the Instance page 179 pass
   (13 files). `scripts/dev ci` at f08aa9a6 (`dev` up to b72c7f76 merged): exit 0, nextest 3687
-  passed / 16 skipped; the commit after it changes this file only.
+  passed / 16 skipped. After it the card's script changed by one reset and the refused-change
+  test by the button's case: the same 13 files pass (179), and each half of the fix undone
+  fails a test (no reset: "stable off" in the refused test; no switching off: "button on" in
+  the held one).
 - After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
   kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
   incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
