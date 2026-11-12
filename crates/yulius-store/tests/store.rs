@@ -321,6 +321,303 @@ async fn the_state_time_moves_only_when_the_state_changes() -> R {
     Ok(())
 }
 
+/// SPEC-472 ATN-001, ATN-002: a flag and its reason are one statement, and a reason speaks only
+/// for the flag it was written with: not once the task left that flag, whatever statement
+/// changed its state, and not for a flag raised later without one.
+#[tokio::test]
+async fn a_flags_reason_is_read_only_while_the_task_reads_that_flag() -> R {
+    use yulius_app::attention::AttentionRecord;
+    use yulius_app::model::TaskTimes;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let gate = AttentionRecord::yulius("The agent stopped 3 times.", "Tell it how to go on.");
+    let secret = AttentionRecord::yulius("A secret waits.", "Answer it.")
+        .on_page("https://yulius.test/s/app/secrets");
+    let state_at = || async {
+        Ok::<_, Box<dyn std::error::Error>>(store.task_times(&t.id).await?.map(|t| t.state_at))
+    };
+
+    // Not running: nothing is flagged and nothing is kept.
+    assert!(
+        !store
+            .flag_attention(&t.id, None, Some(&gate), Timestamp(15))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.activity, None);
+    assert_eq!(store.task_attention(&t.id).await?, None);
+
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            Timestamp(20),
+        )
+        .await?;
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    assert!(
+        store
+            .flag_attention(&t.id, None, Some(&gate), Timestamp(30))
+            .await?
+    );
+    let flagged = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(flagged.activity, Some(Activity::NeedsAttention));
+    assert_eq!(flagged.updated_at, Timestamp(30));
+    assert_eq!(
+        store.task_times(&t.id).await?,
+        Some(TaskTimes {
+            state_at: Timestamp(30),
+            working_since: None,
+        }),
+        "a flagged task works for nobody (SPEC-087)"
+    );
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((gate.clone(), Timestamp(30))),
+        "the reason, and when its flag was raised"
+    );
+
+    // Flagged already: the flag, its time and its reason stay, with or without a new reason.
+    assert!(
+        !store
+            .flag_attention(&t.id, None, Some(&secret), Timestamp(40))
+            .await?
+    );
+    assert!(
+        !store
+            .flag_attention(&t.id, None, None, Timestamp(41))
+            .await?
+    );
+    assert_eq!(state_at().await?, Some(Timestamp(30)));
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((gate.clone(), Timestamp(30)))
+    );
+
+    // The task works again: the reason is not read, though no statement cleared it.
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(50))
+        .await?;
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    // Flagged anew by a statement that knows no reason: the old one is not that flag's.
+    store
+        .set_activity(&t.id, Some(Activity::NeedsAttention), Timestamp(60))
+        .await?;
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    // Flagged anew without a reason by the flag's own statement: none is kept.
+    store
+        .set_activity(&t.id, Some(Activity::Waiting), Timestamp(70))
+        .await?;
+    assert!(
+        store
+            .flag_attention(&t.id, None, None, Timestamp(80))
+            .await?
+    );
+    assert_eq!(state_at().await?, Some(Timestamp(80)));
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    // And with another reason: that one, with its page.
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(90))
+        .await?;
+    assert!(
+        store
+            .flag_attention(&t.id, None, Some(&secret), Timestamp(100))
+            .await?
+    );
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(100)))
+    );
+
+    // A task that is not running reads no reason, also when its state is of the flag's time.
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Stopping,
+            Some(Activity::NeedsAttention),
+            Timestamp(100),
+        )
+        .await?;
+    assert_eq!(state_at().await?, Some(Timestamp(100)));
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    assert_eq!(
+        store.task_attention(&TaskId::parse("missing")?).await?,
+        None
+    );
+    Ok(())
+}
+
+/// SPEC-472 ATN-001 (SPEC-213 SRA-003): a flag raised from a state the task read is not raised
+/// once the task left that state.
+#[tokio::test]
+async fn a_flag_from_a_state_the_task_left_is_not_raised() -> R {
+    use yulius_app::attention::AttentionRecord;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let secret = AttentionRecord::yulius("A secret waits.", "Answer it.");
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            Timestamp(20),
+        )
+        .await?;
+    // The state moved since it was read: its time, then its activity.
+    for stale in [
+        (Some(Activity::Working), Timestamp(19)),
+        (Some(Activity::Waiting), Timestamp(20)),
+        (None, Timestamp(20)),
+    ] {
+        assert!(
+            !store
+                .flag_attention(&t.id, Some(stale), Some(&secret), Timestamp(30))
+                .await?,
+            "{stale:?}"
+        );
+    }
+    assert_eq!(
+        store.task(&t.id).await?.ok_or("task")?.activity,
+        Some(Activity::Working)
+    );
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    // As it was read: flagged, with the reason.
+    let read = (Some(Activity::Working), Timestamp(20));
+    assert!(
+        store
+            .flag_attention(&t.id, Some(read), Some(&secret), Timestamp(30))
+            .await?
+    );
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret, Timestamp(30)))
+    );
+    // A task with no activity yet is flagged from that state too.
+    let u = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    store
+        .transition_task(&u.id, None, TaskStatus::Running, None, Timestamp(20))
+        .await?;
+    assert!(
+        store
+            .flag_attention(&u.id, Some((None, Timestamp(20))), None, Timestamp(30))
+            .await?
+    );
+
+    Ok(())
+}
+
+/// SPEC-472 ATN-011: a flag that changes owner gets another reason and stays the same flag: its
+/// time and the task's state do not move. Only the flag raised at the time named is changed;
+/// the same reason again changes nothing; no reason clears it.
+#[tokio::test]
+async fn a_flags_reason_is_replaced_only_on_the_flag_it_was_read_from() -> R {
+    use yulius_app::attention::AttentionRecord;
+    use yulius_app::model::TaskTimes;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let secret = AttentionRecord::yulius("A secret waits.", "Answer it.")
+        .on_page("https://yulius.test/s/app/secrets?section=agents");
+    let question = AttentionRecord::terminal(Some("Pick one"));
+    let replace = |flagged: i64, reason: Option<AttentionRecord>, at: i64| {
+        let (store, id) = (&store, &t.id);
+        async move {
+            store
+                .replace_attention(id, Timestamp(flagged), reason.as_ref(), Timestamp(at))
+                .await
+        }
+    };
+    // No flag to speak for: a queued task, then a working one.
+    assert!(!replace(10, Some(question.clone()), 15).await?);
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            Timestamp(20),
+        )
+        .await?;
+    assert!(!replace(20, Some(question.clone()), 25).await?);
+    assert_eq!(store.task_attention(&t.id).await?, None);
+
+    assert!(
+        store
+            .flag_attention(&t.id, None, Some(&secret), Timestamp(30))
+            .await?
+    );
+    // Another flag's time: nothing.
+    assert!(!replace(29, Some(question.clone()), 40).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(30)))
+    );
+    // This flag's: the reason changes, the flag does not.
+    assert!(replace(30, Some(question.clone()), 40).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((question.clone(), Timestamp(30))),
+        "the same flag, raised when it was"
+    );
+    let now = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(now.activity, Some(Activity::NeedsAttention));
+    assert_eq!(now.updated_at, Timestamp(40), "the task changed");
+    assert_eq!(
+        store.task_times(&t.id).await?,
+        Some(TaskTimes {
+            state_at: Timestamp(30),
+            working_since: None,
+        })
+    );
+    // The reason it has: no change, nothing to announce.
+    assert!(!replace(30, Some(question.clone()), 50).await?);
+    assert_eq!(
+        store.task(&t.id).await?.ok_or("task")?.updated_at,
+        Timestamp(40)
+    );
+    // No reason: the flag says none, once.
+    assert!(replace(30, None, 60).await?);
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    assert!(!replace(30, None, 70).await?);
+    // And one again, over none.
+    assert!(replace(30, Some(secret.clone()), 80).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(30)))
+    );
+
+    // A task that is not running keeps what it has.
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Stopping,
+            Some(Activity::NeedsAttention),
+            Timestamp(30),
+        )
+        .await?;
+    assert!(!replace(30, Some(question), 90).await?);
+    assert!(
+        !store
+            .replace_attention(
+                &TaskId::parse("missing")?,
+                Timestamp(30),
+                None,
+                Timestamp(90)
+            )
+            .await?
+    );
+    Ok(())
+}
+
 /// SPEC-315 FWS-001: publishing an idle task ends or starts its working stretch only while the
 /// task is still in the state that was decided on; a turn that started in between keeps its
 /// stretch (issue #895).

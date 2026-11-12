@@ -514,16 +514,17 @@ impl App {
                 self.ask_env_files(user, record, &sandbox.slug, &why)
                     .await?;
             }
-            self.flag_secret_wait(user, "a .env request").await?;
-            let waiting_records = waiting.clone();
+            // Where a person answers: the secret's own tab, the page for several.
+            let link = match waiting.as_slice() {
+                [only] => self.agent_secret_link(&sandbox.slug, only),
+                _ => self.agent_secrets_link(&sandbox.slug),
+            };
+            self.flag_secret_wait(user, "a .env request", &link).await?;
             let waiting: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             return Ok(json!({
                 "copied": [],
                 "waiting": waiting,
-                "link": match waiting_records.as_slice() {
-                    [only] => self.agent_secret_link(&sandbox.slug, only),
-                    _ => self.agent_secrets_link(&sandbox.slug),
-                },
+                "link": link,
                 "next": format!(
                     "Nothing was written. A person who manages {} allows copying it into .env files on the Secrets page: print the link so they can, go on with other work, and call secret_copy_to_env again once secrets_list shows env_files allowed.",
                     waiting.join(", ")
@@ -991,7 +992,8 @@ impl App {
                 for record in &waiting {
                     self.ask_env_files(user, record, &sandbox.slug, why).await?;
                 }
-                self.flag_secret_wait(user, "a CD secret request").await?;
+                self.flag_secret_wait(user, "a CD secret request", &link)
+                    .await?;
             }
             return Err(AppError::Conflict(format!(
                 "nothing ran: a person who manages {} allows using {} outside the proxy (the \

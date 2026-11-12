@@ -18,6 +18,8 @@ use yulius_domain::spec_format::{DecisionFiles, NamedFile, decision_titles, proj
 use yulius_domain::spec_format::{DecisionsLocation, SpecPolicy, validate_spec_for};
 use yulius_domain::task::{Activity, TaskStatus};
 
+use crate::attention::Flagged;
+
 use crate::capacity::{CONTINUATION_MAX, HOLD_RETRY_SECS};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -327,14 +329,22 @@ impl App {
                 // task waiting or done, so chains and onboarding see it as finished
                 // (F 2026-10-11).
                 if notification_needs_a_person(input) {
-                    self.set_task_activity(&ctx.task, Activity::NeedsAttention)
+                    // Its question is in the terminal, in Claude Code's own words, and the flag
+                    // says whether the session's work answers it: a restart of Yulius forgets
+                    // the time kept below (SPEC-472).
+                    let flagged = self
+                        .flag_attention(
+                            &ctx.task.id,
+                            crate::attention::AttentionRecord::terminal(input.message.as_deref())
+                                .answered_by_work(notice_answered_by_work(input)),
+                        )
                         .await?;
                     // The agent's next work shows the person answered (STA-003), unless the
                     // task was flagged already (by the gate, say) or a worker asks, which the
-                    // main session's work says nothing about.
-                    if ctx.task.activity != Some(Activity::NeedsAttention)
-                        && notice_answered_by_work(input)
-                    {
+                    // main session's work says nothing about. A secret request's flag that
+                    // this question took over is the question's, so work answers it too
+                    // (SPEC-472 ATN-011).
+                    if notice_answers_by_work(ctx.task.activity, flagged, input) {
                         self.runtime(&ctx.task.id)
                             .notice_attention_ms
                             .store(self.now().0.max(1), Ordering::SeqCst);
@@ -413,14 +423,16 @@ impl App {
     }
 
     /// Sets a running task's activity and publishes it. `NeedsAttention` is raised from the task
-    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]).
+    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]), and without a reason:
+    /// for a flag whose own request says it (a goal pause, a host move: `needs_you`). Every
+    /// other flag gives its reason ([`Self::flag_attention`], SPEC-472).
     pub(crate) async fn set_task_activity(
         &self,
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
         if activity == Activity::NeedsAttention {
-            return self.flag_needs_attention(&task.id).await;
+            return self.flag_needs_attention(&task.id, None).await.map(|_| ());
         }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
@@ -449,23 +461,48 @@ impl App {
     /// Flags a running task as needing a person, for anything but a secret request: a flag
     /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
     /// the task's attention lock, from the task as it is now, so that a secret request's answer
-    /// ending its flag at the same moment cannot swallow this one.
-    async fn flag_needs_attention(&self, task_id: &TaskId) -> AppResult<()> {
+    /// ending its flag at the same moment cannot swallow this one. The flag and its `reason`
+    /// are one write (SPEC-472): a task already flagged keeps both, with one exception. A flag
+    /// that was a secret request's is this matter's from now on (the request's answer no
+    /// longer ends it), so it says this matter's reason, or none: the request's would send the
+    /// person to a Secrets page with nothing left to answer (ATN-011).
+    pub(crate) async fn flag_needs_attention(
+        &self,
+        task_id: &TaskId,
+        reason: Option<&crate::attention::AttentionRecord>,
+    ) -> AppResult<Flagged> {
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
-        runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        let Some(task) = self.deps.store.task(task_id).await? else {
-            return Ok(());
-        };
-        if task.status != TaskStatus::Running || task.activity == Some(Activity::NeedsAttention) {
-            return Ok(());
+        let store = &self.deps.store;
+        let now = self.now();
+        if store.flag_attention(task_id, None, reason, now).await? {
+            runtime.secret_wait_at.store(0, Ordering::SeqCst);
+            self.publish_task(task_id).await;
+            return Ok(Flagged::Raised);
         }
-        self.deps
-            .store
-            .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
-            .await?;
+        // Flagged already. Whose flag it is: this server's memory, or the flag's own reason
+        // when the server started after it was raised.
+        let secret_flag = self.secret_flag_at(&runtime, task_id).await?;
+        runtime.secret_wait_at.store(0, Ordering::SeqCst);
+        if secret_flag == 0 {
+            return Ok(Flagged::Stands);
+        }
+        // The same flag, since the request raised it, with this matter's reason and none of
+        // the request's claim to it.
+        let taken_over = reason.map(|reason| {
+            let mut reason = reason.clone();
+            reason.answer_ends = false;
+            reason
+        });
+        let flagged = yulius_domain::time::Timestamp(secret_flag);
+        if !store
+            .replace_attention(task_id, flagged, taken_over.as_ref(), now)
+            .await?
+        {
+            return Ok(Flagged::Stands);
+        }
         self.publish_task(task_id).await;
-        Ok(())
+        Ok(Flagged::TakenOver)
     }
 
     async fn hook_session_start(
@@ -930,12 +967,23 @@ impl App {
         }
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
-            self.set_task_activity(task, Activity::NeedsAttention)
-                .await?;
-            self.runtime(&task.id).hub.notice(format!(
-                "Yulius: the agent stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+            let stopped = format!(
+                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
                 reasons.join(" ").chars().take(300).collect::<String>()
-            ));
+            );
+            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+            // terminal for the viewers there now.
+            self.flag_attention(
+                &task.id,
+                crate::attention::AttentionRecord::yulius(
+                    &format!("The agent {stopped}"),
+                    "Tell it how to go on, in the terminal.",
+                ),
+            )
+            .await?;
+            self.runtime(&task.id)
+                .hub
+                .notice(format!("Yulius: the agent {stopped}"));
             return Ok(HookReply::Output(HookOutput::default()));
         }
         let update = TaskFieldUpdate {
@@ -1584,6 +1632,15 @@ fn notice_answered_by_work(input: &HookInput) -> bool {
     )
 }
 
+/// Whether the time of a notice is kept, so that the session's next work answers its flag
+/// (STA-003): the notice is one that work answers, and its flag is the notice's own: raised by
+/// it on a task that read no flag (`before`), or taken over from a secret request. A notice on
+/// a task that another matter flagged answers nothing: that flag stands.
+fn notice_answers_by_work(before: Option<Activity>, flagged: Flagged, input: &HookInput) -> bool {
+    notice_answered_by_work(input)
+        && (before != Some(Activity::NeedsAttention) || flagged == Flagged::TakenOver)
+}
+
 /// Whether a `Notification` hook asks a person to act ([`NOTICES_ASKING_A_PERSON`]).
 /// Without `notification_type` (older Claude Code) the idle reminder is known by its text.
 fn notification_needs_a_person(input: &HookInput) -> bool {
@@ -1600,17 +1657,44 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 mod tests {
     use super::{
         RepoDocs, colour, doc_present, foundations, notice_answered_by_work,
-        notification_needs_a_person, read_repo_doc, repo_doc_exists, repo_path, resolved_in_repo,
-        resolved_through_links, workflow_count, worktree_relative,
+        notice_answers_by_work, notification_needs_a_person, read_repo_doc, repo_doc_exists,
+        repo_path, resolved_in_repo, resolved_through_links, workflow_count, worktree_relative,
     };
+    use crate::attention::Flagged;
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
+    use yulius_domain::task::Activity;
 
     fn notice(kind: Option<&str>, message: Option<&str>) -> HookInput {
         HookInput {
             notification_type: kind.map(str::to_owned),
             message: message.map(str::to_owned),
             ..HookInput::default()
+        }
+    }
+
+    /// SPEC-472 ATN-011 (STA-003): the time of a notice is kept, so that work answers its flag,
+    /// only for a notice that work answers and a flag that is the notice's own: raised by it,
+    /// or taken over from a secret request. On another matter's flag it answers nothing.
+    #[test]
+    fn a_notices_time_is_kept_only_for_a_flag_of_its_own() {
+        let asks = notice(Some("permission_prompt"), None);
+        let worker = notice(Some("worker_permission_prompt"), None);
+        let working = Some(Activity::Working);
+        let flagged = Some(Activity::NeedsAttention);
+        // Raised on a task that read no flag (also when a flag was raised meanwhile: the
+        // hook's own snapshot decides, as before).
+        assert!(notice_answers_by_work(working, Flagged::Raised, &asks));
+        assert!(notice_answers_by_work(None, Flagged::Raised, &asks));
+        assert!(notice_answers_by_work(working, Flagged::Stands, &asks));
+        // Taken over from a secret request.
+        assert!(notice_answers_by_work(flagged, Flagged::TakenOver, &asks));
+        // Another matter's flag stands (the gate's, say).
+        assert!(!notice_answers_by_work(flagged, Flagged::Stands, &asks));
+        // What work does not answer, it never answers.
+        for outcome in [Flagged::Raised, Flagged::TakenOver, Flagged::Stands] {
+            assert!(!notice_answers_by_work(working, outcome, &worker));
+            assert!(!notice_answers_by_work(flagged, outcome, &worker));
         }
     }
 

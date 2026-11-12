@@ -266,6 +266,7 @@ function seed(params) {
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
       ...(extra.mode ? { mode: extra.mode } : {}),
+      ...(extra.attention ? { attention: extra.attention } : {}),
       // Background shells the idle agent left running (TSK-014).
       background_shells: extra.shells ?? null,
       background_shells_since: extra.shells ? new Date(Date.now() - 12 * MIN).toISOString() : null,
@@ -286,7 +287,9 @@ function seed(params) {
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, working: 2 * HOUR + 14 * MIN, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
-    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
+    // Its agent asked for a sign-in in the sandbox browser (the request `askBrowserSignIn` sends):
+    // the flag says so itself, with the tab, for a page that never hears the request (SPEC-472).
+    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4, attention: { kind: 'yulius', problem: 'The agent asks you to act in the sandbox\'s browser: Sign in to AWS so task #10 can deploy', action: 'Open the browser tab and do what it asks.', link: `${ORIGIN}/s/studio/browser?tab=tab-aws` } }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3, working: 3 * HOUR }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', null, { done: 1 }),
@@ -479,6 +482,8 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
+    // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
+    attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // No Claude account usable (SPEC-246): it waits for one, not for capacity.
@@ -790,7 +795,12 @@ function touch(db, task, changes = {}) {
   Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
-  if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
+  if (task.status !== status || task.activity !== activity) {
+    task.state_since = task.updated_at;
+    // A flag's reason goes with its flag, as on the server (SPEC-472): a change of state that
+    // brings no reason leaves none.
+    if (!('attention' in changes)) delete task.attention;
+  }
   task.working_since = workingSince(task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });

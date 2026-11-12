@@ -7,6 +7,7 @@ use crate::support;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use axum::http::Method;
 use serde_json::json;
@@ -506,6 +507,179 @@ async fn stop_gate_blocks_three_times_then_needs_attention() -> TestResult {
     assert_eq!(activity(&f).await?, Some(Activity::Waiting));
     let task = f.h.app.deps.store.task(&f.task).await?.ok_or("task")?;
     assert_eq!(task.gate_blocks, 0);
+    Ok(())
+}
+
+/// The gate gives up on the fixture's task: code changed without a spec, three blocks, then a
+/// Stop that passes and flags the task.
+async fn gate_gives_up(f: &Fixture) -> TestResult {
+    std::fs::write(f.worktree.join("api.rs"), "fn main() {}\n")?;
+    for n in 1..=3 {
+        let body = hook(f, "Stop", json!({"stop_hook_active": n > 1})).await?;
+        assert_eq!(body["decision"], "block", "block {n}");
+    }
+    let body = hook(f, "Stop", json!({"stop_hook_active": true})).await?;
+    assert!(body.is_null(), "{body:?}");
+    assert_eq!(activity(f).await?, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-472 ATN-001..ATN-004 (#1221): a flag the gate raised says why to whoever opens the task
+/// later, also after a restart of Yulius. Its notice reaches only the viewers connected then.
+#[tokio::test]
+async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult {
+    let f = fixture().await?;
+    let mut live = f.h.app.runtime(&f.task).hub.watch();
+    gate_gives_up(&f).await?;
+    let said = notices(&mut live);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("stopped 3 times without fixing")),
+        "{said:?}"
+    );
+    // Whoever opens the task afterwards gets no notice: the task itself says why.
+    let mut later = f.h.app.runtime(&f.task).hub.subscribe().rx;
+    assert!(notices(&mut later).is_empty());
+    let why = support::attention(&f.h.app, "t-main").await?;
+    assert_eq!(why["kind"], "yulius", "{why}");
+    let problem = why["problem"].as_str().unwrap_or_default();
+    assert!(
+        problem.starts_with("The agent stopped 3 times without fixing: ")
+            && problem.contains("docs/specs/checkout.md"),
+        "{why}"
+    );
+    assert_eq!(
+        why["action"], "Tell it how to go on, in the terminal.",
+        "{why}"
+    );
+    assert!(why["link"].is_null(), "{why}");
+
+    // A restart of Yulius: another app on the same database, with no memory of the run.
+    let again = support::harness_with(support::HarnessOptions {
+        store: Some(f.h.store.clone()),
+        ..support::HarnessOptions::default()
+    })?;
+    assert_eq!(support::attention(&again.app, "t-main").await?, why);
+
+    // The person answers: the task works again and the reason is gone with its flag.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "UserPromptSubmit",
+        json!({"prompt": "write the spec first"}),
+    )
+    .await?;
+    assert_eq!(activity(&f).await?, Some(Activity::Working));
+    assert!(support::attention(&f.h.app, "t-main").await?.is_null());
+    // A flag raised afterwards by a path that gives no reason shows none, not the old one.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    f.h.app
+        .deps
+        .store
+        .set_activity(&f.task, Some(Activity::NeedsAttention), f.h.app.now())
+        .await?;
+    assert!(support::attention(&f.h.app, "t-main").await?.is_null());
+    Ok(())
+}
+
+/// SPEC-472 ATN-005: a flag raised by a Claude Code notice says the question is in the terminal,
+/// in Claude Code's own words (one line); a notice without words says only that; the idle
+/// reminder flags nothing and says nothing.
+#[tokio::test]
+async fn a_notices_flag_carries_claude_codes_words() -> TestResult {
+    let f = fixture().await?;
+    let why = || support::attention(&f.h.app, "t-main");
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go"})).await?;
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type": "idle_prompt", "message": "Claude is waiting for your input"}),
+    )
+    .await?;
+    assert!(why().await?.is_null());
+    // The input as Claude Code 2.1.322 sends it for a permission dialog left open for six
+    // seconds (read from the real CLI run against a local stand-in for the API; the ids and
+    // paths here are made up).
+    hook(
+        &f,
+        "Notification",
+        json!({
+            "session_id": "0f5065b9-0000-4000-8000-000000000001",
+            "transcript_path": "/home/agent/.claude/projects/-work/0f5065b9.jsonl",
+            "cwd": "/work",
+            "prompt_id": "670bf19d-0000-4000-8000-000000000002",
+            "hook_event_name": "Notification",
+            "message": "Claude needs your permission",
+            "notification_type": "permission_prompt",
+        }),
+    )
+    .await?;
+    assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
+    assert_eq!(
+        why().await?,
+        json!({
+            "kind": "terminal",
+            "problem": "Claude needs your permission",
+            "action": null,
+            "link": null,
+        })
+    );
+
+    // The person's next prompt ends the flag and its reason. Words over several lines are one
+    // line in the bar.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
+    assert!(why().await?.is_null());
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "Notification",
+        json!({
+            "notification_type": "elicitation_dialog",
+            "message": "Claude Code needs\n  your input",
+        }),
+    )
+    .await?;
+    assert_eq!(
+        why().await?["problem"],
+        "Claude Code needs your input",
+        "one line"
+    );
+
+    // A notice that brings no words still says where the question is.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type": "permission_prompt"}),
+    )
+    .await?;
+    assert_eq!(
+        why().await?,
+        json!({"kind": "terminal", "problem": null, "action": null, "link": null})
+    );
+    Ok(())
+}
+
+/// SPEC-472 ATN-002: one flag, one reason, the first. A Claude Code notice on a task the gate
+/// flagged changes neither the flag nor what it says: the gate's matter still stands once the
+/// notice is answered.
+#[tokio::test]
+async fn a_notice_on_a_flagged_task_keeps_the_flags_reason() -> TestResult {
+    let f = fixture().await?;
+    gate_gives_up(&f).await?;
+    let why = support::attention(&f.h.app, "t-main").await?;
+    assert_eq!(why["kind"], "yulius", "{why}");
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"}),
+    )
+    .await?;
+    assert_eq!(support::attention(&f.h.app, "t-main").await?, why);
     Ok(())
 }
 
@@ -1491,7 +1665,6 @@ async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResu
 /// agent that loops meets the Stop gate, which asks a person after three blocks.
 #[tokio::test]
 async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
-    use std::sync::atomic::Ordering;
     let f = fixture().await?;
     let mut watch = f.h.app.runtime(&f.task).hub.watch();
     let file = f.worktree.join("api.rs").to_string_lossy().into_owned();

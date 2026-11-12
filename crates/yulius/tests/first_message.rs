@@ -307,6 +307,17 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
         .await?;
         let said = notices(&mut watch);
         assert!(said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
+        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Someone typed in the terminal before Yulius set the task's goal, so \
+                            their draft was left alone. The task has no goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
+        );
         let shown = screen(&app, &id);
         assert!(!shown.contains("/goal"), "the goal was typed:\n{shown}");
         assert!(!shown.contains("GOAL SET"), "{shown}");
@@ -429,6 +440,17 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
                     && n.ends_with("the task starts by itself once it is answered.")),
             "{said:?}"
         );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code still asks whether to trust this folder, so Yulius typed \
+                            nothing.",
+                "action": "Answer it in the terminal; the task starts by itself once it is \
+                           answered.",
+                "link": null,
+            })
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -498,6 +520,15 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
             said.iter()
                 .any(|n| n.contains("Claude Code did not take the task's goal")),
             "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code did not take the task's goal. The task has no goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
         );
         assert!(
             !screen(&app, &id).contains("/goal"),
@@ -654,6 +685,68 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
     Ok(())
 }
 
+/// SPEC-106 OTR-002, SPEC-472 ATN-004: a trust prompt nobody answers in front of a prompt task's
+/// typed first message gets nothing typed into it; once the time to answer it is over the task
+/// is flagged, and it says what its person does: answer, then type the first message.
+#[test]
+fn an_unanswered_trust_prompt_before_a_typed_first_message_flags_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            config.trust_answer_ms = 3_000;
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(shown.contains("Yes, I trust this folder"), "{shown}");
+        assert!(
+            !shown.contains("TRUST ANSWERED") && !shown.contains("/srv/shot.png"),
+            "something was typed:\n{shown}"
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|n| n
+                == "Claude Code still asks whether to trust this folder, so Yulius typed \
+                    nothing. Answer it in the terminal, then type the task's first message."),
+            "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code still asks whether to trust this folder, so Yulius typed \
+                            nothing.",
+                "action": "Answer it in the terminal, then type the task's first message.",
+                "link": null,
+            })
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-068 OPN-002, AC-OPN-1 (#266): the server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.
@@ -700,6 +793,18 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
             said.iter()
                 .any(|n| n.contains("first message was never sent")),
             "{said:?}"
+        );
+        // No viewer is connected when a server starts: the task itself says it (SPEC-472).
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Yulius restarted while it typed this task's first message, so the \
+                            first message was never sent and may be half typed in the prompt box.",
+                "action": "Complete it (paste the attached images again if they are missing; \
+                           the task's request lists them) and press Enter.",
+                "link": null,
+            })
         );
         let shown = screen(&app, &id);
         assert!(
@@ -851,6 +956,16 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
             said.iter()
                 .any(|n| n.contains("Yulius restarted before it set this task's goal")),
             "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Yulius restarted before it set this task's goal. The task has no \
+                            goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
         );
         stop(&app, &id).await
     })?;
