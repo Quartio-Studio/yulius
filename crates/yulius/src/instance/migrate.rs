@@ -430,6 +430,9 @@ pub struct Move<'a> {
     lines: Vec<HostLine>,
     /// The one-time key's public line, while a person has to add it (SPEC-470 MVB-010).
     key_line: Option<String>,
+    /// This run found the old instance of a move whose new instance has taken over not held
+    /// (SPEC-481): whatever else it did, the move is not finished.
+    not_held: bool,
 }
 
 impl<'a> Move<'a> {
@@ -452,6 +455,7 @@ impl<'a> Move<'a> {
             phase: "Plan",
             lines: Vec::new(),
             key_line: None,
+            not_held: false,
         }
     }
 
@@ -519,6 +523,13 @@ impl<'a> Move<'a> {
         Stop::Failed
     }
 
+    /// The failed line of an old instance that is not held beside a new one that has taken
+    /// over: the run ends with exit 1, and its status does not read "done" (SPEC-481).
+    fn fail_not_held(&mut self, detail: String) -> Stop {
+        self.not_held = true;
+        self.fail("old instance", detail)
+    }
+
     /// Runs a step on the new host and takes its lines; a failed line or no answer stops.
     fn call(&mut self, name: &str, request: &Request) -> Result<Reply, Stop> {
         let reply = match self.remote.call(request) {
@@ -559,7 +570,11 @@ impl<'a> Move<'a> {
             Err(Stop::Failed) => 1,
             Ok(()) | Err(Stop::Ended) => u8::from(failed(&self.lines)),
         };
-        if end.is_ok() {
+        if self.not_held {
+            // Also when the finish was done by this run: the move stands at its cutover until
+            // the old instance is held, for `--status` and the page (SPEC-481 HLD-002).
+            self.phase = "Cutover";
+        } else if end.is_ok() {
             self.phase = "done";
         }
         let summary = host_setup::summary(&self.lines, Mode::Setup);
@@ -1836,7 +1851,7 @@ impl<'a> Move<'a> {
                 ),
             ),
             Err(why) => {
-                self.fail("old instance", why);
+                self.fail_not_held(why);
             }
         }
         self.state.cutover = Cutover::Moved;
@@ -1934,7 +1949,7 @@ impl<'a> Move<'a> {
             ),
             Err(why) => {
                 self.phase("Cutover");
-                return Err(self.fail("old instance", why));
+                return Err(self.fail_not_held(why));
             }
         }
         Ok(())
@@ -2027,7 +2042,7 @@ impl<'a> Move<'a> {
                     // with this host (SPEC-481 HLD-005); later runs look again.
                     if let Err(said) = freeze::disabled(&mut *self.world.freezer(), &unit) {
                         let why = self.not_disabled(&said);
-                        self.fail("old instance", why);
+                        self.fail_not_held(why);
                     }
                     self.state.cutover = Cutover::Moved;
                     return self.save_state();

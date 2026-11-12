@@ -3052,6 +3052,8 @@ fn looks_and_fails(s: &mut Setup, says: &str) -> TestResult {
     assert!(shown.contains(says), "{shown}");
     assert!(shown.contains(NOT_FINISHED), "{shown}");
     assert!(!shown.contains(FINISHED), "{shown}");
+    // Said under the cutover's heading, not as a line of the plan.
+    assert!(shown.contains("\nCutover\nFAIL "), "{shown}");
     let status = s.status()?;
     assert_eq!(status.phase, "Cutover");
     let said = line(&status, "old instance").ok_or("no line of the old instance")?;
