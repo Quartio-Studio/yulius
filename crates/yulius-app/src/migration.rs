@@ -301,7 +301,7 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
             pending = None;
         } else if age > RETRY_AFTER_MS && age <= ACK_WAIT_MS {
             // The same request, with its id and its time: the helper acts on an id once.
-            let _ = helper.request(request);
+            helper.request_again(&request.id);
         }
     }
     Files {

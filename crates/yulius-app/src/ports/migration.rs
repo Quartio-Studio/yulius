@@ -33,6 +33,10 @@ pub trait MoveHelper: Send + Sync {
     /// # Errors
     /// A message when the file cannot be written.
     fn request(&self, request: &MoveRequest) -> Result<(), String>;
+    /// Writes the waiting request again, unchanged, when the request `id` is still the one in
+    /// the file: the path unit starts the helper on a change. Never brings back a request
+    /// that was removed, and never replaces a newer one.
+    fn request_again(&self, id: &str);
     /// The request file as it stands, if readable and well formed.
     fn pending(&self) -> Option<MoveRequest>;
     /// Removes the request file when the request `id` is the one in it (the helper took it, or

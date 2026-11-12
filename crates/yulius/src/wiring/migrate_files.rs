@@ -108,6 +108,20 @@ impl MoveHelper for FileMoveHelper {
             .map_err(|e| format!("cannot write {}: {e}", self.request.display()))
     }
 
+    fn request_again(&self, id: &str) {
+        // Under the lock of every write and removal of the file: between the look and the
+        // write nobody replaces or removes it.
+        let _held = self.writes.lock();
+        let Ok(bytes) = read_bounded(&self.request, MAX_REQUEST_BYTES) else {
+            return;
+        };
+        let same = serde_json::from_slice::<MoveRequest>(&bytes).is_ok_and(|waits| waits.id == id);
+        if same {
+            // The bytes as they are: the helper acts on an id once, whatever else was said.
+            let _ = write_atomic(&self.request, &bytes, 0o600);
+        }
+    }
+
     fn pending(&self) -> Option<MoveRequest> {
         let bytes = read_bounded(&self.request, MAX_REQUEST_BYTES).ok()?;
         serde_json::from_slice::<MoveRequest>(&bytes)
@@ -205,6 +219,26 @@ mod tests {
         assert_eq!(helper.pending(), None);
         std::fs::write(&path, vec![b' '; 17 * 1024])?;
         assert_eq!(helper.pending(), None);
+
+        // Written again (for a path unit that missed the first write) only while it is still
+        // the request that waits: a newer one is not replaced, a removed one does not return.
+        use std::os::unix::fs::MetadataExt as _;
+        let inode = |path: &Path| std::fs::metadata(path).map(|m| m.ino());
+        helper.request(&request())?;
+        let first = inode(&path)?;
+        helper.request_again("0123abcd-older");
+        assert_eq!(
+            inode(&path)?,
+            first,
+            "another request's retry replaced this one"
+        );
+        helper.request_again("0123abcd-plan");
+        assert_ne!(inode(&path)?, first, "not written again");
+        assert_eq!(helper.pending(), Some(request()));
+        assert_eq!(mode(&path)?, 0o600);
+        helper.clear_request("0123abcd-plan");
+        helper.request_again("0123abcd-plan");
+        assert!(!path.exists(), "a removed request came back");
 
         // Removed by its id: a newer request that took its place meanwhile stays.
         helper.request(&request())?;

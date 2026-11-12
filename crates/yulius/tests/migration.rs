@@ -59,6 +59,14 @@ impl MoveHelper for FakeMoveHelper {
         Ok(())
     }
 
+    fn request_again(&self, id: &str) {
+        if let (Ok(pending), Ok(mut written)) = (self.pending.lock(), self.written.lock())
+            && let Some(request) = pending.as_ref().filter(|request| request.id == id)
+        {
+            written.push(request.clone());
+        }
+    }
+
     fn pending(&self) -> Option<MoveRequest> {
         self.looks.fetch_add(1, Ordering::SeqCst);
         self.pending.lock().ok()?.clone()
