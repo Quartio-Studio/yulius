@@ -23,9 +23,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   lets the service user ask for a move; the operations guide says what that allows and how to
   pin the hosts. A move carries the helper's units and enables them on the new host as they were
   on the old one. Updates and moves refuse each other, and every plan, move and abort is audited.
-  Two real moves asked from the page between two hosts found, and this change fixes, a defect of
-  the command: `yulius instance migrate --abort` after a plan that ended with the key to add
-  failed on the new host and left the key there (the abort now brings the build that removes it).
+  Real moves asked from the page between two hosts found, and this change fixes, a defect of the
+  command: `yulius instance migrate --abort` after a plan that ended with the key to add failed
+  on the new host and left the key there (the abort now brings the build that removes it). They
+  also showed that six quick requests leave a path unit failed under systemd's default start
+  limit, so the helper's unit sets none (the update helper's units have that limit: #1201).
 
 ## 2026-11-11
 
