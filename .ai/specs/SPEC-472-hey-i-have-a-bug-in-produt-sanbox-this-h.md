@@ -287,11 +287,16 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
     `a_notice_is_answered_by_the_agents_work_after_a_restart` failed with "timed out waiting for
     Working with the agent's work"; its two guards passed.
   - The browser request's test failed before `e33e15a6e` (`left: Null`).
+  - `5861ce1cc` (review round 1's tests, before their fix): the two `secrets_env` tests read
+    the secret's reason where the question's was expected, `secrets.rs` read the answered
+    request's tab (`section=agents`), the unit test kept the bidi override and the zero-width
+    space, and the e2e row test found "Look at its terminal".
 - **Fix.** `5d6595ced` (the column, the statement that flags with a reason, the API field, the
   gate), `8d6bfc0fd` (every other flag of Yulius's own, and the notice's words), `d736a3871` (the
   bar, the row's line, Reply's notice), `15bca64fa` (the restart), `e33e15a6e` (the browser
   request), `db7bc1a22` (a goal never set behind the trust question; the mock drops a reason
-  with its flag), `c80a37a3f` (documents).
+  with its flag), `c80a37a3f` (documents), `c43b39cc9` (review round 1: a reason follows the
+  owner of its flag, format characters, the row's line).
 - **The real CLI.** Claude Code 2.1.322 was run in a terminal against a local stand-in for the
   API (nothing left this host; the scripts are kept outside the repository). The stand-in asks
   for one Bash call, so the permission dialog opens in the default permission mode. Read from
@@ -304,8 +309,8 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
     line within 0.1 s, both dated after the notice: the work that answers the flag.
   The CLI's own code names the hook input's fields (`message`, `title`, `notification_type`) and
   waits 6 s before it notifies (`rDn=6000`).
-- **Mutation checks** (each on a clean tree at `db7bc1a22`, restored from `HEAD` afterwards).
-  Every mutation fails a test:
+- **Mutation checks** (each on a clean tree, at `db7bc1a22` and for the last seven rows at
+  `8fe945493`, restored from `HEAD` afterwards). Every mutation fails a test:
 
   | Removed or broken | Failing test |
   | --- | --- |
@@ -327,15 +332,23 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   | The row's line follows the reason | "the task's row says the reason's to-do…" |
   | A reason's page gets its Open link | the secret and browser request tests |
   | Reply stays the owner's | "a watcher reads the reason, and Reply stays the owner's" |
+  | A flag handed over says its new owner's reason | `a_flag_raised_after_the_request_outlives_its_answer`, `a_flag_that_takes_a_secret_requests_over_says_its_own_reason` |
+  | A reason handed over is kept as one that work does not answer | `a_flag_raised_after_the_request_outlives_its_answer` |
+  | A flag that waits for another request points at it | `a_flag_points_at_the_secret_request_that_still_waits` |
+  | A reason is replaced only on the flag it was read from | `a_flags_reason_is_replaced_only_on_the_flag_it_was_read_from` |
+  | The same reason again is no change | the same store test |
+  | A replaced reason keeps its flag's time | the same store test |
+  | Format characters are dropped | `reasons_are_single_bounded_lines` |
 
-- **Gate.** `scripts/dev ci` exited 0 at `674e88784`, the head with `dev` merged (`2a31d50ae`,
-  no conflict): repository checks, the scripts' unit tests, `cargo check`, `fmt`, `clippy` for
-  Linux and macOS, the tests (3971 run, 3971 passed, 16 skipped), doctests, `cargo deny`,
-  `cargo shear`, `cargo doc`. The commit after it changes one test, to the real input's shape
-  (`a_notices_flag_carries_claude_codes_words`), and this spec: that test file's tests,
-  `scripts/dev lint` and the repository checks passed again.
-- **End-to-end suite** (a web change). The whole suite at `674e88784`: 83 files passed, 1
-  skipped; 995 tests passed, 1 skipped. A first whole run, at `d736a3871`, had one failure in a
+- **Gate.** `scripts/dev ci` exited 0 at `8fe945493`, the head with review round 1's fixes and
+  `dev` merged (`2a31d50ae`, no conflict): repository checks, the scripts' unit tests, `cargo
+  check`, `fmt`, `clippy` for Linux and macOS, the tests (3974 run, 3974 passed, 16 skipped),
+  doctests, `cargo deny`, `cargo shear`, `cargo doc`. It had exited 0 at `674e88784` too (3971
+  passed), and the first reviewer ran it again at `7d6d66bcb` (3971 passed). The commit after
+  `8fe945493` changes this spec only.
+- **End-to-end suite** (a web change). The whole suite at `8fe945493`: 83 files passed, 1
+  skipped; 995 tests passed, 1 skipped; the same at `674e88784`, and in the reviewer's own run
+  at `7d6d66bcb`. A first whole run, at `d736a3871`, had one failure in a
   file this change does not touch: `cd.e2e.ts` "a scrolled needs_you list survives task updates
   and its to-do stays opaque" read the list's `tabindex` once, before the page had set it
   (`expected [null,40] to equal ["0",40]`). Its file passed alone three times, and the same
@@ -347,8 +360,27 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   phone width, as a request's do.
 - **Security scan.** `scripts/dev security` exited 0 as disabled: Vidoc is turned off in Yulius
   for this project, so nothing was scanned. That is not a pass.
-- **Independent review** (a fresh read-only session, `om-code-review`): round 1 reviews this
-  head; its verdict is the review summary recorded with the merge.
+- **Independent review** (fresh read-only sessions, `om-code-review`).
+  - Round 1, on `7d6d66bcb`: a usage limit cut the first reviewer off after it had run the gate
+    and the e2e suite (both passed) and before it reviewed; a second reviewer continued from
+    its notes. Verdict: request changes, one major and two nits, all in this change's own code
+    and all fixed test-first in `c43b39cc9` (tests first, `5861ce1cc`):
+    - Major: a secret request's flag that another matter took over kept the secret's reason,
+      also after the secret was answered ("Answer it on the Secrets page", with a link to a
+      page with nothing to answer). The reason now follows the flag's owner (ATN-011). The
+      reviewer asked for a case where the gate takes the flag over; the second test uses a
+      worker's permission prompt instead, which goes through the same function
+      (`flag_needs_attention`) and is a flag the session's work does not answer.
+    - Found beside it, the same kind: a flag that waited for two secret requests kept the link
+      of the answered one's tab. It now points at a request that still waits.
+    - Nit: invisible format characters passed into the bar. Dropped (ATN-005).
+    - Nit: the row of a flag whose `needs_you` request says it read "Look at its terminal". It
+      reads the request (ATN-008).
+    - Its notes on coverage: the reason when a secret flag is raised again after an answer is
+      now read by `a_flag_points_at_the_secret_request_that_still_waits`' path for a request
+      that still waits; a flag raised anew in the moment of an answer has no test.
+  - Round 2 reviews the head with these fixes; its verdict is the review summary recorded with
+    the merge.
 - **Not tested.**
   - The task of the screenshot: it is another sandbox's, on the running instance, and nothing
     of it can be read from here. Which of the causes it met is therefore not known; both are
