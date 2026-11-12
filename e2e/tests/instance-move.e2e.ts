@@ -220,6 +220,25 @@ test('when the old address redirects, the card links to the instance at its new 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// MVB-036: only a new address the move could have decided (`https://host`) becomes a link.
+test('a new address that is not an https host is not linked', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', `&move=redirect${QUICK}`));
+  const c = card(screen);
+  await firstShown(c.getByRole('button', 'Show the plan'));
+  await pace(browser, 60);
+  // The checklist names something else than a URL as the new address.
+  await browser.evaluate(() => {
+    // eslint-disable-next-line no-script-url
+    (window as unknown as { __yuliusMock: { migration: { newUrlSaid: string } } }).__yuliusMock.migration.newUrlSaid = 'javascript:alert(document.domain)';
+  });
+  await showThePlan(screen);
+  await runMigration(screen);
+  await expect(c.getByText('Yulius now runs on the new host.')).toBeVisible({ timeout: 15000 });
+  await expect(c.getByRole('button', 'Reload to follow the redirect')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('section.move .move-moved a') === null)).toBe(true);
+  expect(await browser.evaluate(() => document.querySelector('section.move a[href^="javascript"]') === null)).toBe(true);
+});
+
 // MVB-033, MVB-034, MVB-035: a move that does not complete says where it stopped, on the old
 // instance that answers again; it is continued with the same values or aborted, and the abort
 // says what it does.

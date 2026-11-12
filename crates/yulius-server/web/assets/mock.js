@@ -4891,7 +4891,8 @@ function movePlanSteps(db, values, thenSteps) {
   }
   const steps = lines.map((line) => () => {
     moveSay(db, 'Plan', line);
-    if (line.name === 'public URL') m.moving.new_url = url;
+    // `newUrlSaid`: what the checklist names as the new URL instead (a test of what is linked).
+    if (line.name === 'public URL') m.moving.new_url = m.newUrlSaid || url;
   });
   steps.push(thenSteps ? () => {} : () => { m.plans += 1; moveEnd(db, m.mode === 'planfail' ? 1 : 0, 'Plan'); });
   return thenSteps ? steps.concat(thenSteps) : steps;
@@ -5442,7 +5443,11 @@ async function handleFetchAfterLatency(db, url, init) {
     // request that does not follow redirects sees an opaque one.
     const m = db.migration;
     if (m.frozen && new URL(url, ORIGIN).pathname === MOVE_API) m.missed += 1;
-    if (m.redirects && init.redirect === 'manual') return { type: 'opaqueredirect', status: 0, ok: false, text: async () => '' };
+    if (init.redirect === 'manual' && m.frozen) {
+      // The old host's proxy still answers: with its redirect once the move ended there, else
+      // that its upstream (the frozen instance) does not answer.
+      return m.redirects ? { type: 'opaqueredirect', status: 0, ok: false, text: async () => '' } : json(502, {});
+    }
     throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   }
   const u = new URL(url, ORIGIN);

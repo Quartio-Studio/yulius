@@ -57,6 +57,11 @@ export function estimate(lines) {
   return line ? line.detail : '';
 }
 
+/** A new public URL as the move decides one (`https://host`), or null: nothing else is linked. */
+export function linkable(url) {
+  return /^https:\/\/[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(String(url || '')) ? url : null;
+}
+
 /** What a request names, in words. */
 function valuesText(run) {
   const said = [run.target || 'the recorded move'];
@@ -403,7 +408,7 @@ export function moveCard(ctx) {
     followed = {
       id: move ? move.id : followed ? followed.id : null,
       target: (run && run.target) || (move && move.target) || (followed && followed.target) || '',
-      newUrl: (move && move.new_url) || (followed && followed.newUrl) || null,
+      newUrl: linkable(move && move.new_url) || (followed && followed.newUrl) || null,
       estimate: (move && estimate(move.lines)) || (followed && followed.estimate) || '',
       move: move || (followed && followed.move) || null,
     };
