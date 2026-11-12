@@ -102,6 +102,7 @@ Where things are in Yulius:
 - [x] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
 - [x] Mutation checks, gate and the whole e2e suite green, evidence recorded
 - [x] Independent review answered
+- [x] The last look's two notes answered: a figure of the spec and a log line that claimed too much
 
 ## Acceptance criteria
 
@@ -250,7 +251,7 @@ Where things are in Yulius:
   in between. Of several hand-overs that are not over the latest time counts, and a record
   that names none makes the time unknown, so that only a prompt record ends them (all 3,677
   `dequeue` records of this instance name one). The review then produced a scheduled prompt
-  with the real 2.1.322 (round 2): its fire, `enqueue` and `dequeue` within 8 ms, its
+  with the real 2.1.322 (round 2): its fire, `enqueue` and `dequeue` within 9 ms, its
   `UserPromptSubmit` hook 13 to 17 ms after the `dequeue`, its `isMeta` record, its answer
   three seconds later. The fake agent plays that order. The hook is why the task reads
   Working before the model's first line; that Yulius takes the hook for a typed prompt is
@@ -454,6 +455,15 @@ Where things are in Yulius:
   filed as #1225: Yulius reads the hook of a prompt Claude Code scheduled for itself as a
   submit from the prompt box. The delta after 60960503 goes to the same reviewer before the
   merge.
+- **Independent review, round 3** (the same reviewer, head e99eef33; it ran the gate, the 46
+  and 26 tests and six mutants of its own on the new lines): "APPROVE for head `e99eef339`.
+  Nothing in the delta blocks a merge: no blocker, no major, no minor. The gate is green at
+  this exact head. Two nits are left, both the author's call." Pull request #1227 merged
+  that head with `dev`'s 292a5410 merged in (ffa921d6, green Yulius CI) as 48fc8a3a. Both
+  nits are answered in a second pull request: the scheduled prompt's fire, `enqueue` and
+  `dequeue` came within 9 ms, not 8 (Decisions); a turn's end that runs out of its time
+  before the session's version is known no longer says in the log that a newer Claude Code
+  waits for it (`log_out_of_time`; the log's lines have no test, here as before).
 - **Not tested here.** A restart Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test): the fake agent stands in, in the order the real
   tool was seen to have. Claude Code 2.1.292 and 2.1.311 were not run; their transcripts in
