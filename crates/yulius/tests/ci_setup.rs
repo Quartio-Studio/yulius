@@ -11,14 +11,13 @@ use support::{
     TestResult, harness_with_git, mcp_tool, seed_github_user, seed_live_attempt, seed_sandbox,
     seed_task, tool_text,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius_domain::task::TaskStatus;
 
 const TOKEN: &str = "ci-setup-task-token-s1-0123456789abcdef";
 
 #[tokio::test]
 async fn ci_setup_reads_the_worktree_and_follows_no_link_out_of_it() -> TestResult {
-    let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
+    let h = harness_with_git(Arc::new(crate::support::confined_git()))?;
     seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let worktree = h.app.config.data_dir.join("sandboxes/s1/worktrees/t1");

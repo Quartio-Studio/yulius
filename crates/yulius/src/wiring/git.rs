@@ -24,6 +24,8 @@ pub struct GitAdapter {
     /// Test seam: a directory standing in for `https://github.com/` (see
     /// [`GitAdapter::with_github_base`]).
     github_base: Option<String>,
+    /// How its Git is confined (ADR-0322).
+    confinement: Option<std::sync::Arc<yulius_git::Confinement>>,
 }
 
 impl GitAdapter {
@@ -33,7 +35,30 @@ impl GitAdapter {
         Self {
             exe: exe.into(),
             github_base: None,
+            confinement: None,
         }
+    }
+
+    /// Confines every Git command: started through `launcher git-confined`, it executes Git's
+    /// own programs only and touches only the folders it works in; in a sandbox's folder of
+    /// the data folder `data`, that sandbox's (ADR-0322). `data_depth` is 0 for a server's data
+    /// folder; tests, whose data folders are children of the temporary folder, give that
+    /// folder and 1.
+    #[must_use]
+    pub fn confined(mut self, launcher: PathBuf, data: PathBuf, data_depth: usize) -> Self {
+        let shared: Vec<PathBuf> = self
+            .github_base
+            .iter()
+            .map(|base| PathBuf::from(base.trim_end_matches('/')))
+            .collect();
+        self.confinement = Some(std::sync::Arc::new(yulius_git::Confinement {
+            launcher,
+            data,
+            data_depth,
+            shell: !shared.is_empty(),
+            shared,
+        }));
+        self
     }
 
     /// For tests: every `https://github.com/<owner>/<name>.git` this adapter's Git reaches is
@@ -42,7 +67,31 @@ impl GitAdapter {
     #[must_use]
     pub fn with_github_base(mut self, dir: &Path) -> Self {
         self.github_base = Some(format!("{}/", dir.display()));
+        if let Some(confinement) = &mut self.confinement {
+            let confinement = std::sync::Arc::make_mut(confinement);
+            confinement.shared.push(dir.to_path_buf());
+            confinement.shell = true;
+        }
         self
+    }
+
+    /// For tests: the clones' `origin` is a folder of this machine standing for GitHub, so a
+    /// fetch or push by that name is a local transfer, which starts the other side through the
+    /// system's shell: a confined Git may start it in every command. Never set in production,
+    /// where `origin` is GitHub and a confined Git starts no shell for it.
+    #[must_use]
+    pub fn with_local_origins(mut self) -> Self {
+        if let Some(confinement) = &mut self.confinement {
+            std::sync::Arc::make_mut(confinement).shell = true;
+        }
+        self
+    }
+
+    fn bare(&self) -> Git {
+        match &self.confinement {
+            Some(confinement) => Git::new(self.exe.clone()).confined(confinement.clone()),
+            None => Git::new(self.exe.clone()),
+        }
     }
 
     fn git(&self) -> Git {
@@ -63,10 +112,11 @@ impl GitAdapter {
             ));
         }
         if entries.is_empty() {
-            return Git::new(self.exe.clone());
+            return self.bare();
         }
-        let mut git =
-            Git::new(self.exe.clone()).with_env("GIT_CONFIG_COUNT", entries.len().to_string());
+        let mut git = self
+            .bare()
+            .with_env("GIT_CONFIG_COUNT", entries.len().to_string());
         for (i, (key, value)) in entries.into_iter().enumerate() {
             git = git
                 .with_env(format!("GIT_CONFIG_KEY_{i}"), key)
@@ -562,6 +612,18 @@ impl GitPort for GitAdapter {
         let (git, repo) = (self.git_with_token(token), repo.to_path_buf());
         let refspec = format!("refs/heads/{local_branch}:refs/heads/{remote_branch}");
         blocking(move || git.push(&repo, "origin", &refspec)).await
+    }
+
+    async fn push_to_folder(
+        &self,
+        repo: &Path,
+        origin: &Path,
+        local_branch: &str,
+        remote_branch: &str,
+    ) -> AppResult<()> {
+        let (git, repo, origin) = (self.git(), repo.to_path_buf(), origin.to_path_buf());
+        let refspec = format!("refs/heads/{local_branch}:refs/heads/{remote_branch}");
+        blocking(move || git.push_to_folder(&repo, &origin, &refspec)).await
     }
 
     async fn remote_branch_head(

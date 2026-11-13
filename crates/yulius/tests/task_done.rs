@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use support::TestResult;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::{App, AppConfig, Deps};
@@ -214,7 +213,7 @@ async fn start_holding(
             options: agent,
             yulius_exe: exe,
         }),
-        git: Arc::new(GitAdapter::new("git")),
+        git: Arc::new(crate::support::confined_git()),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
         usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),

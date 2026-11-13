@@ -175,7 +175,8 @@ impl Git {
                 Invocation::new(self, "worktree add", Some(repo))
                     .args(["worktree", "add", "--quiet", "--detach", "--"])
                     .arg(path)
-                    .arg(&commit),
+                    .arg(&commit)
+                    .touching(path),
             )?;
             return Ok(());
         };

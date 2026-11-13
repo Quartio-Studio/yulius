@@ -6,8 +6,8 @@ use crate::Git;
 use crate::error::GitError;
 use crate::runner::{Invocation, failure};
 use crate::validate::{
-    validate_branch_name, validate_identity_part, validate_push_refspec, validate_remote,
-    validate_revision,
+    require_absolute, validate_branch_name, validate_identity_part, validate_push_refspec,
+    validate_remote, validate_revision,
 };
 
 /// Longest accepted commit message in bytes.
@@ -173,9 +173,31 @@ impl Git {
     pub fn push(&self, repo: &Path, remote: &str, refspec: &str) -> Result<(), GitError> {
         validate_remote(remote)?;
         validate_push_refspec(refspec)?;
+        let push = Invocation::new(self, "push", Some(repo)).args(["push", "--quiet", "--"]);
+        let push = match self.local_remote(repo, remote) {
+            Some(origin) => push.arg(&origin).local(&origin),
+            None => push.arg(remote),
+        };
+        self.run_ok(push.arg(refspec).timeout(self.network_timeout))?;
+        Ok(())
+    }
+
+    /// [`Self::push`] to the repository in the folder `origin` of this machine, named by the
+    /// caller: `repo`'s configuration is not asked where to push.
+    pub fn push_to_folder(
+        &self,
+        repo: &Path,
+        origin: &Path,
+        refspec: &str,
+    ) -> Result<(), GitError> {
+        require_absolute("origin", origin)?;
+        validate_push_refspec(refspec)?;
         self.run_ok(
             Invocation::new(self, "push", Some(repo))
-                .args(["push", "--quiet", "--", remote, refspec])
+                .args(["push", "--quiet", "--"])
+                .arg(origin)
+                .arg(refspec)
+                .local(origin)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -196,10 +218,14 @@ impl Git {
         validate_remote(remote)?;
         validate_branch_name(branch)?;
         let wanted = format!("refs/heads/{branch}");
+        let list =
+            Invocation::new(self, "ls-remote", Some(repo)).args(["ls-remote", "--heads", "--"]);
+        let list = match self.local_remote(repo, remote) {
+            Some(origin) => list.arg(&origin).local(&origin),
+            None => list.arg(remote),
+        };
         let listed = self.run_ok(
-            Invocation::new(self, "ls-remote", Some(repo))
-                .args(["ls-remote", "--heads", "--", remote])
-                .arg(&wanted)
+            list.arg(&wanted)
                 .timeout(self.network_timeout.min(REMOTE_HEAD_TIMEOUT)),
         )?;
         Ok(listed.stdout_trimmed().lines().find_map(|line| {

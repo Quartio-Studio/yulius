@@ -34,7 +34,6 @@ use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
     seed_sandbox, setup_superadmin_creds,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::model::{AccountRecord, AccountStatus, WebSessionRecord};
 use yulius_app::ports::store::{AccountStore, SessionStore, UserStore};
@@ -280,7 +279,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     let addr = listener.local_addr()?;
     let dir = tempfile::Builder::new().prefix("ylt").tempdir_in("/tmp")?;
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Some(Arc::new(FakeAgentHarness::new(
             exe,

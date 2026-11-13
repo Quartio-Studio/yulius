@@ -22,7 +22,7 @@ impl Git {
         if bare {
             invocation = invocation.arg("--bare");
         }
-        self.run_ok(invocation.arg("--").arg(path))?;
+        self.run_ok(invocation.arg("--").arg(path).touching(path))?;
         Ok(())
     }
 
@@ -45,6 +45,8 @@ impl Git {
             Invocation::new(self, "clone", None)
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
                 .arg(dest)
+                .touching(dest)
+                .local_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -53,18 +55,26 @@ impl Git {
     /// Fetches `remote` (a configured name or URL) with pruning (network timeout applies).
     pub fn fetch(&self, repo: &Path, remote: &str) -> Result<(), GitError> {
         validate_remote(remote)?;
-        self.run_ok(
-            Invocation::new(self, "fetch", Some(repo))
-                .args([
-                    "fetch",
-                    "--quiet",
-                    "--prune",
-                    "--no-recurse-submodules",
-                    "--",
-                    remote,
-                ])
-                .timeout(self.network_timeout),
-        )?;
+        let fetch = Invocation::new(self, "fetch", Some(repo)).args([
+            "fetch",
+            "--quiet",
+            "--prune",
+            "--no-recurse-submodules",
+            "--",
+        ]);
+        let fetch = if Path::new(remote).is_absolute() {
+            // A folder the caller names itself.
+            fetch.arg(remote).local(remote)
+        } else {
+            match self.local_remote(repo, remote) {
+                Some(origin) => fetch
+                    .arg(&origin)
+                    .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))
+                    .local(&origin),
+                None => fetch.arg(remote),
+            }
+        };
+        self.run_ok(fetch.timeout(self.network_timeout))?;
         Ok(())
     }
 
@@ -85,6 +95,7 @@ impl Git {
                 ])
                 .arg(source)
                 .arg("+refs/heads/*:refs/remotes/origin/*")
+                .local(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -116,6 +127,7 @@ impl Git {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ])
+                .local_if_path(url)
                 .timeout(self.network_timeout)
                 .watch_size(&[repo], limit),
         )?;
@@ -171,6 +183,7 @@ impl Git {
                 ])
                 .arg(source)
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .local(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -194,6 +207,7 @@ impl Git {
             self.run_ok(
                 Invocation::new(self, "push", Some(repo))
                     .args(["push", "--quiet", "--", url, &refspec])
+                    .local_if_path(url)
                     .timeout(self.network_timeout),
             )?;
         }
@@ -201,6 +215,7 @@ impl Git {
             Invocation::new(self, "push", Some(repo))
                 .args(["push", "--quiet", "--atomic", "--", url])
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .local_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -214,6 +229,7 @@ impl Git {
         let listed = self.run_ok(
             Invocation::new(self, "ls-remote", Some(repo))
                 .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
+                .local_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         let mut refs: Vec<(String, String)> = listed

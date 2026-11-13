@@ -245,6 +245,20 @@ pub trait GitPort: Send + Sync {
         remote_branch: &str,
         token: &Secret,
     ) -> AppResult<()>;
+    /// Pushes `local_branch` of `repo` to `remote_branch` of the repository in the folder
+    /// `origin` of this machine (a playground's, which Yulius names itself: the address in
+    /// `repo`'s configuration is not asked, and no token is used).
+    async fn push_to_folder(
+        &self,
+        repo: &Path,
+        origin: &Path,
+        local_branch: &str,
+        remote_branch: &str,
+    ) -> AppResult<()> {
+        let _ = origin;
+        self.push(repo, local_branch, remote_branch, &Secret(String::new()))
+            .await
+    }
     /// The commit `branch` points at on origin, as origin answers now with `token` (not a
     /// remote-tracking ref); `None` when origin has no such branch (SPEC-139).
     async fn remote_branch_head(

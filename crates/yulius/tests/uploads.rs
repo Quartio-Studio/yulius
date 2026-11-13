@@ -22,7 +22,6 @@ use support::{
     perms, seed_github_user, seed_sandbox, seed_task, seed_task_with_prompt,
     setup_superadmin_creds,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
 use yulius_app::model::{AccountRecord, AccountStatus};
@@ -830,7 +829,7 @@ async fn agent_task(
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let dir = tempfile::Builder::new().prefix("yup").tempdir_in("/tmp")?;
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Some(Arc::new(FakeAgentHarness::new(
             exe,

@@ -62,6 +62,27 @@ const FIXED_CONFIG: &[&str] = &[
     "core.hooksPath=/dev/null",
 ];
 
+/// Configuration of a command that transfers between two repositories of this machine
+/// ([`Invocation::local`]), where a confined Git may start the shell: only the `file` transport
+/// (a rewritten address cannot turn it into `ssh`, whose command the configuration names), and
+/// no command for listing an alternate's refs.
+const LOCAL_CONFIG: &[&str] = &[
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.file.allow=always",
+    "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
+    "protocol.http.allow=never",
+    "-c",
+    "protocol.https.allow=never",
+    "-c",
+    "core.alternateRefsCommand=",
+];
+
 /// Captured result of a finished command.
 pub(crate) struct Output {
     pub(crate) stdout: Vec<u8>,
@@ -88,6 +109,12 @@ pub(crate) struct Invocation<'a> {
     pub(crate) timeout: Duration,
     /// Paths (folders or files) the command writes and the most bytes they may hold together.
     pub(crate) watch: Option<(Vec<&'a Path>, u64)>,
+    /// What the command works on besides its folder (a clone's destination, a bundle's file,
+    /// another repository): a confined Git reaches these too (ADR-0322).
+    pub(crate) touches: Vec<std::path::PathBuf>,
+    /// The command transfers to or from another repository of this machine: see
+    /// [`Invocation::local`].
+    pub(crate) local: bool,
 }
 
 impl<'a> Invocation<'a> {
@@ -99,7 +126,35 @@ impl<'a> Invocation<'a> {
             env: Vec::new(),
             timeout: git.timeout,
             watch: None,
+            touches: Vec::new(),
+            local: false,
         }
+    }
+
+    /// The command transfers to or from the repository at `path` on this machine (a fetch, a
+    /// push, a clone or a listing by path). Git starts the other side through the system's
+    /// shell, so a confined Git may start that shell here and nowhere else (ADR-0322). What the
+    /// shell could be made to run by the configuration of a repository an agent writes is
+    /// switched off for the command ([`LOCAL_CONFIG`]), and it gets none of the adapter's own
+    /// configuration, which is where a credential travels.
+    pub(crate) fn local(mut self, path: impl AsRef<Path>) -> Self {
+        self.local = true;
+        self.touching(path)
+    }
+
+    /// [`Self::local`] when `url` is a path of this machine, else unchanged.
+    pub(crate) fn local_if_path(self, url: &str) -> Self {
+        if Path::new(url).is_absolute() {
+            self.local(url)
+        } else {
+            self
+        }
+    }
+
+    /// Names a path outside the command's folder that it reads or writes.
+    pub(crate) fn touching(mut self, path: impl AsRef<Path>) -> Self {
+        self.touches.push(path.as_ref().to_path_buf());
+        self
     }
 
     pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
@@ -195,6 +250,31 @@ fn names_a_half_added_worktree(stderr: &[u8]) -> bool {
 }
 
 impl Git {
+    /// The folder a confined transfer with `repo`'s `remote` goes to, when that remote is a
+    /// folder of this machine Yulius may take from the clone's configuration
+    /// ([`crate::Confinement::local_origin`]): the command then names the folder itself, not the
+    /// remote, whose configuration (a program for the other side) an agent writes, and is a
+    /// local transfer ([`Invocation::local`]). `None`: the remote is named as it is, and a
+    /// confined Git starts no shell for it.
+    pub(crate) fn local_remote(&self, repo: &Path, remote: &str) -> Option<std::path::PathBuf> {
+        let confinement = self.confinement.as_ref()?;
+        if Path::new(remote).is_absolute() {
+            // No remote's name but a folder the caller names itself.
+            return Some(std::path::PathBuf::from(remote));
+        }
+        let asked = self
+            .run(
+                Invocation::new(self, "config", Some(repo))
+                    .args(["config", "--get"])
+                    .arg(format!("remote.{remote}.url")),
+            )
+            .ok()?;
+        if !asked.status.success() {
+            return None;
+        }
+        confinement.local_origin(repo, &asked.stdout_trimmed())
+    }
+
     /// Runs and requires exit status 0.
     pub(crate) fn run_ok(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
         let label = invocation.label;
@@ -235,9 +315,36 @@ impl Git {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
         });
-        let mut command = Command::new(&self.exe);
+        let mut command = match &self.confinement {
+            // Through the launcher, which confines itself and then becomes Git (ADR-0322).
+            Some(confinement) => {
+                let mut command = Command::new(&confinement.launcher);
+                command.arg("git-confined");
+                let mut reach: Vec<std::path::PathBuf> = invocation
+                    .cwd
+                    .into_iter()
+                    .chain(invocation.touches.iter().map(std::path::PathBuf::as_path))
+                    .flat_map(|path| confinement.reach(path))
+                    .chain(confinement.shared.iter().cloned())
+                    .collect();
+                reach.sort();
+                reach.dedup();
+                for path in reach {
+                    command.arg("--rw").arg(path);
+                }
+                if invocation.local || confinement.shell {
+                    command.arg("--shell");
+                }
+                command.arg("--").arg(&self.exe);
+                command
+            }
+            None => Command::new(&self.exe),
+        };
+        command.args(FIXED_CONFIG);
+        if invocation.local {
+            command.args(LOCAL_CONFIG);
+        }
         command
-            .args(FIXED_CONFIG)
             .args(&invocation.args)
             .env_clear()
             .stdin(Stdio::null())
@@ -249,6 +356,10 @@ impl Git {
             }
         }
         for (key, value) in &self.env {
+            // A local transfer needs no credential and may start the shell: none goes near it.
+            if invocation.local && key.starts_with("GIT_CONFIG_") {
+                continue;
+            }
             command.env(key, value);
         }
         command

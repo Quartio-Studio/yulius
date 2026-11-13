@@ -11,14 +11,13 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::git;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
-use yulius::wiring::git::GitAdapter;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// A harness with the real Git adapter and no GitHub App, and the superadmin signed in.
 async fn world() -> BoxResult<(Harness, Creds)> {
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         ..HarnessOptions::default()
     })?;
     let owner = support::setup_superadmin_creds(&h).await?;
@@ -1262,7 +1261,7 @@ async fn ci_world() -> BoxResult<(Harness, Creds)> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::new(yulius::wiring::session::PtySessionHost::new(exe))),
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         dir: Some(dir),
         configure: Some(Box::new(|config| {
             config.ci.job_timeout = std::time::Duration::from_secs(30);

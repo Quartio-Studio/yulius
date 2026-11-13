@@ -639,6 +639,28 @@ pub struct Harness {
     pub _dir: tempfile::TempDir,
 }
 
+/// The real Git adapter as the server builds it: on Linux every command confined (ADR-0322),
+/// with a test's temporary folder standing for one sandbox's, and with the shell allowed, as
+/// the tests' `origin` is a folder standing for GitHub ([`strict_git`] is the server's own).
+pub fn confined_git() -> yulius::wiring::git::GitAdapter {
+    strict_git().with_local_origins()
+}
+
+/// The Git adapter exactly as the server builds it: confined, no shell but for a transfer
+/// between two folders that Yulius itself names. A test's data folder is a child of the
+/// system's temporary folder, so `<tmp>/<test>/sandboxes/<id>` is one sandbox's as
+/// `<data>/sandboxes/<id>` is on a server.
+pub fn strict_git() -> yulius::wiring::git::GitAdapter {
+    let adapter = yulius::wiring::git::GitAdapter::new("git");
+    #[cfg(target_os = "linux")]
+    let adapter = adapter.confined(
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        std::env::temp_dir(),
+        1,
+    );
+    adapter
+}
+
 pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
     harness_with_git(Arc::new(yulius::wiring::pending::UnavailableGit))
 }

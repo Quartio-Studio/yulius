@@ -338,8 +338,8 @@ impl App {
                 "the folder's branch has no commit and the folder no file to commit".into(),
             ));
         }
-        git.push(&work, &branch, &branch, &no_token()).await?;
-        let profile = self.seed_profile(&work, &branch).await?;
+        git.push_to_folder(&work, &origin, &branch, &branch).await?;
+        let profile = self.seed_profile(&work, &origin, &branch).await?;
         self.clone_playground(id, &origin).await?;
         Ok(profile)
     }
@@ -351,6 +351,7 @@ impl App {
     pub(super) async fn seed_profile(
         &self,
         work: &Path,
+        origin: &Path,
         branch: &str,
     ) -> AppResult<DeliveryProfile> {
         let git = &self.deps.git;
@@ -372,7 +373,7 @@ impl App {
         profile.auto_promote = false;
         for target in [&profile.production_branch, &profile.integration_branch] {
             if *target != branch && !git.branch_exists(work, target).await? {
-                git.push(work, branch, target, &no_token()).await?;
+                git.push_to_folder(work, origin, branch, target).await?;
             }
         }
         Ok(profile)

@@ -5,7 +5,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use yulius::wiring::git::GitAdapter;
 use yulius_app::model::Secret;
 use yulius_app::ports::git::GitPort;
 
@@ -37,11 +36,11 @@ async fn clones_commits_pushes_and_reuses_branches() -> TestResult {
     let origin = root.join("origin.git");
     std::fs::create_dir_all(&origin)?;
     git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
-    let adapter = GitAdapter::new("git");
+    let adapter = crate::support::confined_git();
     let url = origin.to_string_lossy().into_owned();
 
     // An empty repository clones; the first commit lands on an unborn branch.
-    let repo = root.join("sandbox/repo");
+    let repo = root.join("sandboxes/s1/repo");
     adapter.sync_clone(&url, &repo, &token()).await?;
     std::fs::write(repo.join("README.md"), "# x\n")?;
     assert!(
@@ -65,7 +64,7 @@ async fn clones_commits_pushes_and_reuses_branches() -> TestResult {
 
     // New branch from a SHA base, then the same branch again after the worktree is removed.
     let base = git(&repo, &["rev-parse", "HEAD"])?;
-    let worktrees = root.join("sandbox/worktrees");
+    let worktrees = root.join("sandboxes/s1/worktrees");
     std::fs::create_dir_all(&worktrees)?;
     let wt = worktrees.join("t1");
     adapter.add_worktree(&repo, &wt, "feat/1-x", &base).await?;
@@ -123,7 +122,7 @@ async fn bundles_import_under_the_prefix() -> TestResult {
     let dst = root.join("dst");
     std::fs::create_dir_all(&dst)?;
     git(&dst, &["init", "-q", "-b", "main"])?;
-    let adapter = GitAdapter::new("git");
+    let adapter = crate::support::confined_git();
     let mut branches = adapter.import_bundle(&dst, &bundle, "import/alice").await?;
     branches.sort();
     assert_eq!(branches, ["import/alice/feature/x", "import/alice/main"]);
@@ -144,7 +143,7 @@ async fn an_environment_head_is_fetched_from_github_into_the_mirror() -> TestRes
     git(&root, &["clone", "-q", &origin.to_string_lossy(), "work"])?;
     git(&work, &["commit", "-q", "--allow-empty", "-m", "init"])?;
     git(&work, &["push", "-q", "origin", "HEAD:refs/heads/dev"])?;
-    let adapter = GitAdapter::new("git").with_github_base(&root.join("github"));
+    let adapter = crate::support::confined_git().with_github_base(&root.join("github"));
     let mirror = root.join("cd/environments.git");
     let head = adapter
         .mirror_fetch_head(
@@ -178,7 +177,8 @@ struct Swapped {
 fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
-    let sandbox = root.join("sandbox");
+    // As on a server: `<data>/sandboxes/<id>` holds the clone and its worktrees.
+    let sandbox = root.join("sandboxes/s1");
     let repo = sandbox.join("repo");
     std::fs::create_dir_all(&repo)?;
     git(&repo, &["init", "-q", "-b", "main"])?;
@@ -251,7 +251,7 @@ async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind
     let s = swapped()?;
     let record = s.repo.join(".git/worktrees/t1");
     let swapped = s.swap_after_the_checks();
-    let adapter = GitAdapter::new("git");
+    let adapter = crate::support::confined_git();
     let removed = adapter.remove_worktree(&s.repo, &s.wt, &s.worktrees).await;
     assert!(
         s.victim.join("src/work.txt").exists(),
@@ -279,7 +279,7 @@ async fn a_discarded_worktree_swapped_for_a_link_touches_nothing_behind_it() -> 
     let s = swapped()?;
     std::fs::write(s.wt.join("draft.txt"), "uncommitted\n")?;
     let swapped = s.swap_after_the_checks();
-    let adapter = GitAdapter::new("git");
+    let adapter = crate::support::confined_git();
     let discarded = adapter
         .discard_worktree(&s.repo, &s.wt, &s.worktrees, Some("feat/1"))
         .await;
