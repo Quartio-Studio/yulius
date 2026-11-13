@@ -106,4 +106,18 @@ test('a plan that did not grow says nothing more', async ({ app, browser, screen
   await app.open(mock('/s/studio/t/12', '&planfirst=7'));
   await expect(browser.locator('.stepstrip .step-count')).toHaveText('Step 3/7');
   await expect(browser.locator('.stepstrip .step-first')).toHaveCount(0);
+  // The page's own rule, whatever a server sends: only a first size below the plan's is said.
+  const said = await browser.evaluate(async () => {
+    const url = '/assets/status.js';
+    const { planGrowth } = await import(url);
+    return [7, 9, 0, null, 6, 1].map((first) => {
+      const growth = planGrowth({ total: 7, first_total: first });
+      return growth ? `${growth.text} | ${growth.title}` : null;
+    });
+  });
+  expect(said).toEqual([
+    null, null, null, null,
+    '6 at first | The plan had 6 steps when its first step was finished; 1 was added since.',
+    '1 at first | The plan had 1 step when its first step was finished; 6 were added since.',
+  ]);
 });
