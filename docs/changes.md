@@ -6,6 +6,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
+  task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
+  clone, where a key for GitHub's address in the clone's configuration (a proxy, no
+  certificate check) beat the server's own: the connection, token included, could go through
+  a proxy the agents run. And a transfer with a playground's origin, a folder, started the
+  shell in the clone, which ran what the clone's configuration names for a transfer (the
+  command of a remote to fetch a missing object from, of a submodule's remote, a helper for
+  a password). Every transfer of a sandbox's clone is now made in a repository of the
+  server's own that works on the clone's objects (`<data>/git-couriers`, empty between
+  transfers), with the refs written as data; a new clone is an empty repository filled
+  that way. No command in a sandbox's folder gets the token in its environment or may
+  start the shell, and an empty repository's first commit is made in `<data>/changes`
+  instead of the sandbox's folder. Also, for every Git command of the server in one place:
+  no external diff or text conversion, no signing, no editor, no `ssh` or `git` transport,
+  no program or helper asked for a password, no missing object fetched, no going into
+  submodules, no bundle downloaded.
+  `yulius doctor` checks the host's Git for the last one as "git missing objects": Git
+  2.45.1 or a patched release of the system's (Ubuntu 24.04's has it).
 - The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
   runs Git as the service user in clones whose every file an agent writes. A clone's
   configuration could make it run commands on the host (a filter, an `ssh` command, a

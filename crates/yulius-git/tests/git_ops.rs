@@ -1539,11 +1539,12 @@ fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
     let repo = fx.path("repo.git");
     fs::create_dir(&repo)?;
     let (script, pids) = (fx.path("bundling-git"), fx.path("pids"));
-    // Its arguments: six hardening `-c` words, `bundle create --quiet`, then the bundle's path.
+    // Its arguments: thirty hardening `-c` words, `bundle create --quiet`, then the bundle's
+    // path.
     write_hook(
         &script,
         &format!(
-            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{10}}.lock\"\nsleep 30 &\n\
+            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{34}}.lock\"\nsleep 30 &\n\
              echo $! >> '{p}'\nwait\n",
             p = pids.display()
         ),
@@ -2477,7 +2478,7 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     fs::write(
         &swapper,
         format!(
-            "#!/bin/sh\nif [ \"$7\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
+            "#!/bin/sh\nif [ \"${{31}}\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
              mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
             mark = fx.path("swapped").display(),
             config = config.display(),
@@ -2504,8 +2505,8 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     Ok(())
 }
 
-/// A `git` at `path` that runs `script` (sh, `$7` is the subcommand after the three fixed `-c`
-/// pairs) before the real Git.
+/// A `git` at `path` that runs `script` (sh, `${31}` is the subcommand after the fifteen fixed
+/// `-c` pairs) before the real Git.
 fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt as _;
     fs::write(path, format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
@@ -2557,7 +2558,7 @@ fn a_clone_configuration_swapped_for_a_fifo_is_refused_without_blocking() -> Tes
         &fx,
         &fx.path("fifo-git"),
         &format!(
-            "if [ \"$7\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
+            "if [ \"${{31}}\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
             file = worktree_config.display()
         ),
     )?;

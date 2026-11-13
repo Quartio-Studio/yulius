@@ -5,7 +5,7 @@
 //! worktree: the commit is made in a fresh clone of GitHub's repository (agents can write into
 //! the sandbox's clone, so its objects and refs are never pushed), removed on every path.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 use yulius_domain::ci::{GateResult, gate_checks};
@@ -133,6 +133,26 @@ pub(crate) fn private_dir(dir: &Path) -> AppResult<()> {
             .map_err(AppError::internal)?;
     }
     Ok(())
+}
+
+impl App {
+    /// Where the scratch repository `name` is: a private directory of the server, outside
+    /// every sandbox. Agents can write anywhere under their sandbox, which would let them
+    /// change a clone's configuration (where a push sends a token) or the files between
+    /// writing and committing: nothing the server itself commits and pushes is made there.
+    pub(crate) fn scratch_place(&self, name: &str) -> PathBuf {
+        self.config.data_dir.join("changes").join(name)
+    }
+
+    /// [`Self::scratch_place`] for a new scratch repository: its private parent is made, and
+    /// what an earlier one of that name left is removed. The caller removes it when done.
+    pub(crate) async fn scratch(&self, name: &str) -> AppResult<PathBuf> {
+        let scratch = self.scratch_place(name);
+        let root = self.config.data_dir.join("changes");
+        blocking(move || private_dir(&root)).await?;
+        remove_tree(scratch.clone()).await;
+        Ok(scratch)
+    }
 }
 
 /// The branch name part made of a change's title.
@@ -351,11 +371,7 @@ impl App {
             s if s.is_empty() => format!("{CHANGE_BRANCH_PREFIX}{id}"),
             s => format!("{CHANGE_BRANCH_PREFIX}{id}-{s}"),
         };
-        // A private directory of the server, outside every sandbox: agents can write anywhere
-        // under their sandbox, which would let them change the clone's configuration (where the
-        // push sends the person's token) or the files between writing and committing.
-        let root = self.config.data_dir.join("changes");
-        let scratch = root.join(&id);
+        let scratch = self.scratch_place(&id);
         let (clone, work) = (scratch.join("repo"), scratch.join("work"));
         let (name, email) = commit_identity(Some(&ctx.user));
         let token = self.dlv_author_token(&ctx.user, sandbox).await?;
@@ -365,7 +381,7 @@ impl App {
                 "{MAX_CONCURRENT_CHANGES} changes are being made right now; try again in a moment"
             ))
         })?;
-        blocking(move || private_dir(&root)).await?;
+        self.scratch(&id).await?;
         let made = async {
             self.deps
                 .git

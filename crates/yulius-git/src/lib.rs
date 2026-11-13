@@ -28,6 +28,7 @@ mod commit;
 mod config_scrub;
 #[cfg(target_os = "linux")]
 pub mod confine;
+mod courier;
 pub mod credential;
 mod error;
 #[cfg(unix)]
@@ -120,27 +121,43 @@ const SANDBOX_FOLDERS: [&str; 2] = ["sandboxes", "import-worktrees"];
 const ORIGINS_FOLDER: &str = "playgrounds";
 
 impl Confinement {
-    /// The data folder and sandbox id of `path`, when it lies in a sandbox's folder.
-    fn sandbox_of(&self, path: &std::path::Path) -> Option<(PathBuf, String)> {
+    /// The data folder and sandbox id of `path`, when it lies in a sandbox's folder, and that
+    /// folder (`<data>/sandboxes/<id>` or `<data>/import-worktrees/<id>`).
+    fn sandbox_folder_of(&self, path: &std::path::Path) -> Option<(PathBuf, String, PathBuf)> {
         let below = path.strip_prefix(&self.data).ok()?;
         let mut parts = below.components();
         let mut data = self.data.clone();
         for _ in 0..self.data_depth {
             data.push(parts.next()?);
         }
-        let folder = parts.next()?.as_os_str().to_str()?.to_owned();
-        let id = parts.next()?.as_os_str().to_str()?.to_owned();
+        let mut name = || match parts.next()? {
+            std::path::Component::Normal(name) => Some(name.to_str()?.to_owned()),
+            _ => None,
+        };
+        let (folder, id) = (name()?, name()?);
+        let own = data.join(&folder).join(&id);
         SANDBOX_FOLDERS
             .contains(&folder.as_str())
-            .then_some((data, id))
+            .then_some((data, id, own))
+    }
+
+    /// The data folder and sandbox id of a path as a caller gives it (made absolute first),
+    /// when it lies in a sandbox's folder: `Some` says that the folder is a sandbox's, whose
+    /// every file, a clone's configuration included, its agents write.
+    #[must_use]
+    pub fn sandbox_of_path(&self, path: &std::path::Path) -> Option<(PathBuf, String)> {
+        self.sandbox_folder_of(&plain(path))
+            .map(|(data, id, _)| (data, id))
     }
 
     /// What a command touching `path` may read and write for it: its sandbox's folders when
-    /// `path` lies in one of them, else `path` itself. What is still to be made (a clone's
-    /// destination, a new repository, a file) is made in the nearest folder that exists.
+    /// `path` lies in one of them (of a sandbox that has none yet, the one `path` lies in,
+    /// which the caller makes: never the folder all sandboxes are in), else `path` itself.
+    /// What is still to be made elsewhere (a new repository, a file) is made in the nearest
+    /// folder that exists. Nothing is made here.
     #[must_use]
     pub fn reach(&self, path: &std::path::Path) -> Vec<PathBuf> {
-        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let path = plain(path);
         let nearest = |mut folder: PathBuf| {
             while !folder.is_dir() {
                 match folder.parent() {
@@ -150,18 +167,14 @@ impl Confinement {
             }
             folder
         };
-        match self.sandbox_of(&path) {
-            Some((data, id)) => {
+        match self.sandbox_folder_of(&path) {
+            Some((data, id, lies_in)) => {
                 let own: Vec<PathBuf> = SANDBOX_FOLDERS
                     .iter()
                     .map(|folder| data.join(folder).join(&id))
                     .filter(|folder| folder.is_dir())
                     .collect();
-                if own.is_empty() {
-                    vec![nearest(path)]
-                } else {
-                    own
-                }
+                if own.is_empty() { vec![lies_in] } else { own }
             }
             None => vec![nearest(path)],
         }
@@ -179,11 +192,27 @@ impl Confinement {
         if self.shell {
             return Some(path.to_path_buf());
         }
-        let repo = std::path::absolute(repo).ok()?;
-        let (data, id) = self.sandbox_of(&repo)?;
+        let (data, id) = self.sandbox_of_path(repo)?;
         let origin = data.join(ORIGINS_FOLDER).join(format!("{id}.git"));
         (path == origin).then_some(origin)
     }
+}
+
+/// `path` made absolute, without its `.` and `..` parts (as written: no link is followed).
+/// Which sandbox a path lies in is read from its parts, so `..` must not be one of them.
+fn plain(path: &std::path::Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut plain = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                plain.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => plain.push(other),
+        }
+    }
+    plain
 }
 
 impl Git {
@@ -290,11 +319,20 @@ mod tests {
             server.reach(&data.join("playgrounds/new.git")),
             vec![data.join("playgrounds")]
         );
+        // A sandbox that is being made gets its own folder, not all sandboxes'; a command for
+        // a sandbox that is gone does not bring its folder back.
         assert_eq!(
             server.reach(&data.join("sandboxes/s9/repo")),
-            vec![data.join("sandboxes")],
-            "a sandbox that is being made"
+            vec![data.join("sandboxes/s9")]
         );
+        assert!(!data.join("sandboxes/s9").exists());
+        // `..` names no sandbox: the path counts as what it leads to.
+        assert_eq!(
+            server.reach(&data.join("sandboxes/../cd/s1")),
+            vec![data.join("cd/s1")]
+        );
+        assert_eq!(server.reach(&data.join("sandboxes/s2/../s1/repo")), own);
+        assert_eq!(server.sandbox_of_path(&data.join("sandboxes/..")), None);
         assert_eq!(server.reach(&data.join("cd/s1")), vec![data.join("cd/s1")]);
         // The folder of all sandboxes is no sandbox.
         assert_eq!(

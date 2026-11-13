@@ -53,14 +53,90 @@ const INHERITED_ENV: &[&str] = &[
 /// `core.hooksPath=/dev/null` keeps repository hooks from running: the sandbox repository's Git
 /// directory is writable by its agents, and these commands run outside containment (#54). The
 /// agents' own Git, inside containment, still runs hooks, so the pre-push guard applies to them.
+///
+/// The rest keeps Git from starting a configured word with arguments (ADR-0322): a confined
+/// Git may execute the program loader, which runs any file it is given. The server uses
+/// neither `ssh` nor `git` transports (their commands get the address's parts), signs nothing
+/// and shows no signatures (the signing program gets files), and lists an alternate's refs
+/// itself. What the environment switches off is in [`FIXED_ENV`].
+///
+/// No command goes into a submodule: a push that did (`push.recurseSubmodules` of the clone)
+/// pushed the submodule by its own configuration, with its own command for the other side.
+/// No helper is asked for a password (an empty value clears every one read before it; the
+/// server's token is a header), no bundle is downloaded before a fetch (`fetch.bundleURI`
+/// connects by itself, whatever transports are allowed) and no push fetches first.
 const FIXED_CONFIG: &[&str] = &[
     "-c",
     "protocol.ext.allow=never",
     "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
     "core.fsmonitor=false",
     "-c",
     "core.hooksPath=/dev/null",
+    "-c",
+    "core.alternateRefsCommand=",
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "tag.gpgSign=false",
+    "-c",
+    "push.gpgSign=false",
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "push.recurseSubmodules=no",
+    "-c",
+    "submodule.recurse=false",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "fetch.bundleURI=",
+    "-c",
+    "push.negotiate=false",
 ];
+
+/// The environment of every command, after the adapter's own. Constant.
+///
+/// - No editor is started (`:` is Git's word for none): it would get a file's path.
+/// - Nobody is asked for a name or a password: not the terminal, and not a program
+///   (`core.askPass` of a clone would be started with the question, which holds the address
+///   and so a path of the clone's choosing; an empty `GIT_ASKPASS` comes first and means none).
+/// - A missing object is missing: Git does not fetch it from a "promisor" remote, which a
+///   clone's configuration names, with a command for the other side that the shell of a local
+///   transfer would run.
+const FIXED_ENV: &[(&str, &str)] = &[
+    ("GIT_EDITOR", ":"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_ASKPASS", ""),
+    ("GCM_INTERACTIVE", "never"),
+    ("GIT_NO_LAZY_FETCH", "1"),
+    ("LC_ALL", "C"),
+];
+
+/// Whether `key` is one of the variables Git reads configuration from (`GIT_CONFIG_COUNT` and
+/// its numbered keys and values): the adapter's own configuration, where a token travels.
+fn carries_configuration(key: &str) -> bool {
+    let numbered = |prefix| {
+        key.strip_prefix(prefix)
+            .is_some_and(|n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    key == "GIT_CONFIG_COUNT" || numbered("GIT_CONFIG_KEY_") || numbered("GIT_CONFIG_VALUE_")
+}
+
+/// The commands that can make a diff: each gets [`NO_DIFF_PROGRAMS`], whatever its call site
+/// wrote. An external diff and a text conversion are started with the file's path.
+const DIFF_COMMANDS: &[&str] = &[
+    "diff",
+    "log",
+    "show",
+    "diff-tree",
+    "diff-index",
+    "diff-files",
+];
+const NO_DIFF_PROGRAMS: &[&str] = &["--no-ext-diff", "--no-textconv"];
 
 /// Configuration of a command that transfers between two repositories of this machine
 /// ([`Invocation::local`]), where a confined Git may start the shell: only the `file` transport
@@ -72,15 +148,9 @@ const LOCAL_CONFIG: &[&str] = &[
     "-c",
     "protocol.file.allow=always",
     "-c",
-    "protocol.ssh.allow=never",
-    "-c",
-    "protocol.git.allow=never",
-    "-c",
     "protocol.http.allow=never",
     "-c",
     "protocol.https.allow=never",
-    "-c",
-    "core.alternateRefsCommand=",
 ];
 
 /// Captured result of a finished command.
@@ -115,6 +185,11 @@ pub(crate) struct Invocation<'a> {
     /// The command transfers to or from another repository of this machine: see
     /// [`Invocation::local`].
     pub(crate) local: bool,
+    /// What the command reads on its standard input; none: it reads nothing.
+    pub(crate) input: Option<Vec<u8>>,
+    /// What the command only reads besides its folder: a confined Git reaches these without
+    /// writing there ([`Invocation::local_reading`]).
+    pub(crate) reads: Vec<std::path::PathBuf>,
 }
 
 impl<'a> Invocation<'a> {
@@ -128,15 +203,32 @@ impl<'a> Invocation<'a> {
             watch: None,
             touches: Vec::new(),
             local: false,
+            input: None,
+            reads: Vec::new(),
         }
+    }
+
+    /// [`Self::local`] for a transfer that only takes from the repository at `path` (a fetch,
+    /// a listing): the command reads that folder and writes nothing there.
+    pub(crate) fn local_reading(mut self, path: impl AsRef<Path>) -> Self {
+        self.local = true;
+        self.reads.push(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Gives the command `bytes` on its standard input.
+    pub(crate) fn input(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.input = Some(bytes.into());
+        self
     }
 
     /// The command transfers to or from the repository at `path` on this machine (a fetch, a
     /// push, a clone or a listing by path). Git starts the other side through the system's
-    /// shell, so a confined Git may start that shell here and nowhere else (ADR-0322). What the
-    /// shell could be made to run by the configuration of a repository an agent writes is
-    /// switched off for the command ([`LOCAL_CONFIG`]), and it gets none of the adapter's own
-    /// configuration, which is where a credential travels.
+    /// shell, so a confined Git may start that shell here and nowhere else (ADR-0322). Such a
+    /// command is never run in a sandbox's folder, where it would read a configuration the
+    /// sandbox's agents write and start what that names through the shell (ADR-0323): it is
+    /// refused there. Its transports are pinned to `file` ([`LOCAL_CONFIG`]), and it gets none
+    /// of the adapter's own configuration, which is where a credential travels.
     pub(crate) fn local(mut self, path: impl AsRef<Path>) -> Self {
         self.local = true;
         self.touching(path)
@@ -225,15 +317,21 @@ fn touches_worktree_registrations(args: &[OsString]) -> bool {
 /// The Git subcommand `args` run, past leading `-c <name>=<value>` pairs (a CD mirror's fetch sets
 /// its fsck options so).
 fn subcommand(args: &[OsString]) -> Option<&OsStr> {
+    subcommand_rest(args)
+        .first()
+        .map(OsString::as_os_str)
+        .filter(|a| *a != OsStr::new("-c"))
+}
+
+/// `args` from the subcommand's name on (past leading `-c <name>=<value>` pairs).
+fn subcommand_rest(args: &[OsString]) -> &[OsString] {
     let mut rest = args;
     while let [flag, _, tail @ ..] = rest
         && flag.as_os_str() == OsStr::new("-c")
     {
         rest = tail;
     }
-    rest.first()
-        .map(OsString::as_os_str)
-        .filter(|a| *a != OsStr::new("-c"))
+    rest
 }
 
 /// Whether Git's `stderr` names a linked worktree's `HEAD` as a bad object: `git worktree add`
@@ -249,30 +347,69 @@ fn names_a_half_added_worktree(stderr: &[u8]) -> bool {
     })
 }
 
+/// How a transfer with a clone's remote is made ([`Git::remote_route`]).
+pub(crate) enum Route {
+    /// With this folder of the machine, named by its path.
+    Folder(std::path::PathBuf),
+    /// Through a courier, with the remote's address.
+    Courier(crate::courier::Courier, String),
+    /// By the remote's name, in the repository itself.
+    Named,
+}
+
 impl Git {
-    /// The folder a confined transfer with `repo`'s `remote` goes to, when that remote is a
-    /// folder of this machine Yulius may take from the clone's configuration
-    /// ([`crate::Confinement::local_origin`]): the command then names the folder itself, not the
-    /// remote, whose configuration (a program for the other side) an agent writes, and is a
-    /// local transfer ([`Invocation::local`]). `None`: the remote is named as it is, and a
-    /// confined Git starts no shell for it.
-    pub(crate) fn local_remote(&self, repo: &Path, remote: &str) -> Option<std::path::PathBuf> {
-        let confinement = self.confinement.as_ref()?;
-        if Path::new(remote).is_absolute() {
-            // No remote's name but a folder the caller names itself.
-            return Some(std::path::PathBuf::from(remote));
-        }
-        let asked = self
-            .run(
-                Invocation::new(self, "config", Some(repo))
-                    .args(["config", "--get"])
-                    .arg(format!("remote.{remote}.url")),
-            )
-            .ok()?;
-        if !asked.status.success() {
-            return None;
-        }
-        confinement.local_origin(repo, &asked.stdout_trimmed())
+    /// How a confined transfer with `repo`'s `remote` is made.
+    ///
+    /// - A sandbox's clone: always through a courier ([`crate::courier`]), a repository of the
+    ///   server's own, so that no command that reads the clone's configuration carries the
+    ///   token or may start the shell. The courier borrows the clone's objects when `objects`
+    ///   says the transfer needs them. Its transfer is one between folders (the shell allowed,
+    ///   no token) when the remote is a folder Yulius may take: one the caller names itself,
+    ///   or the one the clone's configuration names when that is the sandbox's own origin
+    ///   ([`crate::Confinement::local_origin`]). With any other address the courier's
+    ///   commands reach the web and nothing of this machine: another sandbox's folder or the
+    ///   host's is neither served (no shell) nor reachable for them.
+    /// - A repository of the server's own: with the folder, when the caller names one (or the
+    ///   tests' stand-in for GitHub does); else by the remote's name as it is.
+    /// - Not confined (macOS, this crate's tests): by the remote's name; nothing is asked.
+    ///
+    /// # Errors
+    /// `repo` is a sandbox's and its configuration gives the remote no address
+    /// (`remote.<name>.url`): Git would find one by other keys of that configuration. Or the
+    /// courier cannot be made.
+    pub(crate) fn remote_route(
+        &self,
+        repo: &Path,
+        remote: &str,
+        objects: bool,
+    ) -> Result<Route, GitError> {
+        let Some(confinement) = &self.confinement else {
+            return Ok(Route::Named);
+        };
+        let in_a_sandbox = confinement.sandbox_of_path(repo).is_some();
+        // The address, and whether it is a folder Yulius may transfer with.
+        let (url, folder) = if Path::new(remote).is_absolute() {
+            (remote.to_owned(), true)
+        } else {
+            match self.remote_url(repo, remote) {
+                Some(url) => {
+                    let folder = confinement.local_origin(repo, &url).is_some();
+                    (url, folder)
+                }
+                None if in_a_sandbox => {
+                    return Err(GitError::InvalidInput {
+                        what: "remote",
+                        reason: "the repository's configuration gives it no address".into(),
+                    });
+                }
+                None => return Ok(Route::Named),
+            }
+        };
+        Ok(match self.courier(repo, objects, folder)? {
+            Some(courier) => Route::Courier(courier, url),
+            None if folder => Route::Folder(std::path::PathBuf::from(url)),
+            None => Route::Named,
+        })
     }
 
     /// Runs and requires exit status 0.
@@ -327,10 +464,23 @@ impl Git {
                     .collect();
                 reach.sort();
                 reach.dedup();
+                let mut reads: Vec<std::path::PathBuf> = invocation
+                    .reads
+                    .iter()
+                    .flat_map(|path| confinement.reach(path))
+                    .filter(|path| !reach.contains(path))
+                    .collect();
+                reads.sort();
+                reads.dedup();
                 for path in reach {
                     command.arg("--rw").arg(path);
                 }
-                if invocation.local || confinement.shell {
+                for path in reads {
+                    command.arg("--ro").arg(path);
+                }
+                // Never in a sandbox's folder, whose configuration would name what the shell
+                // runs (a transfer between folders there is refused before it gets here).
+                if (invocation.local || confinement.shell) && !self.in_a_sandbox(invocation) {
                     command.arg("--shell");
                 }
                 command.arg("--").arg(&self.exe);
@@ -342,10 +492,34 @@ impl Git {
         if invocation.local {
             command.args(LOCAL_CONFIG);
         }
+        // Past the command's own `-c` pairs and its name: no program for a diff.
+        let named = invocation.args.len() - subcommand_rest(&invocation.args).len();
+        let diffs = subcommand(&invocation.args)
+            .is_some_and(|name| DIFF_COMMANDS.iter().any(|diff| name == OsStr::new(diff)));
+        // A call site's own copy of the two is dropped, up to where its options end (past
+        // that, the word is a revision or a path).
+        let options_end = invocation
+            .args
+            .iter()
+            .position(|arg| arg == OsStr::new("--") || arg == OsStr::new("--end-of-options"))
+            .unwrap_or(invocation.args.len());
+        for (at, arg) in invocation.args.iter().enumerate() {
+            let own_copy =
+                at < options_end && NO_DIFF_PROGRAMS.iter().any(|flag| arg == OsStr::new(flag));
+            if diffs && own_copy {
+                continue;
+            }
+            command.arg(arg);
+            if diffs && at == named {
+                command.args(NO_DIFF_PROGRAMS);
+            }
+        }
         command
-            .args(&invocation.args)
             .env_clear()
-            .stdin(Stdio::null())
+            .stdin(match invocation.input {
+                Some(_) => Stdio::piped(),
+                None => Stdio::null(),
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for key in INHERITED_ENV {
@@ -353,17 +527,18 @@ impl Git {
                 command.env(key, value);
             }
         }
+        // The adapter's own configuration is where a token travels. A local transfer needs
+        // none and may start the shell, and a command in a sandbox's folder reads that
+        // folder's configuration, which its agents write and which shapes a connection
+        // (ADR-0323): neither gets it. What needs the token there goes through a courier.
+        let in_a_sandbox = self.in_a_sandbox(invocation);
         for (key, value) in &self.env {
-            // A local transfer needs no credential and may start the shell: none goes near it.
-            if invocation.local && key.starts_with("GIT_CONFIG_") {
+            if (invocation.local || in_a_sandbox) && carries_configuration(key) {
                 continue;
             }
             command.env(key, value);
         }
-        command
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GCM_INTERACTIVE", "never")
-            .env("LC_ALL", "C");
+        command.envs(FIXED_ENV.iter().copied());
         for (key, value) in &invocation.env {
             command.env(key, value);
         }
@@ -373,7 +548,26 @@ impl Git {
         command
     }
 
+    /// Whether a confined `invocation` works in a sandbox's folder: its own folder is one, or
+    /// it has none (a clone, an init) and writes into one. Such a command reads, or makes, a
+    /// configuration the sandbox's agents write.
+    fn in_a_sandbox(&self, invocation: &Invocation<'_>) -> bool {
+        self.confinement.as_ref().is_some_and(|confinement| {
+            let is_a_sandboxes = |path: &Path| confinement.sandbox_of_path(path).is_some();
+            match invocation.cwd {
+                Some(cwd) => is_a_sandboxes(cwd),
+                None => invocation.touches.iter().any(|path| is_a_sandboxes(path)),
+            }
+        })
+    }
+
     fn run_once(&self, invocation: &Invocation<'_>) -> Result<Output, GitError> {
+        if invocation.local && self.in_a_sandbox(invocation) {
+            return Err(GitError::InvalidInput {
+                what: "command",
+                reason: "a transfer between folders is not made in a sandbox's folder".into(),
+            });
+        }
         let _changes = touches_worktree_registrations(&invocation.args).then(|| {
             WORKTREE_CHANGES
                 .lock()
@@ -386,6 +580,13 @@ impl Git {
             command.process_group(0);
         }
         let mut child = command.spawn().map_err(GitError::Spawn)?;
+        if let (Some(mut stdin), Some(input)) = (child.stdin.take(), invocation.input.clone()) {
+            // From a thread of its own: Git may answer before it has read everything. The
+            // pipe closes when the thread ends, and a Git that is gone ends the write.
+            thread::spawn(move || {
+                let _ = std::io::Write::write_all(&mut stdin, &input);
+            });
+        }
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
             kill_tree(&mut child);
             return Err(GitError::Io {
@@ -647,6 +848,7 @@ mod tests {
             .with_env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
             .with_env("GIT_CONFIG_VALUE_0", "AUTHORIZATION: basic dG9rZW4=")
             .with_env("OTHER", "kept")
+            .with_env("GIT_CONFIG_GLOBAL", "/dev/null")
             .confined(std::sync::Arc::new(crate::Confinement {
                 launcher: "/opt/yulius".into(),
                 data: data.to_path_buf(),
@@ -693,7 +895,47 @@ mod tests {
         expected.extend(FIXED_CONFIG.iter().map(|word| (*word).to_owned()));
         expected.extend(["status", "--porcelain"].map(str::to_owned));
         assert_eq!(words(&command), expected);
-        assert!(sets(&command, "GIT_CONFIG_VALUE_0") && sets(&command, "OTHER"));
+        // In a sandbox's folder the clone's configuration shapes a connection: the adapter's
+        // own (a token's header) is not given to a command there (ADR-0323), nor to one in no
+        // folder that writes there (a clone). Elsewhere it is, also when the command borrows
+        // a sandbox's objects from a folder of the server's own (a courier).
+        assert!(
+            !sets(&command, "GIT_CONFIG_VALUE_0")
+                && !sets(&command, "GIT_CONFIG_KEY_0")
+                && !sets(&command, "GIT_CONFIG_COUNT")
+        );
+        // Only the configuration: another variable of the adapter's is kept, whatever it is.
+        assert!(sets(&command, "OTHER") && sets(&command, "GIT_CONFIG_GLOBAL"));
+        let own = data.join("git-couriers/x.git");
+        std::fs::create_dir_all(&own)?;
+        let clone = |dest: &Path| {
+            git.command(
+                &Invocation::new(&git, "clone", None)
+                    .arg("clone")
+                    .touching(dest),
+            )
+        };
+        assert!(!sets(
+            &clone(&data.join("sandboxes/s1/seed")),
+            "GIT_CONFIG_VALUE_0"
+        ));
+        assert!(!sets(
+            &clone(&data.join("sandboxes/s7/repo")),
+            "GIT_CONFIG_COUNT"
+        ));
+        assert!(sets(
+            &clone(&data.join("changes/c1/repo")),
+            "GIT_CONFIG_VALUE_0"
+        ));
+        for command in [
+            Invocation::new(&git, "fetch", Some(&own)).arg("fetch"),
+            Invocation::new(&git, "fetch", Some(&own))
+                .arg("fetch")
+                .touching(repo.join(".git/objects")),
+            Invocation::new(&git, "ls-remote", None).arg("ls-remote"),
+        ] {
+            assert!(sets(&git.command(&command), "GIT_CONFIG_VALUE_0"));
+        }
 
         // Unconfined (this crate's tests, macOS): Git itself.
         let plain = Git::new("git");
@@ -703,29 +945,132 @@ mod tests {
         Ok(())
     }
 
-    /// A transfer with a folder Yulius names: the other folder is reached, the shell is
-    /// allowed, the transports are pinned to `file` with no alternate-refs command, and none
-    /// of the adapter's configuration (where a token travels) is in the environment.
+    /// The loader, which a confined Git must be able to execute, runs any file it can read:
+    /// no configured word is started with an argument an agent chooses. Every command that can
+    /// make a diff gets `--no-ext-diff --no-textconv` (an external diff and a text conversion
+    /// are started with the file's path), whatever its call site wrote; no command signs,
+    /// shows signatures, edits a message or uses `ssh` or `git` transports.
+    #[test]
+    fn nothing_is_started_with_an_argument_of_the_clones() {
+        let git = Git::new("git");
+        let said = |args: &[&str]| {
+            words(&git.command(&Invocation::new(&git, "x", None).args(args.iter().copied())))
+        };
+        for family in [
+            "diff",
+            "log",
+            "show",
+            "diff-tree",
+            "diff-index",
+            "diff-files",
+        ] {
+            let words = said(&[family, "--stat", "HEAD"]);
+            let at = words.iter().position(|word| word == family).unwrap_or(0);
+            assert_eq!(
+                words[at..],
+                [family, "--no-ext-diff", "--no-textconv", "--stat", "HEAD"].map(str::to_owned),
+                "{family}"
+            );
+        }
+        // Past a command's own `-c` pairs; not twice; not for a command that makes no diff.
+        let fsck = said(&["-c", "fetch.fsckObjects=true", "log", "--no-textconv", "-1"]);
+        let at = fsck.iter().position(|word| word == "log").unwrap_or(0);
+        assert_eq!(
+            fsck[at..],
+            ["log", "--no-ext-diff", "--no-textconv", "-1"].map(str::to_owned)
+        );
+        // Past the end of the options the same word is a revision or a path: it stays.
+        for end in ["--", "--end-of-options"] {
+            let words = said(&["diff", "--no-ext-diff", end, "--no-textconv"]);
+            let at = words.iter().position(|word| word == "diff").unwrap_or(0);
+            assert_eq!(
+                words[at..],
+                [
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    end,
+                    "--no-textconv"
+                ]
+                .map(str::to_owned)
+            );
+        }
+        for other in ["status", "merge", "fetch", "rev-parse"] {
+            let words = said(&[other]);
+            assert!(
+                !words.iter().any(|word| word == "--no-textconv"),
+                "{other}: {words:?}"
+            );
+        }
+        let constant = said(&["status"]);
+        for pinned in [
+            "protocol.ext.allow=never",
+            "protocol.ssh.allow=never",
+            "protocol.git.allow=never",
+            "core.alternateRefsCommand=",
+            "commit.gpgSign=false",
+            "tag.gpgSign=false",
+            "push.gpgSign=false",
+            "log.showSignature=false",
+            "push.recurseSubmodules=no",
+            "submodule.recurse=false",
+            "credential.helper=",
+            "fetch.bundleURI=",
+            "push.negotiate=false",
+            "core.fsmonitor=false",
+            "core.hooksPath=/dev/null",
+        ] {
+            assert!(
+                constant.iter().any(|word| word == pinned),
+                "{pinned}: {constant:?}"
+            );
+        }
+        // No editor, nobody asked for a password (an empty program is none, and comes before
+        // the clone's `core.askPass`), no object fetched from a remote the clone names.
+        let command = git.command(&Invocation::new(&git, "x", None).arg("commit"));
+        for (name, wanted) in [
+            ("GIT_EDITOR", ":"),
+            ("GIT_ASKPASS", ""),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+        ] {
+            assert!(
+                command.get_envs().any(
+                    |(key, value)| key == OsStr::new(name) && value == Some(OsStr::new(wanted))
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    /// A transfer with a folder Yulius names, made in a folder of the server's own (a
+    /// courier): the other folder is reached, the shell is allowed, the transports are pinned
+    /// to `file`, and none of the adapter's configuration (where a token travels) is in the
+    /// environment. In a sandbox's folder no command gets the shell, and such a transfer is
+    /// refused there: the clone's configuration would name what the shell runs.
     #[test]
     fn a_local_transfer_gets_the_shell_and_no_credential() -> std::io::Result<()> {
         let dir = tempfile::tempdir()?;
         let data = dir.path().canonicalize()?;
         let repo = data.join("sandboxes/s1/repo");
         let origin = data.join("playgrounds/s1.git");
-        std::fs::create_dir_all(&repo)?;
-        std::fs::create_dir_all(&origin)?;
+        let courier = data.join("git-couriers/s1-1.git");
+        for folder in [&repo, &origin, &courier] {
+            std::fs::create_dir_all(folder)?;
+        }
         let git = confined(&data);
         let command = git.command(
-            &Invocation::new(&git, "push", Some(&repo))
+            &Invocation::new(&git, "push", Some(&courier))
                 .args(["push", "--"])
                 .arg(&origin)
+                .touching(repo.join(".git/objects"))
                 .local(&origin),
         );
         let said = words(&command);
         let split = said.iter().position(|word| word == "--").unwrap_or(0);
         let (launcher, git_words) = said.split_at(split);
         assert!(launcher.iter().any(|word| word == "--shell"), "{said:?}");
-        for folder in [&origin, &data.join("sandboxes/s1")] {
+        for folder in [&origin, &courier, &data.join("sandboxes/s1")] {
             assert!(
                 launcher.contains(&folder.to_string_lossy().into_owned()),
                 "{said:?}"
@@ -751,9 +1096,69 @@ mod tests {
         );
         assert!(sets(&command, "OTHER"));
 
+        // A transfer that only takes from the other folder (a fetch, a listing) reads it and
+        // writes nothing there.
+        let takes = words(
+            &git.command(
+                &Invocation::new(&git, "fetch", Some(&courier))
+                    .args(["fetch", "--"])
+                    .arg(&origin)
+                    .touching(&repo)
+                    .local_reading(&origin),
+            ),
+        );
+        let granted = |how: &str, folder: &Path| {
+            takes
+                .windows(2)
+                .any(|pair| pair[0] == how && pair[1] == folder.to_string_lossy())
+        };
+        assert!(
+            granted("--ro", &origin) && !granted("--rw", &origin),
+            "{takes:?}"
+        );
+        assert!(granted("--rw", &courier) && granted("--rw", &data.join("sandboxes/s1")));
+        assert!(takes.iter().any(|word| word == "--shell"), "{takes:?}");
+
+        // In a sandbox's folder: refused before anything is started, in the clone and for a
+        // new repository there; and no shell for any command, also where every command may
+        // have it (the tests' stand-in for GitHub).
+        for local in [
+            Invocation::new(&git, "push", Some(&repo))
+                .args(["push", "--"])
+                .arg(&origin)
+                .local(&origin),
+            Invocation::new(&git, "clone", None)
+                .args(["clone", "--"])
+                .arg(&origin)
+                .touching(data.join("sandboxes/s1/new"))
+                .local(&origin),
+        ] {
+            let refused = git.run(local).map(|_| ()).map_err(|err| err.to_string());
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|why| why.contains("not made in a sandbox's folder")),
+                "{refused:?}"
+            );
+        }
+        let seam = Git::new("git").confined(std::sync::Arc::new(crate::Confinement {
+            launcher: "/opt/yulius".into(),
+            data: data.clone(),
+            data_depth: 0,
+            shared: Vec::new(),
+            shell: true,
+        }));
+        let shell = |cwd: &Path| {
+            words(&seam.command(&Invocation::new(&seam, "status", Some(cwd)).arg("status")))
+                .iter()
+                .any(|word| word == "--shell")
+        };
+        assert!(shell(&courier) && shell(&origin));
+        assert!(!shell(&repo) && !shell(&data.join("sandboxes/s1/worktrees/t1")));
+
         // No local transfer: no shell and no pins.
         let command =
-            git.command(&Invocation::new(&git, "fetch", Some(&repo)).args(["fetch", "origin"]));
+            git.command(&Invocation::new(&git, "fetch", Some(&courier)).args(["fetch", "origin"]));
         let said = words(&command);
         assert!(!said.iter().any(|word| word == "--shell"), "{said:?}");
         assert!(
@@ -761,14 +1166,36 @@ mod tests {
             "{said:?}"
         );
         // An address that is no folder of this machine is no local transfer.
-        let https =
-            Invocation::new(&git, "fetch", Some(&repo)).local_if_path("https://github.com/a/b.git");
+        let https = Invocation::new(&git, "fetch", Some(&courier))
+            .local_if_path("https://github.com/a/b.git");
         assert!(!https.local);
         assert!(
-            Invocation::new(&git, "fetch", Some(&repo))
+            Invocation::new(&git, "fetch", Some(&courier))
                 .local_if_path("/srv/x.git")
                 .local
         );
+        Ok(())
+    }
+
+    /// A command's standard input: what it is given, whole, and nothing when it is given
+    /// nothing.
+    #[test]
+    fn a_command_reads_what_it_is_given() -> Result<(), GitError> {
+        let git = Git::new("git");
+        let big = "x".repeat(300_000);
+        let hashed = git.run_ok(
+            Invocation::new(&git, "hash-object", None)
+                .args(["hash-object", "--stdin"])
+                .input(big.clone()),
+        )?;
+        let empty = git
+            .run_ok(Invocation::new(&git, "hash-object", None).args(["hash-object", "--stdin"]))?;
+        assert_eq!(
+            empty.stdout_trimmed(),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
+        assert_ne!(hashed.stdout_trimmed(), empty.stdout_trimmed());
+        assert_eq!(hashed.stdout_trimmed().len(), 40);
         Ok(())
     }
 

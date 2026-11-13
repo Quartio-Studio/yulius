@@ -943,6 +943,9 @@ impl App {
             profile,
             user,
         } = *scaffold;
+        // In the folder of the sandbox that is being made: it has no record yet, so nothing
+        // of it runs that could write here (a later scratch clone is the server's own,
+        // `App::scratch`). A playground's origin is taken as one only from there.
         let scratch = self.sandbox_dir(id).join("scaffold");
         if let Some(parent) = scratch.parent() {
             let parent = parent.to_path_buf();

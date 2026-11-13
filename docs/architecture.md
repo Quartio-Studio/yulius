@@ -1413,8 +1413,18 @@ write only the folders the command works in (a sandbox's clone, worktrees and im
 worktrees; what else a command touches is named where it is made). A clone's configuration
 can then make the server's Git run nothing, and a link in the clone leads it nowhere
 outside. Only a transfer between two folders Yulius names may start the shell, with its
-transports pinned to `file`
-([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)).
+transports pinned to `file`, and never in a sandbox's folder
+([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A clone's transfers,
+with GitHub (which carry the server's token) and with a playground's origin (which need the
+shell), are not made in the clone at all: a courier, a bare repository of the server's own in
+`<data>/git-couriers`, fetches or pushes on the clone's objects, and the refs travel as data
+(the server lists them, the clone's Git sets them); a new clone is an empty repository filled
+that way. No command in a sandbox's folder, and none that writes a new repository there, gets
+the adapter's own configuration, where the token travels, or the shell. What the server itself
+commits and pushes (a change from the remote control, an empty repository's first commit) is
+made in `<data>/changes`, not in the sandbox's folder
+(`yulius_git::courier`,
+[decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
 
 ```mermaid
 flowchart LR
@@ -1423,7 +1433,11 @@ flowchart LR
   G -->|"read, write"| S["<data>/sandboxes/<id>, <data>/import-worktrees/<id>"]
   G -->|"read"| SYS["/usr, /lib, /etc"]
   G -.->|"refused"| X["/bin/sh and other programs, <data> beyond the sandbox, other sandboxes"]
-  G -->|"transfer Yulius names: + /bin/sh, file transport only"| O["<data>/playgrounds/<id>.git, CD mirror"]
+  SRV -->|"a clone's fetch, push, listing"| CO["courier in <data>/git-couriers: the server's own configuration, the clone's objects"]
+  CO -->|"HTTPS, with the token"| GH["GitHub"]
+  CO -->|"transfer between folders: + /bin/sh, file transport only, no token"| O["<data>/playgrounds/<id>.git"]
+  CO -->|"objects"| S
+  SRV -->|"refs as data: for-each-ref, update-ref"| G
 ```
 
 ```mermaid

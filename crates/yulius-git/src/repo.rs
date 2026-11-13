@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use crate::Git;
+use crate::courier::Tags;
 use crate::error::GitError;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{
     require_absolute, validate_branch_name, validate_remote, validate_remote_name,
     validate_remote_url, validate_revision,
@@ -26,7 +27,8 @@ impl Git {
         Ok(())
     }
 
-    /// Adds a remote `name` pointing at `url` (https/http/ssh/git/file URL or absolute path).
+    /// Adds a remote `name` pointing at `url` (an https, http or file URL or an absolute path; an
+    /// ssh or git URL is taken as an address, but the server makes no transfer with one).
     pub fn remote_add(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
         validate_remote_name(name)?;
         validate_remote_url(url)?;
@@ -38,9 +40,20 @@ impl Git {
     }
 
     /// Clones `url` into the absolute `dest` (network timeout applies).
+    ///
+    /// Into a sandbox's folder, a new repository is the sandbox's agents' to write from its
+    /// first file on, so it is made without a transfer in it (`clone_into_a_sandbox`,
+    /// ADR-0323).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
+        let a_sandboxes = self
+            .confinement
+            .as_ref()
+            .and_then(|confinement| confinement.sandbox_of_path(dest));
+        if a_sandboxes.is_some() {
+            return self.clone_into_a_sandbox(url, Path::new(url).is_absolute(), dest);
+        }
         self.run_ok(
             Invocation::new(self, "clone", None)
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
@@ -62,17 +75,22 @@ impl Git {
             "--no-recurse-submodules",
             "--",
         ]);
-        let fetch = if Path::new(remote).is_absolute() {
-            // A folder the caller names itself.
-            fetch.arg(remote).local(remote)
-        } else {
-            match self.local_remote(repo, remote) {
-                Some(origin) => fetch
-                    .arg(&origin)
-                    .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))
-                    .local(&origin),
-                None => fetch.arg(remote),
+        // A remote's name, or a folder the caller names itself (fetched as it is).
+        let named = !Path::new(remote).is_absolute();
+        let tracking = format!("+refs/heads/*:refs/remotes/{remote}/*");
+        let fetch = match self.remote_route(repo, remote, true)? {
+            Route::Folder(origin) if named => fetch.arg(&origin).arg(tracking).local(&origin),
+            Route::Folder(origin) => fetch.arg(&origin).local(&origin),
+            Route::Courier(courier, url) if named => {
+                return self.fetch_through(&courier, repo, (remote, Tags::Reached), &url);
             }
+            Route::Courier(..) => {
+                return Err(GitError::InvalidInput {
+                    what: "remote",
+                    reason: "a sandbox's clone fetches a folder's branches as its origin's".into(),
+                });
+            }
+            Route::Named => fetch.arg(remote),
         };
         self.run_ok(fetch.timeout(self.network_timeout))?;
         Ok(())
@@ -83,6 +101,11 @@ impl Git {
     /// URL in `repo`'s configuration, which a sandbox may rewrite (a playground, SPEC-099).
     pub fn fetch_branches_from(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
         require_absolute("source repository", source)?;
+        // A sandbox's clone: through a courier, as every transfer of one.
+        if let Some(courier) = self.courier(repo, true, true)? {
+            let source = source.to_string_lossy();
+            return self.fetch_through(&courier, repo, ("origin", Tags::None), &source);
+        }
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
                 .args([
