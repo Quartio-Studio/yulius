@@ -374,30 +374,52 @@ fn browser_port(
         // An undiscoverable Chromium surfaces as a typed "not found" error on first use.
         yulius_browser::discover_chromium().unwrap_or_else(|_| PathBuf::from("chromium"))
     });
-    let mut config = yulius_browser::BrowserConfig::new(exe, args.data_dir.join("sandboxes"));
+    let (mut config, network) = browser_config(
+        exe,
+        args.data_dir.join("sandboxes"),
+        &args.public_url,
+        args.bind,
+        args.internal_bind,
+    );
     config.no_sandbox = args.chromium_no_sandbox;
     config.display = browser_display_mode(args);
+    (Arc::new(ChromiumBrowsers::new(config)), network)
+}
+
+/// What every sandbox browser of a server on these listeners gets: the welcome page for new
+/// tabs, the guard against Yulius itself, and its way out.
+fn browser_config(
+    exe: PathBuf,
+    profiles: PathBuf,
+    public_url: &str,
+    bind: SocketAddr,
+    internal_bind: SocketAddr,
+) -> (
+    yulius_browser::BrowserConfig,
+    Arc<crate::wiring::egress::BrowserProxies>,
+) {
+    let mut config = yulius_browser::BrowserConfig::new(exe, profiles);
     // New and blank tabs show the welcome page from the internal listener (BRW-006).
-    let welcome = format!("http://{}/browser/welcome", args.internal_bind);
+    let welcome = format!("http://{internal_bind}/browser/welcome");
     config.new_tab_url = Some(format!("{welcome}?sandbox={{sandbox}}"));
     // Never Yulius itself (BRW-008): its public origin, preview origins and listeners; the
     // welcome page stays reachable.
     config.deny = yulius_browser::UrlDenyList::yulius(
-        &args.public_url,
-        &[args.bind, args.internal_bind],
+        public_url,
+        &[bind, internal_bind],
         vec![format!("{welcome}?"), format!("{welcome}/ports?")],
     );
     // Every browser behind a proxy of its own: it reaches what its sandbox's processes reach,
     // and of Yulius's internal listener the same two pages.
     let network = Arc::new(crate::wiring::egress::BrowserProxies::new(
-        args.internal_bind,
+        internal_bind,
         vec![
             "/browser/welcome?".to_owned(),
             "/browser/welcome/ports?".to_owned(),
         ],
     ));
     config.network = Some(network.clone());
-    (Arc::new(ChromiumBrowsers::new(config)), network)
+    (config, network)
 }
 
 /// Live preview origins: under the public host by default, under `domain` when given, none for
@@ -717,6 +739,40 @@ mod tests {
     struct Serve {
         #[command(flatten)]
         args: ServeArgs,
+    }
+
+    /// SPEC-483 E2 (ADR-0321): the server's browsers always get a way out of their own (none
+    /// starts without it), which gives them, of the internal listener, the pages their new
+    /// tabs open and the guard lets through.
+    #[test]
+    fn every_sandbox_browser_is_configured_behind_its_proxy() {
+        let internal: SocketAddr = ([127, 0, 0, 1], 8081).into();
+        let (config, network) = browser_config(
+            "chromium".into(),
+            "/data/sandboxes".into(),
+            "https://yulius.example",
+            ([127, 0, 0, 1], 8080).into(),
+            internal,
+        );
+        assert!(config.network.is_some(), "no browser connects by itself");
+        let wired = format!("{network:?}");
+        let welcome = config.new_tab_url.as_deref().unwrap_or_default();
+        assert_eq!(
+            welcome,
+            "http://127.0.0.1:8081/browser/welcome?sandbox={sandbox}"
+        );
+        for path in ["/browser/welcome?", "/browser/welcome/ports?"] {
+            assert!(wired.contains(path), "{wired}");
+            assert!(
+                !config
+                    .deny
+                    .denies(&format!("http://127.0.0.1:8081{path}sandbox=s1")),
+                "the guard lets {path} through"
+            );
+        }
+        assert!(wired.contains("127.0.0.1:8081"), "{wired}");
+        assert!(wired.contains("bound: false"), "{wired}");
+        assert!(config.deny.denies("http://127.0.0.1:8081/internal/version"));
     }
 
     /// SPEC-325 UPL-001: a 1 GB screen recording uploads on a default instance. Read from the
