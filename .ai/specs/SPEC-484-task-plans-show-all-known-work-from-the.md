@@ -415,10 +415,13 @@ Commands run in this task's worktree, at the head named. Logs are kept in the ig
   slice 12 (1206541e1) merged for real: one conflict, the migration list (dev's 0055 is schema
   version 55, this task's 0056 is 56), and the decision index repaired after the union merge
   repeated ADR-0323's line; #465's slice 13 (3e3b09e13) merged without a conflict, and clippy
-  and the tests of what it touched (the merge train, CI, playgrounds: 285) passed on the result.
-- **The head with this Evidence** differs from 207e6ebd8 by this document only (status, the
-  last Plan item, this section). The reviewer's look at it is named in the merge's review
-  summary, since its verdict cannot be in the commit it judges.
+  and the tests of what it touched (the merge train, CI, playgrounds: 285) passed on the
+  result; so did task #468's change (607121220, SPEC-486, ADR-0326 after this task's 0325 in
+  the index), with clippy and 614 tests of this change's areas and of what it touched.
+- **The head with this Evidence** differs from 207e6ebd8, the head the gate ran at, by this
+  document (status, the last Plan item, this section) and by that last clean merge of `dev`.
+  The reviewer's look at it is named in the merge's review summary, since its verdict cannot
+  be in the commit it judges.
 - **Not tested, and why.** The running server (397d5bdd, the instance's own build) has the
   old rules, so this task's own delivery cannot show a merge with steps ahead: its steps are
   all finished before its merge. A live session's reading of the new briefing and tool texts
