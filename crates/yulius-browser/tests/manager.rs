@@ -579,9 +579,11 @@ async fn a_browser_runs_behind_its_own_proxy_or_not_at_all() -> TestResult {
             .to_owned())
     };
 
+    // The browsers are held on to throughout, as a viewer's session holds one: a proxy closes
+    // when its browser ends, not when the last holder lets go.
     let a = manager.ensure(&s1, &p1).await?;
     manager.ensure(&s1, &p1).await?;
-    manager.ensure(&s2, &p2).await?;
+    let b = manager.ensure(&s2, &p2).await?;
     assert_eq!(proxy_of(&p1)?, "http://127.0.0.1:40000");
     assert_eq!(proxy_of(&p2)?, "http://127.0.0.1:40001", "one each");
     assert_eq!(
@@ -593,8 +595,7 @@ async fn a_browser_runs_behind_its_own_proxy_or_not_at_all() -> TestResult {
     // A crashed browser's proxy closes when the next one starts, behind a new one.
     kill_pid(a.pid().ok_or("no pid")?, Signal::SIGKILL)?;
     assert!(wait_dead(a.pid().ok_or("no pid")?).await);
-    drop(a);
-    manager.ensure(&s1, &p1).await?;
+    let restarted = manager.ensure(&s1, &p1).await?;
     assert_eq!(proxy_of(&p1)?, "http://127.0.0.1:40002");
     assert_eq!(network.open.load(Ordering::SeqCst), 2);
 
@@ -632,5 +633,6 @@ async fn a_browser_runs_behind_its_own_proxy_or_not_at_all() -> TestResult {
 
     assert!(manager.shutdown(&s1).await?);
     assert_eq!(network.open.load(Ordering::SeqCst), 0);
+    drop((a, b, restarted));
     Ok(())
 }
