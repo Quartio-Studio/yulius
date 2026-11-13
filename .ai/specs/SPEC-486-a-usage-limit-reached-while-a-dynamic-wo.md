@@ -96,14 +96,26 @@ reset) only when no subscription can.
 
   What it binds: a limit of the subscription, or of a named model family, is what its record
   says. A limit of "the model that runs" (a model's usage credits: `LimitScope::Model(None)`)
-  is of that agent's model, which the agent's `agent-<id>.meta.json` names when the workflow's
-  script gave it one (`model`, an id or an alias) and leaves out when it runs the session's;
-  when that cannot be told the limit is not reported. A task's session is at the limit when it
-  binds the model the run was launched with: then it is handled as the session's own limit
-  (its turn is over, the pool decides). A limit of another model family is kept in the
-  subscription's reading and changes nothing for the task. The Superagent does not act on a
+  is of that agent's model, which is not always the session's: the workflow's script may give
+  an agent a model, an agent type may have one in its definition, and the session's
+  environment may give every workflow agent one (`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`). Claude
+  Code writes only the first to the agent's `agent-<id>.meta.json` (`model`, an id or an
+  alias); the others show only in the records the model answered. So the agent's model is, in
+  this order: the one its meta file names; the one its own answered records name; for an
+  agent of the default type (`agentType: "workflow-subagent"`), the one that answered such
+  agents of its run; and with none of these, for an agent of the default type, the session's.
+  When it cannot be told (no meta file, or an agent type of its own that was never answered),
+  or is of no family with a limit of its own, the limit is not reported. A task's session is
+  at the limit when it binds the model the run was launched with: then it is handled as the
+  session's own limit (its turn is over, the pool decides). A limit of another model family
+  goes into the subscription's reading when it is read live and changes nothing that is known
+  of the session. The Superagent does not act on a
   workflow agent's limit (see Decisions). A sub-agent's refusal outside a workflow stays
-  unreported: the session's thread is woken and refused itself.
+  unreported: the session's thread is woken and refused itself. Not covered: an agent type
+  with a model of its own, or a session whose environment gives workflow agents one, whose
+  first agent of a run is refused at its first request for that model's usage credits before
+  any such agent was answered; an agent type's limit is then not reported, and a default-type
+  agent's is taken for the session's model.
 - WFL-003 (a workflow is background work). A Workflow launch in the session's transcript is
   `BackgroundStarted` (an agent, by its `taskId`) and names its run (`WorkflowLaunched`);
   its end is the task notification with a status for that `taskId`, as for an agent.
@@ -167,6 +179,7 @@ reset) only when no subscription can.
 - [x] ADR-0326, the architecture, product and contract documents and the changes entry agree
 - [x] The gate and the security scan are run and the head is given to an independent review
 - [x] The review's first round is answered: the Superagent, another model's limit, stale runs and eight smaller findings
+- [ ] The review's second round is answered: an agent type's own model, and five smaller findings
 
 ## Acceptance criteria
 
@@ -200,8 +213,10 @@ reset) only when no subscription can.
   links and files past the bounds; the launch record gives `BackgroundStarted` and
   `WorkflowLaunched`; `pendingWorkflowCount` adds to the pending agents.
 - Unit (wiring): a workflow agent's limit is reported after the session's lines, once; held
-  while the session's transcript is not read to its end; dropped when the session worked after
-  it; a plain sub-agent's limit is not reported.
+  while the session's transcript is not read to its end; dropped when a prompt recorded after
+  it was worked on, when the thread's own limit stands and when its reset has passed; a plain
+  sub-agent's limit is not reported; whose model a model's limit is of, for each shape of
+  meta file and answered records.
 - Unit (app): the facts' unfinished runs (launch, end, relaunch); the prompt's text.
 - Integration (`crates/yulius/tests`, fake agent): the acceptance criteria above.
 - The real Claude Code against the stand-in API (not in CI: it needs the installed CLI): the
@@ -269,14 +284,17 @@ reset) only when no subscription can.
     limit), also when the resume carries the prompt on the command line.
   - `bg-agent` (a background agent refused): its notification wakes the session's thread at
     once and the thread asks the model, so the limit reaches the session's own transcript.
-- **The real records through the watch** (a throwaway test, not kept; output in
-  `target/evidence/real-replay.log`). The `limit` and `goal-limit` runs cut before the typed
-  "continue": `WorkflowLaunched`, `BackgroundStarted`, `TurnEnded background=Some(1)`, then
-  `LimitReached` with the reset (`1794598079000`), window 300 and the refusal's time; the
-  facts say `limit_pending=true`, the run unfinished and paused. The whole `limit` run (the
-  thread answered after the limit): no limit reported. `limit-both`: the session's own two
-  limits, no third one. `limit-kill-resume`: the transcript-only notice ends the old launch
-  and starts no turn. `bg-agent`: as before the change.
+- **The real records through the watch** (a throwaway test, not kept; redone at `113898779`
+  after the second review round; output in `target/evidence/real-replay.log`). The `limit` and
+  `goal-limit` runs cut before the typed "continue": `WorkflowLaunched`, `BackgroundStarted`,
+  `TurnEnded background=Some(1)`, then `WorkflowLimitReached` with the reset
+  (`1794598079000`), window 300, scope `Account` and the refusal's time; the facts say
+  `limit_pending=true`, the run unfinished and paused. The whole `limit` run (a later prompt
+  was answered): no limit reported. `limit-both`: the session's own two `LimitReached`, no
+  workflow limit beside them. `limit-kill-resume`: the transcript-only notice ends the old
+  launch and its queue hand-over (`Queue Written`) and starts no turn. `bg-agent`: as before
+  the change. The reviewer's run of an agent type with a model of its own, refused for the
+  5-hour window: reported with scope `Account` (the subscription's, whatever the model).
 - **Tests that fail without the fix** (`target/evidence/mutants.sh`, log
   `target/evidence/mutants.log`, at `ccb0f3ad1`): nine mutants, each removing one part, against
   the nine integration tests (`workflow_limit::`, eight, and the hook test). Unmutated: all
@@ -314,7 +332,12 @@ reset) only when no subscription can.
   `agent-models-limit`): `agent(prompt, {model: 'haiku'})` and `{model: 'claude-opus-4-5'}`
   ask the API for `claude-haiku-5-5` and `claude-opus-4-5`, and the agent's
   `agent-<id>.meta.json` then has `"model": "haiku"` and `"model": "claude-opus-4-5"`; an
-  agent given none has no `model` key and asks for the session's model.
+  agent given none has no `model` key and asks for the session's model. With
+  `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL=haiku` in the session's environment (run `run-envm`)
+  every agent asks for `claude-haiku-5-5` and no meta file has a `model` key; the reviewer's
+  runs (`probe2/run-at`, `run-atl` in its notes folder) show the same for an agent type whose
+  definition says `model: opus`: `"agentType":"pinned"`, no `model` key, the API asked for
+  `claude-opus-5-5`.
 - **The gate.** `scripts/dev ci` at `b75a01cbd` (before merging `dev` and before the review):
   exit 0, 4225 tests passed, 16 skipped. After merging `dev` (#1253) and the answers to the
   review's first round, at `db8ff8d6a`: exit 0, 4239 tests run, 4239 passed, 16 skipped
@@ -362,3 +385,27 @@ reset) only when no subscription can.
   11. Nits: a file that cannot be read no longer costs the others' lines. The two-step link
       check and the larger worst case of one poll (768 files instead of 256, each read with
       the same per-poll bound) are stated in Decisions and left.
+- **Independent review, second round** (the same reviewer, delta `9f02878be..554462ea9`):
+  request changes. Round one's findings 1 and 3 to 11 hold as answered (the reviewer ran its
+  Cockpit reproduction again: not moved; its own limit moves it). Left, and answered at
+  `113898779`:
+  1. Major, reproduced by the reviewer with the real CLI: an agent of an agent type with a
+     model of its own writes no `model` in its meta file and was still taken to run the
+     session's model. Answer: the agent's model is told from evidence, in the order WFL-002
+     names; an agent type of its own that was never answered cannot be told, and its model's
+     limit is not reported (`WorkflowAgents`, unit test
+     `a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model` with the real shapes).
+     The same answer covers the environment variable, found while checking it (run `run-envm`).
+     What stays uncovered is said in WFL-002.
+  2. Nit: another model's limit was folded as the session's pending limit. Answer: the watcher
+     keeps it to the subscription's reading (when read live) before anything is folded.
+  3. Nit: documents (this Evidence's replay redone, the test plan's sentence, the changes
+     entry and the decision index, the hook note's wording). Answered.
+  4. Nit: the pause ended with the launch turn's answer under way at the refusal. Answer: it
+     ends with work on a prompt that came after the limit. Left: once reported, a second
+     refusal later in the same long turn is not reported again (after a refused move, the
+     next prompt makes it news again).
+  5. Nit: `/clear` in the terminal does not drop the runs at once. Left: the new session's
+     first turn record does.
+  6. Nit: the transcript-only notice ends a hand-over of a prompt handed on just before it,
+     until that prompt's record is read (the next line in the real order). Left.

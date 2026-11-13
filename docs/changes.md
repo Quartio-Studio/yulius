@@ -15,7 +15,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   session is told in one prompt to resume the workflow by its run id (finished agents' results
   are kept, only the others run again), and a prompt typed at a paused workflow is told not to
   start it again. A workflow counts as background work, and its agents' tokens count in the
-  run's metrics.
+  run's metrics. Two cases stay where they are: the Superagent (its relaunch types nothing, so
+  Claude Code continues its paused workflow at the reset), and a limit of another model than
+  the session runs, met by a workflow agent the script put on that model.
 - A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
   A secret allowed for production deploys that still had hosts from before such secrets
   became exclusive was sent to those hosts for an agent's run by the egress proxy, while a

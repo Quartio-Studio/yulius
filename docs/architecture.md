@@ -524,8 +524,10 @@ run under watch began, the newest runs' first, 512 at most), and the transcript 
 a limit found there as `WorkflowLimitReached`: once the session's transcript is read to its
 end, once until a prompt reaches its thread again, and not when a later prompt was worked on,
 the thread's own limit stands or the limit's reset has passed. A limit of "the model that
-runs" is of that agent's model, which its `agent-<id>.meta.json` names when the script gave it
-one. For a task whose run is of the model the limit binds (or a limit of the subscription) it
+runs" is of that agent's model, told from its files (`WorkflowAgents`): the model its
+`agent-<id>.meta.json` names when the script gave it one, else the one its answered records
+name, else, for the default agent type, the one that answered such agents of its run, else
+the session's. For a task whose run is of the model the limit binds (or a limit of the subscription) it
 is then a limit like any other; a limit of another model is only kept in the subscription's
 reading. The Superagent does not act on it: its relaunch types nothing, so its paused workflow
 is left to Claude Code's continuation at the reset.

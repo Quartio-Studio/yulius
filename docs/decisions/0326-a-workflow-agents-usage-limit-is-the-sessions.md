@@ -39,8 +39,11 @@ stand-in for the model API (Claude Code 2.1.323), it behaves like this:
    reports a usage limit found there as `WorkflowLimitReached`: once the session's own
    transcript is read to its end, once until a prompt reaches the session's thread again, and
    not when a later prompt was worked on, the thread's own limit stands or the limit's reset
-   has passed. A limit of "the model that runs" is of that agent's model, read from the
-   agent's meta file. For a task whose run is of the model the limit binds (or a limit of the
+   has passed. A limit of "the model that runs" is of that agent's model, told from what its
+   files say: the model its script gave it (the meta file), else the one that answered it,
+   else, for the default agent type, the one that answered such agents of its run, else the
+   session's; an agent type of its own that was never answered cannot be told, and its limit
+   is not reported. For a task whose run is of the model the limit binds (or a limit of the
    subscription) it is then any other limit: the pool decides, the task moves or waits. A
    limit of another model is kept in the subscription's reading and moves nothing. The
    Superagent leaves a workflow agent's limit to Claude Code's own continuation at the reset:
@@ -106,5 +109,9 @@ stand-in for the model API (Claude Code 2.1.323), it behaves like this:
   would be missed until the session's thread asks the model.
 - A workflow whose agent runs another model than its session and meets that model's limit
   stays paused where it is; so does a Superagent's workflow at any limit.
+- An agent's model that only its type's definition or the session's environment names leaves
+  no trace before that model answered once: the first such agent of a run, refused at its
+  first request for the model's usage credits, is not reported (an agent type) or taken for
+  the session's model (the default type).
 - A task that waits without a process across a Yulius restart is resumed without the prompt
   (the unfinished runs are rebuilt from a watched run's transcripts only).
