@@ -56,18 +56,29 @@ Two rules, and one mechanism that keeps both.
     courier fetches the remote's branches from the address (with the adapter's
     configuration for an address on the web; as a transfer between folders, with the shell
     and without the token, for the origin's folder); the server lists the courier's refs
-    and has the clone's Git set them (`update-ref --stdin`: a moved or new branch set, a
-    dropped one deleted, a tag the clone has none of made). A clone without a note of the
-    remote's default branch (`refs/remotes/<remote>/HEAD`) gets one, asked from the remote.
+    and has the clone's Git set them (`update-ref --stdin`, in two steps as a fetch does
+    it: the branches the remote dropped are deleted first, so that `a/b` can take the place
+    of `a`; then a moved branch is set, a new one and a tag the clone has none of made; each
+    change names what the clone had, so a ref that changed meanwhile is not set back). A
+    clone without a note of the remote's default branch (`refs/remotes/<remote>/HEAD`) gets
+    one, asked from the remote.
     The courier's fetch tidies nothing (`gc.auto=0`, no maintenance): the objects are the
     clone's, and the courier knows only the remote's branches.
   - **Push:** the clone's commit is pushed from the courier by its id; never forced.
   - **Listing** the remote's branch is asked from a courier that works on no objects.
+  - **A folder is written only by a push.** A fetch and a listing with a playground's
+    origin read that folder and may write nothing there (the launcher's read-only reach):
+    the courier's `shallow` file is a link to the clone's, a file of the agents', and with
+    a link of their own in its place Git, which follows it, would have written where the
+    history ends into the origin.
   - **A new clone** in a sandbox's folder is the sandbox's agents' to write from its first
     file on, and `git clone` connects, and checks files out, in a repository whose
     configuration it has already written. So it is not made by a transfer: it is an empty
-    repository with the address as its origin's, filled by a fetch through a courier, whose
-    default branch is then checked out by a command in the clone like any other.
+    repository with the address as its origin's, filled by a fetch through a courier
+    (every tag with it), whose default branch is then checked out by a command in the clone
+    like any other. As with `git clone`, the folder is new or empty, and a clone that fails
+    leaves nothing of itself: one that kept its `.git` would be taken for a clone to
+    refresh, and never be checked out.
   The courier is removed when the transfer ends; one left by a server that stopped is removed
   by a later transfer after a day.
 - **What still starts the shell** is a transfer between two folders made in a folder of the
@@ -149,7 +160,14 @@ Two rules, and one mechanism that keeps both.
 - A new clone is `init`, `remote add`, such a fetch and a `checkout`, instead of one
   `git clone`. What a clone is to Git stays: the default branch checked out and following
   the remote's, the remote's branches and tags, the note of its default branch, and, of a
-  repository whose own history ends early, where it ends.
+  repository whose own history ends early, where it ends. One difference: the clone of an
+  empty remote is on `main`, where `git clone` takes the name the remote would give its
+  first branch; Yulius asks GitHub for that name before the first commit.
+- The list of a clone's remote branches and tags is read in one answer (at most 16 MiB,
+  the runner's bound for any command's output): a clone with more refs than fit is not
+  fetched. No repository Yulius has met is near it.
+- `yulius doctor` asks the Git on its own `PATH`; run as the service's user, it asks the
+  Git the server starts.
 - A refresh of a clone's reflogs differs: the remote-tracking refs are set by `update-ref`,
   not by a fetch, and `FETCH_HEAD` is the courier's, not the clone's. Nothing of Yulius
   reads either.

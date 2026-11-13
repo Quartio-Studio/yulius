@@ -507,15 +507,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   The remote's address is `remote.<name>.url` of the clone, or a folder the caller names; a
   remote without such an address is refused. For a fetch and a push the courier's commands
   work on the clone's objects (`GIT_OBJECT_DIRECTORY`; its `shallow` file a link to the
-  clone's), which must lie in the sandbox's own folders (links followed on both sides).
+  clone's), which must lie in the sandbox's own folders (links followed on both sides), and
+  reach the clone's sandbox by the path the caller names. A fetch and a listing with a
+  folder only read that folder; a push writes there.
 - **TKR-002** A fetch through a courier leaves the clone's `refs/remotes/<remote>/*` as a
   fetch by name with pruning would, brings the tags that come with them (none for a refresh
   of the branches alone) without touching a tag the clone has, and gives a clone without
   `refs/remotes/<remote>/HEAD` the one the remote names; a push sends the commit of the
   given branch and is refused when it would rewind the remote; the listing answers the
   remote's branch. The refs travel as data: the clone's are listed and written into the
-  courier, the courier's are listed and set in the clone by `update-ref --stdin`. The
-  courier's fetch runs no maintenance.
+  courier, the courier's are listed and set in the clone by `update-ref --stdin`, the
+  dropped ones in a step before the others (a branch can take the place of another under
+  its name), each change naming what the clone had. The courier's fetch runs no
+  maintenance.
 - **TKR-003** A command whose folder is a sandbox's, a command without a folder that writes
   into one, and a transfer between folders get none of the adapter's `GIT_CONFIG_COUNT`,
   `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`; a command in a folder of the server's own
@@ -532,8 +536,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   not the folder of all sandboxes, and makes nothing; which sandbox a path lies in is read
   from the path without its `.` and `..` parts.
 - **TKR-006** A clone into a sandbox's folder is an empty repository with the address as
-  its origin's, filled by a fetch through a courier, with the remote's default branch
-  checked out and following it; of an empty remote, a repository without a commit. The
+  its origin's, filled by a fetch through a courier with every tag of the remote, with the
+  remote's default branch checked out and following it; of an empty remote, a repository
+  without a commit. Its folder is new or empty, and a clone that fails removes it. The
   first commit of an empty repository is made in `<data>/changes`, never in the sandbox's
   folder.
 - **TKR-007** `yulius doctor` fails a host whose Git, told `GIT_NO_LAZY_FETCH=1`, still
@@ -806,10 +811,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   never connected to.
 - **AC-62** With the tests' stand-in for GitHub (an address rewritten to a folder in the
   server's own configuration only): a clone into a sandbox's folder that has what a clone
-  has (the checked-out default branch following the remote's, its branches, a tag, the note
-  of the default branch, the address); a push that arrives, the remote's head, a push that
-  would rewind refused, a fetch that brings the remote's new commit and prunes a branch the
-  remote dropped; a note of the default branch that is kept when the remote's changes and
+  has (the checked-out default branch following the remote's, its branches, a tag, a tag
+  of a commit on no branch, the note of the default branch, the address), after a clone
+  from an address where nothing listens left no folder and one into a folder that holds a
+  file was refused; a push that arrives, the remote's head, a push that would rewind
+  refused, a fetch that brings the remote's new commit and prunes a branch the remote
+  dropped; a branch `a` replaced by `a/b` and that by `a` again, each fetched; a note of
+  the default branch that is kept when the remote's changes and
   made when the clone has none; an empty remote cloned, fetched, and noted once it has a
   branch; no courier left after any of it. The same clone, push and fetch with the data
   folder reached through a link.
@@ -822,8 +830,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   options, kept past `--`, and on no other command. A transfer between folders made in a
   courier gets the shell, the `file` transport only and no adapter configuration; made in
   a sandbox's clone or into a new repository there, it is refused; with the shell given to
-  every command, a command in a sandbox's folder still gets none. A command given input
-  reads all of it.
+  every command, a command in a sandbox's folder still gets none. A transfer that only
+  takes from a folder reaches it read-only. A command given input reads all of it.
 - **AC-64** With the clone naming the program loader as external diff, diff driver, text
   conversion, `ssh` command and signing program, and a new file in a folder that is a
   program: the server's status, review, diff, log, commit, fetch and push start nothing.
@@ -858,7 +866,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   was never connected to and there is no marker.
 - **AC-71** A playground's origin whose history ends early (a shallow copy, two of three
   commits) is cloned into the sandbox's folder: the clone has the two commits, the same
-  `shallow` file as the origin, and passes `git fsck`; so after a second fetch.
+  `shallow` file as the origin, and passes `git fsck`; so after a second fetch, and so with
+  the data folder reached through a link. With a link to a missing branch file of the
+  origin where the clone's `shallow` file was, and the clone's remote branch deleted, the
+  server's fetch creates nothing in the origin.
 
 ## Test plan
 
@@ -1112,6 +1123,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   courier, a new clone copied from a courier and then copied without its files, the
   objects lent through an alternates file and its one-line rule). The earlier pins stay as
   depth.
+- From the fresh review of the slice as redesigned, round 1 (two major, three minor, five
+  nits; the rules on the token and the shell held): the clone's refs are set in two steps
+  with the values the clone had (as Git's own fetch prunes first and checks what it
+  replaces); a fetch and a listing reach the folder they take from read-only (chosen over
+  copying the `shallow` file in and out by the server: with the origin read-only the link
+  can lead Git only where the clone's agents write anyway, and the object folders linked
+  into the origin, which slice 10's fetch could be made to write through, are closed by the
+  same rule); the courier reaches the clone's sandbox by the caller's path; a failed clone
+  removes its folder and a clone needs an empty one, as `git clone`; a new clone asks for
+  every tag; the doctor's `PATH` and the bound on a clone's list of refs are said in
+  ADR-0323.
 - From the review of slice 10 (four nits, answered in slice 11): the loader (what the claim
   rests on is in ADR-0322 and enforced in the runner); a sandbox being made gets its own
   folder; what `/etc` and `/usr` readable means is in ADR-0322 already; the safety of a
