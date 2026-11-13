@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A failure inside Yulius no longer reads as an outage to `yulius wait` (SPEC-483 slice 16,
+  task #465). The listener the agents' own clients call (hooks, `yulius wait`, the Git
+  credential helper) had its own table of HTTP statuses: every error but four kinds was a
+  502, which `yulius wait` waits out as "Yulius cannot be reached", for 90 minutes by
+  default. It answers with the statuses of every other route now (a failure of its own is
+  500, an invalid request 422, no capacity 429), and so does the remote MCP endpoint: one
+  table for the whole server.
 - An armed merge ends with its task's run (SPEC-483 slice 15, task #465). A merge an agent
   armed outlived the task: for a task a person had stopped or closed, a green pull request
   that was up to date was still merged, one behind `dev` waited for ever (bringing it up to

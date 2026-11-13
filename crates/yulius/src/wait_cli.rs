@@ -311,7 +311,9 @@ fn ask(
                 );
                 return None;
             }
-            // A proxy in front of a Yulius that is starting: an outage.
+            // Something cannot be reached: a proxy in front of a Yulius that is starting, or
+            // what Yulius itself asked (GitHub; `status_for`'s only 502). Waited out, never an
+            // answer: a failure inside Yulius is a 500 and counts below.
             Ok((status @ 502..=504, _)) => Ok(format!("HTTP {status}")),
             Ok((status, _)) => Err(format!("Yulius answered HTTP {status}")),
             Err(err) => Ok(err.to_string()),

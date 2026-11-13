@@ -50,7 +50,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14 (merged, #1257), D6 slice 15, QB1 follows;
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -358,6 +358,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `Running` lost its armed merge, also one in `WaitingCapacity` or `Switching`, although
   the documents say armed merges are restored.
 
+### Slice 16: the statuses of the agents' own listener
+
+- **QB1 (medium).** The server had three hand-written tables from an application error to
+  an HTTP status: `error::status_for` (the public API, and `/internal/scrub/*`),
+  `routes/internal.rs` `status_of` (hooks, `yulius wait`, the Git credential helper: `Invalid`
+  400, everything else but four kinds 502) and one in `routes/mcp.rs`. Two of them served
+  the same loopback listener and disagreed (`Invalid` 400 or 422, `Internal` 502 or 500,
+  `Capacity` 502 or 429). `yulius wait` takes 502 to 504 for "cannot be reached" and waits
+  it out without counting it: a failure inside Yulius at `/internal/agent/wait` (any store
+  error) kept an agent's wait going to its deadline, 90 minutes by default, and then told
+  it "When it restarts, Yulius wakes this task" although Yulius never stopped.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -652,6 +664,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   first, as for any task.
 - **ARM-003** A start (`restore_armed_merges`) puts back the armed merges of the tasks whose
   state keeps one, and forgets the others.
+- **STS-001** Every route of the server maps an application error to its HTTP status by
+  `error::status_for`: 401 unauthenticated, 403 forbidden or a bad CSRF token, 404 not
+  found, 409 a conflict or a missing account, 422 invalid, 429 capacity, 502 an upstream
+  failure, 500 an internal one. No file under `src/routes` holds another mapping.
 
 ## Plan
 
@@ -673,6 +689,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
+- [ ] Slice 16: the agents' own listener answers an error with the status every other route gives it
 
 ## Acceptance criteria
 
@@ -1045,6 +1062,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   not merged at the start and is forgotten.
 - **AC-91** The existing tests of armed merges, merge trains and the playground's delivery
   pass with their tasks running (a live run in a fixture is a running task now).
+- **AC-92** `status_for` gives each kind of application error the status of STS-001.
+- **AC-93** No line of a file under `crates/yulius-server/src/routes` maps an `AppError`
+  to a `StatusCode` (the two tables that did are gone).
+- **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
+  the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
+  500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
+  failure of its own).
 
 ## Test plan
 
@@ -1217,6 +1241,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 15: `yulius-domain` `task::tests::an_armed_merge_lives_with_the_run_that_armed_it`
   (AC-89); `yulius` `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-90); `delivery`,
   `merge_train` and `playground` (AC-91).
+- Slice 16: `yulius-server` `error::tests::every_application_error_has_one_status` (AC-92)
+  and `error::tests::no_route_maps_an_application_error_to_a_status_itself` (AC-93);
+  `yulius` `restart::a_server_failing_every_request_ends_the_wait_after_a_few_tries` and
+  the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94).
 
 ## Decisions
 
@@ -1280,6 +1308,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 16 (no decision record): the loopback listener takes the public table as it is,
+  422 for an invalid request included; nothing in the repository reads its 400 (the hook
+  client takes any 5xx for "try again while held" and any other error for none, the
+  credential helper anything but 200 for no credential, `yulius wait` is described above).
+  `yulius wait` keeps waiting out 502 to 504: with one table a 502 from Yulius means that
+  what Yulius asked (GitHub) could not be reached, which passes by itself as an outage
+  does; only the words it prints then ("Yulius cannot be reached") are less exact, and
+  stay. The source test (AC-93) is the guard against a fourth table; a test through the
+  listener would need a store that fails on demand, which the harness does not have.
 - Slice 15 (no decision record: DLV-205's sentence "put back at startup for tasks still
   running", made the rule of every pass too): an armed merge lives with the run that armed
   it. The other way was weighed: the order stands whatever becomes of the task, so a
@@ -1293,7 +1330,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   capacity returns while every slot is taken, and a task revived after a host move starts
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
-  is asked before the run's end is said: a person's merge does not clear the armed slot. The agent's own
+  is asked before the run's end is said: a person's merge does not clear the armed slot.
+  The agent's own
   message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
@@ -1470,7 +1508,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 16 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |

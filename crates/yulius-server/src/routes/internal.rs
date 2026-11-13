@@ -7,11 +7,11 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use yulius_app::error::AppError;
 use yulius_app::hooks::HookReply;
 use yulius_contracts::hooks::{HookInput, SENT_AT_HEADER, StatusLineInput, events};
 
 use crate::AppState;
+use crate::error::status_for;
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -20,17 +20,6 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .ok()?
         .strip_prefix("Bearer ")
         .map(str::trim)
-}
-
-fn status_of(err: &AppError) -> StatusCode {
-    match err {
-        AppError::Unauthenticated => StatusCode::UNAUTHORIZED,
-        AppError::Forbidden(_) => StatusCode::FORBIDDEN,
-        AppError::NotFound => StatusCode::NOT_FOUND,
-        AppError::Invalid(_) => StatusCode::BAD_REQUEST,
-        AppError::Conflict(_) => StatusCode::CONFLICT,
-        _ => StatusCode::BAD_GATEWAY,
-    }
 }
 
 /// Hook forwarding: the body is the CLI's hook JSON; the response body is printed by the hook
@@ -57,7 +46,7 @@ pub async fn hook(
                 line,
             )
                 .into_response(),
-            Err(err) => status_of(&err).into_response(),
+            Err(err) => status_for(&err).into_response(),
         };
     }
     let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
@@ -89,7 +78,7 @@ pub async fn hook(
         Ok(HookReply::Output(output)) => Json(output).into_response(),
         Err(err) => {
             tracing::debug!(error = %err, %harness, %event, "hook refused");
-            status_of(&err).into_response()
+            status_for(&err).into_response()
         }
     }
 }
@@ -126,7 +115,7 @@ pub async fn agent_wait(
         .await
     {
         Ok(state) => Json(state).into_response(),
-        Err(err) => status_of(&err).into_response(),
+        Err(err) => status_for(&err).into_response(),
     }
 }
 
@@ -165,7 +154,7 @@ pub async fn git_credential(
         }
         Err(err) => {
             tracing::info!(error = %err, "git credential refused");
-            status_of(&err).into_response()
+            status_for(&err).into_response()
         }
     }
 }

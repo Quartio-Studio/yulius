@@ -6,7 +6,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use yulius_app::error::AppError;
 use yulius_contracts::mcp::RpcRequest;
 
 use crate::AppState;
@@ -64,12 +63,7 @@ pub async fn remote_post(
         Ok(caller) => caller,
         // 401 lets an MCP client say the token is wrong; 403 and 429 carry the reason.
         Err(err) => {
-            let status = match &err {
-                AppError::Forbidden(_) => StatusCode::FORBIDDEN,
-                AppError::Capacity(_) => StatusCode::TOO_MANY_REQUESTS,
-                AppError::Unauthenticated => StatusCode::UNAUTHORIZED,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            };
+            let status = crate::error::status_for(&err);
             let body = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32001, "message": err.public_message()}});
             let mut response = (status, Json(body)).into_response();
             if status == StatusCode::UNAUTHORIZED {
