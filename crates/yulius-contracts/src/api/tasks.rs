@@ -22,6 +22,11 @@ pub struct StepProgress {
     /// and in-progress share rounded down (#150). 0 from older servers.
     #[serde(default)]
     pub active_percent: u8,
+    /// How many steps the plan had when its first step was finished, when it has more now: the
+    /// plan grew by `total - first_total` steps since (SPEC-484 PLN-010). Absent for a plan
+    /// that did not grow, one with no finished step, and from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_total: Option<u32>,
 }
 
 /// A task in lists and events.

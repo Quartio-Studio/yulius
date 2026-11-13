@@ -253,9 +253,19 @@ fn progress_line(value: &Value) -> Option<String> {
         return Some("No steps yet: set the plan with steps_set.".to_owned());
     }
     let percent = progress.get("percent").and_then(Value::as_u64).unwrap_or(0);
+    let first = at_first(progress);
     Some(format!(
-        "Progress: {done}/{total} steps done, {percent}% by effort."
+        "Progress: {done}/{total} steps done{first}, {percent}% by effort."
     ))
+}
+
+/// " (N at first)" for a plan that grew since its first step was finished (`first_total`,
+/// SPEC-484 PLN-010), so the count is not read as the plan it began with; empty otherwise.
+fn at_first(progress: &Value) -> String {
+    progress
+        .get("first_total")
+        .and_then(Value::as_u64)
+        .map_or_else(String::new, |first| format!(" ({first} at first)"))
 }
 
 fn nudges(out: &mut String, value: &Value) {
@@ -801,8 +811,9 @@ fn task_line(task: &Value) -> Option<String> {
         let total = steps.get("total").and_then(Value::as_u64).unwrap_or(0);
         if total > 0 {
             let mut s = format!(
-                "steps {}/{total}, {}%",
+                "steps {}/{total}{}, {}%",
                 steps.get("done").and_then(Value::as_u64).unwrap_or(0),
+                at_first(steps),
                 steps.get("percent").and_then(Value::as_u64).unwrap_or(0)
             );
             if let Some(current) = text(steps, "current") {
@@ -943,6 +954,47 @@ mod tests {
             );
             assert!(!text.contains('{'), "{text}");
         }
+    }
+
+    /// SPEC-484 PLN-010: where a plan grew since its first step was finished, the count says what
+    /// it began with (task #465's "6/6" had been "4/4"); a plan that did not grow says nothing.
+    #[test]
+    fn a_plan_that_grew_says_what_it_had_at_first() {
+        let mut record = plan_record();
+        record["progress"] = json!({"done": 6, "total": 11, "percent": 54, "first_total": 4});
+        for tool in ["steps_get", "steps_set", "step_update"] {
+            record["updated"] = json!({"ordinal": 1, "title": "Write the spec", "status": "done"});
+            let text = render(tool, &json!({}), &record);
+            assert!(
+                text.contains("Progress: 6/11 steps done (4 at first), 54% by effort.\n"),
+                "{tool}: {text}"
+            );
+        }
+        let task = |first: Value| {
+            json!({
+                "task_id": UUID, "number": 465, "title": "Audit", "harness": "claude",
+                "status": "running", "activity": "working", "branch": "feat/465-x",
+                "spec_path": null,
+                "steps": {"done": 6, "total": 11, "percent": 54, "current": "Slice 7", "first_total": first},
+                "runs_after": null, "created_at": "2026-11-12T22:12:35Z", "updated_at": "2026-11-13T16:23:07Z"
+            })
+        };
+        let grown = render("task_get", &json!({"number": 465}), &task(json!(4)));
+        assert!(
+            grown.contains("· steps 6/11 (4 at first), 54%, now \"Slice 7\" ·"),
+            "{grown}"
+        );
+        let listed = render(
+            "tasks_list",
+            &json!({}),
+            &json!({"you": null, "tasks": [task(json!(4))]}),
+        );
+        assert!(listed.contains("steps 6/11 (4 at first), 54%"), "{listed}");
+        let steady = render("task_get", &json!({"number": 465}), &task(Value::Null));
+        assert!(
+            steady.contains("· steps 6/11, 54%, now \"Slice 7\" ·") && !steady.contains("at first"),
+            "{steady}"
+        );
     }
 
     /// TOL-002: an update says which step changed, the progress and what is next.

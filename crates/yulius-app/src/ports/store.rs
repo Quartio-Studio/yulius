@@ -647,6 +647,11 @@ pub trait CoordinationStore: Send + Sync {
     ) -> AppResult<()>;
     /// Steps of a task in order.
     async fn steps(&self, task: &TaskId) -> AppResult<Vec<StepRecord>>;
+    /// How many steps the task's plan had when its first step was finished (done or skipped):
+    /// kept once by the step write that finished it ([`Self::replace_steps`],
+    /// [`Self::update_step`]), so a plan that grew later can say so (SPEC-484 PLN-009). `None`
+    /// while no step is finished, and for an unknown task.
+    async fn plan_first_steps(&self, task: &TaskId) -> AppResult<Option<u32>>;
     /// When each step of a task last started and finished, from `step_events`.
     async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<crate::model::StepTiming>>;
     /// Updates one step and records an event; `NotFound` if absent.

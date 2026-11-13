@@ -72,3 +72,38 @@ test('a plan with no step in progress shows no in-progress segment', async ({ ap
   });
   expect(shown).toEqual({ hidden: true, width: 0, rounded: true });
 });
+
+// SPEC-484 PLN-010 (task #465 on 2026-11-13: "You say 5 of 15 but I see only 6 steps … the number
+// of steps grows in the time"): a plan holds all the work its agent knows of, and one that grew
+// since its first step was finished says what it had then, so a person can tell.
+test('a plan that grew says how many steps it had at first', async ({ app, browser, screen }) => {
+  // #12's plan has seven steps; it had four when its first step was finished.
+  await app.open(mock('/s/studio/t/12', '&planfirst=4'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const count = browser.locator('.stepstrip .step-count');
+  await expect(count).toHaveText('Step 3/7 · 4 at first');
+  await expect(browser.locator('.stepstrip .step-first')).toHaveAttribute('title', 'The plan had 4 steps when its first step was finished; 3 were added since.');
+  // The strip still fits its row: the count is one part that gives way whole.
+  const fits = await browser.evaluate(() => {
+    const strip = document.querySelector('.stepstrip-main');
+    const part = document.querySelector('.stepstrip .step-count');
+    if (!strip || !part) return null;
+    return { inside: part.getBoundingClientRect().right <= strip.getBoundingClientRect().right + 0.5, oneLine: part.getBoundingClientRect().height < 30 };
+  });
+  expect(fits).toEqual({ inside: true, oneLine: true });
+
+  // The task page says it beside the count.
+  await app.open(mock('/s/studio/tasks/12', '&ambient=0&planfirst=4'));
+  await expect(browser.locator('.ti-facts .stat:has-text("Plan") .stat-value')).toHaveText('2/7 · 4 at first');
+});
+
+test('a plan that did not grow says nothing more', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(browser.locator('.stepstrip .step-count')).toHaveText('Step 3/7');
+  await expect(browser.locator('.stepstrip .step-first')).toHaveCount(0);
+  // A first size that is not below the plan's (an older plan, or one that shrank) is not a growth.
+  await app.open(mock('/s/studio/t/12', '&planfirst=7'));
+  await expect(browser.locator('.stepstrip .step-count')).toHaveText('Step 3/7');
+  await expect(browser.locator('.stepstrip .step-first')).toHaveCount(0);
+});

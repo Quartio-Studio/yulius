@@ -4438,6 +4438,31 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
         "{outcome}"
     );
     assert_eq!(progress().await?, (2, 3));
+
+    // Work found later adds steps, and the task says what its plan had at first (PLN-010).
+    let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(
+        task.body["steps"]["first_total"],
+        Value::Null,
+        "{}",
+        task.body
+    );
+    set_steps(
+        &f,
+        "t1",
+        &["done", "done", "in_progress", "pending", "pending"],
+    )
+    .await?;
+    let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(
+        (
+            &task.body["steps"]["total"],
+            &task.body["steps"]["first_total"]
+        ),
+        (&json!(5), &json!(3)),
+        "{}",
+        task.body
+    );
     Ok(())
 }
 

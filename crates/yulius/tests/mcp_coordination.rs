@@ -738,6 +738,29 @@ async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestRe
         ),
         "{last}"
     );
+
+    // Work found later: the plan grows, and every count says what it had at first (PLN-010).
+    assert!(!last.contains("at first"), "{last}");
+    let grown = agent_text(
+        &internal,
+        "steps_set",
+        json!({"steps": [
+            "Parse the CSV upload",
+            "Store rows per tenant",
+            "Show the import summary",
+            "A quoted field with a line break is one row",
+            "Review round 2 answered",
+        ]}),
+    )
+    .await?;
+    assert!(
+        grown.starts_with(
+            "Plan set: 5 steps.\nProgress: 3/5 steps done (3 at first), 60% by effort.\n"
+        ),
+        "{grown}"
+    );
+    let mine = agent_text(&internal, "tasks_list", json!({})).await?;
+    assert!(mine.contains("steps 3/5 (3 at first), 60%"), "{mine}");
     Ok(())
 }
 

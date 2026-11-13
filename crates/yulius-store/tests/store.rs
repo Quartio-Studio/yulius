@@ -1207,6 +1207,103 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
     Ok(())
 }
 
+/// SPEC-484 PLN-009: the store keeps how many steps the plan had when its first step was
+/// finished, written once: a plan that grows later is compared with it (task #465 read 4/4,
+/// then 2/2, 3/3 … 11/11, and nothing said that it had grown).
+#[tokio::test]
+async fn the_plan_keeps_its_first_size() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let a = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let b = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    let plan =
+        |task: &TaskId, statuses: &[&str]| -> Result<Vec<StepRecord>, Box<dyn std::error::Error>> {
+            statuses
+                .iter()
+                .enumerate()
+                .map(|(i, status)| {
+                    Ok(StepRecord {
+                        id: StepId::parse(&format!("{}-s{i}", task.as_str()))?,
+                        task_id: task.clone(),
+                        ordinal: u32::try_from(i + 1)?,
+                        title: format!("Slice {i}"),
+                        status: (*status).into(),
+                        note: None,
+                        updated_by: None,
+                        updated_at: None,
+                        effort: 1,
+                    })
+                })
+                .collect()
+        };
+    assert_eq!(store.plan_first_steps(&a.id).await?, None, "no plan yet");
+
+    // Planned and started, nothing finished: no first size yet (a seed plan may still be replaced).
+    store
+        .replace_steps(
+            &a.id,
+            &plan(&a.id, &["in_progress", "pending", "pending", "pending"])?,
+            "task:1",
+            Timestamp(70),
+        )
+        .await?;
+    assert_eq!(store.plan_first_steps(&a.id).await?, None);
+
+    // The first step finished by `update_step`: the plan had four steps then.
+    store
+        .update_step(
+            &StepId::parse("t1-s0")?,
+            "done",
+            None,
+            "task:1",
+            Timestamp(71),
+        )
+        .await?;
+    assert_eq!(store.plan_first_steps(&a.id).await?, Some(4));
+
+    // It grows to eleven and more steps are finished or skipped: the first size stays.
+    let mut grown = vec!["done"; 6];
+    grown.extend(["skipped", "in_progress", "pending", "pending", "pending"]);
+    store
+        .replace_steps(&a.id, &plan(&a.id, &grown)?, "spec", Timestamp(80))
+        .await?;
+    store
+        .update_step(
+            &StepId::parse("t1-s7")?,
+            "done",
+            None,
+            "task:1",
+            Timestamp(81),
+        )
+        .await?;
+    assert_eq!(store.steps(&a.id).await?.len(), 11);
+    assert_eq!(store.plan_first_steps(&a.id).await?, Some(4));
+    // Nor does it follow a plan that shrinks.
+    store
+        .replace_steps(
+            &a.id,
+            &plan(&a.id, &["done", "done"])?,
+            "spec",
+            Timestamp(90),
+        )
+        .await?;
+    assert_eq!(store.plan_first_steps(&a.id).await?, Some(4));
+
+    // A plan set with finished steps (the spec's Plan with ticked boxes), a skipped step
+    // included, has its first size at once; another task's plan is its own.
+    store
+        .replace_steps(
+            &b.id,
+            &plan(&b.id, &["skipped", "pending", "pending"])?,
+            "spec",
+            Timestamp(95),
+        )
+        .await?;
+    assert_eq!(store.plan_first_steps(&b.id).await?, Some(3));
+    assert_eq!(store.plan_first_steps(&a.id).await?, Some(4));
+    Ok(())
+}
+
 #[tokio::test]
 async fn oauth_state_single_use_and_expiry() -> R {
     let store = SqliteStore::open_in_memory()?;

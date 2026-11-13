@@ -142,7 +142,7 @@ to the person.
 - [x] A plan holds every slice: 60 steps, no "too fine" nudge, a nudge when it reads complete
 - [x] The briefing and the tools' texts tell agents to plan all the known work
 - [x] Skills, workflows and templates say the same rule, checked against the constants
-- [ ] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
+- [x] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
 - [ ] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
 - [ ] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
 - [ ] Independent review's findings answered test-first

@@ -433,6 +433,10 @@ function seed(params) {
       chainAfter(b, a);
     }
   }
+  // `planfirst=N`: studio's #12 had N steps when its first step was finished (SPEC-484).
+  const planFirst = Number(params.get('planfirst'));
+  const grown = planFirst ? db.tasks.find((x) => x.id === 'tsk_studio_12') : null;
+  if (grown) grown.stepsFirst = planFirst;
   recount(db);
   // A playground's guests (SPEC-410). `guestlink=1|dead`: signed out, holding a link to `lab`;
   // `guest=1`: signed in as a guest of `lab`, who sees nothing else.
@@ -462,7 +466,9 @@ function stepsSummary(task) {
   // The share in progress ends at the cumulative floor, as the server computes it (SPEC-159).
   const activeEffort = list.filter((s) => s.status === 'in_progress').reduce((sum, s) => sum + effort(s), 0);
   const active_percent = total ? Math.min(100, Math.floor(((finishedEffort + activeEffort) * 100) / total)) - percent : 0;
-  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent };
+  // The plan's size when its first step was finished, sent where the plan has more steps now.
+  const first = Number.isInteger(task.stepsFirst) && task.stepsFirst > 0 && task.stepsFirst < list.length ? { first_total: task.stepsFirst } : {};
+  return { done: finished.length, total: list.length, current: current ? current.title : null, percent, active_percent, ...first };
 }
 
 /** The mock's database, for views built without it (a subscription's email by its label). */
