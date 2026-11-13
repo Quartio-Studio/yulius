@@ -674,6 +674,9 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
         let before = sent_by(&w, token, host).await.ok_or(who)?;
         assert!(before.contains(value), "{who} gets the project secret");
     }
+    let fingerprints = w.h.app.scrub_fingerprints(ALICE_TASK).await?;
+    assert_eq!(fingerprints.names, ["LAB_TOKEN"]);
+    assert!(!fingerprints.needles.is_empty());
 
     let code = link(&w, 7).await?;
     let (_, guest) = join(&w, &code, "Carol").await?;
@@ -701,6 +704,12 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
             !after.contains(value),
             "{who} gets no agent secret now: {after}"
         );
+    }
+    // Nor the fingerprints of one: its name, its length and something to test guesses against.
+    for token in [ALICE_TASK, GUEST_TASK] {
+        let fingerprints = w.h.app.scrub_fingerprints(token).await?;
+        assert!(fingerprints.names.is_empty(), "{:?}", fingerprints.names);
+        assert!(fingerprints.needles.is_empty());
     }
     // Revoking the link does not bring them back: what guests left in the sandbox stays.
     let listed = get(&w, "/api/sandboxes/p1/guest-invites", &w.alice).await?;

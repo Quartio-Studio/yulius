@@ -3502,3 +3502,66 @@ async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult
     assert!(used.is_empty(), "{used:?}");
     Ok(())
 }
+
+/// ADR-0313: asking for the fingerprints again tells a run nothing more. The set is the same on
+/// every request (a set that changed its hash base each time gave a value away to as many
+/// requests as it has bytes), and all it says about a value besides its length and salted digest
+/// is a tag of a few bits.
+#[tokio::test]
+async fn repeated_fingerprint_requests_answer_the_same_set() -> TestResult {
+    use yulius_domain::vault::redact::tag_bits;
+    let w = world().await?;
+    let created = add_agent_secret(&w, &w.writer, "s1", json!({"name": "STRIPE_KEY", "description": "Stripe test key", "hosts": ["api.stripe.test"], "value": STRIPE})).await?;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let mut answers = Vec::new();
+    for _ in 0..3 {
+        let got = call(
+            &w.h.internal,
+            Method::POST,
+            "/internal/scrub/fingerprints",
+            Some(json!({})),
+            &Creds {
+                bearer: Some(TOKEN_S1.into()),
+                ..Creds::default()
+            },
+        )
+        .await?;
+        assert_eq!(got.status, StatusCode::OK);
+        answers.push(got.body);
+    }
+    assert_eq!(answers[0], answers[1]);
+    assert_eq!(answers[1], answers[2]);
+    let set = &answers[0];
+    let mut fields: Vec<&str> = set
+        .as_object()
+        .ok_or("set")?
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["names", "needles", "salt", "version"]);
+    let needles = set["needles"].as_array().ok_or("needles")?;
+    assert_eq!(needles[0]["len"], STRIPE.len(), "the value comes first");
+    for needle in needles {
+        let mut fields: Vec<&str> = needle
+            .as_object()
+            .ok_or("needle")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["digest", "len", "secret", "tag"]);
+        let len = usize::try_from(needle["len"].as_u64().ok_or("len")?)?;
+        let tag = needle["tag"].as_u64().ok_or("tag")?;
+        assert!(tag < 1 << tag_bits(len), "{needle}");
+        assert!(tag_bits(len) <= 16);
+    }
+    // Another sandbox salts its digests differently, and a changed value changes the set.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let s2 = yulius_domain::ids::SandboxId::parse("s2")?;
+    let nobody = yulius_app::vault::Holder::Nobody;
+    let first = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    let other = w.h.app.scrub_fingerprints_for(&s2, nobody).await?;
+    assert_ne!(first.salt, other.salt);
+    Ok(())
+}

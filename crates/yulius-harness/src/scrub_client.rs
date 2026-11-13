@@ -8,7 +8,7 @@
 //! - `yulius hook claude PostToolUse` replaces a tool result that holds a secret with its
 //!   redacted copy (`hookSpecificOutput.updatedToolOutput`, Claude Code ≥ 2.1.292).
 //!
-//! Neither holds a value: they redact from **fingerprints** (rolling hash plus salted SHA-256
+//! Neither holds a value: they redact from **fingerprints** (a short tag plus the salted SHA-256
 //! of each value and encoding), fetched from `POST /internal/scrub/fingerprints` with the task
 //! token, or read from the run's `scrub.json` while Yulius restarts. With neither, a Yulius run
 //! fails closed: the command does not run and a tool result is withheld.
@@ -216,7 +216,7 @@ pub fn matcher(set: &FingerprintSet) -> Option<HashedMatcher<impl Fn(&[u8]) -> [
             Some(Fingerprint {
                 secret: n.secret,
                 len: n.len,
-                rolling: n.rolling,
+                tag: n.tag,
                 digest,
             })
         })
@@ -230,7 +230,7 @@ pub fn matcher(set: &FingerprintSet) -> Option<HashedMatcher<impl Fn(&[u8]) -> [
         hasher.update(window);
         hasher.finalize().into()
     };
-    let matcher = HashedMatcher::new(set.base, set.names.clone(), fingerprints, verify);
+    let matcher = HashedMatcher::new(set.names.clone(), fingerprints, verify);
     (!matcher.is_empty()).then_some(matcher)
 }
 
@@ -515,7 +515,7 @@ mod tests {
     use super::*;
     use yulius_contracts::scrub::Fingerprint as WireFingerprint;
     use yulius_domain::vault::encode::{base64, needles};
-    use yulius_domain::vault::redact::rolling_hash;
+    use yulius_domain::vault::redact::needle_tag;
 
     const VALUE: &str = "sk_test_4eC39HqLyjWDarjtT1zdp7dc";
 
@@ -530,24 +530,22 @@ mod tests {
 
     /// [`set`] with another salt: the set a rewrite makes (same layout, other digests).
     fn salted(salt: &[u8]) -> FingerprintSet {
-        let base = 912_367;
         FingerprintSet {
             version: FINGERPRINT_VERSION,
-            base,
             salt: hex(salt),
             names: vec!["STRIPE_KEY".into()],
             needles: needles(VALUE)
                 .iter()
-                .map(|n| {
+                .filter_map(|n| {
                     let mut hasher = Sha256::new();
                     hasher.update(salt);
                     hasher.update(n);
-                    WireFingerprint {
+                    Some(WireFingerprint {
                         secret: 0,
                         len: n.len(),
-                        rolling: rolling_hash(base, n),
+                        tag: needle_tag(n)?,
                         digest: hex(&hasher.finalize()),
-                    }
+                    })
                 })
                 .collect(),
         }

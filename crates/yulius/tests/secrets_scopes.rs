@@ -868,6 +868,56 @@ async fn a_deleted_tasks_client_resolves_to_no_person() -> TestResult {
     Ok(())
 }
 
+/// ADR-0313: a run that was live across an update keeps the fingerprint file its launch wrote,
+/// in a format this server no longer makes (a rolling hash and its base, which told too much
+/// about a value). A starting server rewrites every live run's file in place.
+#[tokio::test]
+async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+    let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
+    let run = tempfile::tempdir()?;
+    seed_task(&w.h, "t6", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt_at(
+        &w.h,
+        "t6",
+        "scopes-task-token-alice-run-fedcba987654",
+        &run.path().to_string_lossy(),
+    )
+    .await?;
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    let old = json!({
+        "version": 1, "base": 912_367, "salt": "00", "names": ["MY_TOKEN"],
+        "needles": [{"secret": 0, "len": MINE.len(), "rolling": 77, "digest": "00"}],
+    });
+    std::fs::write(&file, serde_json::to_vec(&old)?)?;
+    let inode = std::fs::metadata(&file)?.ino();
+
+    w.h.app.refresh_fingerprint_files().await;
+
+    let text = std::fs::read_to_string(&file)?;
+    assert!(
+        !text.contains("rolling") && !text.contains("base"),
+        "{text}"
+    );
+    let rewritten: yulius_contracts::scrub::FingerprintSet = serde_json::from_str(&text)?;
+    assert_eq!(
+        rewritten.version,
+        yulius_contracts::scrub::FINGERPRINT_VERSION
+    );
+    let matcher = yulius_harness::scrub_client::matcher(&rewritten).ok_or("matcher")?;
+    let (out, _) = yulius_domain::vault::redact::redact_text(&matcher, &format!("TOKEN={MINE}\n"));
+    assert_eq!(out, "TOKEN=[secret:MY_TOKEN]\n");
+    assert_eq!(std::fs::metadata(&file)?.ino(), inode, "in place");
+    Ok(())
+}
+
 /// SPEC-248 FUP-002: a hand-over rewrites the run's fingerprint file (the Bash wrapper's fallback)
 /// for the new owner, in place, so the run holds no hashes of the previous owner's values.
 #[tokio::test]

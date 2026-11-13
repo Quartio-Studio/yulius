@@ -622,6 +622,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
+    // Sessions that ran across an update hold the fingerprint file an older server wrote.
+    app.refresh_fingerprint_files().await;
     let public_router = yulius_server::public_router(app.clone())
         .into_make_service_with_connect_info::<SocketAddr>();
     let internal_router = crate::wiring::egress::with_egress(

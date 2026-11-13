@@ -1922,8 +1922,11 @@ task; other hooks answer as usual.
   ended (its attempt over, a CI job's credential closed, a Superagent's shell gone), its token is
   refused (407) and a request on a connection it already holds answers 403 with nothing sent
   (503 when its state cannot be read; ADR-0252).
-- `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
-  [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
+- `POST /internal/scrub/fingerprints` (task token) → `{version, salt, names, needles:
+  [{secret, len, tag, digest}]}`: the run's redaction fingerprints (no values; `version` 2). The
+  answer is the same on every request until a secret changes; `tag` is a few bits of a hash of
+  the needle's first 8 bytes and `digest` is `SHA-256(salt || needle)` (ADR-0313). A playground a
+  guest joined gets no names and no needles.
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
   once per run, secret and channel (`vault.agent.redacted`).
 - MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,

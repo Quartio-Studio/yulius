@@ -14,7 +14,7 @@ use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
-use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
+use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, needle_tag};
 use yulius_domain::vault::{
     Injection, PLACEHOLDER_PREFIX, SecretName, placeholder, substitute_placeholders,
 };
@@ -339,7 +339,10 @@ impl App {
     }
 
     /// The fingerprints of every agent secret that can reach runs of `holder` in `sandbox`
-    /// (never another person's: SPEC-245, ADR-0186), with a fresh salt and rolling-hash base.
+    /// (never another person's: SPEC-245, ADR-0186). The salt is the sandbox's
+    /// ([`Self::scrub_salt`]) and a tag depends on its needle alone, so the set changes only when
+    /// a secret does: asking again tells a run nothing more (ADR-0313). A playground a guest
+    /// joined gets an empty set, as its runs get no agent secret (SPEC-410 GST-004).
     ///
     /// # Errors
     /// Store or decryption failures.
@@ -348,33 +351,52 @@ impl App {
         sandbox: &SandboxId,
         holder: super::Holder<'_>,
     ) -> AppResult<FingerprintSet> {
+        let salt = self.scrub_salt(sandbox);
+        let mut set = FingerprintSet {
+            version: FINGERPRINT_VERSION,
+            salt: crate::auth::hex_token(&salt),
+            names: Vec::new(),
+            needles: Vec::new(),
+        };
+        if self.playground_had_guests(sandbox).await {
+            return Ok(set);
+        }
         let matcher = self.matcher_for(sandbox, Some(holder)).await?;
-        let random = self.deps.crypto.random_bytes();
-        let mut base_bytes = [0u8; 8];
-        base_bytes.copy_from_slice(&random[..8]);
-        let base = (u64::from_le_bytes(base_bytes) % ((1 << 61) - 1 - 512)) + 512;
-        let salt = &random[8..24];
-        let needles = matcher
+        set.names = matcher.names().to_vec();
+        set.needles = matcher
             .needles()
-            .map(|(needle, secret)| {
+            .filter_map(|(needle, secret)| {
                 let mut salted = Vec::with_capacity(salt.len() + needle.len());
-                salted.extend_from_slice(salt);
+                salted.extend_from_slice(&salt);
                 salted.extend_from_slice(needle);
-                Fingerprint {
+                Some(Fingerprint {
                     secret,
                     len: needle.len(),
-                    rolling: rolling_hash(base, needle),
+                    tag: needle_tag(needle)?,
                     digest: self.deps.crypto.sha256_hex(&salted),
-                }
+                })
             })
             .collect();
-        Ok(FingerprintSet {
-            version: FINGERPRINT_VERSION,
-            base,
-            salt: crate::auth::hex_token(salt),
-            names: matcher.names().to_vec(),
-            needles,
-        })
+        Ok(set)
+    }
+
+    /// The salt of `sandbox`'s fingerprint digests: derived from the server's workspace secret,
+    /// so it is the same on every request and after a restart, and no other sandbox's.
+    fn scrub_salt(&self, sandbox: &SandboxId) -> [u8; 16] {
+        let material = format!(
+            "yulius-scrub-salt\n{}\n{}",
+            self.workspace_secret(),
+            sandbox.as_str()
+        );
+        let digest = self.deps.crypto.sha256_hex(material.as_bytes());
+        let mut salt = [0u8; 16];
+        for (byte, pair) in salt.iter_mut().zip(digest.as_bytes().chunks(2)) {
+            *byte = std::str::from_utf8(pair)
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .unwrap_or(0);
+        }
+        salt
     }
 
     /// Whose redaction calls with `token`: a live run's attempt (`task:<n>`), or a person's
@@ -498,8 +520,6 @@ impl App {
     /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
     /// file (opened without following a link or blocking, checked on the handle).
     pub async fn rewrite_run_fingerprints(&self, task: &TaskId) -> AppResult<()> {
-        use nix::fcntl::OFlag;
-        use std::os::unix::fs::OpenOptionsExt as _;
         let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
         let Some(task) = self.deps.store.task(task).await? else {
             return Ok(());
@@ -507,11 +527,28 @@ impl App {
         let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
             return Ok(());
         };
-        let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
+        self.rewrite_fingerprint_file(
+            Path::new(&attempt.run_dir),
+            &task.sandbox_id,
+            super::Holder::of_task(&task),
+        )
+        .await
+    }
+
+    /// Writes `holder`'s fingerprints of `sandbox` into the fingerprint file of `run_dir`, in
+    /// place; a run directory without one is left alone.
+    async fn rewrite_fingerprint_file(
+        &self,
+        run_dir: &Path,
+        sandbox: &SandboxId,
+        holder: super::Holder<'_>,
+    ) -> AppResult<()> {
+        use nix::fcntl::OFlag;
+        use std::os::unix::fs::OpenOptionsExt as _;
         let mut out = match std::fs::OpenOptions::new()
             .write(true)
             .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
-            .open(&file)
+            .open(run_dir.join(FINGERPRINTS_FILE))
         {
             Ok(out) => out,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -522,12 +559,43 @@ impl App {
                 "the run's fingerprint file is no regular file".into(),
             ));
         }
-        let set = self
-            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(&task))
-            .await?;
+        let set = self.scrub_fingerprints_for(sandbox, holder).await?;
         let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
         out.set_len(0).map_err(AppError::internal)?;
         std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
+    }
+
+    /// Rewrites the fingerprint file of every live task run and of every adopted Superagent, as
+    /// this server makes it (ADR-0313): a session that was running across an update holds the
+    /// file its launch wrote, which an older server may have written in a format the Bash wrapper
+    /// no longer reads. Call once at startup, after the shells were adopted; failures are logged.
+    pub async fn refresh_fingerprint_files(&self) {
+        let attempts = match self.deps.store.live_attempts().await {
+            Ok(attempts) => attempts,
+            Err(err) => {
+                tracing::warn!(error = %err, "live runs' fingerprint files not refreshed");
+                return;
+            }
+        };
+        for attempt in attempts {
+            if let Err(err) = self.rewrite_run_fingerprints(&attempt.task_id).await {
+                tracing::warn!(task = %attempt.task_id, error = %err, "run's fingerprint file not rewritten");
+            }
+        }
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        // A Global Superagent has none (its shell runs no project's commands).
+        for cockpit in self.live_cockpits().iter().filter(|c| !c.global) {
+            if let Err(err) = self
+                .rewrite_fingerprint_file(
+                    &cockpit.run_dir,
+                    cockpit.sandbox(),
+                    super::Holder::Person(cockpit.creator()),
+                )
+                .await
+            {
+                tracing::warn!(shell = %cockpit.id(), error = %err, "Superagent's fingerprint file not rewritten");
+            }
+        }
     }
 
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer
@@ -1318,7 +1386,6 @@ mod tests {
     {
         let set = FingerprintSet {
             version: FINGERPRINT_VERSION,
-            base: 7,
             salt: "00".into(),
             names: vec!["APIFY_KEY".into()],
             needles: Vec::new(),

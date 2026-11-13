@@ -2,21 +2,21 @@
 //! wrapper, the `PostToolUse` hook) receive to redact agent secrets without holding them.
 //!
 //! Served by `POST /internal/scrub/fingerprints` (task token) and written at launch to
-//! `<run>/scrub.json` (the fallback while Yulius restarts). A needle is matched by its rolling
-//! hash and confirmed by `SHA-256(salt || window)`; the needle itself never leaves the server.
+//! `<run>/scrub.json` (the fallback while Yulius restarts). A candidate is found by a needle's
+//! tag (a few bits of a hash of its first eight bytes) and confirmed by
+//! `SHA-256(salt || window)`; the needle itself never leaves the server. A sandbox's set is the
+//! same on every request until a secret changes, so asking again tells nothing more (ADR-0313).
 
 use serde::{Deserialize, Serialize};
 
 /// Current format version.
-pub const FINGERPRINT_VERSION: u32 = 1;
+pub const FINGERPRINT_VERSION: u32 = 2;
 
 /// The fingerprints of every agent secret that applies to a run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FingerprintSet {
     /// [`FINGERPRINT_VERSION`].
     pub version: u32,
-    /// Base of the rolling hash (mod 2^61 − 1).
-    pub base: u64,
     /// Hex salt prefixed to a candidate before hashing.
     pub salt: String,
     /// Secret names; [`Fingerprint::secret`] indexes them.
@@ -32,8 +32,8 @@ pub struct Fingerprint {
     pub secret: usize,
     /// Length in bytes.
     pub len: usize,
-    /// Rolling hash with [`FingerprintSet::base`].
-    pub rolling: u64,
+    /// The needle's tag (`yulius_domain::vault::redact::needle_tag`).
+    pub tag: u16,
     /// Hex `SHA-256(salt || needle)`.
     pub digest: String,
 }

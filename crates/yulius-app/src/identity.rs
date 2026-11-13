@@ -521,7 +521,7 @@ impl App {
     /// The workspace token secret: read from the data directory, created there on first use. When
     /// the file cannot be read or written, a secret for this server's lifetime (tokens then end
     /// with it, as before).
-    fn workspace_secret(&self) -> &str {
+    pub(crate) fn workspace_secret(&self) -> &str {
         self.workspace_grants.secret.get_or_init(|| {
             let path = self.config.data_dir.join(WORKSPACE_SECRET_FILE);
             if let Ok(text) = std::fs::read_to_string(&path) {

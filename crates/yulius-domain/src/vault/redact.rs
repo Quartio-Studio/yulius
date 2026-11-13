@@ -5,8 +5,9 @@
 //! - [`PlainMatcher`] holds the needles themselves (the server: proxy responses, MCP results,
 //!   the terminal, served transcripts). It knows prefixes, so a stream holds back only a tail
 //!   that could begin a value.
-//! - [`HashedMatcher`] holds fingerprints only — a rolling hash to find candidates and a salted
-//!   SHA-256 digest (computed by the caller's injected function) to confirm them — so code
+//! - [`HashedMatcher`] holds fingerprints only — a few bits of a hash of a needle's beginning
+//!   ([`needle_tag`]) to find candidates and a salted SHA-256 digest (computed by the caller's
+//!   injected function) to confirm them — so code
 //!   running inside the sandbox (the Bash wrapper, the `PostToolUse` hook) never holds a value
 //!   the agent could read. Needles never contain a line break, so a stream holds back at most
 //!   the last `max_len - 1` bytes of an unfinished line.
@@ -291,43 +292,62 @@ impl Matcher for PlainMatcher {
     }
 }
 
-/// Modulus of the rolling hash (the Mersenne prime 2^61 − 1).
-const MODULUS: u64 = (1 << 61) - 1;
+/// How many bytes at a needle's beginning its tag is made from: the shortest needle.
+pub const TAG_WINDOW: usize = super::encode::MIN_NEEDLE_LEN;
 
-fn mul_mod(a: u64, b: u64) -> u64 {
-    let product = u128::from(a) * u128::from(b);
-    let folded = (product & u128::from(MODULUS)) + (product >> 61);
-    let folded = u64::try_from(folded % u128::from(MODULUS)).unwrap_or(0);
-    folded % MODULUS
-}
+/// Bits of a [`TAG_WINDOW`] hash.
+const HASH_BITS: u32 = 16;
 
-/// Polynomial rolling hash of `bytes` with `base` (each byte counts as `byte + 1`).
+/// How many bits of its beginning's hash a needle of `len` bytes publishes as its tag: 4 for the
+/// shortest, one more each time the length doubles, at most 16. A tag is all a fingerprint says
+/// about a needle besides its length and its salted digest, so few bits keep what a holder of
+/// the fingerprints learns small (at most these bits about the first [`TAG_WINDOW`] bytes of each
+/// form); a longer needle costs more to confirm, so it gets more bits and each needle costs the
+/// redactor less than one hashed byte per byte of output.
 #[must_use]
-pub fn rolling_hash(base: u64, bytes: &[u8]) -> u64 {
-    let base = base % MODULUS;
-    bytes
-        .iter()
-        .fold(0, |h, &b| (mul_mod(h, base) + u64::from(b) + 1) % MODULUS)
+pub fn tag_bits(len: usize) -> u32 {
+    (4 + (len / TAG_WINDOW).max(1).ilog2()).min(HASH_BITS)
 }
 
-/// One needle as a fingerprint: its length, its rolling hash and the salted digest that
-/// confirms a candidate.
+/// A 16-bit hash of the first [`TAG_WINDOW`] bytes of `window` (0 for a shorter one).
+fn window_hash(window: &[u8]) -> u16 {
+    let Some(word) = window
+        .get(..TAG_WINDOW)
+        .and_then(|w| <[u8; 8]>::try_from(w).ok())
+    else {
+        return 0;
+    };
+    let mixed = u64::from_le_bytes(word).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let mixed = (mixed ^ (mixed >> 32)).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    u16::try_from(mixed >> (u64::BITS - HASH_BITS)).unwrap_or(0)
+}
+
+/// The tag of `needle`: the top [`tag_bits`] bits of the hash of its first [`TAG_WINDOW`] bytes;
+/// `None` for a needle shorter than that.
+#[must_use]
+pub fn needle_tag(needle: &[u8]) -> Option<u16> {
+    (needle.len() >= TAG_WINDOW)
+        .then(|| window_hash(needle) >> (HASH_BITS - tag_bits(needle.len())))
+}
+
+/// One needle as a fingerprint: its length, the tag that finds candidates and the salted digest
+/// that confirms one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     /// Index into the matcher's names.
     pub secret: usize,
     /// Needle length in bytes.
     pub len: usize,
-    /// [`rolling_hash`] of the needle.
-    pub rolling: u64,
+    /// [`needle_tag`] of the needle.
+    pub tag: u16,
     /// The caller's salted digest of the needle.
     pub digest: [u8; 32],
 }
 
 /// A matcher over fingerprints; `verify` computes the salted digest of a candidate.
 pub struct HashedMatcher<V: Fn(&[u8]) -> [u8; 32]> {
-    base: u64,
-    groups: Vec<(usize, u64, HashMap<u64, Vec<usize>>)>,
+    /// Per tag width: the fingerprints of each tag.
+    groups: Vec<(u32, HashMap<u16, Vec<usize>>)>,
     fingerprints: Vec<Fingerprint>,
     names: Vec<String>,
     max_len: usize,
@@ -335,33 +355,26 @@ pub struct HashedMatcher<V: Fn(&[u8]) -> [u8; 32]> {
 }
 
 impl<V: Fn(&[u8]) -> [u8; 32]> HashedMatcher<V> {
-    /// Builds from fingerprints made with `base`.
-    pub fn new(base: u64, names: Vec<String>, fingerprints: Vec<Fingerprint>, verify: V) -> Self {
-        let base = base % MODULUS;
-        let mut by_len: HashMap<usize, HashMap<u64, Vec<usize>>> = HashMap::new();
+    /// Builds from fingerprints; one shorter than [`TAG_WINDOW`] or of an unknown secret is
+    /// left out.
+    pub fn new(names: Vec<String>, fingerprints: Vec<Fingerprint>, verify: V) -> Self {
+        let mut by_bits: HashMap<u32, HashMap<u16, Vec<usize>>> = HashMap::new();
         let mut max_len = 0;
         for (i, fp) in fingerprints.iter().enumerate() {
-            if fp.len == 0 || fp.secret >= names.len() {
+            if fp.len < TAG_WINDOW || fp.secret >= names.len() {
                 continue;
             }
             max_len = max_len.max(fp.len);
-            by_len
-                .entry(fp.len)
+            by_bits
+                .entry(tag_bits(fp.len))
                 .or_default()
-                .entry(fp.rolling)
+                .entry(fp.tag)
                 .or_default()
                 .push(i);
         }
-        let mut groups: Vec<(usize, u64, HashMap<u64, Vec<usize>>)> = by_len
-            .into_iter()
-            .map(|(len, map)| {
-                let pow = (1..len).fold(1, |p, _| mul_mod(p, base));
-                (len, pow, map)
-            })
-            .collect();
+        let mut groups: Vec<_> = by_bits.into_iter().collect();
         groups.sort_by_key(|g| g.0);
         Self {
-            base,
             groups,
             fingerprints,
             names,
@@ -374,36 +387,26 @@ impl<V: Fn(&[u8]) -> [u8; 32]> HashedMatcher<V> {
 impl<V: Fn(&[u8]) -> [u8; 32]> Matcher for HashedMatcher<V> {
     fn find(&self, data: &[u8]) -> Vec<Match> {
         let mut candidates = Vec::new();
-        for (len, pow, map) in &self.groups {
-            let len = *len;
-            if data.len() < len {
-                continue;
-            }
-            let mut h = rolling_hash(self.base, &data[..len]);
-            let mut i = 0;
-            loop {
-                if let Some(hits) = map.get(&h) {
-                    let window = &data[i..i + len];
-                    let digest = (self.verify)(window);
-                    for &f in hits {
-                        let fp = &self.fingerprints[f];
-                        if fp.digest == digest {
-                            candidates.push(Match {
-                                start: i,
-                                end: i + len,
-                                secret: fp.secret,
-                            });
-                        }
+        for (start, window) in data.windows(TAG_WINDOW).enumerate() {
+            let hash = window_hash(window);
+            for (bits, by_tag) in &self.groups {
+                let Some(hits) = by_tag.get(&(hash >> (HASH_BITS - bits))) else {
+                    continue;
+                };
+                for &f in hits {
+                    let fp = &self.fingerprints[f];
+                    let end = start + fp.len;
+                    if data
+                        .get(start..end)
+                        .is_some_and(|candidate| (self.verify)(candidate) == fp.digest)
+                    {
+                        candidates.push(Match {
+                            start,
+                            end,
+                            secret: fp.secret,
+                        });
                     }
                 }
-                if i + len >= data.len() {
-                    break;
-                }
-                let out = u64::from(data[i]) + 1;
-                let incoming = u64::from(data[i + len]) + 1;
-                h = (h + MODULUS - mul_mod(out, *pow)) % MODULUS;
-                h = (mul_mod(h, self.base) + incoming) % MODULUS;
-                i += 1;
             }
         }
         select(candidates)
@@ -584,22 +587,18 @@ mod tests {
     type Digest = fn(&[u8]) -> [u8; 32];
 
     fn hashed() -> HashedMatcher<Digest> {
-        let base = 1_000_003;
         let fingerprints = needles(VALUE)
             .iter()
-            .map(|n| Fingerprint {
-                secret: 0,
-                len: n.len(),
-                rolling: rolling_hash(base, n),
-                digest: digest(n),
+            .filter_map(|n| {
+                Some(Fingerprint {
+                    secret: 0,
+                    len: n.len(),
+                    tag: needle_tag(n)?,
+                    digest: digest(n),
+                })
             })
             .collect();
-        HashedMatcher::new(
-            base,
-            vec!["STRIPE_KEY".into()],
-            fingerprints,
-            digest as Digest,
-        )
+        HashedMatcher::new(vec!["STRIPE_KEY".into()], fingerprints, digest as Digest)
     }
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -707,20 +706,60 @@ mod tests {
         assert_eq!(stream.flush(), b"line".to_vec());
     }
 
+    /// A tag is a few bits of the hash of a needle's first eight bytes: needles that begin
+    /// alike share it whatever follows, and no tag is wider than its length allows.
     #[test]
-    fn rolling_hash_rolls() {
-        let base = 257;
-        let data = b"abcdefghij";
-        let len = 4;
-        let pow = (1..len).fold(1, |p, _| mul_mod(p, base));
-        let mut h = rolling_hash(base, &data[..len]);
-        for i in 0..data.len() - len {
-            let out = u64::from(data[i]) + 1;
-            let incoming = u64::from(data[i + len]) + 1;
-            h = (h + MODULUS - mul_mod(out, pow)) % MODULUS;
-            h = (mul_mod(h, base) + incoming) % MODULUS;
-            assert_eq!(h, rolling_hash(base, &data[i + 1..i + 1 + len]));
+    fn a_tag_says_a_few_bits_about_a_needles_beginning_only() {
+        assert_eq!(
+            [8, 15, 16, 31, 32, 64, 1024, 16 * 1024, 1 << 20].map(tag_bits),
+            [4, 4, 5, 5, 6, 7, 11, 15, 16]
+        );
+        assert_eq!(needle_tag(b"short"), None);
+        assert_eq!(
+            needle_tag(b"sk_live_AAAAAAAA"),
+            needle_tag(b"sk_live_BBBBBBBB"),
+            "only the first eight bytes count"
+        );
+        for needle in needles(VALUE) {
+            let tag = needle_tag(&needle).unwrap_or(u16::MAX);
+            assert!(u32::from(tag) < 1 << tag_bits(needle.len()), "{tag}");
         }
+        // Every tag value occurs: the hash spreads over its bits.
+        let seen: BTreeSet<u16> = (0..4096u32)
+            .filter_map(|i| needle_tag(format!("{i:08}").as_bytes()))
+            .collect();
+        assert_eq!(seen.len(), 16);
+    }
+
+    /// A text that shares a needle's tag but not its bytes is left alone, and a fingerprint of
+    /// an unknown secret or too short to tag is ignored.
+    #[test]
+    fn hashed_matchers_confirm_candidates_and_skip_unusable_fingerprints() {
+        let matcher = hashed();
+        let twin = format!("{}XXXXXXXXXXXXXXXXX", &VALUE[..TAG_WINDOW]);
+        assert_eq!(twin.len(), VALUE.len());
+        assert_eq!(needle_tag(twin.as_bytes()), needle_tag(VALUE.as_bytes()));
+        assert!(matcher.find(twin.as_bytes()).is_empty());
+        let unusable = HashedMatcher::new(
+            vec!["A".into()],
+            vec![
+                Fingerprint {
+                    secret: 1,
+                    len: 9,
+                    tag: 0,
+                    digest: digest(b"123456789"),
+                },
+                Fingerprint {
+                    secret: 0,
+                    len: 4,
+                    tag: 0,
+                    digest: digest(b"1234"),
+                },
+            ],
+            digest as Digest,
+        );
+        assert!(unusable.is_empty());
+        assert!(unusable.find(b"1234 123456789").is_empty());
     }
 
     #[test]
