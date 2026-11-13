@@ -179,7 +179,7 @@ reset) only when no subscription can.
 - [x] ADR-0326, the architecture, product and contract documents and the changes entry agree
 - [x] The gate and the security scan are run and the head is given to an independent review
 - [x] The review's first round is answered: the Superagent, another model's limit, stale runs and eight smaller findings
-- [ ] The review's second round is answered: an agent type's own model, and five smaller findings
+- [x] The review's second round is answered: an agent type's own model, and five smaller findings
 
 ## Acceptance criteria
 
@@ -296,20 +296,23 @@ reset) only when no subscription can.
   the change. The reviewer's run of an agent type with a model of its own, refused for the
   5-hour window: reported with scope `Account` (the subscription's, whatever the model).
 - **Tests that fail without the fix** (`target/evidence/mutants.sh`, log
-  `target/evidence/mutants.log`, at `ccb0f3ad1`): nine mutants, each removing one part, against
-  the nine integration tests (`workflow_limit::`, eight, and the hook test). Unmutated: all
-  nine pass (1.5 to 2.6 s each).
+  `target/evidence/mutants.log`, at `7ed99edc8`): eleven mutants, each removing one part,
+  against the nine integration tests (`workflow_limit::`, eight, and the hook test) and the
+  watch's three unit tests. Unmutated: all twelve pass.
   - 1 and 2, the workflow agents' files not followed and their limit not reported (the bug as
-    it was): seven fail, among them
+    it was): eight fail, among them
     `a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow` after 90 s
     waiting for the move and
     `with_no_subscription_free_the_task_waits_and_then_resumes_the_workflow` after 30 s waiting
-    for the pause; the two that pass need no agent's limit (the session's own turn cut, a
-    person's move).
-  - 3, the launch not naming its run: eight fail. 4, the relaunch past a limit saying
+    for the pause; the integration tests that pass need no agent's limit (the session's own
+    turn cut, a person's move).
+  - 3, the launch not naming its run: nine fail. 4, the relaunch past a limit saying
     nothing: five fail. 5, the prompt hook adding nothing: the hook test fails.
-  - 6, another model's limit taken for the session's, and 7, the agent's own model not looked
-    up: `a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task` fails.
+  - 6, another model's limit taken for the session's:
+    `a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task` fails. 7, the agent's
+    own model not looked up: that test and the unit test of the agents' models fail.
+  - 10, an agent type of its own taken to run the session's model, and 11, what answered an
+    agent not heard: `a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model` fails.
   - 8, the runs forgotten when the launch is decided:
     `a_relaunch_that_fails_still_knows_the_workflow_at_the_next_one` fails. 9, a replay's
     unfinished runs not kept: `a_workflow_paused_at_a_limit_is_known_after_a_restart` fails.
@@ -340,8 +343,9 @@ reset) only when no subscription can.
   `claude-opus-5-5`.
 - **The gate.** `scripts/dev ci` at `b75a01cbd` (before merging `dev` and before the review):
   exit 0, 4225 tests passed, 16 skipped. After merging `dev` (#1253) and the answers to the
-  review's first round, at `db8ff8d6a`: exit 0, 4239 tests run, 4239 passed, 16 skipped
-  (`target/evidence/gate.log`); `scripts/dev lint` exit 0.
+  review's first round, at `db8ff8d6a`: exit 0, 4239 tests run, 4239 passed, 16 skipped;
+  `scripts/dev lint` exit 0. After the answers to the second round, at `7ed99edc8`: exit 0,
+  4239 tests run, 4239 passed, 16 skipped (`target/evidence/gate.log`).
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius". Disabled, not passed: nothing was scanned.
 - **Not tested here.**
