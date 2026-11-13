@@ -83,6 +83,10 @@ pub enum Point {
     /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
     /// path is the task id.
     StopTurnLock,
+    /// `type_into_session` (SPEC-488): the screen showed the prompt box empty and the hold's
+    /// mark and flag were ended; the hold is not judged again and nothing is pasted yet. The
+    /// path is the task id.
+    BoxSeenEmpty,
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,

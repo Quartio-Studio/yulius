@@ -279,9 +279,9 @@ impl App {
     /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
     /// it takes typed text (TMS-004): its session started, no person's draft may sit in its
     /// prompt box (SPEC-480; none does in a box the screen shows empty, SPEC-488) and none
-    /// typed in the last minute, and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358 MSB-007). `what` says
-    /// whether Claude Code will submit it as a prompt, `from` who is told when a person's
-    /// possible draft holds it back.
+    /// typed in the last minute, and nothing else is being typed. Also Yulius's own "Yulius is
+    /// back; continue" (SPEC-358 MSB-007). `what` says whether Claude Code will submit it as a
+    /// prompt, `from` who is told when a person's possible draft holds it back.
     pub(crate) async fn type_into_session(
         &self,
         task: &TaskRecord,
@@ -347,7 +347,17 @@ impl App {
         // nothing (SPEC-488). Any other picture proves nothing and the hold stays.
         if held.is_some_and(BoxHeld::ends_at_an_empty_box) && runtime.hub.prompt_box_shown_empty() {
             self.box_seen_empty(task, typed).await;
-            held = None;
+            crate::race::reached(
+                crate::race::Point::BoxSeenEmpty,
+                Path::new(task.id.as_str()),
+            );
+            // The judged keystroke holds nothing any more. One typed since the screen was read
+            // (ending the mark and the flag took a moment) is a possible draft of its own.
+            held = yulius_domain::intake::box_held(
+                self.now().0,
+                runtime.typed_at_ms.load(Ordering::SeqCst),
+                runtime.box_emptied_ms.load(Ordering::SeqCst),
+            );
         }
         match held {
             Some(held @ BoxHeld::Draft { .. }) => {

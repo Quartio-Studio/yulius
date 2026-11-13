@@ -940,6 +940,113 @@ fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() 
     Ok(())
 }
 
+/// SPEC-488 EBX-004 (review round 1): a key typed after the screen was read, while the hold's
+/// mark and flag are ended, is a possible draft of its own: the hold is judged again before
+/// anything is pasted, and the message is refused. The paste used to go in behind that key.
+#[test]
+fn a_key_typed_while_the_empty_box_is_taken_in_holds_the_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        // The person's next key arrives exactly there (recorded as a viewer's key is, before
+        // it is passed on).
+        let (typist, task, person) = (app.clone(), id.clone(), caller.user.clone());
+        yulius_app::race::on(
+            yulius_app::race::Point::BoxSeenEmpty,
+            Path::new(id.as_str()),
+            move || typist.record_typing(&task, &person),
+        );
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        let refused = app.tool_task_message(&caller, &message).await.err();
+        assert!(
+            matches!(&refused, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{refused:?}"
+        );
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("Message from admin"), "{shown}");
+        assert!(audited(&data, &id)?.is_empty());
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-488 EBX-004 (review round 1): after a restart of the server the possible draft is
+/// known from its mark alone, and the screen is the process host's snapshot of what the
+/// session shows. A key that left nothing in the box before the restart holds no message
+/// after it: two minutes on, the message is typed, read alone, and the mark is gone.
+#[test]
+fn a_key_before_a_restart_that_left_nothing_holds_no_message() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, full_screen(), 0, probe).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+                && app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, KEY_WITHOUT_TEXT, false)
+            .await?;
+        app.terminal_leave(&attach).await;
+        assert!(draft_mark(&app, &id).await?.exists());
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            full_screen(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        wait_for("the reattached screen", Duration::from_secs(30), || async {
+            app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        let mark = draft_mark(&app, &id).await?;
+        // The restarted server knows the key from its mark: within the minute it holds.
+        let young = send(&app, &caller, &id).await.err();
+        assert!(
+            matches!(&young, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{young:?}"
+        );
+        assert!(mark.exists());
+        clock.0.store(2 * MINUTE, Ordering::SeqCst);
+        let answer = send(&app, &caller, &id).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "Message from admin (through their Superagent):")
+        })
+        .await?;
+        assert!(!mark.exists(), "a box seen empty keeps no draft's mark");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-488 AC6 (EBX-005), with a pull request's news: text left in the prompt box holds the
 /// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
 /// watch types nothing into a task whose person must act; a flag that only says a message

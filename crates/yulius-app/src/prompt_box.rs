@@ -22,7 +22,13 @@ const FIRST_CELL: u16 = 2;
 ///   parks it there while the box has the keys and is empty (in a dialog, a list or another
 ///   view the cursor is elsewhere, and a picture of a box in the conversation has no cursor);
 /// - the rows directly above and below are rules across the whole width (the history search
-///   labels its upper rule; a draft of several rows has no rule below its first);
+///   labels its upper rule; a draft of several rows has no rule below its first), and not
+///   dim: the agents view, whose box starts a new session with what is entered, draws dim
+///   rules in every theme, and under `dark-ansi` a dim placeholder like a suggestion;
+/// - the row above the upper rule is blank. Claude Code writes its hints there, among them
+///   "› stashed" for as long as a draft is put aside with the stash key: that draft comes
+///   back into the box by itself after the next submit, so a box with a stash is not empty
+///   for what is typed after. Other hints there last seconds (deleted text) and cost a try;
 /// - from the first cell on, the row holds nothing, or only dim text: what Claude Code draws
 ///   into an empty box by itself (its prompt suggestion, "Press up to edit queued messages"),
 ///   which a paste replaces. Typed text is never dim. The cell under the cursor is drawn
@@ -35,15 +41,23 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
     }
     let (_, cols) = screen.size();
     let (row, col) = screen.cursor_position();
-    // A box in the first row has no rule above it; one in the last row has none below, which
-    // the rule check finds.
-    if col != FIRST_CELL || row == 0 {
+    // The box needs its upper rule and the hint row above that; one in the last row has no
+    // rule below, which the rule check finds.
+    if col != FIRST_CELL || row < 2 {
         return false;
     }
-    let text = |r: u16, c: u16| screen.cell(r, c).map_or("", vt100::Cell::contents);
+    let cell = |r: u16, c: u16| screen.cell(r, c);
+    let text = |r: u16, c: u16| cell(r, c).map_or("", vt100::Cell::contents);
     let blank = |r: u16, c: u16| text(r, c).trim().is_empty();
-    let rule = |r: u16| (0..cols).all(|c| text(r, c) == RULE);
-    if text(row, 0) != PROMPT || !blank(row, 1) || !rule(row - 1) || !rule(row + 1) {
+    let rule =
+        |r: u16| (0..cols).all(|c| text(r, c) == RULE && !cell(r, c).is_some_and(vt100::Cell::dim));
+    let hint_row_blank = (0..cols).all(|c| blank(row - 2, c));
+    if text(row, 0) != PROMPT
+        || !blank(row, 1)
+        || !rule(row - 1)
+        || !rule(row + 1)
+        || !hint_row_blank
+    {
         return false;
     }
     let dim = |c: u16| screen.cell(row, c).is_some_and(vt100::Cell::dim);

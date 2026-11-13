@@ -264,9 +264,10 @@
 //! X10 mouse reports are dropped from a message, as Claude Code consumes them.
 //!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
-//! header box, the transcript and an input box between two rules along the bottom, all as wide
-//! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
-//! go into the transcript. Used to measure how the web terminal settles (F 2026-10-09).
+//! header box, the transcript, a blank row (Claude Code's hint row) and an input box between two
+//! rules along the bottom, all as wide as the terminal, redrawn in full whenever the terminal is
+//! resized (SIGWINCH). Printed lines go into the transcript. Used to measure how the web terminal
+//! settles (F 2026-10-09).
 
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Read, Write};
@@ -742,7 +743,9 @@ impl Tui {
             )
         ));
         screen.push_str(&format!("╰{}╯", "─".repeat(cols - 2)));
-        let body = rows - 3 - 4;
+        // The row above the input box's upper rule stays blank: Claude Code writes only its
+        // hints there ("› stashed"), never the transcript.
+        let body = rows - 3 - 5;
         if let Ok(lines) = self.lines.lock() {
             let start = lines.len().saturating_sub(body);
             for (i, line) in lines.iter().skip(start).enumerate() {
