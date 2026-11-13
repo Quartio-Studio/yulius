@@ -362,6 +362,21 @@ pub fn parse_port_range(text: &str) -> Result<std::ops::RangeInclusive<u16>, Str
     Ok(first..=last)
 }
 
+/// The Git adapter: on Linux every command confined to Git's own programs and the folders it
+/// works in, by the `git-confined` command of this program (`exe`; ADR-0322).
+fn git_adapter(exe: &Path, data_dir: &Path) -> GitAdapter {
+    let adapter = GitAdapter::new("git");
+    #[cfg(target_os = "linux")]
+    let adapter = adapter.confined(
+        exe.to_path_buf(),
+        std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf()),
+        0,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let _ = (exe, data_dir);
+    adapter
+}
+
 /// The browser adapter for the data directory (profiles live in each sandbox directory), and
 /// the browsers' way out, to be bound to the egress proxy once that runs (ADR-0321).
 fn browser_port(
@@ -548,7 +563,7 @@ pub fn build_app(
             config.yulius_exe.clone(),
             config.internal_url.clone(),
         )),
-        git: Arc::new(GitAdapter::new("git")),
+        git: Arc::new(git_adapter(&config.yulius_exe, &args.data_dir)),
         system: Arc::new(SysinfoProbe::new()),
         browser,
         usage: Arc::new(crate::wiring::usage::ProviderUsage::new()?),
