@@ -114,7 +114,7 @@ still never typed behind text that is there (SPEC-480).
 - [x] The screen's prompt box is read: shown empty only as the real Claude Code draws it
 - [x] A message is typed when the box is seen empty, and its hold, mark and flag end
 - [x] The pull-request watch still tries a task flagged only for a held message
-- [ ] The documents and the decision say when a message waits
+- [x] The documents and the decision say when a message waits
 - [ ] The independent review's findings are answered
 - [ ] The full gate passes on the final code and the spec carries the evidence
 

@@ -1248,7 +1248,8 @@ run holding it, the armed slot, the train, a merge of its head into `origin/<int
 the merge drivers, cached per head and integration commit), and types into its session, as one
 bracketed paste through `type_into_session`, cleaned of control characters and never while a
 person must act first (a prompt on screen, `needs_you`) or may have a draft in the prompt box
-(SPEC-480: the notice stays untold and is tried again):
+(SPEC-480: the notice stays untold and is tried again; a flag that only says a message waits
+for such a draft, over a prompt box the screen shows empty, does not stop the try, SPEC-488):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
   the kept failures, and the `ci_status` run and job), or one that errored;
@@ -1845,7 +1846,12 @@ however long ago) or they typed in the last minute (`App::box_held`, `policy::bo
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
 and its terminal says so once the person's last key is ten minutes old; the key that begins a
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
-the box and read by `reconcile` for a reattached run), while Claude Code's
+the box and read by `reconcile` for a reattached run; a prompt box the hub's screen shows empty
+(`prompt_box::shown_empty`: the one picture Claude Code 2.1.323 draws, the cursor in a row `❯`
+between two rules with nothing or only dim text in it) ends the hold, its mark and its flag
+once the minute after the key has passed,
+[SPEC-488](../.ai/specs/SPEC-488-fix.md),
+[decision 0329](decisions/0329-a-prompt-box-the-screen-shows-empty-holds-no-message.md)), while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`

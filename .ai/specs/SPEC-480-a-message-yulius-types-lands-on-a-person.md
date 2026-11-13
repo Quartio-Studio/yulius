@@ -11,6 +11,9 @@ Owner: Yulius task #463
 Scope authorization: the request of task #463 (by MrFishPL, 2026-11-12, started by the
 open-issues automation, task #458): fix issue #1199. Amends SPEC-230 TMS-004 and ADR-0178;
 decision in [ADR-0309](../../docs/decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md).
+Amended by [SPEC-488](SPEC-488-fix.md) (ADR-0329, issue #1260): a prompt box the session's
+screen shows empty holds no message, so DRF-001's "every keystroke" ends where the screen
+proves that the key left no text.
 
 ## Goal
 

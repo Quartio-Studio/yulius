@@ -897,14 +897,20 @@ Yulius types into a running task's session: a person's message sent through thei
 or their own agent (`task_message`), what happens to the task's pull request, "Yulius is back;
 continue" after an outage, and `/mcp reconnect yulius` when the session's Yulius tools went
 silent. It types none of them while a person's draft may sit in the session's prompt box
-(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
+(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md);
+SPEC-488, [decision 0329](decisions/0329-a-prompt-box-the-screen-shows-empty-holds-no-message.md)):
 
 - **When a message waits.** Someone typed into the task's terminal since its prompt box was
   last empty (the session's start, or the last prompt sent from the box), however long ago.
-  Yulius sees keys and sent prompts, not the box, so every key counts until the next prompt is
-  sent: also an answer to one of Claude Code's dialogs, or Escape. Typed behind a draft, the
-  message and the unfinished text would be sent as one prompt. For a minute after any key
-  nothing is typed either.
+  Typed behind a draft, the message and the unfinished text would be sent as one prompt. For
+  a minute after any key nothing is typed either.
+- **A key that left no text holds nothing.** Most keys leave none: Escape, an arrow, an answer
+  to one of Claude Code's dialogs, text typed and deleted. Once the minute has passed Yulius
+  looks at the session's screen: when it shows Claude Code's prompt box with nothing typed in
+  it (a row `❯` between two rules with the cursor in it, empty or holding only Claude Code's
+  own grey suggestion), the message is typed and nobody is asked. Any other picture (text in
+  the box, a dialog, another view, a Claude Code that draws the box differently from 2.1.323)
+  proves nothing, and the message waits.
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
@@ -913,9 +919,10 @@ silent. It types none of them while a person's draft may sit in the session's pr
   and its terminal says the same in one line; a wake that is dropped says so at its last try,
   whatever the key's age. A flagged task is not idle, so a finished one does not count as done
   for the tasks chained after it until its person sent a prompt.
-- **What ends it.** Send what you typed in the task's terminal, or clear it and send any
-  prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
-  it never sends or clears a person's text.
+- **What ends it.** Send what you typed in the task's terminal, or clear it: a minute after
+  your last key Yulius sees the empty box and types its message at its next try. Where the
+  screen proves nothing, any prompt sent from there (`continue` will do) ends it. Yulius never
+  sends or clears a person's text.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
   box, and a restarted server reads it when it reattaches the run. A draft it knows from

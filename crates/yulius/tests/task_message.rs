@@ -697,13 +697,7 @@ async fn idle_full_screen(
 
 /// The mark of a possible draft in the folder of `id`'s live run (SPEC-480 DRF-009).
 async fn draft_mark(app: &App, id: &TaskId) -> Result<std::path::PathBuf, Error> {
-    let run_dir = app
-        .deps
-        .store
-        .live_attempt(id)
-        .await?
-        .ok_or("run")?
-        .run_dir;
+    let run_dir = app.deps.store.live_attempt(id).await?.ok_or("run")?.run_dir;
     Ok(Path::new(&run_dir).join("person-typed"))
 }
 

@@ -151,7 +151,8 @@ watching, steering and unblocking.
   sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
   they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
   message is not typed behind a person's draft, and for a message of Yulius's own the task
-  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
+  says so after ten minutes; a key that left nothing there holds no message, because Yulius
+  sees on the session's screen that the box is empty, SPEC-488), or the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as

@@ -407,7 +407,9 @@ mod tests {
     fn a_snapshot_keeps_the_prompt_box_readable() {
         let rule = "─".repeat(20);
         let framed = |row: &str| {
-            format!("\x1b[?1049h\x1b[H\x1b[2J\x1b[2;1H{rule}\x1b[3;1H{row}\x1b[0m\x1b[4;1H{rule}\x1b[5;1H  status\x1b[3;3H")
+            format!(
+                "\x1b[?1049h\x1b[H\x1b[2J\x1b[2;1H{rule}\x1b[3;1H{row}\x1b[0m\x1b[4;1H{rule}\x1b[5;1H  status\x1b[3;3H"
+            )
         };
         for (row, empty) in [
             ("❯ ", true),
@@ -426,7 +428,11 @@ mod tests {
                 .unwrap_or_default();
             let again = Hub::new(20, 6);
             again.reset(2, &snapshot, 20, 6);
-            assert_eq!(again.prompt_box_shown_empty(), empty, "after a snapshot: {row:?}");
+            assert_eq!(
+                again.prompt_box_shown_empty(),
+                empty,
+                "after a snapshot: {row:?}"
+            );
         }
     }
 

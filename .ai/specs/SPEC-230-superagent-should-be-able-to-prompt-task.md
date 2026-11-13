@@ -60,7 +60,8 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   person's draft may sit in the session's prompt box (their draft is theirs: they typed into the
   task's terminal since its prompt box was last empty, that is since the run started or the last
   prompt was submitted from the box, however long ago; every keystroke counts, because Yulius
-  sees keys and not the box) or a person typed there in the last minute
+  sees keys and not the box, until the session's screen shows the box empty a minute or more
+  after the key, [SPEC-488](SPEC-488-fix.md)) or a person typed there in the last minute
   ([SPEC-480](SPEC-480-a-message-yulius-types-lands-on-a-person.md), issue #1199: until then
   only the last minute counted, and an older draft was submitted with the message), Claude Code's
   session has not started (no SessionStart hook yet, which leaves a marker in the run folder that

@@ -133,7 +133,8 @@ mod tests {
         let unfocused = format!("❯ {DIM}run the tests");
         assert!(empty(&boxed(&[&unfocused], (9, 3))));
         // The hint while prompts wait in Claude Code's queue (its prompt character is grey).
-        let queued = format!("\x1b[38;5;246m❯{OFF} {INV}P{OFF}{DIM}ress up to edit queued messages");
+        let queued =
+            format!("\x1b[38;5;246m❯{OFF} {INV}P{OFF}{DIM}ress up to edit queued messages");
         assert!(empty(&boxed(&[&queued], (9, 3))));
     }
 
@@ -141,9 +142,15 @@ mod tests {
     #[test]
     fn a_draft_is_not_shown_empty() {
         // The cursor behind the text.
-        assert!(!empty(&boxed(&[&format!("❯ half a thought{INV} ")], (9, 18))));
+        assert!(!empty(&boxed(
+            &[&format!("❯ half a thought{INV} ")],
+            (9, 18)
+        )));
         // The cursor moved to the start: the first character inverse, the rest as typed.
-        assert!(!empty(&boxed(&[&format!("❯ {INV}h{OFF}alf a thought")], (9, 3))));
+        assert!(!empty(&boxed(
+            &[&format!("❯ {INV}h{OFF}alf a thought")],
+            (9, 3)
+        )));
         // The same without the focus: no inverse cell.
         assert!(!empty(&boxed(&["❯ half a thought"], (9, 3))));
         // One character under the cursor: like a suggestion's first cell, with nothing dim
@@ -220,9 +227,7 @@ mod tests {
         let last = format!("\x1b[11;1H{}\x1b[12;1H❯ \x1b[12;3H", rule());
         assert!(!empty(&last));
         // The same picture on the main screen, which was not probed.
-        assert!(!shown_empty(
-            drawn(&boxed(&["❯ "], (9, 3)), true).screen()
-        ));
+        assert!(!shown_empty(drawn(&boxed(&["❯ "], (9, 3)), true).screen()));
         // Nothing drawn at all.
         assert!(!empty(""));
     }

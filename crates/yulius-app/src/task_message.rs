@@ -140,7 +140,11 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
 /// and this one over any other screen (a dialog, text in the box), is a person's to answer.
 fn held_message_flag_outlived(reason: Option<&AttentionRecord>, box_shown_empty: bool) -> bool {
     box_shown_empty
-        && reason == Some(&AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION))
+        && reason
+            == Some(&AttentionRecord::yulius(
+                DRAFT_HOLDS_PROBLEM,
+                DRAFT_HOLDS_ACTION,
+            ))
 }
 
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
@@ -341,8 +345,7 @@ impl App {
         // Most keys leave no text (Escape, an arrow, an answered dialog), and the screen can
         // prove it: a prompt box shown empty, once the minute after the key has passed, holds
         // nothing (SPEC-488). Any other picture proves nothing and the hold stays.
-        if held.is_some_and(BoxHeld::ends_at_an_empty_box) && runtime.hub.prompt_box_shown_empty()
-        {
+        if held.is_some_and(BoxHeld::ends_at_an_empty_box) && runtime.hub.prompt_box_shown_empty() {
             self.box_seen_empty(task, typed).await;
             held = None;
         }

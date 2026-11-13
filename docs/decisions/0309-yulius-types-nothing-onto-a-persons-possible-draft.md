@@ -5,6 +5,9 @@
 Accepted. Specified in [SPEC-480](../../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md);
 task #463, issue #1199. Amends [ADR-0178](0178-the-superagent-messages-tasks-by-queueing-or-typing.md)
 ("the person's draft counts for a minute") and SPEC-230 TMS-004.
+Amended by [ADR-0329](0329-a-prompt-box-the-screen-shows-empty-holds-no-message.md) (SPEC-488,
+issue #1260): a prompt box the session's screen shows empty holds no message once the minute
+after the key has passed, so a key that left no text flags nobody.
 
 ## Context
 
@@ -65,7 +68,8 @@ a prompt is submitted from it.
   prompt box before that was not proven either way, and a wrong guess is the defect. Rejected.
 - **Read the prompt box from the screen.** The box's frame and what is drawn in it without
   being typed differ between Claude Code versions; the issue's verification judged it fragile,
-  and a wrong "empty" is the defect. Rejected.
+  and a wrong "empty" is the defect. Rejected. (ADR-0329 looked at the real tool and reads
+  the screen as proof of an empty box only, in one exact picture.)
 - **Stash the draft with a key of Claude Code's own, type, and let it come back.** Not proven
   against the real tool, and it would depend on a key binding people can change and on the
   version. Rejected.
