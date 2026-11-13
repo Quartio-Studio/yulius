@@ -182,16 +182,18 @@ impl TaskStatus {
         )
     }
 
-    /// Whether a merge its agent armed stays armed in this state: while the task's run lives
-    /// or is only held (a subscription switch, no capacity). An armed merge lives with the run
-    /// that armed it: only a running, idle agent's branch is brought up to date, joins a merge
-    /// train or gets a refusal answered, so a run that ended (closed, stopped, failed) or is
-    /// being stopped ends the armed merge too.
+    /// Whether a merge its agent armed stays armed in this state: while the task's run lives,
+    /// is only held (a subscription switch, no capacity) or waits in the queue for a slot to
+    /// start in again by itself (a held run goes through the queue when capacity returns
+    /// while every slot is taken). An armed merge lives with the run that armed it: only a
+    /// running, idle agent's branch is brought up to date, joins a merge train or gets a
+    /// refusal answered, so a run that ended (closed, stopped, failed) or is being stopped
+    /// ends the armed merge too.
     #[must_use]
     pub fn keeps_an_armed_merge(self) -> bool {
         matches!(
             self,
-            Self::Starting | Self::Running | Self::Switching | Self::WaitingCapacity
+            Self::Queued | Self::Starting | Self::Running | Self::Switching | Self::WaitingCapacity
         )
     }
 
@@ -1292,12 +1294,12 @@ mod tests {
         assert!(!AttemptState::Live.can_become(AttemptState::Spawning));
     }
 
-    /// SPEC-483 D6: an armed merge stays armed while its task's run lives or is only held, and
-    /// ends with a run that ended or is being stopped; a task waiting for its first slot has
-    /// armed nothing.
+    /// SPEC-483 D6: an armed merge stays armed while its task's run lives, is only held or
+    /// waits in the queue to start again, and ends with a run that ended or is being stopped.
     #[test]
     fn an_armed_merge_lives_with_the_run_that_armed_it() {
         for kept in [
+            TaskStatus::Queued,
             TaskStatus::Starting,
             TaskStatus::Running,
             TaskStatus::Switching,
@@ -1306,7 +1308,6 @@ mod tests {
             assert!(kept.keeps_an_armed_merge(), "{kept:?}");
         }
         for ended in [
-            TaskStatus::Queued,
             TaskStatus::Stopping,
             TaskStatus::Closed,
             TaskStatus::Stopped(StopReason::Cancelled),

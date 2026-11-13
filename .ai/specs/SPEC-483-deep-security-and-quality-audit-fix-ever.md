@@ -644,11 +644,12 @@ no code path reaches; documents, texts shown to agents and people, and code that
   branch has CI, or when the commit brings its own to a branch without any (the scheduler's
   rule for a proposal, CGR-001; whether the scheduler has a pull request to test it for is
   not asked, as it is not for a project with CI).
-- **ARM-001** `TaskStatus::keeps_an_armed_merge` is true for `Starting`, `Running`,
-  `Switching` and `WaitingCapacity`, false for every other state.
+- **ARM-001** `TaskStatus::keeps_an_armed_merge` is true for `Queued`, `Starting`,
+  `Running`, `Switching` and `WaitingCapacity`, false for every other state.
 - **ARM-002** A pass (`merge_armed_task`) ends the armed merge of a task whose state does
-  not keep one, before anything else is asked: decided, with "the task's run ended
-  (<state>)" and what to do, and nothing is merged for it later.
+  not keep one: decided, with "the task's run ended (<state>)" and what to do, and nothing
+  is merged for it later. A pull request that is merged already is said to be merged
+  first, as for any task.
 - **ARM-003** A start (`restore_armed_merges`) puts back the armed merges of the tasks whose
   state keeps one, and forgets the others.
 
@@ -1036,8 +1037,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-89** The states that keep an armed merge and those that do not, as a table
   (ARM-001).
 - **AC-90** With a merge armed and its checks pending: the task in `WaitingCapacity`, then
-  `Switching`, stays armed after a pass, and the saved merge is kept by a new server's
-  restore. Closed: the next pass ends it ("dropped", "run ended (closed)"), the saved
+  `Switching`, then `Queued`, stays armed after a pass, and the saved merge is kept by a new
+  server's restore. With the armed pull request merged by a person and the task closed
+  afterwards, the pass's outcome says "merged" and not "dropped". Closed: the next pass ends it ("dropped", "run ended (closed)"), the saved
   merge is gone, and with the checks passed neither a pass nor a new server's start merges
   the pull request. A merge saved for a task that was closed while the server was down is
   not merged at the start and is forgotten.
@@ -1287,7 +1289,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   only be kept for the one case that needs nothing more. A person who stops or closes a
   task has ended what Yulius does for it, and a merge afterwards is a surprise. And a
   restart already decided this way. "Held" states keep the merge (the run is there and
-  comes back by itself); `Stopping` does not (the run is being ended). The agent's own
+  comes back by itself), and so does `Queued`: a held run goes through the queue when its
+  capacity returns while every slot is taken, and a task revived after a host move starts
+  from it (the review of this slice; a task queued for its first run has armed nothing).
+  `Stopping` does not (the run is being ended). That the pull request was merged already
+  is asked before the run's end is said: a person's merge does not clear the armed slot. The agent's own
   message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
@@ -1463,6 +1469,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 15 |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |

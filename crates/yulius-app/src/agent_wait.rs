@@ -286,8 +286,9 @@ impl App {
 
     /// Records `task`'s armed merge, or that it has none any more, in [`ARMED_MERGES_FILE`]
     /// (written whole, then renamed into place). Called with the task's [`ArmedSlot`] locked, so
-    /// the file follows the slot's order of changes; only the startup restore forgets a task that
-    /// is not running without it. Failures are logged: the merge stays armed in memory.
+    /// the file follows the slot's order of changes; only the startup restore forgets, without
+    /// it, a task whose state keeps no armed merge. Failures are logged: the merge stays armed
+    /// in memory.
     fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
         let _guard = ARMED_FILE_LOCK
             .lock()
@@ -625,15 +626,16 @@ impl App {
     async fn merge_armed_task(self: &Arc<Self>, task: &TaskRecord, armed: ArmedMerge) -> Verdict {
         // An armed merge lives with the run that armed it (SPEC-483 D6): a task a person
         // stopped or closed is not merged behind their back, and one that could only wait for
-        // an agent that is gone does not wait for ever.
-        if !task.status.keeps_an_armed_merge() {
-            return Verdict::Decided(format!(
+        // an agent that is gone does not wait for ever. Said below, once it is known that the
+        // pull request was not merged already.
+        let ended = (!task.status.keeps_an_armed_merge()).then(|| {
+            Verdict::Decided(format!(
                 "The merge you armed was dropped: the task's run ended ({}) before the merge \
-                 could be made. Its pull request stays open: continue the task and call \
-                 `delivery_merge` again with the reviewed head, or merge it on GitHub.",
+                 could be made. Yulius leaves its pull request as it is: continue the task and \
+                 call `delivery_merge` again with the reviewed head, or merge it on GitHub.",
                 task.status.as_str()
-            ));
-        }
+            ))
+        });
         let head = match task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
@@ -704,19 +706,25 @@ impl App {
         // A playground has no pull request: its run of the head merged into the integration
         // branch decides (SPEC-163 PCI-003).
         if sandbox.is_playground() {
+            if let Some(ended) = ended {
+                return ended;
+            }
             return self
                 .merge_armed_playground(task, &auth, &sandbox, armed)
                 .await;
         }
         // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
         // merges it itself (its note says where it stands); nothing to ask GitHub meanwhile.
-        if self.train_hold(task) == crate::merge_train::Hold::Held {
+        if ended.is_none() && self.train_hold(task) == crate::merge_train::Hold::Held {
             return Verdict::Keep(armed);
         }
         let Ok(view) = self.task_delivery(&auth, &id).await else {
-            return Verdict::Keep(armed);
+            return ended.unwrap_or(Verdict::Keep(armed));
         };
         let Some(pr) = view.pr.as_ref() else {
+            if let Some(ended) = ended {
+                return ended;
+            }
             self.note_armed(
                 &task.id,
                 "Yulius cannot read this task's pull request right now; it tries again on its \
@@ -728,6 +736,9 @@ impl App {
         // Merged already, by anyone: what counts is whether its head passed (SPEC-441 MQ-009).
         if pr.state == "merged" {
             return Verdict::Decided(self.merged_note(task, &sandbox, pr.number, true).await);
+        }
+        if let Some(ended) = ended {
+            return ended;
         }
         // A task's change merges into the integration branch only (SPEC-483 D3): a pull request
         // pointed elsewhere since it was armed (the agent's own token may do that) is dropped,

@@ -1318,10 +1318,11 @@ async fn an_automatic_promotion_stops_at_a_failed_head() -> TestResult {
         .await?;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
     let said = confirmed.body.to_string();
-    assert!(
-        said.contains("Automatic promotion did not happen") && said.contains("fail"),
-        "{said}"
-    );
+    let why = said
+        .split_once("Automatic promotion did not happen:")
+        .map(|(_, why)| why)
+        .ok_or_else(|| format!("no such note: {said}"))?;
+    assert!(why.contains("fail"), "the reason: {why}");
     assert_eq!(
         f.origin_sha("main")?,
         main_before,
@@ -4447,8 +4448,13 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
             .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
     let saved = || std::fs::read_to_string(&file).unwrap_or_default();
 
-    // Held, not ended: armed in this process and for the next one.
-    for held in [TaskStatus::WaitingCapacity, TaskStatus::Switching] {
+    // Held, or queued to start again by itself (a held run goes through the queue when its
+    // capacity returns while every slot is taken): armed in this process and for the next.
+    for held in [
+        TaskStatus::WaitingCapacity,
+        TaskStatus::Switching,
+        TaskStatus::Queued,
+    ] {
         becomes(held).await?;
         f.h.app.merge_armed(&sandbox).await;
         assert_eq!(t.wait(Value::Null).await?["merge_armed"], true, "{held:?}");
@@ -4486,6 +4492,23 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         f.delivery("t1").await?["stage"],
         "pr_open",
         "not merged at the start"
+    );
+
+    // A pull request a person merged while it was armed, in a task closed afterwards: what
+    // the pass says is that it is merged, not that a merge was dropped.
+    becomes(TaskStatus::Running).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Pending);
+    t.arm().await?;
+    let by_hand = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    becomes(TaskStatus::Closed).await?;
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("merged") && !outcome.contains("dropped"),
+        "{outcome}"
     );
     Ok(())
 }

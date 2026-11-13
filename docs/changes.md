@@ -11,8 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   that was up to date was still merged, one behind `dev` waited for ever (bringing it up to
   date needs a running, idle agent), and after a restart the same merge was dropped, also
   for a task that only waited for capacity or a subscription switch. One rule now, in every
-  pass and at a start: armed while the task runs or its run is held, ended with a reason
-  ("the task's run ended (closed) …") once the run ended. The pull request stays open.
+  pass and at a start: armed while the task runs, its run is held or it waits in the queue
+  to start again; once the run ended, a pass ends the merge with a reason ("the task's run
+  ended (closed) …") and a start forgets it. Yulius leaves the pull request as it is; one
+  that a person merged meanwhile is said to be merged.
 - A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
   are green was decided in five places by three rules: a task's merge and the Git page
   asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
