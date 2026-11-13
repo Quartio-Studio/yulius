@@ -48,7 +48,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
      merged, pull request #1248;
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
-  11. production secrets decided once (V6): slice 12 of the Plan;
+  11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
@@ -591,7 +591,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
-- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
+- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 
 ## Acceptance criteria
 
@@ -1271,7 +1271,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 12 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 12 |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
