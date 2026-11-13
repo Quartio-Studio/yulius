@@ -4,7 +4,7 @@
 
 Accepted. Specified in [SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md)
 (slice 1); task #465. Amends SPEC-002 ADR-20 (VLT-007) and
-[ADR-0014](0014-secrets-vault-and-agent-secret-proxy.md) ("redaction is an oracle for weak
+[ADR-0014](0014-secrets-vault.md) ("redaction is an oracle for weak
 values"), extends [ADR-0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)
 and SPEC-410 GST-004.
 
