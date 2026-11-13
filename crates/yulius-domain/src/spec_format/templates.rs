@@ -122,7 +122,8 @@ pub fn spec_template(title: &str, task_id: &TaskId, date: CivilDate) -> String {
          \n\
          ## Plan\n\
          \n\
-         <!-- A checklist ('- [ ] step'), kept in sync with Yulius steps (steps_set, step_update). -->\n\
+         <!-- A checklist ('- [ ] step') of all the work known now, later slices and pull requests\n\
+         included; kept in sync with Yulius steps (steps_set, step_update). -->\n\
          \n\
          ## Acceptance criteria\n\
          \n\
@@ -344,9 +345,11 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
             the sections Goal, Context, Requirements, Plan (a `- [ ]` checklist), Acceptance\n   \
             criteria, Test plan and Decisions. When the task is complete, check every Plan item,\n   \
             add Evidence and set `status: done`.\n\
-         3. Steps measure real progress: 3-12 steps of similar effort, each a slice that leaves\n   \
-            the project working, finished one at a time as the work happens. Keep the spec's\n   \
-            Plan and the Yulius steps in sync (`steps_set`, `step_update`).\n\
+         3. Steps measure real progress: all the work known now as steps of similar effort\n   \
+            (3-12 per pull request, at most 60), each a slice that leaves the project working,\n   \
+            finished one at a time as the work happens; a step is added only for work found\n   \
+            later. Keep the spec's Plan and the Yulius steps in sync (`steps_set`,\n   \
+            `step_update`).\n\
          4. Tests prove behavior: a test that fails without the change, then the change; strong\n   \
             unit and integration tests; wait on conditions, never on sleeps; no retries of\n   \
             flaky tests.\n\
@@ -827,7 +830,7 @@ mod tests {
         for needle in [
             "never commit or push to `dev` or\n  `main` directly",
             "Features and fixes need a spec; research, questions, docs and chores do not.",
-            "3-12 steps of similar effort",
+            "all the work known now as steps of similar effort\n   (3-12 per pull request, at most 60)",
             "independent review in a fresh session",
             "no `git stash` as a tool",
             "never add GitHub Actions",
@@ -914,9 +917,9 @@ mod tests {
                 "Section '## Context' (line 14) is empty.",
                 "Section '## Requirements' (line 18) is empty.",
                 "Section '## Plan' (line 22) has no checklist item; list the steps as '- [ ] step'.",
-                "Section '## Acceptance criteria' (line 26) is empty.",
-                "Section '## Test plan' (line 30) is empty.",
-                "Section '## Decisions' (line 34) is empty.",
+                "Section '## Acceptance criteria' (line 27) is empty.",
+                "Section '## Test plan' (line 31) is empty.",
+                "Section '## Decisions' (line 35) is empty.",
             ]
         );
         assert!(spec_template("  ", &task, date).contains("# Untitled task\n"));

@@ -1200,7 +1200,12 @@ A pass (`App::merge_armed`, one per sandbox at a time) runs at the end of every 
 minutes after the delivery reconcile, and every 20 seconds for a sandbox with something it can
 decide now (a candidate whose run ended, or an armed head whose run passed that is up to date or,
 with no candidate under test, whose agent is idle). It fetches the clone,
-then decides the armed merges in arm order:
+then decides the armed merges in arm order. An armed merge lives with the run that armed it
+(`TaskStatus::keeps_an_armed_merge`): while the task runs, its run is only held (no capacity,
+a subscription switch) or it waits in the queue to start again, it stays armed, also across a
+restart; once the run ended (the task was closed, stopped or failed) the next pass ends it and
+says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
+request as it is:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
   merges the integration branch into it nor puts it in a candidate, so a moving base never
@@ -1540,7 +1545,24 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Yulius
+switches plugin language servers off for every session it starts, and none is asked to install
+one: before each
+launch Yulius reads which plugins of the session bring a language server (the installed ones
+and the ones the home's or the worktree's settings switch on; `lspServers` in the plugin's
+marketplace entry or manifest, or a `.lsp.json`; read through handles that follow no link, a
+path the agent wrote only inside the sandbox's folders, within one budget of 16 MiB and 1024
+folders, never failing the launch) and switches them off, whole, in the run's own
+settings (`"enabledPlugins": {"<id>": false}` in a task run's `claude-settings.json` and a
+Superagent's `--settings`), which outrank the home's `settings.json`, a repository's
+`.claude/settings.json` and a worktree's `.claude/settings.local.json`; the same preparation as
+above sets `"lspRecommendationDisabled": true` in `.claude.json`. Claude Code otherwise offers,
+in the terminal and with yes as the default, to install the plugin of any language server it
+finds on `PATH`, for every session of the home, and then starts one server per session at the
+first edited file, or reports that it could not
+([SPEC-485](../.ai/specs/SPEC-485-task-sessions-start-without-yellow-error.md),
+[decision 0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md)).
+Task runs and the
 Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
 full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run

@@ -14,8 +14,8 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
    do not (SPEC-001 DSC-013). Attach stable requirement IDs, input/output and lifecycle
    contracts, acceptance scenarios and affected boundaries. Record assumptions and
    unresolved product choices; use the [spec template](../../.ai/templates/spec.md).
-   Plan steps of similar effort, each a slice that leaves the code working, and finish
-   them one at a time (STP-006/007).
+   Plan all the known work as steps of similar effort, each a slice that leaves the code
+   working, and finish them one at a time (STP-006/007, STP-009).
 3. **Implement:** build a complete slice, preserving existing behavior. Keep an
    affected boundary's types, implementation and tests together. New architecture
    deserves a short ADR with alternatives and consequences.

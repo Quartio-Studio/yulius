@@ -719,8 +719,8 @@ impl App {
     }
 
     /// The CI's verdict at `sha` for the merge gate: the latest run of that commit when there
-    /// is one, else pending when the sandbox has CI, else not configured (also when CI is off
-    /// on this instance).
+    /// is one, else pending when Yulius CI will test it, else not configured (also when CI is
+    /// off on this instance).
     pub async fn ci_gate_result(&self, sandbox: &SandboxRecord, sha: &str) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
@@ -730,7 +730,16 @@ impl App {
         {
             return GateResult::Run(Some(latest.state));
         }
-        if self.ci_gate(sandbox).await.gate.is_some() {
+        // No run yet: one will come when Yulius CI tests this commit, with the integration
+        // branch's jobs or, for a commit that brings CI to a branch without any, with its own
+        // (the scheduler's own answer, `ci_gate_for_head`).
+        let view = self.ci_gate(sandbox).await;
+        if view.gate.is_some()
+            || self
+                .ci_gate_for_head(sandbox, &view, (sha, Head::Proposed))
+                .await
+                .is_some()
+        {
             GateResult::Run(None)
         } else {
             GateResult::NotConfigured
@@ -1591,6 +1600,7 @@ impl App {
         let what = match &run.reference {
             CiRef::Branch(_) => None,
             CiRef::PullRequest(_) => Some(Head::Proposed),
+            // (A train's run never gets here: it was refused above.)
             CiRef::Train(_) | CiRef::Task(_) => Some(Head::Merged),
         };
         let gate = match what {

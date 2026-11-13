@@ -133,6 +133,8 @@ watching, steering and unblocking.
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. Like task runs, it answers in Claude
   Code's Concise output style unless someone picks another with `/output-style` (SPEC-210).
+  Yulius switches the language servers of Claude Code plugins off for each run of either, and
+  neither is asked to install one (SPEC-485).
   `/clear` starts over, it cannot be
   deleted and comes back with its conversation. When it cannot reach Yulius from its sandbox, its
   panel says so and Restart Superagent starts it again in place, keeping its conversation
@@ -293,7 +295,9 @@ watching, steering and unblocking.
 - **Delivery discipline**: spec when it matters (a task that needs one is refused code edits with
   Claude Code's edit tools until its spec has a Plan, SPEC-426; Bash edits and the spec's validity
   are the turn-end gate's),
-  effort-weighted steps, independent review
+  effort-weighted steps that hold all the work the agent knows of (a pull request delivers the
+  finished part, and a plan that grew says how many steps it had at first, SPEC-484),
+  independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`

@@ -49,8 +49,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
-  12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan, the others
-      follow one by one;
+  12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15, QB1 follows;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -329,6 +329,35 @@ no code path reaches; documents, texts shown to agents and people, and code that
   by the agent's `ci_rerun`, or by Yulius after an errored run), and `ci_gate_result` takes
   the newest run of a head as its verdict.
 
+### Slice 14: what the checks at a commit say
+
+- **D5 (medium).** "Are the checks green at this head" was decided in five places by three
+  rules. `dlv_observe` (a task's delivery) and `git_overview` (the Git page) asked Yulius
+  CI's run of the head and, without Yulius CI, GitHub's checks, each with its own copy.
+  The remote control's merge (`remote_files.rs`) added two cases (a pull request that
+  brings CI is pending; a broken configuration refuses). A promotion pull request read
+  GitHub's checks only, with `ChecksState::None` passing: when a run's status was not
+  published, a failed Yulius CI run at the integration head read as no checks and the
+  promotion merged with `require_checks` on, although `docs/engineering/git.md` says the
+  head "must have a successful `yulius/ci` status". A fast-forward promotion read no
+  checks at all.
+- **From the review of slice 13 (its sixth point):** `ci_gate_result` said "not configured"
+  for a commit without a run in a project without CI, also when the commit brings jobs the
+  scheduler is about to test: a merge that requires checks could go through before that
+  first run existed. Only the remote control compensated.
+
+### Slice 15: an armed merge and its task's run
+
+- **D6 (medium).** The life of an armed merge was the pair of the slot (`slot.merge`) and
+  the task's status, with no rule for "armed, and the task no longer runs".
+  `merge_armed_task` never read the status: a task a person stopped or closed after its
+  agent armed was still merged when its head was green and up to date; green and behind,
+  every pass answered Keep for ever, because bringing a branch up to date
+  (`keep_armed_current`) and joining a merge candidate both need a running, idle agent.
+  `restore_armed_merges` used another rule: after a restart every task not exactly
+  `Running` lost its armed merge, also one in `WaitingCapacity` or `Switching`, although
+  the documents say armed merges are restored.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -601,6 +630,28 @@ no code path reaches; documents, texts shown to agents and people, and code that
   jobs. A run again that nothing tests says why: the integration branch's broken
   configuration, the commit's own that cannot be read, or that the sandbox (a branch's run)
   or the commit has no CI.
+- **CHK-001** `App::dlv_checks_at(sandbox, token, sha)` answers what the checks at a commit
+  say: with a verdict of Yulius CI (`ci_gate_result` other than "not configured"), that
+  verdict alone, with the word `error` for a run that could not happen; else GitHub's
+  combined checks and what of them could not be read.
+- **CHK-002** A task's delivery, the Git page, the remote control's merge, a promotion pull
+  request and a fast-forward promotion use CHK-001. With `require_checks`, both promotions
+  refuse failing, pending and unreadable checks at the integration head and go on passed
+  checks or none. A fast-forward that is the profile's automatic promotion (after a merge,
+  or after an integration environment of a merged change) also goes while that head's
+  checks are pending; failing and unreadable checks stop it, and its note says so.
+- **CHK-003** `ci_gate_result` is "pending" for a commit without a run when the integration
+  branch has CI, or when the commit brings its own to a branch without any (the scheduler's
+  rule for a proposal, CGR-001; whether the scheduler has a pull request to test it for is
+  not asked, as it is not for a project with CI).
+- **ARM-001** `TaskStatus::keeps_an_armed_merge` is true for `Queued`, `Starting`,
+  `Running`, `Switching` and `WaitingCapacity`, false for every other state.
+- **ARM-002** A pass (`merge_armed_task`) ends the armed merge of a task whose state does
+  not keep one: decided, with "the task's run ended (<state>)" and what to do, and nothing
+  is merged for it later. A pull request that is merged already is said to be merged
+  first, as for any task.
+- **ARM-003** A start (`restore_armed_merges`) puts back the armed merges of the tasks whose
+  state keeps one, and forgets the others.
 
 ## Plan
 
@@ -619,7 +670,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
-- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask
+- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
+- [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
+- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
 
 ## Acceptance criteria
 
@@ -961,6 +1014,37 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-82** In a playground whose `dev` has a `yulius.toml` that cannot be read (the CI
   overview says so): a task that brings a readable one arms its merge (`dev` does not move
   before the run), and its run shows the task's job.
+- **AC-83** With a promotion pull request open and GitHub's checks at its head passed: a
+  failed run of Yulius CI at that head refuses the promotion (409, "fail…"), nothing is
+  merged; a newer passed run lets it merge.
+- **AC-84** With a fast-forward profile: a failed run of Yulius CI at the integration head
+  refuses the promotion and the production branch does not move; a newer passed run lets
+  it fast-forward.
+- **AC-85** In a project without CI: a pull request without jobs has no verdict of Yulius
+  CI; one that brings a job is pending before the scheduler's round and passed after its
+  run.
+- **AC-87** With automatic promotion, required checks and Yulius CI as the project's CI: a
+  merge is refused while the pull request's head has no run, goes once its run passed, and
+  the production branch is fast-forwarded to the merge's commit with it, although that
+  commit has no run of its own.
+- **AC-88** With automatic promotion, required checks, a manual integration environment and
+  a failed run of Yulius CI at the integration head: confirming the environment promotes
+  nothing, the answer says "Automatic promotion did not happen", and the production branch
+  stays; once a newer run passed, a person's promotion fast-forwards it.
+- **AC-86** The existing tests of a task's delivery, the Git page, the remote control's
+  merge and the promotions pass unchanged (pending, unreadable and passed checks of
+  GitHub's for a project without Yulius CI among them).
+- **AC-89** The states that keep an armed merge and those that do not, as a table
+  (ARM-001).
+- **AC-90** With a merge armed and its checks pending: the task in `WaitingCapacity`, then
+  `Switching`, then `Queued`, stays armed after a pass, and the saved merge is kept by a new
+  server's restore. With the armed pull request merged by a person and the task closed
+  afterwards, the pass's outcome says "merged" and not "dropped". Closed: the next pass ends it ("dropped", "run ended (closed)"), the saved
+  merge is gone, and with the checks passed neither a pass nor a new server's start merges
+  the pull request. A merge saved for a task that was closed while the server was down is
+  not merged at the start and is forgotten.
+- **AC-91** The existing tests of armed merges, merge trains and the playground's delivery
+  pass with their tasks running (a live run in a fixture is a running task now).
 
 ## Test plan
 
@@ -1124,6 +1208,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-80): two parts of the rule that only a unit test of its comparison, or nothing, held;
   `playground::a_task_that_changes_the_jobs_is_tested_with_its_own` (AC-81) and
   `playground::a_task_that_repairs_a_broken_configuration_is_tested_with_its_own` (AC-82).
+- Slice 14: `yulius` `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`
+  (AC-83), `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out`
+  (AC-84), `local_ci::a_pull_request_that_brings_ci_waits_for_its_first_run` (AC-85),
+  `delivery::an_automatic_promotion_goes_on_the_checks_of_its_merge` (AC-87),
+  `delivery::an_automatic_promotion_stops_at_a_failed_head` (AC-88);
+  `delivery`, `remote_mcp`, `merge_train` and `playground` as they are (AC-86).
+- Slice 15: `yulius-domain` `task::tests::an_armed_merge_lives_with_the_run_that_armed_it`
+  (AC-89); `yulius` `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-90); `delivery`,
+  `merge_train` and `playground` (AC-91).
 
 ## Decisions
 
@@ -1187,14 +1280,49 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 15 (no decision record: DLV-205's sentence "put back at startup for tasks still
+  running", made the rule of every pass too): an armed merge lives with the run that armed
+  it. The other way was weighed: the order stands whatever becomes of the task, so a
+  closed task's green pull request merges. It was not taken, for three reasons. Everything
+  that moves an armed merge forward already needs a running, idle agent (its branch
+  brought up to date, a place in a merge candidate, a refusal answered), so the order could
+  only be kept for the one case that needs nothing more. A person who stops or closes a
+  task has ended what Yulius does for it, and a merge afterwards is a surprise. And a
+  restart already decided this way. "Held" states keep the merge (the run is there and
+  comes back by itself), and so does `Queued`: a held run goes through the queue when its
+  capacity returns while every slot is taken, and a task revived after a host move starts
+  from it (the review of this slice; a task queued for its first run has armed nothing).
+  `Stopping` does not (the run is being ended). That the pull request was merged already
+  is asked before the run's end is said: a person's merge does not clear the armed slot. The agent's own
+  message says what to do; the pull request is not touched.
+- Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
+  one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
+  head, which is the promotion pull request's head too. A fast-forward promotion is held
+  to the same checks as one by pull request (it had none): what reaches production is the
+  same commit either way, and `require_checks` is the profile's word for both. One
+  promotion does not wait for a verdict of its own: the automatic one (`auto_promote`),
+  wherever it starts (after a merge, or after the last integration environment of a merged
+  change). What it promotes went in on green checks of a current head, the commit the merge
+  made may have no run yet, and nothing would promote later if this were refused as
+  pending; a verdict that is already there (failed, unreadable) stops it. Narrowing the
+  exception to the merge's own commit was weighed (review of this slice) and not taken: a
+  promotion after an environment that finishes before the head's run would then never
+  happen, where before this slice a fast-forward read no checks at all. The
+  "pending before the first run" case moved from the remote control into `ci_gate_result`,
+  so that a task's `delivery_merge` waits for it too; it costs one read of the commit's
+  `yulius.toml` per question, only in a project without CI and only for a commit without
+  a run. The remote control keeps its two refusals with their own words (a broken
+  configuration on the integration branch, an unreadable one in the pull request).
 - Slice 13 (no decision record: an existing rule, CI-110 and SPEC-217, given one place):
   the rule lives in `ci_gate_for_head` and takes the commit and what it is (a proposal or
   the branch with a change merged); what the commit branched off is the merge base with the
   integration branch for every caller. For a train's merge commit that is the integration
   head it was built on, as its own copy had it. For a playground's it is that head too,
-  where its copy compared with the task's fork point: the answers differ when `dev` changed
-  its jobs since the task began and the task did not, and the new one (the jobs of `dev` as
-  it is, since the task changed nothing) is the rule's. A playground task that changes its
+  where its copy compared with the task's fork point: the answers differ only when `dev`
+  changed its jobs since the task began, the task did not, and the playground's profile
+  has a `gate` command (the copy then ran `dev`'s project jobs as the task's own instead of
+  the profile's gate); the new answer, the gate, is the rule's, since the task changed
+  nothing. A playground task that changes its
   jobs now keeps the trusted security job: the copy that lacked it was the odd one. A
   playground task's merge is still tested with its own jobs while `dev`'s configuration is
   broken (the review of this slice: without it the repairing task would land untested, and
@@ -1338,9 +1466,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 13 |
-| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
+| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 15 |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
@@ -2252,3 +2381,100 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
   skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
   rustdoc passed.
+
+### Slice 14 (2026-11-13)
+
+- **Slice 13's delivery.** Pull request #1254 merged into `dev` at e3c85c345. Its first
+  Yulius CI run failed in one test of another area
+  (`task_done::a_stop_settles_a_run_no_server_holds`, "the run's host still runs": the
+  known flake of issue #1190, where this occurrence is noted); the run was repeated once
+  at the same head and passed. Its review approved that head in its second round; the two
+  nits left (a sentence about playgrounds, an arm that cannot be reached) are answered
+  here.
+- **The defects, by their tests on the code before** (`target/audit/slice14/mutations.log`,
+  the first two cases, which are the old code): with the promotion pull request's check
+  gone, `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr` failed; with
+  the fast-forward's check gone,
+  `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out` failed
+  (it promoted past a failed run).
+- **Tests failing without their fix** (`target/audit/slice14/mutate.py`, 7 cases, each
+  failed its tests): a promotion pull request reading no checks; a fast-forward promotion
+  reading none; an automatic promotion made to wait for a run of its own; a person's
+  fast-forward going while the checks are pending; GitHub's checks deciding where Yulius
+  CI ran; failing checks allowing what requires them; a commit that brings CI without
+  checks before its first run.
+- **Found before the review, by reading the callers:** the first shape of this slice held
+  every fast-forward to the integration head's own verdict, which an automatic promotion
+  right after a merge can never have (the commit is seconds old): a profile with
+  `auto_promote` and `require_checks` would have stopped promoting. AC-87 is its test.
+- **The suites:** `2680 tests run: 2680 passed` for the app and the binary
+  (`target/audit/slice14-suite2.log`).
+- **Gate.** `scripts/dev ci` at `35a35b810`: exit 0; `4213 tests run: 4213 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A promotion in a project without Yulius CI whose GitHub checks fail
+  (pending and unreadable are tested, as before); an automatic promotion after an
+  environment's command, as distinct from its confirmation (the same call); the cost of
+  the extra read in a project without CI.
+- **Review of slice 14, round 1** (head acda02182, request changes; "The four call sites
+  that were right before behave as they did, and the promotion checks are mostly right").
+  One minor finding, in the reviewer's words: "the automatic promotion's pending exception
+  covers more cases than the spec says, and one of its outcomes is untested". Answered by
+  the reviewer's second way (Decisions): the rule is said as it holds, for every automatic
+  promotion, and AC-88 shows a failed head stopping one. Two nits answered: CHK-003's
+  wording, and a sentence on `auto_promote` in `docs/api.md`.
+- **Tests failing without their fix, after the review** (`mutations.log`, 8 cases, each
+  failed its tests): the seven above, and an automatic promotion reading no checks.
+- **Gate after it.** `scripts/dev ci` at `ee36e7c2e`: exit 0; `4214 tests run: 4214 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+
+### Slice 15 (2026-11-13)
+
+- **Slice 14's delivery.** Pull request #1257 merged into `dev` (through a merge train of
+  one, at c7626f165), its own Yulius CI run passed; its review approved the head in its
+  second round, and its two cosmetic nits are answered here (a long line in
+  `docs/api.md`, the refusal's reason asserted in AC-88's test).
+- **The defect, by its test on the code before** (`target/audit/slice15/mutations.log`, the
+  first two cases, which are the old code): without the pass's rule,
+  `delivery::an_armed_merge_ends_with_its_tasks_run` failed (a closed task's merge stayed
+  armed and merged); with the start's old rule (`== Running`) it failed for the task
+  waiting for capacity.
+- **Tests failing without their fix** (`target/audit/slice15/mutate.py`, 5 cases, each
+  failed its tests): a pass deciding whatever became of the task; a start restoring only a
+  running task's merge; a start restoring every saved merge; a held run losing its armed
+  merge; a closed task keeping it.
+- **What the rule showed in the tests:** eight delivery tests armed a merge for a task that
+  had a live run in the store and was not running; their fixtures (`live_agent`,
+  `ArmedTask::new`) now make the task running, as a live run is.
+- **The suites:** the app's, the domain's and the binary's with the rule: all passed but
+  nine `workflow_limit`/`task_done` tests that timed out on the fake agent of before the
+  merge of `dev` (rebuilt with `cargo build -p fake-agent`, then 9 of 9 passed; the gate
+  builds it itself).
+- **Gate.** `scripts/dev ci` at `9bf5df124`: exit 0; `4249 tests run: 4249 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A member of a merge train under test whose task is closed meanwhile (the
+  pass ends its armed merge by the same line; the train's own handling of a member that
+  left is as before); a playground's armed merge for a closed task (the same function).
+- **Review of slice 15, round 1** (head 3c263ef00, request changes). Two minor findings in
+  own code, in the reviewer's words: "a run that is only held can pass through `Queued`,
+  and the rule treats that as ended" (capacity back while every slot is taken; a task
+  revived by a host move) and "a merged pull request is reported as 'dropped'" (a person's
+  merge does not clear the armed slot). Both answered (ARM-001, ARM-002, AC-90). A third,
+  from before this slice with a new effect, is finding D8 of the ledger: a task with an
+  armed merge can be grouped Done, and archiving it there ends the merge unseen; it goes
+  with the lifecycles (the grouping is theirs). Three nits answered: the long line of
+  `docs/api.md`, the reason's sentence asserted in AC-88's test, two doc sentences.
+- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
+  failed its tests): the five above with the predicate's cases split (held, queued,
+  closed), and a merged pull request of an ended task said to be dropped.
+- **Gate after it.** `scripts/dev ci` at `9eec2f02b`: exit 0; `4249 tests run: 4249 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Not tested, besides the list above:** the path that queues a held run (capacity back
+  with every slot taken) end to end; the test sets the state.

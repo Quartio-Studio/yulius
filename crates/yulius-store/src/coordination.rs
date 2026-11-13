@@ -64,6 +64,18 @@ fn inbox_from_row(row: &Row<'_>) -> rusqlite::Result<InboxEntry> {
     })
 }
 
+/// Keeps how many steps `task`'s plan has now as its first size, once a step of it is finished
+/// and no first size is kept yet (SPEC-484 PLN-009): in the transaction of the step write, so
+/// the number is the plan as that write left it.
+fn keep_first_plan_size(tx: &rusqlite::Transaction<'_>, task: &str) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE tasks SET plan_first_steps = (SELECT COUNT(*) FROM steps WHERE task_id = ?1) \
+         WHERE id = ?1 AND plan_first_steps IS NULL \
+         AND EXISTS (SELECT 1 FROM steps WHERE task_id = ?1 AND status IN ('done', 'skipped'))",
+        [task],
+    )
+}
+
 const MSG_COLS: &str = "m.id, m.sandbox_id, m.from_task, m.from_user, m.to_task, m.kind, m.subject, m.body, m.created_at";
 
 #[async_trait]
@@ -103,7 +115,24 @@ impl CoordinationStore for SqliteStore {
                     .map_err(db)?;
                 }
             }
+            keep_first_plan_size(&tx, &task).map_err(db)?;
             tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn plan_first_steps(&self, task: &TaskId) -> AppResult<Option<u32>> {
+        let t = task.as_str().to_owned();
+        self.call(move |c| {
+            let first: Option<Option<i64>> = c
+                .query_row(
+                    "SELECT plan_first_steps FROM tasks WHERE id = ?1",
+                    [t],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(first.flatten().and_then(|n| u32::try_from(n).ok()))
         })
         .await
     }
@@ -180,6 +209,7 @@ impl CoordinationStore for SqliteStore {
             )
             .map_err(db)?;
             let updated = tx.query_row(&format!("SELECT {STEP_COLS} FROM steps WHERE id = ?1"), [&id], step_from_row).map_err(db)?;
+            keep_first_plan_size(&tx, current.task_id.as_str()).map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(updated)
         })

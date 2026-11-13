@@ -177,6 +177,9 @@ pub struct LaunchRequest {
     pub mcp_servers: Vec<McpServerSpec>,
     /// Provider credential.
     pub credential: Credential,
+    /// Plugins of the sandbox home (`name@marketplace`) this run switches off whatever a settings
+    /// file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
+    pub disabled_plugins: Vec<String>,
 }
 
 /// A config file the supervisor writes before spawning.
@@ -480,6 +483,26 @@ fn push_prompt(argv: &mut Vec<String>, prompt: Option<&str>) {
     }
 }
 
+/// Claude Code's settings key of the plugins that are on (`true`) or off (`false`).
+const ENABLED_PLUGINS: &str = "enabledPlugins";
+
+/// `enabledPlugins` with `false` for each of `plugins`, `None` for none. In a run's own settings
+/// (`--settings`) it outranks the home's `settings.json`, a repository's `.claude/settings.json`
+/// and a worktree's `.claude/settings.local.json`, where a `/plugin` in any terminal or the Enter
+/// that answers Claude Code's install dialog switches a plugin on for every session: with `true`
+/// in the home's file and `false` here no language server of the plugin is loaded (measured on
+/// 2.1.323, SPEC-485 LSP-003, ADR-0327).
+fn plugins_off(plugins: &[String]) -> Option<Value> {
+    (!plugins.is_empty()).then(|| {
+        Value::Object(
+            plugins
+                .iter()
+                .map(|plugin| (plugin.clone(), Value::Bool(false)))
+                .collect(),
+        )
+    })
+}
+
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential;
     check(
@@ -531,7 +554,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             }] }
         ]),
     );
-    let settings = json!({
+    let mut settings = json!({
         "hooks": hooks,
         // A session whose context fills up compacts itself instead of answering "Prompt is too
         // long" to everything (F 2026-10-12: "auto compact can be enabled"). These run settings
@@ -543,6 +566,12 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             "padding": 0
         }
     });
+    if let (Some(off), Some(settings)) = (
+        plugins_off(&request.disabled_plugins),
+        settings.as_object_mut(),
+    ) {
+        settings.insert(ENABLED_PLUGINS.into(), off);
+    }
 
     // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
     // lives as long as the session: Claude Code gives up on an HTTP server after a minute of
@@ -687,6 +716,9 @@ pub struct CockpitRequest {
     /// its tools pre-allowed instead of the Cockpit's read tools: the Global Superagent (SPEC-427
     /// GSA-002). `None` for a sandbox's Cockpit.
     pub only_yulius: Option<Vec<String>>,
+    /// Plugins of the config dir (`name@marketplace`) this session switches off whatever a
+    /// settings file says: the ones that bring a language server (SPEC-485 LSP-003, ADR-0327).
+    pub disabled_plugins: Vec<String>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -821,6 +853,9 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         if request.bypass_permissions {
             settings.insert("skipDangerousModePermissionPrompt".into(), json!(true));
         }
+    }
+    if let Some(off) = plugins_off(&request.disabled_plugins) {
+        settings.insert(ENABLED_PLUGINS.into(), off);
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);

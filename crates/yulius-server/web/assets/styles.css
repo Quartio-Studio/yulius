@@ -1411,6 +1411,8 @@ button.account-chip:hover { background: var(--surface-3); color: var(--text); }
 .stepstrip.open .stepstrip-toggle .icon { transform: rotate(90deg); }
 .step-label { display: flex; gap: 6px; min-width: 0; align-items: baseline; }
 .step-count { flex: none; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* What a plan that grew had at first (SPEC-484): quieter than the count it follows. */
+.step-first { color: var(--muted); font-weight: 400; }
 /* The task title leads and keeps its room; the step name truncates first. */
 .step-current { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-task { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
