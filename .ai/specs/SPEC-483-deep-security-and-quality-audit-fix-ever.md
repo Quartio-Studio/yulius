@@ -46,7 +46,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   8. what a secret's keys can still reach: a focused frame of another site, a navigation
      under way, and its user name and one-time code typed without the rule (E8, E9, E10):
      merged, pull request #1248;
-  9. the sandbox browser's network (E2);
+  9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1);
   11. production secrets decided once (V6);
   12. delivery and CI decided once (D4-D6, QB1);
@@ -416,7 +416,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
-- [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches, reviewed
+- [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
+- [ ] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders, reviewed
 
 ## Acceptance criteria
 
@@ -844,7 +845,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
 | W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 18 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
-| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 9 |
+| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | fixed (slice 9) |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
 | E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | fixed (slice 8) |
 | E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | fixed (slice 8) |
