@@ -3792,7 +3792,7 @@ impl App {
                 !fresh && runtime.with_workflows(|workflows| !workflows.runs().is_empty());
             if resumes_workflow {
                 let resumed = crate::dynamic_workflow::RESUMED_NOTICE;
-                runtime.hub.notice(&format!("{line}{resumed}"));
+                runtime.hub.notice(format!("{line}{resumed}"));
             } else {
                 runtime.hub.notice(line);
             }

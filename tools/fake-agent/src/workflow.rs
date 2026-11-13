@@ -411,16 +411,14 @@ pub(super) fn resume(
                 "result": {"alpha": "alpha done", "beta": "beta done", "gamma": "gamma done"}})
             .to_string(),
         )?;
-        let body = format!(
-            "<status>completed</status>\n<summary>Dynamic workflow \"A wave of agents\" \
-             completed</summary>\n<result>{{\"alpha\":\"alpha done\",\"beta\":\"beta done\",\
-             \"gamma\":\"gamma done\"}}</result>"
-        );
+        let body = "<status>completed</status>\n<summary>Dynamic workflow \"A wave of agents\" \
+                    completed</summary>\n<result>{\"alpha\":\"alpha done\",\"beta\":\"beta done\",\
+                    \"gamma\":\"gamma done\"}</result>";
         let wake = format!("<task-notification>\n<task-id>{task}</task-id>\n{body}");
         // The wake-up is a prompt of Claude Code's own: its hook, its turn, its Stop.
         let _ = hooks.and_then(|h| h.prompt(&wake));
         if let Ok(mut t) = transcript.lock() {
-            t.workflow_notified(task, &body, false)?;
+            t.workflow_notified(task, body, false)?;
             t.answer(&wake, "The workflow is done.")?;
         }
         say(&format!("WORKFLOW {run} COMPLETED"))?;
