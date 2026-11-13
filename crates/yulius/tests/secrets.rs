@@ -2036,9 +2036,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         if created.body["name"] == "PROD_KEY" {
-            // Bound to a host, as a production secret could be before SPEC-134 M-B.
+            // Made a production secret: its host goes with that (ADR-0324).
             let id = created.body["id"].as_str().ok_or("id")?;
-            crate::support::legacy_production_secret(&w.h.store, id).await?;
+            crate::support::production_secret(&w.h.store, id).await?;
         }
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;

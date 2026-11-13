@@ -143,6 +143,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0054_attempt_model.sql"),
+    // Schema version 55 (SPEC-483 V6). The file is 0055, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0055_production_secrets_have_no_hosts.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -770,7 +774,6 @@ mod tests {
         store.insert_attempt(&next).await?;
         let stored = store.live_attempt(&task).await?.ok_or("the new run")?;
         assert_eq!(stored.model.as_deref(), Some("claude-opus-5-5"));
-        assert_eq!(schema_version(), 54);
         Ok(())
     }
 
@@ -946,6 +949,67 @@ mod tests {
     /// A version-5 database (the subscription pool) migrates to updates and the Jev key (ADR-18,
     /// ADM-002): the instance row keeps its values and has no saved key; at most one update run is
     /// open at a time, and a state moves only from the expected one.
+    /// SPEC-483 V6 (ADR-0324): a production secret that kept hosts from before such secrets
+    /// became exclusive loses them at the migration, with a line in the audit log; another
+    /// secret's hosts, and a production secret without any, are left as they are.
+    #[tokio::test]
+    async fn a_production_secrets_old_hosts_are_removed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v54.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..54] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 54)?;
+            for (id, name, hosts, cd_prod) in [
+                ("old", "PROD_OLD", r#"["api.example.com","*.old.test"]"#, 1),
+                ("prod", "PROD_NEW", "[]", 1),
+                ("agent", "AGENT_KEY", r#"["api.example.com"]"#, 0),
+            ] {
+                conn.execute(
+                    "INSERT INTO vault_secrets (id, section, sandbox_id, name, hosts, kek_id, \
+                     wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
+                     value_updated_at, cd_prod) \
+                     VALUES (?1, 'agent', NULL, ?2, ?3, 1, x'00', x'00', 'u', 1, 'u', 1, 1, ?4)",
+                    rusqlite::params![id, name, hosts, cd_prod],
+                )?;
+            }
+        }
+        drop(SqliteStore::open(&path)?);
+        let conn = rusqlite::Connection::open(&path)?;
+        let hosts = |id: &str| -> rusqlite::Result<String> {
+            conn.query_row(
+                "SELECT hosts FROM vault_secrets WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+        };
+        assert_eq!(hosts("old")?, "[]");
+        assert_eq!(hosts("prod")?, "[]");
+        assert_eq!(hosts("agent")?, r#"["api.example.com"]"#);
+        let noted: Vec<(String, String, String, i64)> = conn
+            .prepare("SELECT actor, target, detail, at FROM audit_log WHERE action = 'vault.agent.hosts_cleared'")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(noted.len(), 1, "{noted:?}");
+        let (actor, target, detail, at) = &noted[0];
+        assert_eq!((actor.as_str(), target.as_str()), ("yulius", "old"));
+        let detail: serde_json::Value = serde_json::from_str(detail)?;
+        assert_eq!(detail["name"], "PROD_OLD");
+        // A global secret here (a project's would need its project's row): no sandbox.
+        assert!(detail["sandbox"].is_null());
+        assert_eq!(
+            detail["hosts"],
+            serde_json::json!(["api.example.com", "*.old.test"])
+        );
+        // Milliseconds, as every time in the log.
+        assert!(*at > 1_700_000_000_000, "{at}");
+        assert_eq!(schema_version(), 55);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn version_five_databases_migrate_to_updates_and_the_jev_key()
     -> Result<(), Box<dyn std::error::Error>> {

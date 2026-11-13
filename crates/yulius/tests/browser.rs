@@ -1185,7 +1185,7 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             created.body
         );
         let id = created.body["id"].as_str().ok_or("id")?;
-        support::legacy_production_secret(&f.h.store, id).await?;
+        support::production_secret(&f.h.store, id).await?;
 
         let opened = mcp_tool(
             &f.h,
