@@ -6,14 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
-- A run again tests a commit with the jobs of its first run (SPEC-483 slice 13, task #465).
+- A run again tests a commit with the jobs the scheduler gives it (SPEC-483 slice 13, task
+  #465): its own when it changed them, the integration branch's of now otherwise.
   A pull request that changes the CI is tested with its own jobs; run again (Run again, the
   agent's `ci_rerun`, Yulius's retry of an errored run), it was tested with the integration
   branch's jobs instead, and that newest run was the head's verdict: a pull request whose
   stricter job failed passed on the rerun. Which jobs test a commit on its way into the
   integration branch is one rule now, for the scheduler, a merge train, a playground task,
   a run again and a change from the remote control. A playground task that changes its jobs
-  keeps the trusted security job, as a pull request does.
+  keeps the trusted security job, as a pull request does, and one that did not change them
+  is tested with `dev`'s jobs of now also when `dev` changed them since the task began.
 - A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
   A secret allowed for production deploys that still had hosts from before such secrets
   became exclusive was sent to those hosts for an agent's run by the egress proxy, while a

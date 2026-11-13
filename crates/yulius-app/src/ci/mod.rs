@@ -359,6 +359,16 @@ pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+/// What a commit asked about in [`App::ci_gate_for_head`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Head {
+    /// A pull request's head: a proposal for the integration branch.
+    Proposed,
+    /// The integration branch with a change merged into it (a merge train's commit, a
+    /// playground task's merge): what the branch would be.
+    Merged,
+}
+
 /// Whether a pull request is tested with its own jobs (`own`) instead of the integration branch's:
 /// only when it changed them itself, against what it branched off (`at_base`, unknown: assumed
 /// changed), and they differ from the integration branch's.
@@ -867,7 +877,9 @@ impl App {
             ) {
                 continue;
             }
-            let gate = self.ci_gate_for_head(sandbox, &view, &pull.head_sha).await;
+            let gate = self
+                .ci_gate_for_head(sandbox, &view, (&pull.head_sha, Head::Proposed))
+                .await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
@@ -1493,16 +1505,19 @@ impl App {
     /// - The integration branch has CI: its jobs, or the commit's own when the commit changed
     ///   them since it branched off (CI-110: not when the integration branch moved on since)
     ///   and they can be read; own jobs keep the trusted security job (SPEC-217 VDP-001).
-    /// - It has none, and its configuration is not broken: the commit's own, when it brings
-    ///   some (the change that adds CI is tested with it).
+    /// - It has none: the commit's own, when it brings some (the change that adds CI is
+    ///   tested with it). While the integration branch's configuration is broken, that holds
+    ///   only for a commit that is the branch with a change merged ([`Head::Merged`]: what is
+    ///   tested is what the branch would be, repaired); a pull request's head is a proposal
+    ///   beside a branch nobody can test, and is not given a verdict.
     /// - Otherwise none: nothing tests the commit.
     pub(crate) async fn ci_gate_for_head(
         &self,
         sandbox: &SandboxRecord,
         view: &GateView,
-        head: &str,
+        (head, what): (&str, Head),
     ) -> Option<Gate> {
-        if view.gate.is_none() && view.problem.is_some() {
+        if view.gate.is_none() && view.problem.is_some() && what == Head::Proposed {
             return None;
         }
         let repo = self.sandbox_repo(&sandbox.id);
@@ -1573,15 +1588,34 @@ impl App {
         let view = self.ci_gate(sandbox).await;
         // The jobs the scheduler would give this commit now: a branch's are the integration
         // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
-        let gate = match &run.reference {
-            CiRef::Branch(_) => view.gate.clone(),
-            _ => self.ci_gate_for_head(sandbox, &view, &run.sha).await,
+        let what = match &run.reference {
+            CiRef::Branch(_) => None,
+            CiRef::PullRequest(_) => Some(Head::Proposed),
+            CiRef::Train(_) | CiRef::Task(_) => Some(Head::Merged),
+        };
+        let gate = match what {
+            None => view.gate.clone(),
+            Some(what) => {
+                self.ci_gate_for_head(sandbox, &view, (&run.sha, what))
+                    .await
+            }
         };
         let Some(gate) = gate else {
-            return Err(AppError::Conflict(
-                view.problem
-                    .unwrap_or_else(|| "this commit has no CI configured".into()),
-            ));
+            // Why nothing tests it: the integration branch's configuration, the commit's own
+            // that cannot be read, or none anywhere.
+            let own = match what {
+                Some(_) => {
+                    self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
+                        .await
+                }
+                None => Ok(Vec::new()),
+            };
+            return Err(AppError::Conflict(match (view.problem, own, what) {
+                (Some(problem), ..) => problem,
+                (None, Err(unreadable), _) => unreadable,
+                (None, Ok(_), None) => "this sandbox has no CI configured".into(),
+                (None, Ok(_), Some(_)) => "this commit has no CI configured".into(),
+            }));
         };
         self.ci_queue(sandbox, run.reference.clone(), &run.sha, &gate, by)
             .await

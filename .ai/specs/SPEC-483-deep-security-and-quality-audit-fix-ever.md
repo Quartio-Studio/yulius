@@ -588,15 +588,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   name alike; a push reaches its destination read-write. A command without a folder of its
   own that takes from a sandbox's folder counts as one in a sandbox's folder (no token, no
   shell).
-- **CGR-001** `App::ci_gate_for_head(sandbox, view, head)` answers which jobs test a commit on
-  its way into the integration branch: that branch's; the commit's own when it changed them
-  since it branched off and they can be read, with the trusted security job kept; the
-  commit's own when the integration branch has no CI and its configuration is not broken;
-  else none.
+- **CGR-001** `App::ci_gate_for_head(sandbox, view, (head, what))` answers which jobs test a
+  commit on its way into the integration branch: that branch's; the commit's own when it
+  changed them since it branched off and they can be read, with the trusted security job
+  kept; the commit's own when the integration branch has no CI, and, while that branch's
+  configuration is broken, only for a commit that is the branch with a change merged
+  (`Head::Merged`: a train's commit, a playground task's merge), not for a pull request's
+  head (`Head::Proposed`); else none.
 - **CGR-002** The scheduler (pull requests), a merge train, a playground task's merge, a run
   again of a run that is no branch's, and the remote control's "will Yulius CI test this
   pull request" use CGR-001. A run again of a branch's run takes the integration branch's
-  jobs.
+  jobs. A run again that nothing tests says why: the integration branch's broken
+  configuration, the commit's own that cannot be read, or that the sandbox (a branch's run)
+  or the commit has no CI.
 
 ## Plan
 
@@ -952,6 +956,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   is broken.
 - **AC-80** A pull request that changes no job, after the integration branch changed its
   job's command: its run has the integration branch's command of now.
+- **AC-81** In a playground whose `dev` has CI: a task that changes the job's command arms
+  its merge, and its run shows the task's command, not `dev`'s.
+- **AC-82** In a playground whose `dev` has a `yulius.toml` that cannot be read (the CI
+  overview says so): a task that brings a readable one arms its merge (`dev` does not move
+  before the run), and its run shows the task's job.
 
 ## Test plan
 
@@ -1112,7 +1121,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `local_ci`, `merge_train`, `playground`, `remote_mcp` and `ci_setup` as they are (AC-78);
   `local_ci::nothing_is_tested_while_the_integration_branchs_configuration_is_broken`
   (AC-79) and `local_ci::a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now`
-  (AC-80): two parts of the rule that only a unit test of its comparison, or nothing, held.
+  (AC-80): two parts of the rule that only a unit test of its comparison, or nothing, held;
+  `playground::a_task_that_changes_the_jobs_is_tested_with_its_own` (AC-81) and
+  `playground::a_task_that_repairs_a_broken_configuration_is_tested_with_its_own` (AC-82).
 
 ## Decisions
 
@@ -1177,11 +1188,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 13 (no decision record: an existing rule, CI-110 and SPEC-217, given one place):
-  the rule lives in `ci_gate_for_head` and takes the commit alone; what the commit branched
-  off is the merge base with the integration branch for every caller (for a train's and a
-  playground's merge commit that is the integration head it was built on, which gives the
-  same answer as their own copies did). A playground task that changes its jobs now keeps
-  the trusted security job: the copy that lacked it was the odd one. A run again asks the
+  the rule lives in `ci_gate_for_head` and takes the commit and what it is (a proposal or
+  the branch with a change merged); what the commit branched off is the merge base with the
+  integration branch for every caller. For a train's merge commit that is the integration
+  head it was built on, as its own copy had it. For a playground's it is that head too,
+  where its copy compared with the task's fork point: the answers differ when `dev` changed
+  its jobs since the task began and the task did not, and the new one (the jobs of `dev` as
+  it is, since the task changed nothing) is the rule's. A playground task that changes its
+  jobs now keeps the trusted security job: the copy that lacked it was the odd one. A
+  playground task's merge is still tested with its own jobs while `dev`'s configuration is
+  broken (the review of this slice: without it the repairing task would land untested, and
+  a playground has no other checks); a pull request beside a broken branch is not, as
+  before. A run again asks the
   rule anew instead of storing the first run's jobs: the answer for a commit changes only
   when the integration branch's CI does, and then the scheduler would give the new answer
   too.
@@ -2215,5 +2233,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** A run again of a merge train's run (refused, as before) and of a
   playground task's run (the rule is the same function; its checks' tests pass, none
-  reruns one); a playground task that changes its jobs while a scanner is configured (the
-  kept security job is tested for a pull request and for a train).
+  reruns one); a playground task that changes its jobs while `dev` has a scanning job of
+  its own (the kept security job is tested for a pull request and for a train; the
+  built-in scan is never on in a playground); the reasons a run again gives when nothing
+  tests the commit.

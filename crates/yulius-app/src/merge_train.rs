@@ -1270,7 +1270,7 @@ impl App {
         }
         // Its own CI when the members changed it, as for a pull request (`ci_gate_for_head`).
         let gate = self
-            .ci_gate_for_head(sandbox, &view, &built.head)
+            .ci_gate_for_head(sandbox, &view, (&built.head, crate::ci::Head::Merged))
             .await
             .unwrap_or(gate);
         let prs = numbers(&members);

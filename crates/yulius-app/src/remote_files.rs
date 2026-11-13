@@ -583,7 +583,11 @@ impl App {
                 // Whether Yulius CI will test this head is the scheduler's own answer.
                 Ok(_) => {
                     if self
-                        .ci_gate_for_head(sandbox, &view, &pull.head_sha)
+                        .ci_gate_for_head(
+                            sandbox,
+                            &view,
+                            (&pull.head_sha, crate::ci::Head::Proposed),
+                        )
                         .await
                         .is_some()
                     {
