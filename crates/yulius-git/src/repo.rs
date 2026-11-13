@@ -59,7 +59,7 @@ impl Git {
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
                 .arg(dest)
                 .touching(dest)
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -118,7 +118,7 @@ impl Git {
                 ])
                 .arg(source)
                 .arg("+refs/heads/*:refs/remotes/origin/*")
-                .local(source)
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -150,7 +150,7 @@ impl Git {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ])
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout)
                 .watch_size(&[repo], limit),
         )?;
@@ -206,7 +206,7 @@ impl Git {
                 ])
                 .arg(source)
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
-                .local(source)
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -252,7 +252,7 @@ impl Git {
         let listed = self.run_ok(
             Invocation::new(self, "ls-remote", Some(repo))
                 .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         let mut refs: Vec<(String, String)> = listed
