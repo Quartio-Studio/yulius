@@ -1665,9 +1665,10 @@ async fn a_secret_needs_a_known_document() -> TestResult {
         .tool_navigate(&to(&tab, "https://h.example/"))
         .await?;
     fake.set_password_field("#pw", true);
-    // The read after typing fails: nothing tells where the value went.
+    // The read after typing fails (the third: two tell the page before the keys): nothing
+    // tells where the value went.
     let reads = fake.calls_for("Page.getFrameTree").len();
-    fake.fail_nth("Page.getFrameTree", reads + 2, -32000, "no frame tree");
+    fake.fail_nth("Page.getFrameTree", reads + 3, -32000, "no frame tree");
     instance
         .tool_type_secret(&fill(&tab, "#pw", "pw-lost-secret-2"), &|_: &str| true)
         .await?;
@@ -2134,7 +2135,151 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
     fake.set_child_frames(&["https://id.bank-auth.example/form"]);
     fake.set_secret_probe(Some(in_a_frame));
     instance.tool_type_secret(&secret, &for_the_bank).await?;
-    assert!(texts() > typed);
+    let typed = texts();
+    assert!(typed > before);
+
+    // Only a text field of the page is the page's own. The focus on anything else (the host
+    // of a closed shadow root, an object, nothing, a kind this code does not know, no answer)
+    // can be a document of another site: the frames are asked.
+    let focused = |focus: Value| json!({"shown": ["Fake page text"], "masked": [], "over": false, "focus": focus});
+    fake.set_child_frames(&["https://evil.example/collect"]);
+    for focus in [
+        json!({"kind": "other"}),
+        json!({"kind": "none"}),
+        json!({"kind": "a-kind-from-later"}),
+        Value::Null,
+    ] {
+        fake.set_secret_probe(Some(focused(focus.clone())));
+        let refused = instance.tool_type_secret(&secret, &for_the_bank).await;
+        assert!(
+            matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "evil.example"),
+            "{focus}: {refused:?}"
+        );
+        // A user name or a one-time code goes where the secret goes (SPEC-483 E10).
+        let refused = instance
+            .tool_type_beside_secret(&secret, &for_the_bank)
+            .await;
+        assert!(
+            matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "evil.example"),
+            "{focus}: {refused:?}"
+        );
+    }
+    assert_eq!(texts(), typed, "nothing typed");
+    fake.set_secret_probe(Some(focused(json!({"kind": "field"}))));
+    instance.tool_type_secret(&secret, &for_the_bank).await?;
+    let typed = texts();
+
+    // A fenced frame is on no list of the page's frames: refused whatever they are.
+    fake.set_child_frames(&[]);
+    fake.set_secret_probe(Some(focused(json!({"kind": "sealed"}))));
+    let refused = instance.tool_type_secret(&secret, &for_the_bank).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::SecretFrameRefused(site)) if site == "an unknown site"),
+        "{refused:?}"
+    );
+
+    // A page that cannot be read says nothing of where the focus is: nothing is typed.
+    fake.set_secret_probe(Some(json!({"shown": [], "masked": [], "over": true})));
+    let refused = instance.tool_type_secret(&secret, &for_the_bank).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::InvalidInput(why)) if why.contains("cannot be read")),
+        "{refused:?}"
+    );
+    // Nor when its frames cannot be told once the field has the focus.
+    fake.set_secret_probe(None);
+    let trees = fake.calls_for("Page.getFrameTree").len();
+    fake.fail_nth("Page.getFrameTree", trees + 2, -32000, "no tree");
+    let refused = instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &for_the_bank)
+        .await;
+    assert!(
+        matches!(&refused, Err(BrowserError::InvalidInput(why)) if why.contains("frames cannot be identified")),
+        "{refused:?}"
+    );
+    assert_eq!(texts(), typed, "nothing typed");
+    Ok(())
+}
+
+/// SPEC-483 E8, E9 (review of slice 8): what the page is, is asked again after the field was
+/// focused, and where the focus is after the keys. A page that changed between the look and
+/// the keys gets nothing typed; a frame of another site that has the focus afterwards (its
+/// script took it back) is reported as where part of the secret may be.
+#[tokio::test]
+async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    fake.set_password_field("#pw", true);
+    let bank_only = |address: &str| address.starts_with("https://bank.example/");
+    let secret = fill(&tab, "#pw", "pw-secret-4471");
+    let texts = || fake.calls_for("Input.insertText").len();
+    let looks = || fake.calls_for("Page.createIsolatedWorld").len();
+
+    // Another site arrived while the page was looked at: named, nothing typed.
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    let before = texts();
+    fake.navigate_to_during_nth(
+        "Page.createIsolatedWorld",
+        looks() + 1,
+        "https://evil.example/collect",
+    );
+    let refused = instance.tool_type_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::SecretPageRefused(host)) if host == "evil.example"),
+        "{refused:?}"
+    );
+    assert_eq!(texts(), before, "nothing typed");
+
+    // Another page of the secret's site arrived: the field that was focused is gone with the
+    // page it was in, so nothing is typed and the fill is asked again.
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.navigate_to_during_nth(
+        "Page.createIsolatedWorld",
+        looks() + 1,
+        "https://bank.example/account",
+    );
+    let refused = instance.tool_type_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::InvalidInput(why)) if why.contains("changed while")),
+        "{refused:?}"
+    );
+    assert_eq!(texts(), before, "nothing typed");
+
+    // The focus is in the page's field at the look and in a frame of another site after the
+    // keys: reported, for the secret and for what is typed beside it.
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    fake.set_child_frames(&["https://evil.example/collect"]);
+    let probe = |kind: &str| json!({"shown": ["Fake page text"], "masked": [], "over": false, "focus": {"kind": kind}});
+    fake.queue_secret_probes(vec![probe("field"), probe("frame")]);
+    let astray = instance.tool_type_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&astray, Err(BrowserError::SecretFrameAstray(host)) if host == "evil.example"),
+        "{astray:?}"
+    );
+    assert!(texts() > before, "it was typed, and said so");
+    // (One more look in between: what is typed beside a secret may edit one typed before.)
+    fake.queue_secret_probes(vec![probe("field"), probe("field"), probe("frame")]);
+    let astray = instance.tool_type_beside_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&astray, Err(BrowserError::SecretFrameAstray(host)) if host == "evil.example"),
+        "{astray:?}"
+    );
+    // A fenced frame afterwards: no site to name.
+    fake.set_child_frames(&[]);
+    fake.queue_secret_probes(vec![probe("field"), probe("sealed")]);
+    let astray = instance.tool_type_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&astray, Err(BrowserError::SecretFrameAstray(site)) if site == "an unknown site"),
+        "{astray:?}"
+    );
+    // The focus in a frame of a site the secret is for, or still in the field: no report.
+    fake.set_child_frames(&["https://bank.example/widget"]);
+    fake.queue_secret_probes(vec![probe("field"), probe("frame")]);
+    instance.tool_type_secret(&secret, &bank_only).await?;
     Ok(())
 }
 
@@ -2142,7 +2287,7 @@ async fn a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for() -> TestRes
 /// form sent) would put its page under the keys: Chrome announces where the frame is going
 /// before it arrives (12 ms after the click and 1.5 s before the page, measured on Chrome 157).
 /// A tab on its way to a site the secret is not for gets nothing typed and the site is named;
-/// one that gave up, or is going to a page of the secret's site, is typed into.
+/// one that arrived, gave up, or is going to a page of the secret's site, is typed into.
 #[tokio::test]
 async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResult {
     let (fake, instance, tab) = setup().await?;
@@ -2152,84 +2297,194 @@ async fn a_secret_is_not_typed_into_a_tab_leaving_for_another_site() -> TestResu
     fake.set_password_field("#pw", true);
     let bank_only = |address: &str| address.starts_with("https://bank.example/");
     let texts = || fake.calls_for("Input.insertText").len();
-    // Events arrive in order: once a title set after an announcement shows, it was heard.
+    // Events arrive in order: once a title set after an event shows, the event was heard.
     let mut tabs = instance.subscribe_tabs();
-    let mut heard = async |title: &str| {
-        fake.set_target_title(tab.as_str(), title).await;
-        wait_tabs(&mut tabs, |tabs| tabs.iter().any(|t| t.title == title)).await
+    let mut titles = 0;
+    let mut send = async |method: &str, params: Value| {
+        fake.emit(tab.as_str(), method, params).await;
+        titles += 1;
+        let title = format!("heard {titles}");
+        fake.set_target_title(tab.as_str(), &title).await;
+        assert!(wait_tabs(&mut tabs, |tabs| tabs.iter().any(|t| t.title == title)).await);
     };
+    let started = |frame: &str, kind: &str, url: &str| json!({"frameId": frame, "loaderId": "loader-next", "navigationType": kind, "url": url});
+    let secret = fill(&tab, "#pw", "pw-secret-4471");
+    // Whether a fill is refused as leaving for `site`; `None`: it is typed.
+    let leaving = async || -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let before = texts();
+        match instance.tool_type_secret(&secret, &bank_only).await {
+            Err(BrowserError::SecretPageLeaving(site)) => {
+                assert_eq!(texts(), before, "nothing typed");
+                // A user name or a one-time code goes where the secret goes (SPEC-483 E10).
+                let beside = instance.tool_type_beside_secret(&secret, &bank_only).await;
+                assert!(
+                    matches!(&beside, Err(BrowserError::SecretPageLeaving(s)) if *s == site),
+                    "{beside:?}"
+                );
+                assert_eq!(texts(), before, "nothing typed");
+                Ok(Some(site))
+            }
+            Err(other) => Err(other.into()),
+            Ok(_) => {
+                assert!(texts() > before);
+                Ok(None)
+            }
+        }
+    };
+    let evil = Some("evil.example".to_owned());
+    const STARTED: &str = "Page.frameStartedNavigating";
 
-    fake.announce_navigation(
-        tab.as_str(),
-        "https://evil.example/collect",
-        Some("differentDocument"),
+    // A link was clicked.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "differentDocument",
+            "https://evil.example/collect",
+        ),
     )
     .await;
-    assert!(heard("leaving").await);
-    let before = texts();
-    let refused = instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+    assert_eq!(leaving().await?, evil);
+    // A navigation inside the document (a fragment, `pushState`) leaves no page and takes
+    // nothing back: what was announced before it still stands.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "sameDocument",
+            "https://bank.example/login#in-page",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, evil);
+    // It never arrived (the navigation was given up): the page it is on gets the secret.
+    send("Page.frameStoppedLoading", json!({"frameId": "frame-1"})).await;
+    assert_eq!(leaving().await?, None);
+    // By itself a navigation inside the document sets nothing, whatever its address.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "sameDocument",
+            "https://evil.example/collect#in-page",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, None);
+
+    // On its way to another page of the secret's site: typed.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "differentDocument",
+            "https://bank.example/account",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, None);
+
+    // Back in the tab's history to a page of another site (the page's own `history.back()`):
+    // a navigation to another document like a link's. Once Chrome says the frame arrived (the
+    // fake's page stays), nothing is on its way.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "historyDifferentDocument",
+            "https://evil.example/earlier",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, evil);
+    send(
+        "Page.frameNavigated",
+        json!({"frame": {"id": "frame-1", "loaderId": "loader-next",
+            "url": "https://bank.example/login"}}),
+    )
+    .await;
+    assert_eq!(leaving().await?, None);
+
+    // What Chrome says first of a clicked link: this tab's is kept, a new tab's or a
+    // download's is not this page's.
+    let requested = |disposition: &str| {
+        json!({"frameId": "frame-1", "reason": "anchorClick",
+            "url": "https://evil.example/collect", "disposition": disposition})
+    };
+    for elsewhere in ["newTab", "newWindow", "download"] {
+        send("Page.frameRequestedNavigation", requested(elsewhere)).await;
+        assert_eq!(leaving().await?, None, "{elsewhere}");
+    }
+    send("Page.frameRequestedNavigation", requested("currentTab")).await;
+    assert_eq!(leaving().await?, evil);
+    send("Page.frameStoppedLoading", json!({"frameId": "frame-1"})).await;
+
+    // A frame of the page on its way to another site is asked like the page (the focus can be
+    // in it); once the frame is gone from this page's process, or removed, it is not.
+    fake.set_child_frames(&["https://bank.example/widget"]);
+    send(
+        STARTED,
+        started(
+            "child-0",
+            "differentDocument",
+            "https://evil.example/collect",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, evil);
+    send(
+        "Page.frameDetached",
+        json!({"frameId": "child-0", "reason": "swap"}),
+    )
+    .await;
+    assert_eq!(leaving().await?, None);
+    // A frame that is none of this page's says nothing about it.
+    send(
+        STARTED,
+        started(
+            "another-pages-frame",
+            "differentDocument",
+            "https://evil.example/collect",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, None);
+
+    // An address without a site is no page the secret is for, and is not repeated.
+    send(
+        STARTED,
+        started(
+            "frame-1",
+            "differentDocument",
+            "data:text/html,<p>collect</p>",
+        ),
+    )
+    .await;
+    assert_eq!(leaving().await?, Some("an unknown site".to_owned()));
+    send("Page.frameStoppedLoading", json!({"frameId": "frame-1"})).await;
+
+    // The announcement comes while the page is looked at, after the page itself was asked:
+    // where it is going is asked last, before the keys.
+    fake.set_secret_probe_delay(Duration::from_millis(1500));
+    let (looks, before) = (fake.calls_for("Page.createIsolatedWorld").len(), texts());
+    let (refused, ()) = tokio::join!(instance.tool_type_secret(&secret, &bank_only), async {
+        while fake.calls_for("Page.createIsolatedWorld").len() == looks {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        send(
+            STARTED,
+            started(
+                "frame-1",
+                "differentDocument",
+                "https://evil.example/collect",
+            ),
+        )
         .await;
+    });
     assert!(
         matches!(&refused, Err(BrowserError::SecretPageLeaving(host)) if host == "evil.example"),
         "{refused:?}"
     );
     assert_eq!(texts(), before, "nothing typed");
-
-    // It never arrived (the navigation was given up): the page it is on gets the secret.
-    fake.announce_navigation(tab.as_str(), "", None).await;
-    assert!(heard("stayed").await);
-    instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
-        .await?;
-    let typed = texts();
-    assert!(typed > before);
-
-    // On its way to another page of the secret's site: typed.
-    fake.announce_navigation(
-        tab.as_str(),
-        "https://bank.example/account",
-        Some("differentDocument"),
-    )
-    .await;
-    assert!(heard("within").await);
-    instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
-        .await?;
-    let typed = texts();
-    assert!(typed > before);
-
-    // Back in the tab's history to a page of another site (the page's own `history.back()`):
-    // a navigation to another document like a link's.
-    fake.announce_navigation(
-        tab.as_str(),
-        "https://evil.example/earlier",
-        Some("historyDifferentDocument"),
-    )
-    .await;
-    assert!(heard("back").await);
-    let refused = instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
-        .await;
-    assert!(
-        matches!(&refused, Err(BrowserError::SecretPageLeaving(host)) if host == "evil.example"),
-        "{refused:?}"
-    );
-    assert_eq!(texts(), typed, "nothing typed");
-
-    // A navigation inside the document (a fragment, `pushState`) leaves no page: what was
-    // announced before it still stands, and it sets nothing itself.
-    fake.announce_navigation(tab.as_str(), "", None).await;
-    fake.announce_navigation(
-        tab.as_str(),
-        "https://evil.example/collect#in-page",
-        Some("sameDocument"),
-    )
-    .await;
-    assert!(heard("in-page").await);
-    instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
-        .await?;
-    assert!(texts() > typed);
     Ok(())
 }

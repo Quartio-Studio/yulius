@@ -64,7 +64,9 @@ startxref\n\
 407\n\
 %%EOF\n";
 
-/// Serves [`PAGE`]; at `/frame` a page framing `framed`; at `/own-frame`, `/sandboxed-frame` and
+/// Serves [`PAGE`]; at `/frame` a page framing `framed`, at `/frame-and-field` with a field of
+/// its own beside it, at `/object` in an `object`, at `/closed-shadow` in a frame inside a closed
+/// shadow root that takes the focus; at `/own-frame`, `/sandboxed-frame` and
 /// `/sandboxed-page` a page framing this server's own `/`: plainly, in a sandboxed frame, and
 /// from a page that is sandboxed itself (`Content-Security-Policy: sandbox`); at `/doc.pdf`
 /// [`PDF`], at `/pdf-frame` a page framing it, and at `/pdf-and-embed` one that also holds `/`
@@ -87,8 +89,21 @@ async fn serve(listener: TcpListener, framed: String) {
                 framing("<iframe src=\"/doc.pdf\"></iframe>")
             } else if request.starts_with(b"GET /pdf-and-embed") {
                 framing("<iframe src=\"/doc.pdf\"></iframe><embed src=\"/\" type=\"text/html\">")
+            } else if request.starts_with(b"GET /frame-and-field") {
+                framing(&format!(
+                    "<input id=\"own\"><iframe src=\"{framed}\"></iframe>"
+                ))
             } else if request.starts_with(b"GET /frame") {
                 framing(&format!("<iframe src=\"{framed}\"></iframe>"))
+            } else if request.starts_with(b"GET /object") {
+                framing(&format!(
+                    "<object data=\"{framed}\" type=\"text/html\" tabindex=\"0\"></object>"
+                ))
+            } else if request.starts_with(b"GET /closed-shadow") {
+                // The frame takes the focus by itself, as a widget does once it loaded.
+                framing(&format!(
+                    "<div id=\"host\"></div><script>const root = document.getElementById('host').attachShadow({{mode: 'closed'}}); const frame = document.createElement('iframe'); frame.src = '{framed}'; frame.onload = () => frame.focus(); root.appendChild(frame);</script>"
+                ))
             } else if request.starts_with(b"GET /own-frame") {
                 framing("<iframe src=\"/\"></iframe>")
             } else if request.starts_with(b"GET /sandboxed-frame") {
@@ -775,6 +790,49 @@ async fn a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium() -> 
     );
     let both = |address: &str| address.starts_with(&framing_url) || address.starts_with(&framed);
     browser.tool_type_secret(&into_the_frame, &both).await?;
+
+    // The other site's document in an `object`, and in a frame inside a closed shadow root
+    // that took the focus by itself: the page says only that the focus is not in a field of
+    // its own, so its frames are asked (review of slice 8).
+    for (path, selector) in [("object", Some("object")), ("closed-shadow", None)] {
+        let tab = browser
+            .tool_open(&OpenParams {
+                url: format!("{framing_url}{path}"),
+            })
+            .await?
+            .tab
+            .id;
+        let fill = TypeParams {
+            tab_id: tab,
+            text: "real-secret-4471-frame".into(),
+            selector: selector.map(str::to_owned),
+        };
+        let refused = browser.tool_type_secret(&fill, &framing_only).await;
+        assert!(
+            matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "localhost"),
+            "{path}: {refused:?}"
+        );
+        let refused = browser.tool_type_beside_secret(&fill, &framing_only).await;
+        assert!(
+            matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "localhost"),
+            "{path}: {refused:?}"
+        );
+        browser.tool_type_secret(&fill, &both).await?;
+    }
+    // A field of the page itself beside such a frame: the frame is not asked.
+    let tab = browser
+        .tool_open(&OpenParams {
+            url: format!("{framing_url}frame-and-field"),
+        })
+        .await?
+        .tab
+        .id;
+    let own_field = TypeParams {
+        tab_id: tab,
+        text: "real-secret-4471-frame".into(),
+        selector: Some("#own".into()),
+    };
+    browser.tool_type_secret(&own_field, &framing_only).await?;
     let _ = manager.shutdown(&sandbox).await;
     server.abort();
     framing_server.abort();

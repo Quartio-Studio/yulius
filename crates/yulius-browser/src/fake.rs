@@ -199,8 +199,11 @@ impl FakeState {
         let Some(page) = self.page(session) else {
             return json!({"kind": "none"});
         };
-        if !password.contains(&page.focused) {
+        if page.focused.is_empty() {
             return json!({"kind": "other"});
+        }
+        if !password.contains(&page.focused) {
+            return json!({"kind": "field"});
         }
         let value = page
             .fields
@@ -501,25 +504,18 @@ impl FakeCdpServer {
         }
     }
 
-    /// Announces that the page of `target_id` set out for `url` in a navigation of `kind`
-    /// (`Page.frameStartedNavigating` on its sessions with that `navigationType`, as Chrome 157
-    /// sends when a link is clicked) without arriving; with no kind, that it stopped loading
-    /// without arriving (`Page.frameStoppedLoading`).
-    pub async fn announce_navigation(&self, target_id: &str, url: &str, kind: Option<&str>) {
+    /// Sends the event `method` with `params` on the sessions of `target_id`, as Chrome does for
+    /// what happens in a page (`Page.frameStartedNavigating` when a link is clicked, say). The
+    /// fake's page does not change; its main frame is `frame-1`, its child frames `child-<n>`.
+    pub async fn emit(&self, target_id: &str, method: &str, params: Value) {
         let (events, connections) = {
             let state = lock(&self.shared.state);
             let events: Vec<Value> = state
                 .sessions
                 .iter()
                 .filter(|(_, target)| target.as_str() == target_id)
-                .map(|(session, _)| match kind {
-                    None => json!({"method": "Page.frameStoppedLoading", "sessionId": session,
-                            "params": {"frameId": "frame-1"}}),
-                    Some(kind) => {
-                        json!({"method": "Page.frameStartedNavigating", "sessionId": session,
-                            "params": {"frameId": "frame-1", "loaderId": "loader-next",
-                                "navigationType": kind, "url": url}})
-                    }
+                .map(|(session, _)| {
+                    json!({"method": method, "sessionId": session, "params": params})
                 })
                 .collect();
             (events, state.connections.clone())
