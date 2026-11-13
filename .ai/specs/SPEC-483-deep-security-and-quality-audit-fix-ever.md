@@ -985,7 +985,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 
 ### Slice 7 (2026-11-13)
 
-- **Tests failing without their fix** (`target/audit/slice7/mutate.py`, eight cases): the page
+- **Tests failing without their fix** (`target/audit/slice7/mutate.py`, ten cases; the two
+  added after the review: the wrong page asked after the move, no activity entry for a
+  secret gone astray): the page
   not asked under the lock: `instance::a_secret_is_typed_only_into_a_page_it_may_go_to` and
   `browser::agents_type_secrets_only_into_pages_of_their_hosts` failed (the secret was typed
   into `evil.example`); the page it moved to not asked:
@@ -1008,8 +1010,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   creation and closes it unless the probe takes it, also when the probe is dropped; the
   ADR says who waits behind a navigation. The major one, a secret typed into a focused
   frame of another site, is finding E8 with its own slice.
-- **Gate.** `scripts/dev ci` at `0d924205e`: exit 0; `4152 tests run: 4152 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Gate.** `scripts/dev ci` at `5a89ab57f` (round 1's answers; `0d924205e` before the review:
+  4152 passed): exit 0; `4152 tests run: 4152 passed, 16 skipped`; doctor, repository check,
+  lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Slice 6's delivery.** Its first CI run failed in one e2e test of a page it does not touch
   (`notes.e2e.ts` "a failed reload after a teammate's edit backs off": 4 loads counted in a
