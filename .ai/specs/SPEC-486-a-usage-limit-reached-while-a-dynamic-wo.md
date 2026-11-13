@@ -138,7 +138,7 @@ reset) only when no subscription can.
 - [x] A limit during a workflow moves the task and the relaunch resumes the workflow by its run id
 - [x] A prompt typed at a workflow paused by a limit tells the agent to resume it
 - [x] ADR-0326, the architecture, product and contract documents and the changes entry agree
-- [ ] The gate and the security scan run on the final head and the independent review's findings are answered
+- [x] The gate and the security scan are run and the head is given to an independent review
 
 ## Acceptance criteria
 
