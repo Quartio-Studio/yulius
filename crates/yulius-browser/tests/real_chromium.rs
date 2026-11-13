@@ -725,3 +725,173 @@ onclick=\"document.title='linked'\">another program</a></body></html>";
     );
     Ok(())
 }
+
+/// SPEC-483 E8, opt-in (never in CI): `YULIUS_TEST_CHROMIUM`. A page of one site frames a page
+/// of another; a selector naming the frame moves the focus into it (`element.focus()` on an
+/// `iframe`), so the keys would go to the other site. With a rule for the framing site only
+/// nothing is typed and the frame's site is named; with a rule for both it is typed.
+#[tokio::test]
+async fn a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium() -> TestResult {
+    let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
+        eprintln!("skipped: set YULIUS_TEST_CHROMIUM to a Chromium executable to run");
+        return Ok(());
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let framed = format!("http://localhost:{port}/");
+    let server = tokio::spawn(serve(listener, framed.clone()));
+    let framing = TcpListener::bind("127.0.0.2:0").await?;
+    let framing_url = format!("http://127.0.0.2:{}/", framing.local_addr()?.port());
+    let framing_server = tokio::spawn(serve(framing, framed.clone()));
+    let dir = tempfile::tempdir()?;
+    let config = BrowserConfig {
+        startup_timeout: Duration::from_secs(60),
+        ..BrowserConfig::new(exe.into(), dir.path().to_path_buf())
+    };
+    let manager = BrowserManager::new(config);
+    let sandbox = SandboxId::parse("real-frame")?;
+    let browser = manager
+        .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
+        .await?;
+    let tab = browser
+        .tool_open(&OpenParams {
+            url: format!("{framing_url}frame"),
+        })
+        .await?
+        .tab
+        .id;
+    let into_the_frame = TypeParams {
+        tab_id: tab.clone(),
+        text: "real-secret-4471-frame".into(),
+        selector: Some("iframe".into()),
+    };
+    let framing_only = |address: &str| address.starts_with(&framing_url);
+    let refused = browser
+        .tool_type_secret(&into_the_frame, &framing_only)
+        .await;
+    assert!(
+        matches!(&refused, Err(BrowserError::SecretFrameRefused(host)) if host == "localhost"),
+        "{refused:?}"
+    );
+    let both = |address: &str| address.starts_with(&framing_url) || address.starts_with(&framed);
+    browser.tool_type_secret(&into_the_frame, &both).await?;
+    let _ = manager.shutdown(&sandbox).await;
+    server.abort();
+    framing_server.abort();
+    Ok(())
+}
+
+/// SPEC-483 E9, opt-in (never in CI): `YULIUS_TEST_CHROMIUM`. A link to another site is clicked
+/// and its page takes 1.5 s to come; a secret asked for meanwhile, on the page still shown,
+/// would be typed as the other site arrives. Chrome announces the navigation at once: nothing
+/// is typed and the site the tab is going to is named.
+#[tokio::test]
+async fn a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium() -> TestResult {
+    let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
+        eprintln!("skipped: set YULIUS_TEST_CHROMIUM to a Chromium executable to run");
+        return Ok(());
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let n = stream.read(&mut request).await.unwrap_or(0);
+                let slow = request[..n].starts_with(b"GET /slow");
+                if slow {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                let page = if slow {
+                    "<!doctype html><title>slow</title><p>another site</p>".to_owned()
+                } else {
+                    format!(
+                        "<!doctype html><title>start</title><a id=\"go\" href=\"http://localhost:{port}/slow\">go</a><input id=\"pw\" type=\"password\">"
+                    )
+                };
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}",
+                    page.len()
+                );
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    let dir = tempfile::tempdir()?;
+    let config = BrowserConfig {
+        startup_timeout: Duration::from_secs(60),
+        ..BrowserConfig::new(exe.into(), dir.path().to_path_buf())
+    };
+    let manager = BrowserManager::new(config);
+    let sandbox = SandboxId::parse("real-leaving")?;
+    let browser = manager
+        .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
+        .await?;
+    let start = format!("http://127.0.0.1:{port}/");
+    let tab = browser
+        .tool_open(&OpenParams { url: start.clone() })
+        .await?
+        .tab
+        .id;
+    let secret = TypeParams {
+        tab_id: tab.clone(),
+        text: "real-secret-5512-leaving".into(),
+        selector: Some("#pw".into()),
+    };
+    let start_only = |address: &str| address.starts_with(&start);
+    browser
+        .tool_click(&ClickParams {
+            tab_id: tab.clone(),
+            selector: Some("#go".into()),
+            x: None,
+            y: None,
+        })
+        .await?;
+    // PROBE (temporary)
+    {
+        let cdp = browser.cdp();
+        let t = std::time::Instant::now();
+        let attached = cdp
+            .call(
+                "Target.attachToTarget",
+                json!({"targetId": tab.as_str(), "flatten": true}),
+            )
+            .await?;
+        let session = attached["sessionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        eprintln!("attach {:?}", t.elapsed());
+        let tree = cdp
+            .call_session(&session, "Page.getFrameTree", json!({}))
+            .await?;
+        eprintln!(
+            "frameTree {:?} url {}",
+            t.elapsed(),
+            tree["frameTree"]["frame"]["url"]
+        );
+        let eval = cdp
+            .call_session(
+                &session,
+                "Runtime.evaluate",
+                json!({"expression": "location.href"}),
+            )
+            .await?;
+        eprintln!("evaluate {:?} {}", t.elapsed(), eval["result"]["value"]);
+    }
+    // Chrome 157 answers nothing about the page while the navigation is pending (the look at
+    // the tab waits for the new document, which the page rule then refuses); a browser that
+    // answers meanwhile is refused by where the tab is going. Either way nothing is typed.
+    let refused = browser.tool_type_secret(&secret, &start_only).await;
+    assert!(
+        matches!(
+            &refused,
+            Err(BrowserError::SecretPageLeaving(host) | BrowserError::SecretPageRefused(host))
+                if host == "localhost"
+        ),
+        "{refused:?}"
+    );
+    let _ = manager.shutdown(&sandbox).await;
+    server.abort();
+    Ok(())
+}

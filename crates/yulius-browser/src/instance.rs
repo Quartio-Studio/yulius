@@ -606,6 +606,9 @@ struct Document {
     /// the tree may list without their address or not at all, and its own host when the probe
     /// did not read every frame of its own origin ([`Document::add_unread_frames`]).
     framed: Vec<String>,
+    /// The addresses of the frames of another origin and of the out-of-process frames (empty
+    /// for one whose address is not said): where keys go when the focus is in such a frame.
+    framed_addresses: Vec<String>,
     /// Its frames at addresses of its own origin, those holding a PDF apart (no page text). The
     /// frame tree says the origin of a frame's address, sandboxed or not, so only the probe tells
     /// whether it read them.
@@ -632,6 +635,7 @@ impl Document {
         let own = host(main);
         let own_origin = origin(main);
         let mut framed = Vec::new();
+        let mut framed_addresses = Vec::new();
         let mut own_frames = 0;
         let mut frames = Vec::new();
         let mut stack: Vec<&Value> = tree
@@ -648,10 +652,19 @@ impl Document {
                 let pdf = child.pointer("/frame/mimeType").and_then(Value::as_str)
                     == Some("application/pdf");
                 own_frames += usize::from(!pdf);
-            } else if let Some(child_host) = child.get("frame").and_then(host)
-                && !framed.contains(&child_host)
-            {
-                framed.push(child_host);
+            } else {
+                framed_addresses.push(
+                    child
+                        .pointer("/frame/url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                if let Some(child_host) = child.get("frame").and_then(host)
+                    && !framed.contains(&child_host)
+                {
+                    framed.push(child_host);
+                }
             }
             if let Some(children) = child.get("childFrames").and_then(Value::as_array) {
                 stack.extend(children);
@@ -669,6 +682,7 @@ impl Document {
                 .to_owned(),
             host: own,
             framed,
+            framed_addresses,
             own_frames,
             frames,
         })
@@ -735,6 +749,7 @@ impl Document {
                 if parent.is_some_and(|parent| viewers.contains(&parent)) {
                     continue;
                 }
+                self.framed_addresses.push(url.to_owned());
                 if let Some(host) = host_of(url)
                     && !self.framed.contains(&host)
                 {
@@ -934,6 +949,9 @@ struct State {
     screencasts: HashMap<TabId, Screencast>,
     viewport: (u32, u32),
     pointer: Pointer,
+    /// Navigations to another document that Chrome announced and has not finished, by session
+    /// and frame: where the frame is going, and since when (SPEC-483 E9).
+    leaving: HashMap<(String, String), (String, Instant)>,
     /// The policy probe's own tabs (ADR-0318), by the ids Chrome gave them: never listed.
     probe_tabs: HashSet<TabId>,
     /// A policy probe asked Chrome for its tab and has no id for it yet: what is announced
@@ -1087,6 +1105,10 @@ struct PolicyCheck {
     in_force: bool,
     asked: Option<Instant>,
 }
+
+/// How long a navigation Chrome announced and never finished keeps a secret from being typed
+/// into its frame.
+const LEAVING_STANDS: Duration = Duration::from_secs(30);
 
 /// How long a "not in force" answer stands before a refused input asks again (the policy
 /// appears while the browser runs when an administrator runs host setup: Chrome reloads it).
@@ -1279,6 +1301,7 @@ impl BrowserInstance {
                 screencasts: HashMap::new(),
                 viewport,
                 pointer: Pointer::default(),
+                leaving: HashMap::new(),
                 probe_tabs: HashSet::new(),
                 probing: false,
                 probe_held: Vec::new(),
@@ -1548,12 +1571,50 @@ impl BrowserInstance {
                 }
             }
             "Fetch.requestPaused" if event.session_id.is_none() => self.on_request_paused(event),
+            // A frame set out for another document (a clicked link, a form, a script): until
+            // Chrome says it arrived or gave up, a secret's typing may land in either.
+            "Page.frameStartedNavigating" | "Page.frameRequestedNavigation" => {
+                let same_document = event
+                    .params
+                    .get("navigationType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.ends_with("ameDocument"));
+                let elsewhere = event
+                    .params
+                    .get("disposition")
+                    .and_then(Value::as_str)
+                    .is_some_and(|tab| tab != "currentTab");
+                if let (Some(session), Some(frame), Some(url), false) = (
+                    event.session_id.as_deref(),
+                    event.params.get("frameId").and_then(Value::as_str),
+                    event.params.get("url").and_then(Value::as_str),
+                    same_document || elsewhere,
+                ) {
+                    lock(&self.state).leaving.insert(
+                        (session.to_owned(), frame.to_owned()),
+                        (url.to_owned(), Instant::now()),
+                    );
+                }
+            }
+            "Page.frameNavigated" | "Page.frameStoppedLoading" => {
+                let frame = event
+                    .params
+                    .pointer("/frame/id")
+                    .or_else(|| event.params.get("frameId"))
+                    .and_then(Value::as_str);
+                if let (Some(session), Some(frame)) = (event.session_id.as_deref(), frame) {
+                    lock(&self.state)
+                        .leaving
+                        .remove(&(session.to_owned(), frame.to_owned()));
+                }
+            }
             "Target.detachedFromTarget" => {
                 if let Some(session) = event.params.get("sessionId").and_then(Value::as_str) {
                     {
                         let mut state = lock(&self.state);
                         state.sessions.retain(|_, s| s != session);
                         state.screencasts.retain(|_, cast| cast.session != session);
+                        state.leaving.retain(|(of, _), _| of != session);
                     }
                     self.cdp.remove_frame_sink(session);
                 }
@@ -2919,20 +2980,27 @@ impl BrowserInstance {
         self.touch();
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
-        if let Some(selector) = &params.selector {
-            let value = self
-                .call_on_document(&session, FOCUS_FUNCTION, selector)
-                .await?;
-            if value.get("found").and_then(Value::as_bool) != Some(true) {
-                return Err(BrowserError::ElementNotFound);
+        let focus = || async {
+            if let Some(selector) = &params.selector {
+                let value = self
+                    .call_on_document(&session, FOCUS_FUNCTION, selector)
+                    .await?;
+                if value.get("found").and_then(Value::as_bool) != Some(true) {
+                    return Err(BrowserError::ElementNotFound);
+                }
             }
-        }
-        // Screenshots hold the same lock from their look at the page to the capture.
-        let _input = self.input_lock.lock().await;
+            Ok(())
+        };
         let Some(allowed) = secret else {
+            focus().await?;
+            // Screenshots hold the same lock from their look at the page to the capture.
+            let _input = self.input_lock.lock().await;
             let watched = self.watched_values(&session).await;
             return self.type_lines(&session, params, watched.as_ref()).await;
         };
+        // A secret's field is focused with the lock held too: nothing of Yulius's moves the
+        // focus between that and the keys.
+        let _input = self.input_lock.lock().await;
         let Some(before) = self.document(&session).await else {
             return Err(BrowserError::InvalidInput(
                 "the tab's page cannot be identified, so the secret was not typed; try again"
@@ -2944,6 +3012,48 @@ impl BrowserInstance {
         // (SPEC-483 E3).
         if !allowed(&before.address) {
             return Err(BrowserError::SecretPageRefused(shown_as(&before)));
+        }
+        // A navigation under way would put its page under the keys: where the tab is going is
+        // asked too (SPEC-483 E9). One Chrome never finished is forgotten after a while.
+        let going = lock(&self.state)
+            .leaving
+            .get(&(session.clone(), before.frame.clone()))
+            .filter(|(_, since)| since.elapsed() < LEAVING_STANDS)
+            .map(|(url, _)| url.clone());
+        if let Some(url) = going.filter(|url| !allowed(url)) {
+            return Err(BrowserError::SecretPageLeaving(
+                host_of(&url).unwrap_or(url),
+            ));
+        }
+        focus().await?;
+        // The keys go to the element with the focus, which can be in a frame of another site
+        // inside this page (the selector named the frame, or something clicked into it): the
+        // frames the page holds of other sites must be ones the secret may go to as well
+        // (SPEC-483 E8). Which of them has the focus the page cannot say, so all are asked.
+        let Some(look) = self.read_page(&session, &before.frame).await else {
+            return Err(BrowserError::InvalidInput(
+                "the tab's page cannot be read right now, so the secret was not typed; try again"
+                    .into(),
+            ));
+        };
+        if look.focused_frame {
+            let mut framing = self.document(&session).await.ok_or_else(|| {
+                BrowserError::InvalidInput(
+                    "the tab's frames cannot be identified, so the secret was not typed; try again"
+                        .into(),
+                )
+            })?;
+            let targets = self.cdp.call("Target.getTargets", json!({})).await?;
+            framing.add_frame_targets(&params.tab_id, &targets);
+            if let Some(other) = framing
+                .framed_addresses
+                .iter()
+                .find(|address| !allowed(address))
+            {
+                return Err(BrowserError::SecretFrameRefused(
+                    host_of(other).unwrap_or_else(|| "an unknown site".to_owned()),
+                ));
+            }
         }
         {
             let mut typed = self.secrets.lock();

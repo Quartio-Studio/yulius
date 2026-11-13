@@ -132,6 +132,18 @@ pub enum BrowserError {
         "nothing was typed: this tab shows {0} now, which is not a page this secret may be typed into"
     )]
     SecretPageRefused(String),
+    /// The tab is on its way to another page (a link was clicked, a form sent) that the secret
+    /// may not be typed into, and would arrive under the keys: nothing was typed (SPEC-483 E9).
+    #[error(
+        "nothing was typed: this tab is on its way to {0}, which is not a page this secret may be typed into"
+    )]
+    SecretPageLeaving(String),
+    /// The field with the focus is in a frame of another site inside the tab's page, and that
+    /// site is not one the secret may be typed into: nothing was typed (SPEC-483 E8).
+    #[error(
+        "nothing was typed: the focus is in a frame of {0} inside this page, which is not a site this secret may be typed into"
+    )]
+    SecretFrameRefused(String),
     /// The tab's document changed while a secret was typed, to a page it may not be typed
     /// into: part of the secret may be in that page.
     #[error(
@@ -167,6 +179,8 @@ impl BrowserError {
             | Self::ElementNotFound
             | Self::ElementNotVisible
             | Self::SecretPageRefused(_)
+            | Self::SecretPageLeaving(_)
+            | Self::SecretFrameRefused(_)
             | Self::SecretAstray(_)
             | Self::SecretOnPage => ViewerErrorCode::Invalid,
             Self::Cdp(_)

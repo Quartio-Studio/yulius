@@ -30,7 +30,9 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
         BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
         BrowserError::InputLocked => BrowserFailureKind::InputLocked,
-        BrowserError::SecretPageRefused(_) => BrowserFailureKind::SecretPageRefused,
+        BrowserError::SecretPageRefused(_)
+        | BrowserError::SecretPageLeaving(_)
+        | BrowserError::SecretFrameRefused(_) => BrowserFailureKind::SecretPageRefused,
         BrowserError::SecretAstray(_) => BrowserFailureKind::SecretAstray,
         BrowserError::InvalidInput(_)
         | BrowserError::ToolParams(_)

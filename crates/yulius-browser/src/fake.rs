@@ -501,6 +501,36 @@ impl FakeCdpServer {
         }
     }
 
+    /// Announces that the page of `target_id` set out for `url` in a navigation of `kind`
+    /// (`Page.frameStartedNavigating` on its sessions with that `navigationType`, as Chrome 157
+    /// sends when a link is clicked) without arriving; with no kind, that it stopped loading
+    /// without arriving (`Page.frameStoppedLoading`).
+    pub async fn announce_navigation(&self, target_id: &str, url: &str, kind: Option<&str>) {
+        let (events, connections) = {
+            let state = lock(&self.shared.state);
+            let events: Vec<Value> = state
+                .sessions
+                .iter()
+                .filter(|(_, target)| target.as_str() == target_id)
+                .map(|(session, _)| match kind {
+                    None => json!({"method": "Page.frameStoppedLoading", "sessionId": session,
+                            "params": {"frameId": "frame-1"}}),
+                    Some(kind) => {
+                        json!({"method": "Page.frameStartedNavigating", "sessionId": session,
+                            "params": {"frameId": "frame-1", "loaderId": "loader-next",
+                                "navigationType": kind, "url": url}})
+                    }
+                })
+                .collect();
+            (events, state.connections.clone())
+        };
+        for connection in connections {
+            for event in &events {
+                let _ = connection.outgoing.send(event.to_string()).await;
+            }
+        }
+    }
+
     /// Moves a target to another address without telling connected clients yet: a navigation
     /// that committed in the browser and that the client has not heard of.
     pub fn move_target_unannounced(&self, target_id: &str, url: &str) {

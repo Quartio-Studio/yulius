@@ -744,6 +744,116 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
+/// SPEC-483 E8 and E9: the page rule also covers where the keys can end up besides the tab's
+/// own document: a frame of another site with the focus, and the page a navigation under way
+/// is bringing. Both answer as a page the secret is not for, naming the site, with no key sent.
+#[tokio::test]
+async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving() -> TestResult
+{
+    const VALUE: &str = "docs-pass-8842-qrs";
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "DOCS_LOGIN", "hosts": ["docs.example"], "value": VALUE})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/login"}),
+        )
+        .await?;
+        let tab = tool_text(&opened)["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let fill = || {
+            mcp_tool(
+                &f.h,
+                TOKEN,
+                "browser_fill_secret",
+                json!({"tab_id": tab, "secret": "DOCS_LOGIN"}),
+            )
+        };
+        let typed = || f.fake.calls_for("Input.insertText").len();
+        let before = typed();
+        // Events arrive in order: once a title set after an announcement is listed, Yulius
+        // heard the announcement.
+        let heard = |title: &'static str| {
+            let (f, tab) = (&f, &tab);
+            async move {
+                f.fake.set_target_title(tab, title).await;
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let tabs = mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?;
+                        if tool_text(&tabs).to_string().contains(title) {
+                            return Ok::<_, Box<dyn std::error::Error>>(());
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?
+            }
+        };
+
+        // The focus is in a frame of a site the secret is not bound to.
+        f.fake.set_child_frames(&["https://evil.example/collect"]);
+        f.fake
+            .set_secret_probe(Some(json!({"shown": ["Fake page text"], "masked": [],
+            "over": false, "focus": {"kind": "frame"}})));
+        let framed = fill().await?;
+        assert_eq!(framed["isError"], true, "{framed}");
+        assert!(
+            tool_text(&framed).as_str().is_some_and(|t| {
+                t.contains("nothing was typed")
+                    && t.contains("a frame of evil.example")
+                    && !t.contains(VALUE)
+            }),
+            "{framed}"
+        );
+        assert_eq!(typed(), before);
+
+        // The tab set out for such a site (a link clicked just before) and has not arrived.
+        f.fake.set_child_frames(&[]);
+        f.fake.set_secret_probe(None);
+        f.fake
+            .announce_navigation(&tab, "https://evil.example/next", Some("differentDocument"))
+            .await;
+        heard("leaving").await?;
+        let leaving = fill().await?;
+        assert_eq!(leaving["isError"], true, "{leaving}");
+        assert!(
+            tool_text(&leaving).as_str().is_some_and(|t| {
+                t.contains("nothing was typed")
+                    && t.contains("on its way to evil.example")
+                    && !t.contains(VALUE)
+            }),
+            "{leaving}"
+        );
+        let refused_at = typed();
+
+        // Chrome gave the navigation up (the server never answered): the page is the bound
+        // one again and the secret is typed.
+        f.fake.announce_navigation(&tab, "", None).await;
+        heard("stayed").await?;
+        let filled = fill().await?;
+        assert_ne!(filled["isError"], true, "{filled}");
+        assert!(typed() > refused_at);
+        Ok(())
+    })
+    .await
+}
+
 /// SPEC-450 (#1113): pixels cannot be redacted, so a screenshot of a page that may show a secret
 /// typed with `browser_fill_secret` is refused, pointing to `browser_snapshot`: a plain-text
 /// field (and from then on every page of its origin), an edited value, a page in another tab
