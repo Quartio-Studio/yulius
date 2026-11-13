@@ -940,7 +940,7 @@ impl App {
                     tracing::warn!(task = %task.id, error = %err, "audit of a train merge failed");
                 }
                 let next = self
-                    .after_merge_of(&task, crate::agent_wait::PROFILE_ASKS)
+                    .after_merge_of(task, crate::agent_wait::PROFILE_ASKS)
                     .await;
                 let text = format!(
                     "Yulius merged pull request #{} into `{integration}` at {} in a merge train \
