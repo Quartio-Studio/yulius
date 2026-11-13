@@ -619,7 +619,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
-- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask
+- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 
 ## Acceptance criteria
 
@@ -1338,7 +1338,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 13 |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
