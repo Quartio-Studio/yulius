@@ -138,7 +138,7 @@ One item per slice (a slice's own steps are its requirements and tests); a slice
 its change is reviewed and ready to merge, and the next is added when it is merged.
 
 - [x] Slice 1: redaction fingerprints say a few bits and are fixed per sandbox (merged, #1240)
-- [ ] Slice 2: bubblewrap by the host's path, the clone's Git files through handles, reviewed
+- [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles, reviewed
 
 ## Acceptance criteria
 
