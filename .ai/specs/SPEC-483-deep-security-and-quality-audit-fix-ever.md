@@ -241,6 +241,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **VLR-003** While a sandbox's agent secrets cannot be read, its terminals show one notice and
   no output, and ask again after a second or when a secret changes (not at every chunk); once
   they can, output flows redacted.
+- **VLR-007** Yulius types nothing into a terminal whose screen is withheld: the wait before a
+  first message or a goal goes on while it is, starts over when the screen shows again, and
+  after `trust_answer_ms` flags the task with what to do.
 - **VLR-004** The proxy reads the values to redact before it sends a request and answers 503,
   sending nothing, when it cannot.
 - **VLR-005** An edit of a secret, an agent's or the team's, whose sealed value changed since
@@ -358,6 +361,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   changes nothing.
 - **AC-32** A file that states 0 bytes and holds 6 is refused with 5 left (no copy remains) and
   takes 6 from a budget of 10.
+- **AC-34** A goal task whose session starts behind a withheld screen (a secret stopped opening
+  while its trust dialog showed; a person answered it) gets no goal typed and is flagged
+  "Agent secrets cannot be read, so this terminal's screen is withheld and Yulius typed
+  nothing." with the action to replace or delete the secret; no trust notice is given.
 - **AC-33** The app's proxy policy has nothing to redact with for a sandbox one of whose secrets
   no longer opens, and still has for another sandbox.
 
@@ -427,7 +434,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-30), `yulius-store` `env_copies_change_only_from_what_was_seen` and its host-request test
   (AC-31), `yulius-app` `session_docs::tests::side_files_are_copied_without_following_a_link`
   (AC-32), `secrets::the_proxy_gets_nothing_to_redact_with_while_a_secret_cannot_be_opened`
-  (AC-33).
+  (AC-33), `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` (AC-34).
 
 ## Decisions
 
@@ -702,7 +709,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   starts: `github_sign_in_starts_are_limited_per_client` failed; the production-stage command
   without `may_deploy`: `delivery::a_production_environment_run_starts_in_production_containment`
   failed.
-- **Web UI.** `cd e2e && npx e2e run` at `7f3379e06`: `Test Files 84 passed | 1 skipped (85)`,
+- **Web UI.** `cd e2e && npx e2e run` at `7f3379e06` (nothing under `web/` or `e2e/` changed
+  after it): `Test Files 84 passed | 1 skipped (85)`,
   `Tests 1018 passed | 1 skipped (1019)`, exit 0. (At `78c891dac` one test failed in the whole
   suite and passed alone: `cd.e2e.ts` "a needs_you decision reads Decide, and an action alone
   only To do", the known flake under load of issue #1175, in a page this slice does not touch.)
@@ -718,16 +726,29 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   terminal and the app's proxy policy with a secret whose key is gone); closing the code
   dialog was untested (e2e, with "nothing before the code" for `.env`, production and the
   switch). Nits: a doc comment on the wrong helper; the mock compared hosts as typed.
-- **Gate.** `scripts/dev ci` at `7f3379e06` (the review's answers; `78c891dac` before them:
-  4134 passed): exit 0; `4137 tests run: 4137 passed, 16 skipped`; doctor, repository check,
-  lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Review of slice 5, round 2** (head fa200a9ed): request changes, two minor findings and two
+  nits; round 1's answers all verified. Minor: with a withheld screen the supervisor's wait
+  timed out and typed blind, which a withheld folder-trust dialog would have taken as its
+  answer (the wait now types nothing while the screen is withheld and flags the task; ADR-0317
+  corrected); "revoking production needs neither" had no test (a token revokes in
+  `production_secrets_need_their_own_allowance`). Nits: the race guards are tested in the
+  store only (below, "Not tested here"); the copy budget's failing run is not in the mutation
+  log (its test was run and seen failing before the fix was written: "Ok(())" where a refusal
+  was expected); issue #1175 is the flake's own issue (`gh issue view 1175`).
+- **Gate.** `scripts/dev ci` at `2021b3604` (round 2's answers; `7f3379e06` after round 1:
+  4137 passed; `78c891dac` before the reviews: 4134 passed): exit 0; `4138 tests run: 4138
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed. `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task`
+  with the wait's check switched off: "timed out waiting for the flag".
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Review of slice 4** (head f07fde13c): approve, no blocker or major. Its two minor findings
   are fixed here (one byte budget for an imported session's transcript and side files; the
   `busy` text), and of its five nits: tests for the cleared cookie and the plain-HTTP cookie
   name, two consequences added to ADR-0316, the fail-before-fix runs above; `form_train` is
   left as it is (Decisions).
-- **Not tested here.** The proxy process end to end with the app's policy failing (the proxy is
+- **Not tested here.** The two races through the app (an `auto_allow` switched off between an
+  answer's read and its write; a second edit of one team secret): the store's compare and the
+  refusal's wording are tested, the interleaving is not. The proxy process end to end with the app's policy failing (the proxy is
   tested with a policy that has nothing to redact with, the app's policy on its own); a task
   agent's terminal (the Superagent's goes through the same `scrub_output`). The two-factor
   dialog over the open edit form is tested in the mock (e2e), not against a real server.
