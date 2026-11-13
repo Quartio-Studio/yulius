@@ -112,8 +112,9 @@ struct FakeState {
     /// blocked by the administrator (ADR-0318).
     browser_policy: bool,
     /// A page target Chrome makes by itself, opened by no page, announced just before the
-    /// next `Target.createTarget` is answered.
-    alongside: Option<String>,
+    /// next `Target.createTarget` is answered: the addresses it goes through, and whether it
+    /// is closed again before that answer.
+    alongside: Option<(Vec<String>, bool)>,
     selection: String,
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
@@ -470,10 +471,13 @@ impl FakeCdpServer {
         lock(&self.shared.state).emit_load_events = emit;
     }
 
-    /// Makes a page target at `url`, opened by no page, appear just before the next
-    /// `Target.createTarget` is answered (a tab made while a caller waits for its own).
-    pub fn create_alongside_next_target(&self, url: &str) {
-        lock(&self.shared.state).alongside = Some(url.to_owned());
+    /// Makes a page target, opened by no page, appear just before the next
+    /// `Target.createTarget` is answered (a tab made while a caller waits for its own): created
+    /// at the first of `urls`, then navigated to each later one, and with `closed` closed again,
+    /// all before the answer.
+    pub fn create_alongside_next_target(&self, urls: &[&str], closed: bool) {
+        lock(&self.shared.state).alongside =
+            Some((urls.iter().map(|&url| url.to_owned()).collect(), closed));
     }
 
     /// Changes a target's address and notifies connected clients (`Target.targetInfoChanged`):
@@ -490,6 +494,15 @@ impl FakeCdpServer {
         };
         for connection in connections {
             let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
+    /// Moves a target to another address without telling connected clients yet: a navigation
+    /// that committed in the browser and that the client has not heard of.
+    pub fn move_target_unannounced(&self, target_id: &str, url: &str) {
+        let mut state = lock(&self.shared.state);
+        if let Some(target) = state.targets.iter_mut().find(|t| t.id == target_id) {
+            url.clone_into(&mut target.url);
         }
     }
 
@@ -987,15 +1000,28 @@ fn respond(
             before.push(target_event("Target.targetCreated", &target));
             let id = target.id.clone();
             state.targets.push(target);
-            if let Some(url) = state.alongside.take() {
-                let beside = FakeTarget {
+            if let Some((urls, closed)) = state.alongside.take() {
+                let mut beside = FakeTarget {
                     id: fake_target_id(state.next_target),
-                    url,
+                    url: String::new(),
                     title: String::new(),
                 };
                 state.next_target += 1;
-                before.push(target_event("Target.targetCreated", &beside));
-                state.targets.push(beside);
+                for (step, url) in urls.into_iter().enumerate() {
+                    beside.url = url;
+                    let method = if step == 0 {
+                        "Target.targetCreated"
+                    } else {
+                        "Target.targetInfoChanged"
+                    };
+                    before.push(target_event(method, &beside));
+                }
+                if closed {
+                    before.push(json!({"method": "Target.targetDestroyed",
+                        "params": {"targetId": beside.id}}));
+                } else {
+                    state.targets.push(beside);
+                }
             }
             Ok(json!({"targetId": id}))
         }

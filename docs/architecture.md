@@ -389,7 +389,13 @@ sandbox Superagent its own sandbox's browser, the Global Superagent the browser 
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
 ([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
-[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). Pixels cannot be
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). A secret is typed into the
+page the browser shows when the typing begins: the vault's rule (a page of one of the secret's
+hosts) travels to `tool_type_secret`, which applies it to the document read with the input lock
+held, and Yulius's own navigations wait for that lock; a page that moves on by itself to one
+the secret may not get is reported instead of `filled`
+([ADR-0319](decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md)).
+Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
 a password field. Before and after a capture the browser instance reads the page's text and

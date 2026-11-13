@@ -316,7 +316,7 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         selector: Some(selector.to_owned()),
     };
     browser
-        .tool_type_secret(&secret("#pw", "real-secret-7731-pw"))
+        .tool_type_secret(&secret("#pw", "real-secret-7731-pw"), &|_: &str| true)
         .await?;
     browser
         .tool_screenshot_within(&shot_params, 1 << 20)
@@ -339,7 +339,7 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         .tool_screenshot_within(&shot_params, 1 << 20)
         .await?;
     browser
-        .tool_type_secret(&secret("#name", "real-secret-8812-api"))
+        .tool_type_secret(&secret("#name", "real-secret-8812-api"), &|_: &str| true)
         .await?;
     assert!(matches!(
         browser.tool_screenshot_within(&shot_params, 1 << 20).await,
@@ -370,7 +370,7 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     // the frame's address for both.
     browser.tool_navigate(&load(framing_url.clone())).await?;
     browser
-        .tool_type_secret(&secret("#pw", "real-secret-9951-pw"))
+        .tool_type_secret(&secret("#pw", "real-secret-9951-pw"), &|_: &str| true)
         .await?;
     browser
         .tool_screenshot_within(&shot_params, 1 << 20)

@@ -45,6 +45,10 @@ pub enum BrowserFailureKind {
     /// A viewer's clicks and keys are off: the host's browser policy is not in force
     /// (ADR-0318).
     InputLocked,
+    /// The tab's page is not one the secret may be typed into: nothing was typed.
+    SecretPageRefused,
+    /// The tab went to another page while a secret was typed: part of it may be there.
+    SecretAstray,
     /// Malformed or out-of-bounds input (including a missing element).
     Invalid,
     /// A result exceeded its bound.
@@ -52,6 +56,10 @@ pub enum BrowserFailureKind {
     /// Unexpected local failure.
     Internal,
 }
+
+/// Whether a page at an address may get a secret typed into it
+/// ([`BrowserSession::tool_type_secret`]).
+pub type PageRule<'r> = dyn for<'a> Fn(&'a str) -> bool + Send + Sync + 'r;
 
 /// A browser failure with a message safe to show to users and agents (no secrets).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -80,7 +88,9 @@ impl BrowserFailure {
             BrowserFailureKind::NotFound => ViewerErrorCode::NotFound,
             BrowserFailureKind::Capacity => ViewerErrorCode::Capacity,
             BrowserFailureKind::InputLocked => ViewerErrorCode::InputLocked,
-            BrowserFailureKind::Invalid => ViewerErrorCode::Invalid,
+            BrowserFailureKind::Invalid
+            | BrowserFailureKind::SecretPageRefused
+            | BrowserFailureKind::SecretAstray => ViewerErrorCode::Invalid,
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
             | BrowserFailureKind::TooLarge => ViewerErrorCode::Upstream,
@@ -98,7 +108,9 @@ impl From<BrowserFailure> for AppError {
             | BrowserFailureKind::NotFound => Self::Invalid(failure.message),
             BrowserFailureKind::Capacity => Self::Capacity(failure.message),
             // Only a viewer's input meets it; were a tool to, it is the host's to fix.
-            BrowserFailureKind::InputLocked => Self::Forbidden(failure.message),
+            BrowserFailureKind::InputLocked
+            | BrowserFailureKind::SecretPageRefused
+            | BrowserFailureKind::SecretAstray => Self::Forbidden(failure.message),
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
             | BrowserFailureKind::TooLarge => Self::Upstream(failure.message),
@@ -291,8 +303,15 @@ pub trait BrowserSession: Send + Sync {
     /// `browser_type`.
     async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
     /// `browser_fill_secret`'s typing: as `tool_type`, and screenshots of a page that may show
-    /// the text are refused (SPEC-450).
-    async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
+    /// the text are refused (SPEC-450). `allowed` says whether a page at an address may get it:
+    /// it is asked of the tab's page as it is when the typing begins, with navigations of
+    /// Yulius's held off until it ends, not of what the caller saw of the tab before
+    /// (SPEC-483 E3).
+    async fn tool_type_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &PageRule<'_>,
+    ) -> Result<TypeResult, BrowserFailure>;
     /// `browser_snapshot`.
     async fn tool_snapshot(
         &self,

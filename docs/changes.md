@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- `browser_fill_secret` types into the page the browser shows when the typing begins
+  (SPEC-483 slice 7, task #465, ADR-0319). It checked the tab's address as Yulius had last
+  heard it and typed after waiting behind a screenshot: an agent that navigated the tab in
+  between had the secret typed into a site of its choice, answered as `filled` on the secret's
+  host. The page is now asked with the input lock held, Yulius's own navigations wait for that
+  lock, and a page that moves on by itself to a site the secret is not for is reported with
+  where it went. Also from the review of slice 6: a tab made, changed or closed while the
+  browser's policy probe waits is listed as it ends up, and a probe whose tab comes late
+  closes it.
 - A viewer of a sandbox browser could read the host's files (SPEC-483 slice 6, task #465,
   ADR-0318). The browser runs on the host and viewers' clicks are real input there: a click on
   a page's upload button opened Chrome's own file chooser, in which any path the service user

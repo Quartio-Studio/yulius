@@ -207,11 +207,14 @@ async fn typed_secrets_outlive_the_browser() -> TestResult {
         .tool_navigate(&navigate(&tab, "https://p.example/form"))
         .await?;
     first
-        .tool_type_secret(&TypeParams {
-            tab_id: tab.clone(),
-            text: "api-key-5521-qrs".into(),
-            selector: Some("#api-key".into()),
-        })
+        .tool_type_secret(
+            &TypeParams {
+                tab_id: tab.clone(),
+                text: "api-key-5521-qrs".into(),
+                selector: Some("#api-key".into()),
+            },
+            &|_: &str| true,
+        )
         .await?;
     assert!(manager.shutdown(&sandbox).await?);
 
@@ -258,11 +261,14 @@ async fn a_lost_secret_refuses_screenshots_after_a_restart() -> TestResult {
     let reads = fake.calls_for("Page.getFrameTree").len();
     fake.fail_nth("Page.getFrameTree", reads + 2, -32000, "no frame tree");
     first
-        .tool_type_secret(&TypeParams {
-            tab_id: tab,
-            text: "pw-lost-secret-2".into(),
-            selector: Some("#pw".into()),
-        })
+        .tool_type_secret(
+            &TypeParams {
+                tab_id: tab,
+                text: "pw-lost-secret-2".into(),
+                selector: Some("#pw".into()),
+            },
+            &|_: &str| true,
+        )
         .await?;
     assert!(manager.shutdown(&sandbox).await?);
 

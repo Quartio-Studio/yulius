@@ -618,6 +618,46 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
                 .is_some_and(|t| t.contains("may only be typed into pages of docs.example"))
         );
         assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+
+        // SPEC-483 E3: the tab went on to another site and Yulius has not heard of it yet (it
+        // still lists the bound host's page). The page is asked where the typing begins:
+        // nothing is typed, and the answer names where the tab is.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://docs.example/login"}),
+        )
+        .await?;
+        f.fake
+            .move_target_unannounced(&tab, "https://evil.example/collect");
+        let listed = tool_text(&mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?);
+        assert!(
+            listed.to_string().contains("https://docs.example/login"),
+            "Yulius still lists the page it knew: {listed}"
+        );
+        let moved = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(moved["isError"], true, "{moved}");
+        assert!(
+            tool_text(&moved).as_str().is_some_and(|t| {
+                t.contains("nothing was typed") && t.contains("evil.example") && !t.contains(VALUE)
+            }),
+            "{moved}"
+        );
+        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://evil.example/login"}),
+        )
+        .await?;
         // A secret bound to no host yet (SPEC-121) is typed nowhere; the agent learns to ask.
         let unbound = support::call(
             &f.h.router,
@@ -1436,13 +1476,19 @@ async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_st
             ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
         let tabs = next_json(&mut socket).await?;
         let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
-        f.fake.create_alongside_next_target("https://beside.example/");
+        // The other tab is made and goes on to a second address while the probe waits: it is
+        // listed where it went, not where it started.
+        f.fake.create_alongside_next_target(
+            &["https://beside.example/", "https://beside.example/moved"],
+            false,
+        );
         // A press asks for the probe, whose tab and the other are announced before its id.
         send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
         let listed = wait_json(&mut socket, |m| {
             m["type"] == "tabs"
                 && m["tabs"].as_array().is_some_and(|tabs| {
-                    tabs.iter().any(|t| t["url"] == "https://beside.example/")
+                    tabs.iter()
+                        .any(|t| t["url"] == "https://beside.example/moved")
                 })
         })
         .await?;
@@ -1463,6 +1509,31 @@ async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_st
         })
         .await?;
         assert_eq!(stayed["tabs"].as_array().map(Vec::len), Some(2), "{stayed}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6, round 3): a page made and closed again while a probe waits for
+/// the id of its own tab is no tab afterwards.
+#[tokio::test]
+async fn a_tab_made_and_closed_while_the_probe_waits_is_no_tab() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake
+            .create_alongside_next_target(&["https://gone.example/"], true);
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        // The press arrives once the probe is over, its tab closed.
+        assert!(display_of(&f)?.wait_for_input(|i| *i == DisplayInput::Button { button: 1, press: true }, WAIT).await);
+        let mut again =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let now = next_json(&mut again).await?;
+        assert_eq!(now["tabs"].as_array().map(Vec::len), Some(1), "{now}");
+        assert_eq!(now["tabs"][0]["id"], first.as_str(), "{now}");
         Ok(())
     })
     .await
