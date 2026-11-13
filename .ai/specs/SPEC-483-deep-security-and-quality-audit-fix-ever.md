@@ -50,7 +50,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16;
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -692,7 +692,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
-- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it
+- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 
 ## Acceptance criteria
 
@@ -1068,13 +1068,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-92** `status_for` gives each kind of application error the status of STS-001.
 - **AC-93** No line of a file under `crates/yulius-server/src/routes` is a `match` arm from
   an `AppError` kind to a `StatusCode` (the two tables that had such arms are gone).
-- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
-  says the run ended, not that the branch moved. With the armed pull request merged by a
-  person, a commit past the armed head and the task closed: the pass says "merged".
 - **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
   the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
   500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
   failure of its own).
+- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
+  says the run ended, not that the branch moved. With the armed pull request merged by a
+  person, a commit past the armed head and the task closed: the pass says "merged".
 
 ## Test plan
 
@@ -1338,7 +1338,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
   is asked before the run's end is said: a person's merge does not clear the armed slot.
-  The agent's own   message says what to do; the pull request is not touched.
+  The agent's own message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1514,7 +1514,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 16 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
@@ -2553,7 +2553,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   `ended.is_none() &&` in `merge_armed_task`: an ended run is not asked where its branch
   is). `delivery::an_armed_merge_ends_with_its_tasks_run` now commits past the armed head
   before the task is closed and again before the pull request is merged by hand, and
-  expects "run ended (closed)" and "merged", never "dropped". One finding from before,
+  expects "run ended (closed)", and "merged" without "dropped". One finding from before,
   minor: "an Internal error is answered without a log line" on the routes of the agents'
   own clients, where its 500 now ends a `yulius wait`; `bare_status` logs it as the public
   API does and is what `routes/internal.rs`, `routes/mcp.rs` and `routes/secrets.rs` call.
@@ -2566,3 +2566,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   gives".
 - **Gate after it.** `scripts/dev ci` at `c65fb7087`: exit 0;
   `4280 tests run: 4280 passed, 17 skipped` (`target/audit/slice16/gate2.log`).
+- **Review, round 2** (the same session, head `93088ebf3`): approve; every finding of round
+  1 answered, three nits of wording in this spec (a line's spaces, the order of AC-94 and
+  AC-95, and what the test expects of "dropped"), answered in the commit after the merge.
+- **Delivery.** Pull request #1265 merged into `dev` at `93088ebf3`, whose own Yulius CI
+  run passed.
