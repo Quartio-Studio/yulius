@@ -41,10 +41,8 @@ impl Git {
     /// Clones `url` into the absolute `dest` (network timeout applies).
     ///
     /// Into a sandbox's folder, a new repository is the sandbox's agents' to write from its
-    /// first file on (ADR-0323): a clone from elsewhere is made in a repository of the
-    /// server's own first (`clone_through`), and the files are checked out by a command of
-    /// their own, which, unlike a transfer between two folders, may not start the shell (a
-    /// filter added to the new configuration meanwhile is not run).
+    /// first file on, so it is made without a transfer in it (`clone_into_a_sandbox`,
+    /// ADR-0323).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
@@ -52,13 +50,8 @@ impl Git {
             .confinement
             .as_ref()
             .and_then(|confinement| confinement.sandbox_of_path(dest));
-        if let Some((data, id)) = a_sandboxes {
-            if Path::new(url).is_absolute() {
-                self.copy_without_files(Path::new(url), dest)?;
-            } else {
-                self.clone_through((&data, &id), url, dest)?;
-            }
-            return self.check_out_files(dest);
+        if a_sandboxes.is_some() {
+            return self.clone_into_a_sandbox(url, Path::new(url).is_absolute(), dest);
         }
         self.run_ok(
             Invocation::new(self, "clone", None)
@@ -91,7 +84,7 @@ impl Git {
                     .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))
                     .local(&origin),
                 Route::Courier(courier, url) => {
-                    return self.fetch_through(&courier, repo, remote, &url);
+                    return self.fetch_through(&courier, repo, (remote, true), &url);
                 }
                 Route::Named => fetch.arg(remote),
             }
@@ -105,6 +98,11 @@ impl Git {
     /// URL in `repo`'s configuration, which a sandbox may rewrite (a playground, SPEC-099).
     pub fn fetch_branches_from(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
         require_absolute("source repository", source)?;
+        // A sandbox's clone: through a courier, as every transfer of one.
+        if let Some(courier) = self.courier(repo, true, true)? {
+            let source = source.to_string_lossy();
+            return self.fetch_through(&courier, repo, ("origin", false), &source);
+        }
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
                 .args([

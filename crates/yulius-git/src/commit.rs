@@ -197,6 +197,12 @@ impl Git {
     ) -> Result<(), GitError> {
         require_absolute("origin", origin)?;
         validate_push_refspec(refspec)?;
+        // A sandbox's clone: through a courier, as every transfer of one.
+        if let Some(courier) = self.courier(repo, true, true)? {
+            let (source, destination) = refspec.split_once(':').unwrap_or((refspec, refspec));
+            let sha = self.rev_parse(repo, source)?;
+            return self.push_through(&courier, &origin.to_string_lossy(), &sha, destination);
+        }
         self.run_ok(
             Invocation::new(self, "push", Some(repo))
                 .args(["push", "--quiet", "--"])

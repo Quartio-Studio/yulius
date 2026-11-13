@@ -530,16 +530,15 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
             "{answer}"
         );
     }
-    // and not from a path that would be two lines of the file that lends them (the second
-    // one naming any folder of the host).
-    let two_lines = w.sandbox.join("a\nb");
-    std::fs::create_dir_all(&two_lines)?;
+    // A path inside the sandbox is a path, whatever its characters: the transfer is tried.
+    let odd = w.sandbox.join("a\nb");
+    std::fs::create_dir_all(&odd)?;
     std::fs::remove_file(&objects)?;
-    std::fs::rename(&kept, two_lines.join("objects"))?;
-    std::os::unix::fs::symlink(two_lines.join("objects"), &objects)?;
+    std::fs::rename(&kept, odd.join("objects"))?;
+    std::os::unix::fs::symlink(odd.join("objects"), &objects)?;
     for answer in transfers().await {
         assert!(
-            answer.starts_with("Err") && answer.contains("on one line"),
+            answer.starts_with("Err") && !answer.contains("outside its sandbox's folders"),
             "{answer}"
         );
     }
@@ -550,7 +549,7 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
         "the listing was tried: {listed:?}"
     );
     std::fs::remove_file(&objects)?;
-    std::fs::rename(two_lines.join("objects"), &objects)?;
+    std::fs::rename(odd.join("objects"), &objects)?;
 
     // A worktree that names another sandbox's repository as its own: no transfer is made
     // with that repository's objects (the confined Git cannot even read it).
@@ -814,6 +813,155 @@ async fn a_data_folder_behind_a_link_transfers_as_any_other() -> TestResult {
     adapter.merge_integration(&wt, "main", &token()).await?;
     adapter.sync_clone(url, &repo, &token()).await?;
     assert_eq!(std::fs::read_dir(real.join("git-couriers"))?.count(), 0);
+    Ok(())
+}
+
+/// No transfer is made in the clone, so nothing its configuration names for a transfer
+/// happens: a bundle to download before a fetch (Git connects for it whatever transports the
+/// command allows) and a helper to ask for the password that download then wants (started
+/// through the shell). The server's fetches, push and listing with the playground's origin
+/// connect to nothing and start nothing, and still arrive.
+#[tokio::test]
+async fn a_clones_transfer_settings_reach_no_transfer() -> TestResult {
+    let w = world().await?;
+    let (command, marker) = w.marking("ran-credential-helper");
+    // A server of the agent's that counts who connects and asks for a password.
+    let server = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let at = server.local_addr()?;
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&asked);
+    std::thread::spawn(move || {
+        for connection in server.incoming().flatten() {
+            use std::io::{Read as _, Write as _};
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut connection = connection;
+            let _ = connection.read(&mut [0; 2048]);
+            let _ = connection.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"x\"\r\n\
+                  Content-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    for (key, value) in [
+        ("fetch.bundleURI", format!("http://{at}/b.bundle")),
+        ("credential.helper", format!("!{command}")),
+        (
+            &*format!("credential.http://{at}.helper"),
+            format!("!{command}"),
+        ),
+        ("push.negotiate", "true".to_owned()),
+    ] {
+        git(&w.repo, &["config", key, &value])?;
+    }
+    std::fs::write(w.wt.join("a.txt"), "a\n")?;
+    w.adapter
+        .commit_all(&w.wt, "feat: a", "Alice", "alice@example.com")
+        .await?;
+    w.adapter.push(&w.wt, "feat/1", "feat/1", &token()).await?;
+    let head = git(&w.wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(git(&w.origin, &["rev-parse", "feat/1"])?, head);
+    assert_eq!(
+        w.adapter
+            .remote_branch_head(&w.wt, "feat/1", &token())
+            .await?
+            .as_deref(),
+        Some(head.as_str())
+    );
+    // The origin moves on: the fetch brings it.
+    let elsewhere = w.sandbox.join("../../elsewhere");
+    git(
+        &w.outside,
+        &[
+            "clone",
+            "-q",
+            &w.origin.to_string_lossy(),
+            &elsewhere.to_string_lossy(),
+        ],
+    )?;
+    std::fs::write(elsewhere.join("b.txt"), "b\n")?;
+    git(&elsewhere, &["add", "-A"])?;
+    git(&elsewhere, &["commit", "-q", "-m", "b"])?;
+    git(&elsewhere, &["push", "-q", "origin", "main"])?;
+    w.adapter.merge_integration(&w.wt, "main", &token()).await?;
+    assert!(w.wt.join("b.txt").is_file(), "the origin's work arrived");
+    // A refresh of the branches alone brings no tag; a fetch by the remote's name does.
+    git(&w.origin, &["tag", "t1", "main"])?;
+    git(&w.origin, &["branch", "later", "main"])?;
+    w.adapter.fetch_branches_from(&w.repo, &w.origin).await?;
+    assert!(
+        git(
+            &w.repo,
+            &["rev-parse", "--verify", "--quiet", "origin/later"]
+        )
+        .is_ok()
+    );
+    assert!(git(&w.repo, &["rev-parse", "--verify", "--quiet", "t1"]).is_err());
+    w.adapter
+        .sync_clone(&w.origin.to_string_lossy(), &w.repo, &token())
+        .await?;
+    assert_eq!(
+        git(&w.repo, &["rev-parse", "t1"])?,
+        git(&w.origin, &["rev-parse", "t1"])?
+    );
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the clone's bundle address was connected to"
+    );
+    assert!(!marker.exists(), "the clone's credential helper ran");
+    Ok(())
+}
+
+/// A repository whose own history ends early (a playground made of a shallow upload) is
+/// cloned and fetched as any other: the clone learns where the history ends (its `shallow`
+/// file, which the courier's is a link to) and is whole.
+#[tokio::test]
+async fn a_shallow_origin_makes_a_whole_shallow_clone() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let full = root.join("full");
+    std::fs::create_dir_all(&full)?;
+    git(&full, &["init", "-q", "-b", "main"])?;
+    for n in 1..=3 {
+        std::fs::write(full.join("n.txt"), format!("{n}\n"))?;
+        git(&full, &["add", "-A"])?;
+        git(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
+    }
+    let origin = root.join("playgrounds/s1.git");
+    std::fs::create_dir_all(root.join("playgrounds"))?;
+    git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            "--depth",
+            "2",
+            &format!("file://{}", full.display()),
+            &origin.to_string_lossy(),
+        ],
+    )?;
+    let adapter = crate::support::strict_git();
+    let repo = root.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(root.join("sandboxes/s1"))?;
+    adapter
+        .sync_clone(&origin.to_string_lossy(), &repo, &token())
+        .await?;
+    assert_eq!(
+        git(&repo, &["log", "--format=%s"])?
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["commit 3", "commit 2"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".git/shallow"))?,
+        std::fs::read_to_string(origin.join("shallow"))?
+    );
+    git(&repo, &["fsck", "--connectivity-only"])?;
+    adapter
+        .sync_clone(&origin.to_string_lossy(), &repo, &token())
+        .await?;
+    git(&repo, &["fsck", "--connectivity-only"])?;
     Ok(())
 }
 
