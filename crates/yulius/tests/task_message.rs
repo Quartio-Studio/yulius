@@ -874,6 +874,120 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
     Ok(())
 }
 
+/// SPEC-488 AC6 (EBX-005), with a pull request's news: text left in the prompt box holds the
+/// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
+/// watch types nothing into a task whose person must act; a flag that only says a message
+/// waits does not stop it once the screen shows the box empty. The person clears their text
+/// and sends nothing: past the minute the watch types the news and the flag ends. The flag
+/// used to stand, with the news untyped, until a prompt was sent.
+#[test]
+fn a_flag_of_a_held_message_does_not_stop_the_pull_request_watch() -> TestResult {
+    use crate::pr_watch::{git, run};
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::ci::RunState;
+    use yulius_domain::delivery::DeliveryStage;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock, id, caller) = idle_full_screen(&data, 13 * MINUTE).await?;
+        // The task's pull request #7 is open at its head, and the head's run failed.
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let seed_dir = data.join("seed");
+        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+        let repo = data
+            .join("sandboxes")
+            .join(task.sandbox_id.as_str())
+            .join("repo");
+        git(&repo, &["fetch", "-q", "origin"])?;
+        let worktree = task.worktree_path.clone().ok_or("no worktree")?;
+        let worktree = Path::new(&worktree);
+        std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
+        git(worktree, &["commit", "-q", "-am", "task"])?;
+        let head = git(worktree, &["rev-parse", "HEAD"])?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(7),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let bounds = WatchBounds::default();
+        let watched = |app: Arc<App>, id: TaskId| async move {
+            let typed = app.watch_prs(&WatchBounds::default()).await;
+            typed.into_iter().find(|(task, _)| *task == id)
+        };
+        assert!(app.watch_prs(&bounds).await.is_empty(), "no news yet");
+
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        wait_for("the draft in the box", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ half a thought")
+        })
+        .await?;
+        let (red, job) = run(&task.sandbox_id, "r1", &head, RunState::Failed, None, 1);
+        app.deps.store.insert_ci_run(&red, &[job]).await?;
+
+        // Eleven minutes after their last key: the news waits and the task is flagged; a
+        // second pass leaves it so.
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert_eq!(watched(app.clone(), id.clone()).await, None);
+            assert_eq!(
+                support::attention(&app, id.as_str()).await?,
+                held_message_flag()
+            );
+        }
+
+        // They clear it and send nothing; past the minute the watch types the news.
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        let typed = watched(app.clone(), id.clone())
+            .await
+            .ok_or("the news was not typed into the flagged task")?;
+        assert!(
+            typed
+                .1
+                .starts_with("Yulius, about your pull request #7: Its Yulius CI run r1 at "),
+            "{typed:?}"
+        );
+        wait_for("the news read alone", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: Yulius, about your pull request #7")
+        })
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+
+        // Another reason a person must act still stops the watch, an empty box or not.
+        let (again, job) = run(&task.sandbox_id, "r2", &head, RunState::Failed, None, 2);
+        app.deps.store.insert_ci_run(&again, &[job]).await?;
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+                && app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        clock.0.store(MINUTE, Ordering::SeqCst);
+        assert_eq!(watched(app.clone(), id.clone()).await, None);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-480 AC7 (DRF-006; review round 1): the wake after an outage is given up ten minutes
 /// after the start, so at its last pass a wake that a person's draft holds tells them, however
 /// young their keystroke is: here two minutes, at which an earlier pass says nothing. The task
