@@ -1417,8 +1417,12 @@ transports pinned to `file`
 ([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A transfer with GitHub,
 which carries the server's token, is not made in the clone at all: a courier, a bare repository
 of the server's own in `<data>/git-couriers` that borrows the clone's objects, fetches or
-pushes with the token, and the clone takes a fetch's result from it as from any folder. No
-command in a sandbox's folder gets the adapter's own configuration, where the token travels
+pushes with the token, and the clone takes a fetch's result from it as from any folder; a new
+clone is made in a courier and copied. No command in a sandbox's folder, and none that writes a
+new repository there, gets the adapter's own configuration, where the token travels. What the
+server itself commits and pushes (a change from the remote control, an empty repository's first
+commit) is made in `<data>/changes`, not in the sandbox's folder. No Git command asks a program
+for a password or fetches a missing object from a remote the clone names
 (`yulius_git::courier`,
 [decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
 

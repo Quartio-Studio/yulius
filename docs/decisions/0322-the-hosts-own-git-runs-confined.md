@@ -118,8 +118,10 @@ alternate's refs).
 - The program loader is among what may be executed (the kernel starts every program through
   it), and it runs any file it can read. "Git's own programs only" therefore rests on Git
   never starting a configured word with an argument an agent chooses, and, where the shell
-  is allowed, on the other folder of the transfer being one Yulius names. Both are made
-  explicit and central by [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
+  is allowed, on the other folder of the transfer being one Yulius names and on Git starting
+  no transfer of its own there (it fetched a missing object from a remote the clone names,
+  with the clone's command for the other side). All three are made explicit and central by
+  [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
 - Was open, finding G2: for a transfer with GitHub, the clone's configuration shaped the
   connection that carries the server's token (`http.<url>.proxy`, `http.<url>.sslVerify`:
   a key for a URL beats the command line). Closed by

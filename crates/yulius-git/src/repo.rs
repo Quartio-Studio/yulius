@@ -26,7 +26,8 @@ impl Git {
         Ok(())
     }
 
-    /// Adds a remote `name` pointing at `url` (https/http/ssh/git/file URL or absolute path).
+    /// Adds a remote `name` pointing at `url` (an https, http or file URL or an absolute path; an
+    /// ssh or git URL is taken as an address, but the server makes no transfer with one).
     pub fn remote_add(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
         validate_remote_name(name)?;
         validate_remote_url(url)?;

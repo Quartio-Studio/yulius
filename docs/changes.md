@@ -12,9 +12,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   certificate check) beat the server's own: the connection, token included, could go through
   a proxy the agents run. Such a transfer is now made in a repository of the server's own
   that borrows the clone's objects (`<data>/git-couriers`, empty between transfers), and no
-  command in a sandbox's folder gets the token in its environment. Also, for every Git
-  command of the server in one place: no external diff or text conversion, no signing, no
-  editor, no `ssh` or `git` transport.
+  command in a sandbox's folder gets the token in its environment; a new clone is made
+  there too and copied, and an empty repository's first commit is made in `<data>/changes`
+  instead of the sandbox's folder. Also, for every Git command of the server in one place:
+  no external diff or text conversion, no signing, no editor, no `ssh` or `git` transport,
+  no program asked for a password, and no missing object fetched from a remote the clone
+  names (its command for the other side ran in a push to a playground's origin).
+  `yulius doctor` checks the host's Git for the last one as "git missing objects": Git
+  2.45.1 or a patched release of the system's (Ubuntu 24.04's has it).
 - The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
   runs Git as the service user in clones whose every file an agent writes. A clone's
   configuration could make it run commands on the host (a filter, an `ssh` command, a
