@@ -670,7 +670,8 @@ impl App {
                 .map(|commit| commit.sha),
             None => None,
         };
-        if head.as_deref() != Some(armed.head.as_str()) {
+        // (Of an ended run only what became of its pull request is asked, below.)
+        if ended.is_none() && head.as_deref() != Some(armed.head.as_str()) {
             // The agent's own clean merges of the integration branch keep the review, so the
             // armed merge follows its head (SPEC-083 REV-001; 12 merges were dropped this way on
             // 2026-10-12/13). Its checks then decide at that head.

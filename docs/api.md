@@ -668,8 +668,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   integration head's own checks (they may not have reported yet), and is stopped by failing
   or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
   promotes or deploys on its own. Agents deliver their own work through the MCP tools
-  `delivery_merge` (passed checks and `reviewed_head`, the commit an independent review approved: the branch head, or an earlier head followed only by clean merges of
-  the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
+  `delivery_merge` (passed checks and `reviewed_head`, the commit an independent review
+  approved: the branch head, or an earlier head followed only by clean merges of the
+  integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
   the task owner's authority and are audited as `task:<n>` too (DLV-008). `delivery_merge`
   delivers the finished part of the task's plan: it is refused while no step is finished, and
@@ -1912,6 +1913,12 @@ boundary and the client sends the same request again after `Retry-After` seconds
 2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
+
+Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
+`/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application
+error with the status the public API gives that kind of error, and no body: a failure inside
+Yulius is `500` (and logged), never `502`, which `yulius wait` reads as something that cannot be
+reached and waits out.
 
 `PreToolUse` reaches the listener only for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (Bash
 is checked in the sandbox). The client sends a trimmed body, `{"hook_event_name", "tool_name",

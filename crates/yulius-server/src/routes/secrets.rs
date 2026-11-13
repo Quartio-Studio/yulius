@@ -379,7 +379,7 @@ async fn fingerprints(
         .map(Json)
         .map_err(|err| {
             tracing::debug!(error = %err, "fingerprints refused");
-            crate::error::status_for(&err)
+            crate::error::bare_status(&err)
         })
 }
 
@@ -393,7 +393,7 @@ async fn report(
     };
     match app.scrub_report(token, &body).await {
         Ok(()) => StatusCode::NO_CONTENT,
-        Err(err) => crate::error::status_for(&err),
+        Err(err) => crate::error::bare_status(&err),
     }
 }
 

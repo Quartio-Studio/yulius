@@ -50,7 +50,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14 (merged, #1257), D6 slice 15, QB1 follows;
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -358,6 +358,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `Running` lost its armed merge, also one in `WaitingCapacity` or `Switching`, although
   the documents say armed merges are restored.
 
+### Slice 16: the statuses of the agents' own listener
+
+- **QB1 (medium).** The server had three hand-written tables from an application error to
+  an HTTP status: `error::status_for` (the public API, and `/internal/scrub/*`),
+  `routes/internal.rs` `status_of` (hooks, `yulius wait`, the Git credential helper: `Invalid`
+  400, everything else but four kinds 502) and one in `routes/mcp.rs`. Two of them served
+  the same loopback listener and disagreed (`Invalid` 400 or 422, `Internal` 502 or 500,
+  `Capacity` 502 or 429). `yulius wait` takes 502 to 504 for "cannot be reached" and waits
+  it out without counting it: a failure inside Yulius at `/internal/agent/wait` (any store
+  error) kept an agent's wait going to its deadline, 90 minutes by default, and then told
+  it "When it restarts, Yulius wakes this task" although Yulius never stopped.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -652,6 +664,13 @@ no code path reaches; documents, texts shown to agents and people, and code that
   first, as for any task.
 - **ARM-003** A start (`restore_armed_merges`) puts back the armed merges of the tasks whose
   state keeps one, and forgets the others.
+- **STS-001** Every route of the server maps an application error to its HTTP status by
+  `error::status_for`: 401 unauthenticated, 403 forbidden or a bad CSRF token, 404 not
+  found, 409 a conflict or a missing account, 422 invalid, 429 capacity, 502 an upstream
+  failure, 500 an internal one. No file under `src/routes` holds another table; one kind
+  is answered differently on purpose, by its own route: a guest link that ended is 410
+  (SPEC-410). The routes that answer without a body log a failure inside Yulius as the
+  others do (`error::bare_status`).
 
 ## Plan
 
@@ -672,7 +691,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
-- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
+- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
+- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it
 
 ## Acceptance criteria
 
@@ -1045,6 +1065,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   not merged at the start and is forgotten.
 - **AC-91** The existing tests of armed merges, merge trains and the playground's delivery
   pass with their tasks running (a live run in a fixture is a running task now).
+- **AC-92** `status_for` gives each kind of application error the status of STS-001.
+- **AC-93** No line of a file under `crates/yulius-server/src/routes` is a `match` arm from
+  an `AppError` kind to a `StatusCode` (the two tables that had such arms are gone).
+- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
+  says the run ended, not that the branch moved. With the armed pull request merged by a
+  person, a commit past the armed head and the task closed: the pass says "merged".
+- **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
+  the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
+  500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
+  failure of its own).
 
 ## Test plan
 
@@ -1217,6 +1247,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 15: `yulius-domain` `task::tests::an_armed_merge_lives_with_the_run_that_armed_it`
   (AC-89); `yulius` `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-90); `delivery`,
   `merge_train` and `playground` (AC-91).
+- Slice 16: `yulius-server` `error::tests::every_application_error_has_one_status` (AC-92)
+  and `error::tests::no_route_maps_an_application_error_to_a_status_itself` (AC-93);
+  `yulius` `restart::a_server_failing_every_request_ends_the_wait_after_a_few_tries` and
+  the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94);
+  `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-95, slice 15's rule).
 
 ## Decisions
 
@@ -1280,6 +1315,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 16 (no decision record): the loopback listener takes the public table as it is,
+  422 for an invalid request included; nothing in the repository reads its 400 (the hook
+  client takes any 5xx for "try again while held" and any other error for none, the
+  credential helper anything but 200 for no credential, `yulius wait` is described above).
+  `yulius wait` keeps waiting out 502 to 504: with one table a 502 from Yulius means that
+  what Yulius asked (GitHub) could not be reached, which passes by itself as an outage
+  does; only the words it prints then ("Yulius cannot be reached") are less exact, and
+  stay. The source test (AC-93) is the guard against a fourth table; a test through the
+  listener would need a store that fails on demand, which the harness does not have.
 - Slice 15 (no decision record: DLV-205's sentence "put back at startup for tasks still
   running", made the rule of every pass too): an armed merge lives with the run that armed
   it. The other way was weighed: the order stands whatever becomes of the task, so a
@@ -1293,8 +1337,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   capacity returns while every slot is taken, and a task revived after a host move starts
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
-  is asked before the run's end is said: a person's merge does not clear the armed slot. The agent's own
-  message says what to do; the pull request is not touched.
+  is asked before the run's end is said: a person's merge does not clear the armed slot.
+  The agent's own   message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1468,9 +1512,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 15 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 16 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
@@ -1485,6 +1529,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
+| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
 | W7 | web UI | Dead exports and CSS rules | low | slice 15 |
 | D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
 | E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |
@@ -2478,3 +2523,46 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   rustdoc passed.
 - **Not tested, besides the list above:** the path that queues a held run (capacity back
   with every slot taken) end to end; the test sets the state.
+
+### Slice 16 (2026-11-13)
+
+- **Slice 15's delivery.** Pull request #1263 merged into `dev` (through a merge train of
+  one, at 7c20df998), its own Yulius CI run passed; its review approved the head in its
+  second round, and its three nits are answered here (the long line of `docs/api.md`, a
+  long line of this spec, and the order in `merge_armed_task`: of an ended run only what
+  became of its pull request is asked).
+- **Tests failing without their fix** (`target/audit/slice16/mutate.py`, `mutations.log`, 3
+  cases, each failed its test): a failure inside Yulius answered with 502; a table of its
+  own in the loopback listener's routes; one in the remote MCP endpoint's. The third
+  passed at first: the source test looked only for arms that begin with `AppError::`, and
+  the type can be named by its path; it reads any arm that names it now.
+- **The suites:** `2739 tests run: 2739 passed` for the server, the app and the binary
+  (`target/audit/slice16-suite1.log`): hooks, the credential helper, `yulius wait` against
+  a listener that answers 500, the remote MCP endpoint.
+- **Gate.** `scripts/dev ci` at `de1cb8ba0`: exit 0; `4280 tests run: 4280 passed, 17 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A failure inside Yulius through the listener itself (it needs a store that
+  fails on demand; the mapping and the absence of another are what is tested, and
+  `yulius wait`'s reading of a 500 is); an outside client of the loopback listener that
+  reads its 400 or 502 (none in this repository).
+- **Review, round 1** (a fresh session, read-only, head `2a5f2d4ec`): request changes. One
+  finding in this slice's code, minor: "A behaviour change with no test" (the condition
+  `ended.is_none() &&` in `merge_armed_task`: an ended run is not asked where its branch
+  is). `delivery::an_armed_merge_ends_with_its_tasks_run` now commits past the armed head
+  before the task is closed and again before the pull request is merged by hand, and
+  expects "run ended (closed)" and "merged", never "dropped". One finding from before,
+  minor: "an Internal error is answered without a log line" on the routes of the agents'
+  own clients, where its 500 now ends a `yulius wait`; `bare_status` logs it as the public
+  API does and is what `routes/internal.rs`, `routes/mcp.rs` and `routes/secrets.rs` call.
+  The nits are answered: the source test's comment says what it reads; STS-001 names the
+  guest link's 410; `docs/api.md` speaks of the routes the agents' clients call;
+  `docs/changes.md` says five kinds; the line of this spec is joined; the `unavailable`
+  code that nothing produces is P15 in the ledger.
+- **Tests failing without their fix, after the review** (`mutations.log`, 4 cases, each
+  failed its test): the three above and "an ended run's moved branch is the reason it
+  gives".
+- **Gate after it.** `scripts/dev ci` at `c65fb7087`: exit 0;
+  `4280 tests run: 4280 passed, 17 skipped` (`target/audit/slice16/gate2.log`).
