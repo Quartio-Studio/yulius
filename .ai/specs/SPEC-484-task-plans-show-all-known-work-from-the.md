@@ -121,8 +121,11 @@ to the person.
   `Nudge::Complete`: "Every step is finished (N of N), so the task reads 100 %. If you know of
   work that is not done (a later slice or pull request, the review of a fix), add its steps
   now (`steps_set`)." It comes with the step tools' results and the briefing like every nudge.
-  In the briefing the nudges stand before the list of steps: the list is the part a tight
-  briefing cuts, and a long plan's list does not fit it whole (`steps_get` has all of it).
+  In the briefing the nudges stand before the list of steps: at the default budget a long
+  plan's list does not fit whole and is what gets cut, so its nudges stay (`steps_get` has all
+  of the list). With a workflow's instructions taking their room (the tight budget of the
+  briefing's tests, 7,850 bytes) the steps part can be cut down to its heading, nudges
+  included: it is an optional part of the briefing, as before.
 - PLN-006 (the briefing). Rule 3 says: plan all the work known now, later slices and pull
   requests included, 3-12 steps per pull request and at most 60; a step is done when nothing of
   it remains (a review step when the reviewer approved); add a step only for work found later.
@@ -138,7 +141,9 @@ to the person.
   (merges the finished part; refused while none is finished, and while a step is in progress
   when the call has a new head to deliver; the work ahead begins after the merge; a playground
   squashes once) say the rule; so does the server's instruction line.
-- PLN-008 (skills, workflows, templates). `delivery-pipeline` (sections 1, 5 and 6),
+- PLN-008 (skills, workflows, templates). `delivery-pipeline` (sections 1, 5 and 6; section 6
+  also says that the next step's work begins after the merge and that a playground delivers
+  once),
   `om-spec-writing` (step 7), the Feature workflow's instructions, the spec template's Plan
   comment and the scaffolded AGENTS.md rule 3 say the same rule with the same numbers. (The Fix
   workflow states no count and its instructions are at their byte limit: unchanged.) One test

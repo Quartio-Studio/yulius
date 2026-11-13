@@ -1769,7 +1769,7 @@ async fn set_steps(h: &Harness, id: &str, statuses: &[&str]) -> BoxResult<()> {
 /// SPEC-484 PLN-001 in a playground: its agent's merge is the task's one squash, so it waits for
 /// the whole plan and says so (a merged playground task delivers nothing again, so a part
 /// squashed first would leave the rest undeliverable); with the plan finished it is armed and
-/// lands as before, and its messages promise no later delivery.
+/// lands as before.
 #[tokio::test]
 async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     let (h, owner) = ci_world().await?;
@@ -1802,7 +1802,6 @@ async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     set_steps(&h, "t1", &["done", "done"]).await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
-    assert!(!armed.contains("still ahead"), "{armed}");
     ci_settle(&h, &owner, &body).await?;
     dev_moves(&h, &body, &dev).await?;
     assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");

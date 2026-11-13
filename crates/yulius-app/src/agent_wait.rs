@@ -1549,6 +1549,16 @@ mod tests {
             assert!(!text.contains("end with your summary"), "{text}");
             assert!(!text.contains("  "), "{text}");
         }
+        // What the merge counts as is said without a next step, steps ahead or not.
+        let fact = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            GateResult::Run(Some(RunState::Passed)),
+            false,
+            ahead,
+        );
+        assert!(!fact.contains("ahead"), "{fact}");
         // What the profile asks for the merged part stays; only the task's end gives way.
         assert_eq!(
             after_merge(ahead, PROFILE_ASKS),

@@ -102,7 +102,9 @@ GitHub Actions, no paid rulesets: Yulius CI runs the gate and records it, see `c
 independent review approved, the spec is valid when one is required, the steps of what it
 delivers are done with none in progress, and the branch is up to date with the integration
 branch. A merge delivers the finished part of the plan: steps still ahead stay open, and the
-task goes on with them as its next pull request. Features are squash-merged into the
+task goes on with them as its next pull request, begun once this one is merged (a commit on
+the branch drops an armed merge; a Yulius playground delivers a task once, with its whole
+plan). Features are squash-merged into the
 integration branch; nobody else will press the button (in Yulius: `delivery_merge`, which
 refuses anything that is not green).
 
