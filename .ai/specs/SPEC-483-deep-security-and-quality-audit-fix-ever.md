@@ -462,7 +462,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
-- [ ] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders, reviewed
+- [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders, reviewed
 
 ## Acceptance criteria
 
@@ -1529,3 +1529,58 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested, named by the review.** How Chrome 157 classes a proxied answer's address
   space (the fix does not depend on it); WebTransport under a fixed proxy; a managed proxy
   policy on the host overriding the switches (documented in `docs/operations.md`).
+
+### Slice 10 (2026-11-13)
+
+- **The hole, on the adapter as it was** (`target/audit/slice10/unconfined-proof.log`: the
+  `git_confined` tests with the confinement taken out of the tests' adapter): the server's
+  Git ran the clone's `filter.mine.process`, `core.sshCommand`, `remote.origin.uploadpack`
+  and `remote.origin.receivepack` (four markers); a fetch replaced a file outside the sandbox
+  with Git's `FETCH_HEAD` ("…branch 'main' of …/playgrounds/s1"); a push by the remote's name
+  arrived at another sandbox's origin. By hand, a link at `.git/shallow` gave "fatal: bad
+  shallow line: secret-line-of-the-host".
+- **Confined, by hand first** (`yulius git-confined`, Landlock ABI 8 here): `status`, `log`
+  and an HTTPS `ls-remote` work; a filter's command fails with "cannot exec 'sh -c …':
+  Permission denied"; the linked `FETCH_HEAD` is refused ("cannot open '.git/FETCH_HEAD':
+  Permission denied") and the file outside kept; a local fetch needs the shell ("cannot exec
+  'git-upload-pack …'") and works with it; with the shell, `core.alternateRefsCommand` and
+  `core.sshCommand` through a rewritten address ran, and with the pins they did not
+  ("transport 'ssh' not allowed").
+- **The binary's whole suite, confined.** Every test that uses the real adapter now uses it
+  confined in the server's layout (`support::confined_git`, 45 places). The first such run
+  failed 181 tests and showed what a confined command needed named: destinations of `init`
+  and `clone`, the other folder of local transfers, bundles, a CD export's index, worktree
+  paths, a playground's origin for pushes by the remote's name, import worktrees beside the
+  sandbox's folder. After that: 2134 of 2134 passed.
+- **Tests failing without their fix** (`target/audit/slice10/mutate.py`, 23 cases,
+  `mutations.log`): each failed its tests: Git unconfined, the shell always executable,
+  every program executable, writes not confined, reads not confined, a Git not on `PATH`
+  started by name, a local transfer without its pins (attack test and unit), with the
+  adapter's configuration, without the shell, the shell for every command, what a command
+  names not reached, any folder taken as an origin (attack test and unit), a sandbox's
+  folders being the whole data folder (attack test and unit), import worktrees no sandbox's,
+  a push or a fetch with the own origin by the remote's name, the server's adapter not
+  confined, the doctor passing a host that cannot confine; and the two extras: a request
+  without a body framed as chunked, a withheld screen flagged once per run.
+- **A flaky test of slice 5**, met in this slice's first confined run:
+  `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once` failed 5 of 24
+  runs alone (the task read `Waiting`, or its flag had no reason): the prompt the test typed
+  started a turn of the fake agent, whose states replaced the flag. With a key that starts
+  no turn: 30 of 30. The flag is now raised again after such a replacement (test first:
+  `Waiting` where `NeedsAttention` was expected).
+- **G2, found here** (`urlmatch-proof.log`): with `http.https://github.com/.sslVerify=false`
+  and `.proxy` in the clone's configuration, `git config --get-urlmatch` under the server's
+  command line (`-c http.sslVerify=true -c http.proxy=`) and environment answered `false`
+  and the clone's proxy. Listed, not fixed here.
+- **Gate.** `scripts/dev ci` at `f819929cd`: exit 0; `4188 tests run: 4188 passed, 16
+  skipped`; doctor (with "git confinement: ok"), repository check, lint, the macOS compile,
+  cargo-deny (the new `landlock` crate: MIT OR Apache-2.0), cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 9, round 2** (head 72b4a521f): "No critical, major or minor own-code
+  finding is open; two nits." Approve; both nits answered here; merged as pull request #1250.
+- **Not tested here.** A kernel without Landlock (the launcher's refusal is code read, not
+  run: this machine enforces it). A real server with real sandboxes, a relay and GitHub over
+  HTTPS from the confined adapter (HTTPS was run by hand through this sandbox's proxy; the
+  suite's "GitHub" is folders, with the shell). Git builds whose helpers live outside their
+  `exec-path`. macOS, where Git runs unconfined as before.
