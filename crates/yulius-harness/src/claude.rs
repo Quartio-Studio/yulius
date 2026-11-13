@@ -1134,7 +1134,12 @@ mod tests {
         );
         // A run id that is not one (it would be named in a prompt) is not passed on; the launch
         // still counts as background work.
-        for run in [r#""wf_1\"}) and rm -rf""#, r#""""#, "7", &format!("\"{}\"", "w".repeat(129))] {
+        for run in [
+            r#""wf_1\"}) and rm -rf""#,
+            r#""""#,
+            "7",
+            &format!("\"{}\"", "w".repeat(129)),
+        ] {
             assert_eq!(
                 launch(&format!(
                     r#"{{"status":"async_launched","taskId":"wtx0s195j","taskType":"local_workflow","runId":{run}}}"#
@@ -1164,9 +1169,11 @@ mod tests {
                 r#"{{"type":"system","subtype":"turn_duration","durationMs":169,"messageCount":18{extra}}}"#
             ));
             match observed.as_slice() {
-                [Observed::TurnEnded {
-                    background_agents, ..
-                }] => *background_agents,
+                [
+                    Observed::TurnEnded {
+                        background_agents, ..
+                    },
+                ] => *background_agents,
                 other => panic!("{other:?}"),
             }
         };
@@ -1220,12 +1227,14 @@ mod tests {
             r#"{"isSidechain":true,"agentId":"a8a9fc5f53c4dd2f4","type":"assistant","timestamp":"2026-11-13T16:27:59.360Z","message":{"id":"aa7cf6b7","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You've hit your 5-hour limit · resets 7:27pm (UTC)"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794598079,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}},"quotaLimits":{"status":"rejected","resetsAt":1794598079,"rateLimitType":"five_hour"},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"version":"2.1.323"}"#,
         );
         match observed.as_slice() {
-            [Observed::LimitReached {
-                resets_at,
-                window_minutes,
-                at,
-                ..
-            }] => {
+            [
+                Observed::LimitReached {
+                    resets_at,
+                    window_minutes,
+                    at,
+                    ..
+                },
+            ] => {
                 assert_eq!(*resets_at, Some(Timestamp(1_794_598_079_000)));
                 assert_eq!(*window_minutes, Some(300));
                 assert_eq!(*at, Some(Timestamp(1_794_587_279_360)));

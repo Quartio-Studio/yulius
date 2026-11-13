@@ -185,6 +185,14 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// The session launched a dynamic workflow (Claude Code's Workflow tool; SPEC-486 WFL-003),
+    /// beside the [`Observation::BackgroundStarted`] of the same `task`.
+    WorkflowLaunched {
+        /// Claude Code's task id of the run: the notification of its end names it.
+        task: String,
+        /// The run id the workflow is resumed by (letters, digits, `_` and `-` only).
+        run: String,
+    },
     /// A task notification said the background work `id` ended.
     BackgroundEnded {
         /// Claude Code's task id.

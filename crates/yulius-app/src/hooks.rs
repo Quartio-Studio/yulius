@@ -838,6 +838,18 @@ impl App {
         };
         self.set_task_activity(&task, Activity::Working).await?;
         self.keep_working_stretch(&task.id, stretch).await;
+        // A workflow of the session is paused at a usage limit: its agent is told to resume
+        // it, not to start it again (SPEC-486 WFL-006).
+        if let Some(runs) =
+            runtime.with_workflows(|workflows: &mut crate::dynamic_workflow::Unfinished| {
+                workflows.paused()
+            })
+        {
+            return Ok(HookReply::Output(HookOutput::additional_context(
+                events::USER_PROMPT_SUBMIT,
+                crate::dynamic_workflow::paused_context(&runs),
+            )));
+        }
         Ok(HookReply::Output(HookOutput::default()))
     }
 

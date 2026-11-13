@@ -130,6 +130,8 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
+    /// The dynamic workflows the session launched whose end was not read (SPEC-486 WFL-003).
+    pub(crate) workflows: Mutex<crate::dynamic_workflow::Unfinished>,
     /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
     /// word that the session stays there (SPEC-464 UCL-007).
     pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
@@ -491,6 +493,17 @@ impl TaskRuntime {
             || self.queue.lock().map_or(true, |queue| queue.hands_on())
     }
 
+    /// Reads or changes what is known of the session's dynamic workflows (SPEC-486).
+    pub(crate) fn with_workflows<T: Default>(
+        &self,
+        change: impl FnOnce(&mut crate::dynamic_workflow::Unfinished) -> T,
+    ) -> T {
+        self.workflows
+            .lock()
+            .map(|mut workflows| change(&mut workflows))
+            .unwrap_or_default()
+    }
+
     /// Changes what is known of the queue.
     pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
         if let Ok(mut queue) = self.queue.lock() {
@@ -512,6 +525,7 @@ impl TaskRuntime {
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             at_limit: AtomicBool::new(false),
+            workflows: Mutex::new(crate::dynamic_workflow::Unfinished::default()),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
             blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
@@ -1620,14 +1634,23 @@ impl App {
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::AfterLimit, Some(prev)) => (
-                SessionMode::Resume {
-                    session_id: prev.session_id.clone(),
-                    prompt: None,
-                    continue_interrupted: true,
-                },
-                LaunchKind::Resume,
-            ),
+            (RunStart::AfterLimit, Some(prev)) => {
+                // Workflows the old process left unfinished end with it: the session is told
+                // to resume them by their run ids, which Claude Code does not do by itself;
+                // that prompt is the turn this launch opens with (SPEC-486 WFL-004).
+                let runs = self
+                    .runtime(&task.id)
+                    .with_workflows(crate::dynamic_workflow::Unfinished::take);
+                (
+                    SessionMode::Resume {
+                        session_id: prev.session_id.clone(),
+                        prompt: (!runs.is_empty())
+                            .then(|| crate::dynamic_workflow::resume_prompt(&runs)),
+                        continue_interrupted: runs.is_empty(),
+                    },
+                    LaunchKind::Resume,
+                )
+            }
             // Without a recorded session there is nothing to resume: the task starts afresh.
             (RunStart::Resume { .. } | RunStart::AfterLimit, None)
             | (RunStart::Fresh { .. }, _) => {
@@ -1688,13 +1711,12 @@ impl App {
                         ..
                     }
                 ));
-        // This session's transcript steps back over a usage limit before the run (SPEC-034).
-        let stepped_back = match &mode {
-            SessionMode::Resume {
-                session_id,
-                continue_interrupted: true,
-                ..
-            } => Some(session_id.clone()),
+        // This session's transcript steps back over a usage limit before the run (SPEC-034),
+        // also when the run opens with the prompt that resumes its workflows (SPEC-486).
+        let stepped_back = match (&start, &mode) {
+            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. }) => {
+                Some(session_id.clone())
+            }
             _ => None,
         };
         let attempt_id =
@@ -3750,13 +3772,22 @@ impl App {
         if for_claude_code {
             runtime.hub.notice(self.claude_code_move_notice());
         } else {
-            runtime.hub.notice(if fresh {
+            let line = if fresh {
                 "↻ Yulius starts a fresh session for this task…"
             } else if elsewhere {
                 "↻ Yulius continues this session on another Claude subscription…"
             } else {
                 "↻ Yulius continues this session…"
-            });
+            };
+            // Past a limit met while a workflow ran, the workflow is resumed (SPEC-486 WFL-004).
+            let resumes_workflow = matches!(start, RunStart::AfterLimit)
+                && runtime.with_workflows(|workflows| !workflows.runs().is_empty());
+            if resumes_workflow {
+                let resumed = crate::dynamic_workflow::RESUMED_NOTICE;
+                runtime.hub.notice(&format!("{line}{resumed}"));
+            } else {
+                runtime.hub.notice(line);
+            }
         }
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
@@ -4733,6 +4764,8 @@ impl App {
             Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
             _ => None,
         };
+        // A workflow launched, ended, or met by a limit while unfinished (SPEC-486 WFL-003).
+        runtime.with_workflows(|workflows| workflows.observe(&observation));
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4922,6 +4955,8 @@ impl App {
             Observation::BackgroundResumable { id } => {
                 self.background_resumable(task_id, id).await;
             }
+            // Kept above; its background work is the `BackgroundStarted` beside it.
+            Observation::WorkflowLaunched { .. } => {}
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}

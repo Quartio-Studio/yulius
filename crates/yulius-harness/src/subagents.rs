@@ -472,8 +472,8 @@ mod tests {
     }
 
     #[test]
-    fn a_workflow_s_agents_are_read_over_the_run_s_window()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn a_workflow_s_agents_are_read_over_the_run_s_window() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let transcript = dir.path().join("s1.jsonl");
         let run = workflow_dir(&transcript).join("wf_1");
