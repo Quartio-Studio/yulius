@@ -357,7 +357,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
-- [ ] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
+- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
 
 ## Acceptance criteria
 
@@ -1075,3 +1075,41 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested here.** The race on a real browser (a slow screenshot, a fill and a navigation
   at once): the order is tested on the fake with the lock held by a delayed look at the page.
   A page that redirects by itself while it is typed into, on a real site.
+
+### Slice 8 (2026-11-13)
+
+- **Tests failing without their fix** (`target/audit/slice8/mutate.py`, ten cases, each
+  switched one check off and ran its test): the frames not asked (browser and through the MCP
+  tool), the frames in other processes not asked, frames that cannot be listed typed into:
+  `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for` and
+  `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
+  failed; where the tab is going not asked, a navigation given up still standing (each in the
+  browser and through the MCP tool), only a link's navigation counting, a navigation inside
+  the document counting:
+  `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` and the MCP test
+  failed.
+- **Real browser** (Google Chrome 157, opt-in, `YULIUS_TEST_CHROMIUM`): four tests passed.
+  `a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium`: a page at `127.0.0.2`
+  framing `localhost` with the focus in the frame's field got nothing typed and the answer
+  named `localhost`; with both allowed it was typed. Before the fix the same steps typed the
+  secret into the frame. `a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium`:
+  a fill right after a click on a link to `localhost` (answering after 1.5 s) typed nothing.
+  Measured there with a probe since removed: `Page.getFrameTree` on a new session answered
+  1.52 s after the click with the new address (4.01 s with a 4 s server, also for a link to
+  the same site), so on Chrome 157 the answer is `SecretPageRefused` by slice 7's rule and
+  `SecretPageLeaving` is not reached; the test accepts either and says so.
+- **The gate's first run** at `8d90eacc5` failed in
+  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` (slice 5's test):
+  reproduced with a 300 ms delay before the typing flag was cleared (the same panic), fixed
+  by ending the typing before the task is flagged, passed with the delay in place, delay
+  removed.
+- **Gate.** `scripts/dev ci` at `2f17216be`: exit 0; `4157 tests run: 4157 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run for this slice.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 7, round 2** (head ec5c5c240): approve; merged as pull request #1247.
+- **Not tested here.** `SecretPageLeaving` on a real browser: Chrome 157 holds its answer
+  during a navigation, so only the fake reaches it. A frame nested in another site's frame
+  in a process of its own on a real Chrome (the fake lists such targets; the real test uses
+  one frame). Chromium builds other than Google Chrome 157.
