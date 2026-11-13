@@ -2689,5 +2689,31 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested.** A real session that ignores its end for a minute (the test host drops
   the request and the wait is 300 ms); a probe that times out by itself (the test host
   answers "not known" at once); the restart on a newer Claude Code meeting a session that
-  cannot be ended (it shares `switch_timed_out`; only its cooldown differs); the end of a
-  run recorded twice (Decisions).
+  cannot be ended (it shares `switch_timed_out`; its cooldown differs and it says nothing
+  of a switch); the host reporting the exit while it is killed, with the real host (the
+  test makes the session leave at that moment instead); the end of a run recorded twice
+  (Decisions).
+- **Review, round 1** (a fresh session, read-only, head `44da4c6e2`): request changes. One
+  major finding in this slice's code: "The outcome of a timed-out switch still depends on
+  who records the run's end first, and two orders leave the task `switching` with no run"
+  (the run's own exit taken at the deadline; the host reporting the exit while it is
+  killed; and a run that exits before a refused kill, left `running` with no run). The
+  slot now says the run was given up, every recorder reads it, a run whose end was taken
+  is waited for, and four tests make the orders with pause points (AC-99, AC-100). Two
+  minor: SPEC-002 names `stopped(switch_timeout)` for this and the slice rested the task
+  as `stopped_lost` (it is `stopped_switch_timeout` now, and SPEC-002's row names the run
+  that cannot be ended); a `Done` task moved while idle rests stopped, not closed (not
+  changed: Decisions say why, with RBT-001's own test). Nits answered: no notice of a
+  switch for a restart on a newer Claude Code, and the flag's action is "Stop the task to
+  try again."; a session kept for a look without an answer is logged, and the architecture
+  says what a host whose look never answers means; SWT-001 names both looks; the pair of
+  waits stays a pair (Decisions).
+- **Tests failing without their fix, after the review** (`mutations2.log`, 11 cases, each
+  failed its test): the six above as they are now, and: the reader's loss keeping its own
+  reason; the slot emptied when the switch gives the run up; the exit of a given-up run
+  not resting the task; a run that ended before a refused kill called one that could not
+  be ended; a run whose end is being recorded not waited for.
+- **The suites after it:** `3222 tests run: 3222 passed, 17 skipped` for the domain, the
+  app and the binary (`target/audit/slice17/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `ea43f41d6`: exit 0;
+  `4287 tests run: 4287 passed, 17 skipped` (`target/audit/slice17/gate2.log`).
