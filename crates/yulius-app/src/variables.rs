@@ -80,7 +80,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<ProjectVariables> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &sid, Action::View).await?;
+        let (_, level) = self.require_for(ctx, &sid, Action::View).await?;
         let variables = self
             .deps
             .store
@@ -117,7 +117,7 @@ impl App {
         only_new: bool,
     ) -> AppResult<ProjectVariablesSetResult> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         if inputs.len() > MAX_VARIABLES {
             return Err(AppError::Invalid(format!(
                 "at most {MAX_VARIABLES} variables at once"
@@ -208,7 +208,7 @@ impl App {
         name: &str,
     ) -> AppResult<()> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         if !self
             .deps
             .store

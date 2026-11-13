@@ -1446,7 +1446,7 @@ impl App {
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel)> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, action).await
+        self.require_for(ctx, &sid, action).await
     }
 
     async fn ci_run_of(&self, sandbox: &SandboxRecord, run_id: &str) -> AppResult<CiRunRecord> {

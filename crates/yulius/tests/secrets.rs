@@ -1027,7 +1027,7 @@ pub(crate) async fn admit_again(
         Method::GET,
         &format!("/api/auth/github/callback?code={code}&state={state}"),
         None,
-        &Creds::default(),
+        &support::started(&state),
     )
     .await?;
     let cookie = support::session_from(&callback.set_cookie).ok_or("cookie")?;
@@ -1124,6 +1124,7 @@ async fn browser_session(
         cookie: Some(cookie),
         csrf: Some(format!("csrf-of-{user}")),
         bearer: None,
+        oauth: None,
     })
 }
 

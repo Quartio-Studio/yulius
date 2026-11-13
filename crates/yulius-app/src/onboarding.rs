@@ -918,7 +918,7 @@ impl App {
         sid: &str,
     ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let (_, level) = self.require_for(ctx, &id, Action::Administer).await?;
         let actor = self.login_of(&ctx.user.id).await;
         // Under the creation lock, so an onboarding task created meanwhile never writes `pending`
         // back over the skip (SPEC-097); released before the waiting tasks start.
@@ -1186,7 +1186,7 @@ impl App {
     /// `NotFound` without access; store failures and a failed read of the checkout.
     pub async fn onboarding_plan(&self, ctx: &AuthContext, sid: &str) -> AppResult<OnboardingPlan> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &id, Action::View).await?;
+        let (record, _) = self.require_for(ctx, &id, Action::View).await?;
         let store = &self.deps.store;
         let task = match &record.onboarding_task_id {
             Some(task) => store.task(task).await?,
@@ -1432,7 +1432,7 @@ impl App {
     ) -> AppResult<Sandbox> {
         ensure_browser(ctx)?;
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, level) = self.require(&ctx.user, &id, Action::Work).await?;
+        let (record, level) = self.require_for(ctx, &id, Action::Work).await?;
         let notes = notes.map(str::trim).filter(|n| !n.is_empty());
         if notes.is_some_and(|n| n.len() > MAX_HANDOVER_BYTES) {
             return Err(AppError::Invalid(format!(

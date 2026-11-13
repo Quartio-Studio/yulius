@@ -135,7 +135,7 @@ impl App {
     ) -> AppResult<()> {
         match scope {
             AgentScope::Project(sandbox) => self
-                .require(&ctx.user, sandbox, Action::Configure)
+                .require_for(ctx, sandbox, Action::Configure)
                 .await
                 .map(|_| ()),
             AgentScope::Global => {
@@ -228,7 +228,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<AgentSecretView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &sid, Action::View).await?;
+        let (_, level) = self.require_for(ctx, &sid, Action::View).await?;
         let admin = is_admin(ctx);
         let me = &ctx.user.id;
         let store = &self.deps.store;
@@ -293,7 +293,7 @@ impl App {
         on: bool,
     ) -> AppResult<AgentSecretView> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record_sandbox, _) = self.require(&ctx.user, &sid, Action::View).await?;
+        let (record_sandbox, _) = self.require_for(ctx, &sid, Action::View).await?;
         let record = self.agent_record(ctx, id).await?;
         match record.scope() {
             AgentScope::Project(_) => {
@@ -307,7 +307,7 @@ impl App {
             AgentScope::Personal(owner) => {
                 self.require_manage_agent(ctx, &AgentScope::Personal(owner))
                     .await?;
-                self.require(&ctx.user, &sid, Action::Work).await?;
+                self.require_for(ctx, &sid, Action::Work).await?;
             }
         }
         let changed = self
@@ -359,13 +359,13 @@ impl App {
         input: &AgentSecretInput,
     ) -> AppResult<AgentSecretView> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let scope = match input.scope.as_deref().unwrap_or("sandbox") {
             "sandbox" => AgentScope::Project(sid.clone()),
             "instance" => AgentScope::Global,
             "personal" => {
                 // Switched on here at once: only where its person works (MAN-003).
-                self.require(&ctx.user, &sid, Action::Work).await?;
+                self.require_for(ctx, &sid, Action::Work).await?;
                 AgentScope::Personal(ctx.user.id.clone())
             }
             _ => {
@@ -555,7 +555,7 @@ impl App {
         match record.scope() {
             // Invisible sandboxes answer like a missing secret.
             AgentScope::Project(sandbox) => {
-                self.require(&ctx.user, &sandbox, Action::View).await?;
+                self.require_for(ctx, &sandbox, Action::View).await?;
             }
             AgentScope::Global => {}
             // So does another person's secret (MAN-003).

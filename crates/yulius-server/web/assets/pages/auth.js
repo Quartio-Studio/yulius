@@ -294,6 +294,8 @@ export function signInProblem(reason, login) {
       return { otherAccount: false, text: 'That sign-in was already used or has expired. Sign in again.' };
     case 'denied':
       return { otherAccount: false, text: 'GitHub sign-in was cancelled.' };
+    case 'busy':
+      return { otherAccount: false, text: 'Too many sign-ins were started in the last minute. Wait a minute, then sign in again.' };
     case 'github_unconfigured':
       return { otherAccount: false, github: false, text: GITHUB_UNCONFIGURED };
     default:

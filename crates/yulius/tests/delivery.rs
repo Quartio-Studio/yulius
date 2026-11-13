@@ -3715,6 +3715,73 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 D3: a task's change merges into the integration branch only. An agent's own token
+/// may change its pull request's base; a pull request pointed at another branch (production)
+/// is not merged by the armed merge, cannot be armed, and is refused to a person too, until it
+/// goes into the integration branch again.
+#[tokio::test]
+async fn a_pull_request_pointed_at_another_branch_is_never_merged() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    let retarget = |base: &str| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            base.clone_into(&mut pull.base);
+        }
+    };
+    let merged = || {
+        f.h.github
+            .pulls
+            .lock()
+            .is_ok_and(|pulls| pulls.iter().any(|p| p.number == 1 && p.merged))
+    };
+    t.arm().await?;
+
+    // Pointed at production after it was armed, then green: dropped, not merged.
+    retarget("main");
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("dropped") && outcome.contains("goes into `main`, not `quartio`"),
+        "{outcome}"
+    );
+    assert!(!merged());
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // The agent cannot merge or arm it, nor can a person.
+    let refused = t.merge().await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("goes into `main`, not `quartio`"),
+        "{refused}"
+    );
+    let person = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(person.status, StatusCode::CONFLICT, "{}", person.body);
+    assert!(
+        person
+            .body
+            .to_string()
+            .contains("does not go into the integration branch"),
+        "{}",
+        person.body
+    );
+    assert!(!merged());
+
+    // Back at the integration branch it merges as any other.
+    retarget("quartio");
+    let done = t.merge().await?;
+    assert_eq!(done["isError"], false, "{done}");
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
+    Ok(())
+}
+
 /// SPEC-206 RMV-001 (#624): nothing armed in a removed sandbox is merged. A CI run that ends
 /// after the removal (green) calls `merge_armed`; the removed sandbox's pull request stays open.
 #[tokio::test]
@@ -6163,14 +6230,34 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
         )
         .await?;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
-    let started = f
-        .req(
-            Method::POST,
-            "/api/sandboxes/s1/delivery/environments/rollout/runs",
-            Some(json!({"confirm": true})),
-            &f.alice,
-        )
+    // The command of an environment that follows production is a production deploy (ADR-0110,
+    // SPEC-483 P8): an administrator's, with the project's slug typed.
+    let rollout = "/api/sandboxes/s1/delivery/environments/rollout/runs";
+    let typed = json!({"confirm": true, "slug": "shop"});
+    let writer = f
+        .req(Method::POST, rollout, Some(typed.clone()), &f.bob)
         .await?;
+    assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
+    assert!(
+        error_message(&writer).contains("administrator"),
+        "{}",
+        writer.body
+    );
+    for untyped in [
+        json!({"confirm": true}),
+        json!({"confirm": true, "slug": "other"}),
+    ] {
+        let refused = f
+            .req(Method::POST, rollout, Some(untyped), &f.alice)
+            .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+    }
+    let started = f.req(Method::POST, rollout, Some(typed), &f.alice).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let run = f
         .wait_run(started.body["run_id"].as_str().ok_or("run id")?)

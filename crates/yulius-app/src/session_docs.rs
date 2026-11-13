@@ -593,7 +593,7 @@ impl App {
         filter: &SessionFilter,
     ) -> AppResult<SessionList> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &id, Action::View).await?;
+        let (_, level) = self.require_for(ctx, &id, Action::View).await?;
         self.refresh_session_index(&id).await?;
         let store = &self.deps.store;
         let docs = store.session_docs(&id).await?;
@@ -677,7 +677,7 @@ impl App {
             .session_doc(id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &doc.sandbox_id, action).await?;
+        let (_, level) = self.require_for(ctx, &doc.sandbox_id, action).await?;
         Ok((doc, level))
     }
 
@@ -955,14 +955,14 @@ impl App {
         blocking(move || {
             // An imported session's files are in the sandbox directory, the agents' to write:
             // read through handles, as every transcript is (ADR-0315).
-            let mut transcript = transcripts::open(&anchor, &source).map_err(|err| {
+            let transcript = transcripts::open(&anchor, &source).map_err(|err| {
                 if transcripts::unreadable(&err) {
                     AppError::Invalid("this session's transcript is not on the server".into())
                 } else {
                     AppError::internal(err)
                 }
             })?;
-            crate::imports::copy_immutable_from(&mut transcript, &main_dest)?;
+            copy_bounded(transcript, &main_dest)?;
             copy_dir_below(&anchor, &aux_src, &aux_dest)
         })
         .await
@@ -1423,6 +1423,21 @@ const MAX_AUX_DEPTH: usize = 8;
 /// Entries of an imported session's side files copied at most.
 const MAX_AUX_ENTRIES: usize = 10_000;
 
+/// The most of one file of an imported session that is copied into the server's own folders,
+/// which no sandbox quota counts: a larger one (a sparse file an agent made) is refused.
+const MAX_COPIED_FILE_BYTES: u64 = 1 << 30;
+
+/// A read-only copy of `file` at `dest`, of at most [`MAX_COPIED_FILE_BYTES`].
+fn copy_bounded(file: fs::File, dest: &Path) -> AppResult<()> {
+    use std::io::Read as _;
+    if file.metadata().map_err(AppError::internal)?.len() > MAX_COPIED_FILE_BYTES {
+        return Err(AppError::Invalid(
+            "a file of this session is larger than 1 GiB; it is not copied".into(),
+        ));
+    }
+    crate::imports::copy_immutable_from(&mut file.take(MAX_COPIED_FILE_BYTES), dest)
+}
+
 /// Copies the folder `src` (side files of an imported session: sub-agent transcripts) to
 /// `dest` as read-only files; nothing when there is none. `src` is below `anchor`, a sandbox
 /// directory the agents write, so it is walked through handles (ADR-0315): no link is followed
@@ -1435,6 +1450,12 @@ fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path) -> AppResult<()> {
             "an imported session's files are outside its sandbox".into(),
         ));
     };
+    let plain = |part: std::path::Component<'_>| matches!(part, std::path::Component::Normal(_));
+    if !below.components().all(plain) {
+        return Err(AppError::Internal(
+            "an imported session's files are not at a plain path".into(),
+        ));
+    }
     let parts: Vec<&std::ffi::OsStr> = below.iter().collect();
     let folder = match crate::files::open_dirs_below(anchor, &parts, false) {
         Ok(folder) => folder,
@@ -1454,10 +1475,15 @@ fn copy_folder(
 ) -> AppResult<()> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::{Mode, SFlag};
-    let io = |err: nix::errno::Errno| AppError::internal(std::io::Error::from(err));
     fs::create_dir_all(dest).map_err(AppError::internal)?;
-    for name in crate::files::names_in(folder, *budget).map_err(io)? {
-        *budget = budget.saturating_sub(1);
+    // A folder that cannot be listed is left out, as a link is.
+    let names = crate::files::names_in(folder, *budget).unwrap_or_default();
+    for name in names {
+        // The bound is on all the side files together, whatever their folders.
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         let target = dest.join(&name);
         match crate::files::kind_at(folder, &name).map(|(kind, _)| kind) {
             Ok(SFlag::S_IFDIR) if depth < MAX_AUX_DEPTH => {
@@ -1472,9 +1498,9 @@ fn copy_folder(
                 else {
                     continue;
                 };
-                let mut file = fs::File::from(fd);
+                let file = fs::File::from(fd);
                 if file.metadata().is_ok_and(|meta| meta.is_file()) {
-                    crate::imports::copy_immutable_from(&mut file, &target)?;
+                    copy_bounded(file, &target)?;
                 }
             }
             // A link, a FIFO, a deeper folder: not copied.
@@ -1553,6 +1579,36 @@ mod tests {
             assert!(!dest.exists(), "{name}");
         }
         assert!(copy_dir_below(&sandbox, &host, &dir.path().join("out")).is_err());
+
+        // The bound is on all side files together: with more names than it, only that many
+        // are taken, across folders.
+        let many = sandbox.join("sessions/doc/many");
+        std::fs::create_dir_all(many.join("a"))?;
+        for n in 0..6 {
+            std::fs::write(many.join(format!("a/{n}.jsonl")), "{}")?;
+            std::fs::write(many.join(format!("{n}.jsonl")), "{}")?;
+        }
+        let folder = crate::files::open_dirs_below(
+            &sandbox,
+            &["sessions", "doc", "many"].map(std::ffi::OsStr::new),
+            false,
+        )?;
+        let (mut budget, out) = (5usize, dir.path().join("bounded"));
+        copy_folder(&folder, &out, 0, &mut budget)?;
+        let mut files = 0;
+        let mut pending = vec![out];
+        while let Some(at) = pending.pop() {
+            for entry in std::fs::read_dir(at)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    files += 1;
+                }
+            }
+        }
+        assert!(files <= 5, "{files} files copied with a budget of 5");
+        assert_eq!(budget, 0);
         Ok(())
     }
 

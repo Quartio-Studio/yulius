@@ -717,8 +717,25 @@ impl App {
         if pr.state == "merged" {
             return Verdict::Decided(self.merged_note(task, &sandbox, pr.number, true).await);
         }
-        let integration = pr.base.clone();
-        let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
+        // A task's change merges into the integration branch only (SPEC-483 D3): a pull request
+        // pointed elsewhere since it was armed (the agent's own token may do that) is dropped,
+        // never brought up to date with that branch or merged into it.
+        let profile = crate::delivery::delivery_profile(&sandbox);
+        if pr.base != profile.integration_branch {
+            return Verdict::Decided(format!(
+                "The merge you armed was dropped: pull request #{} goes into `{}`, not `{}`. A \
+                 task's change merges into `{}` only: point the pull request back at it (`gh pr \
+                 edit {} --base {}`), then call `delivery_merge` again.",
+                pr.number,
+                pr.base,
+                profile.integration_branch,
+                profile.integration_branch,
+                pr.number,
+                profile.integration_branch,
+            ));
+        }
+        let integration = profile.integration_branch.clone();
+        let require_checks = profile.require_checks;
         // With Yulius CI, its run at the armed head decides: GitHub may still show an older head
         // whose run passed, and the base must not be merged into one whose run still goes.
         let checks =

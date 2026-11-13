@@ -227,6 +227,27 @@ impl App {
         }
     }
 
+    /// [`Self::require`] for the caller of a request, who may hold an API token: a token's scope
+    /// only narrows what its person may do (SPEC-247 RMT-001), so a `read` token takes no action
+    /// above View, whatever the request's method (a GET that reads the working tree is one).
+    ///
+    /// # Errors
+    /// As [`Self::require`]; `Forbidden` for a token whose scope does not allow `action`.
+    pub async fn require_for(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        sandbox_id: &SandboxId,
+        action: Action,
+    ) -> AppResult<(SandboxRecord, AccessLevel)> {
+        let found = self.require(&ctx.user, sandbox_id, action).await?;
+        if ctx.scope().is_some_and(|scope| !scope.allows(action)) {
+            return Err(AppError::Forbidden(
+                "this API token is read-only; make an operate token on Settings to do this".into(),
+            ));
+        }
+        Ok(found)
+    }
+
     /// Requires `action` on `sandbox`; invisible sandboxes yield `NotFound`.
     ///
     /// # Errors

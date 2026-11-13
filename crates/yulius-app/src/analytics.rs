@@ -630,7 +630,7 @@ impl App {
         let sandboxes = match sandbox {
             Some(id) => {
                 let sid = SandboxId::parse(id).map_err(|_| AppError::NotFound)?;
-                vec![self.require(&ctx.user, &sid, Action::View).await?.0.id]
+                vec![self.require_for(ctx, &sid, Action::View).await?.0.id]
             }
             None => self
                 .visible_sandboxes(&ctx.user)

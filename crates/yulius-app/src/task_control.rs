@@ -40,7 +40,7 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let (sandbox, _) = self
-            .require(&ctx.user, &task.sandbox_id, Action::Work)
+            .require_for(ctx, &task.sandbox_id, Action::Work)
             .await?;
         if ctx.user.disabled_at.is_some() {
             return Err(AppError::Forbidden("this account is disabled".into()));

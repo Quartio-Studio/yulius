@@ -36,7 +36,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   2. what the host runs and writes where an agent can write: `bwrap` found on a run's PATH, the
      Git attributes and hook files written by path (C1, D1, D2): merged, pull request #1241;
   3. what the host reads where an agent can write: transcripts, `upper/etc/passwd`, numbered
-     directories, disk usage (C2, C3, C5, I4);
+     directories, disk usage (C2, C3, C5, I4): merged, pull request #1242;
   4. access rules of the public API and the merge gate (A1-A4, W1, D3, P8);
   5. the sandbox browser (E1-E3);
   6. the vault's remaining rules (V3-V6);
@@ -113,6 +113,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `handles::read_in` kept set-user-id bits for the file that replaces it; one test case could
   not fail; the change log's claim was wider than the fix.
 
+### Slice 4: access rules of the public API and the merge gate
+
+- **A1 (medium).** The server refuses a `read` token by method only (`yulius-server` `auth.rs`);
+  `files.rs` (`file_target`, `files_roots`), `shells.rs` `shell_list`, `preview.rs`
+  `preview_info`, `cockpit.rs` `cockpit_link` need Work and never look at the scope;
+  `cross_sandbox.rs` `superagent_requests` checks nothing.
+- **A3 (low).** `revoke_api_token` (`yulius-store` `sessions.rs`) does not grow the access
+  epoch; a write grant is re-confirmed only after 30 s.
+- **A2, A4 (low).** `github_start` sets no cookie and is unlimited; `github_callback` checks
+  the state only.
+- **W1 (high).** `build.rs` embeds `lab.js`; `app.js` loads it for `?lab=`; `lab.js` builds a
+  stylesheet from the address; `/device?code=…` approves with one click.
+- **D3 (high).** `dlv_merge` and `merge_armed_task` read the pull request's base and use it
+  as the integration branch; `check_merge` has no fact about it.
+- **P8 (medium).** `dlv_start_environment_run` needs Work and `confirm: true` whatever the
+  environment follows.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -175,6 +192,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
   clone's `.git` (same device and inode) and sets `core.hooksPath` to a path made from the
   clone's; a file replaced through `handles` gets the permission bits only.
 
+- **ACR-001** Every access check of a request's caller applies its token's scope
+  (`App::require_for`): a `read` token gets 403 where the action is above View. The
+  Superagent's requests are refused to a read token.
+- **ACR-002** Revoking an API token grows the access epoch.
+- **ACR-003** The GitHub sign-in start sets a host-only, HttpOnly, SameSite=Lax cookie with the
+  state for 10 minutes; the callback without that cookie, or with another state in it, answers
+  `expired` and leaves the state usable; the cookie is cleared by every callback.
+- **ACR-004** One client starts at most 10 GitHub sign-ins a minute and at most 1000 states
+  wait; a start past either goes to the sign-in page with `busy` and stores nothing.
+- **ACR-005** `lab.js` and `lab-proposals.js` are not embedded; the page loads the lab only in
+  mock mode.
+- **ACR-006** A task's pull request whose base is not the integration branch, or that comes
+  from a fork, is not merged by a person, cannot be armed and is dropped when armed, with what
+  to do; nothing is merged from or into another base on its behalf.
+- **ACR-007** The command of an environment that follows production starts only for an
+  administrator with the project's slug in `slug`; a manual checkpoint is confirmed as before.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -182,7 +216,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 
 - [x] Slice 1: redaction fingerprints say a few bits and are fixed per sandbox (merged, #1240)
 - [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles (merged, #1241)
-- [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting, reviewed
+- [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
+- [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in, reviewed
 
 ## Acceptance criteria
 
@@ -236,6 +271,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-16** The guard refuses a worktree whose `.git` file names a directory of the same shape
   elsewhere and writes nothing there; a set-user-id bit on a hook is gone after a reinstall.
 
+- **AC-17** A writer's `read` token gets 403 "read-only" on GET `files/roots`, `files`,
+  `files/content`, `files/live`, `shells`, `previews`, `cockpit/link` and
+  `superagent/requests`, and 200 on the task list; the same person's operate token reads
+  `files/roots`.
+- **AC-18** The access epoch grows on `revoke_api_token`.
+- **AC-19** A callback with a valid state and code but no cookie, or another start's cookie,
+  answers `/signin?error=expired` without a session; the starting browser then completes.
+  The start's cookie is `__Host-yulius_oauth=<state>` with HttpOnly, SameSite=Lax, Path=/,
+  Max-Age=600 and Secure.
+- **AC-20** The eleventh start within a minute goes to `/signin?error=busy&next=…` with no
+  cookie; the store refuses a state past its bound and takes one again after an expiry.
+- **AC-21** `/assets/lab.js` and `/assets/lab-proposals.js` answer 404 from the server while
+  the UI still imports them; the e2e lab test passes in mock mode.
+- **AC-22** A pull request pointed at `main` after it was armed is dropped on green ("goes
+  into `main`, not `quartio`") and not merged; `delivery_merge` and a person's merge are
+  refused; pointed back, it merges.
+- **AC-23** A writer's run of a production-stage command is 403, an administrator's without
+  the slug or with another is 422, with it 200.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -277,6 +331,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `managed_attributes_follow_no_link_an_agent_planted` (its linked-file case now asks with
   lines, so a writer that followed the link would copy the host file).
 
+- Slice 4: `remote_mcp::a_read_token_reads_nothing_above_view_access` (AC-17), `yulius-store`
+  `writes_that_change_access_grow_the_access_epoch` (AC-18),
+  `http_auth::a_github_sign_in_completes_only_in_the_browser_that_started_it` (AC-19),
+  `http_auth::github_sign_in_starts_are_limited_per_client` and `yulius-store`
+  `oauth_state_single_use_and_expiry` (AC-20),
+  `ui_contract::embedded_assets_serve_with_content_types_and_every_import_resolves` (AC-21),
+  `delivery::a_pull_request_pointed_at_another_branch_is_never_merged` and the domain's merge
+  refusal table (AC-22), the delivery test of the `rollout` command (AC-23); the e2e suite
+  (the web UI changed).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -294,6 +358,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (finding G1, a later slice).
 - [ADR-0315](../../docs/decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md):
   the five readers through handles; the adapter hands on the text of `passwd`, not its path.
+- [ADR-0316](../../docs/decisions/0316-access-rules-hold-whatever-the-way-in.md): the scope
+  in every access check; the sign-in bound to its browser by a cookie holding the state; the
+  lab not shipped; the base as a fact of the merge rule; production-stage commands under
+  `cd::may_deploy`. The response headers' missing script and style policy is finding W1b.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -313,10 +381,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
 | G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 3a |
-| C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | slice 3 |
-| C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | slice 3 |
-| C5 | host reads | `usage::measure` walks by path | low | slice 3 |
-| I4 | host reads | `record_number` lists a directory through a link | low | slice 3 |
+| C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
+| C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
+| C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
+| I4 | host reads | `record_number` lists a directory through a link | low | fixed (slice 3) |
 | A1 | access | A `read` API token reads the working tree (ignored `.env` included) over REST GET | medium | slice 4 |
 | A2 | access | GitHub sign-in is not bound to the browser that started it | low | slice 4 |
 | A3 | access | Revoking an API token leaves its open terminal sockets typing for up to 30 s | low | slice 4 |
@@ -324,6 +392,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | slice 4 |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | slice 4 |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | slice 4 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 5 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | slice 5 |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 5 |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 5 |
@@ -489,4 +558,34 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
     in the hard-link set; a FIFO regression would end in the test runner's timeout.
 - **Gate after round 1.** `scripts/dev ci` at bb4859b97: exit 0; `4125 tests run: 4125
   passed, 16 skipped`; the other steps passed.
+
+### Slice 4 (2026-11-13)
+
+- **Tests failing before their fix.**
+  `delivery::a_pull_request_pointed_at_another_branch_is_never_merged`: with the three checks
+  switched off the armed merge merged the pull request that had been pointed at `main`.
+  `ui_contract::embedded_assets_serve_with_content_types_and_every_import_resolves`: failed
+  while the lab was embedded (`GET /assets/lab.js` answered 200). `yulius-store`
+  `writes_that_change_access_grow_the_access_epoch`: failed at "an API token revocation".
+  `remote_mcp::a_read_token_reads_nothing_above_view_access`: its last route
+  (`superagent/requests`) answered 200 until that function refused a read token; the other
+  seven routes were refused by `require_for`, written before the test. The sign-in tests
+  (`a_github_sign_in_completes_only_in_the_browser_that_started_it`,
+  `github_sign_in_starts_are_limited_per_client`) and the production-stage command's
+  refusals were written with their fixes and not run against `dev`.
+- **Web UI.** `cd e2e && npx e2e run`: `Test Files 84 passed | 1 skipped (85)`, `Tests 1018
+  passed | 1 skipped (1019)`, exit 0, on this slice's tree.
+- **Gate.** `scripts/dev ci` on this slice's tree (the commit after this text names it): exit 0;
+  `4129 tests run: 4129 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 3, round 2** (head 5810cc78f): approve, no blocker or major; its three
+  minor findings and two nits are taken in this slice: the bound on an imported session's side
+  files holds across folders (`copy_folder` stops at 0), the depth test no longer assumes a
+  file system where folders take no blocks (run with `TMPDIR` on ext4: passed), one file of an
+  imported session is copied only up to 1 GiB, the side files' path must be plain names, and a
+  folder that cannot be listed is left out.
+- **Not tested here.** A real browser against a real server (the cookie on a top-level
+  navigation back from github.com): the routes are tested through the router with the cookie
+  header set as a browser would.
 

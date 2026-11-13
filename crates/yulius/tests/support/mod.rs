@@ -680,6 +680,17 @@ pub struct Creds {
     pub cookie: Option<String>,
     pub csrf: Option<String>,
     pub bearer: Option<String>,
+    /// The state of a GitHub sign-in this browser started (its `yulius_oauth` cookie).
+    pub oauth: Option<String>,
+}
+
+/// The browser that started the GitHub sign-in with `state`: it holds the cookie the callback
+/// asks for (SPEC-483 A2).
+pub fn started(state: &str) -> Creds {
+    Creds {
+        oauth: Some(state.to_owned()),
+        ..Creds::default()
+    }
 }
 
 pub async fn call(
@@ -692,6 +703,10 @@ pub async fn call(
     let mut req = Request::builder().method(method).uri(path);
     if let Some(cookie) = &creds.cookie {
         req = req.header(header::COOKIE, cookie_header(cookie));
+    }
+    if let Some(state) = &creds.oauth {
+        let both = format!("yulius_oauth={state}; __Host-yulius_oauth={state}");
+        req = req.header(header::COOKIE, both);
     }
     if let Some(csrf) = &creds.csrf {
         req = req.header("x-yulius-csrf", csrf);
@@ -897,6 +912,7 @@ pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::e
         cookie: session_from(&r.set_cookie),
         csrf: r.body["csrf_token"].as_str().map(str::to_owned),
         bearer: None,
+        oauth: None,
     })
 }
 
@@ -964,7 +980,7 @@ pub async fn admit_and_sign_in(
         Method::GET,
         &format!("/api/auth/github/callback?code={code}&state={state}"),
         None,
-        &Creds::default(),
+        &started(&state),
     )
     .await?;
     let cookie = session_from(&cb.set_cookie).ok_or("no session cookie")?;
@@ -972,6 +988,7 @@ pub async fn admit_and_sign_in(
         cookie: Some(cookie),
         csrf: None,
         bearer: None,
+        oauth: None,
     };
     let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
     Ok(Creds {

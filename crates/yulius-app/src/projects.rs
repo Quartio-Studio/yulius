@@ -1000,7 +1000,7 @@ impl App {
     /// `NotFound` without access, `Forbidden` without admin.
     pub async fn delete_sandbox(self: &Arc<Self>, ctx: &AuthContext, sid: &str) -> AppResult<()> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let (record, _) = self.require_for(ctx, &id, Action::Administer).await?;
         let store = &self.deps.store;
         let mut tasks = store.tasks(&id, false).await?;
         tasks.extend(store.tasks(&id, true).await?);

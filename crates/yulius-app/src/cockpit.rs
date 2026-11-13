@@ -320,7 +320,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         // A running Cockpit is returned without waiting for anybody's start.
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
@@ -678,7 +678,7 @@ impl App {
     /// `NotFound`/`Forbidden` without write access.
     pub async fn cockpit_link(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<CockpitLink> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) else {
             return Ok(CockpitLink {
                 state: "unknown",
@@ -709,7 +709,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let app = Arc::clone(self);
         let user = ctx.user.clone();
         Self::run_detached(async move {

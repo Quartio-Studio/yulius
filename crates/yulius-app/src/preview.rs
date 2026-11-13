@@ -446,7 +446,7 @@ impl App {
     /// `NotFound` for invisible sandboxes, `Forbidden` without write access.
     pub async fn preview_info(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<PreviewInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let (_, first, last, listening) = self.sandbox_listening_ports(sandbox).await?;
         let excluded: Vec<u16> = self
             .preview_excluded_ports()
@@ -504,7 +504,7 @@ impl App {
                 AppError::Forbidden(refusal.message())
             }
         })?;
-        self.require(&ctx.user, &target.sandbox_id, Action::Work)
+        self.require_for(ctx, &target.sandbox_id, Action::Work)
             .await?;
         let now = self.now().0;
         let token = random_hex(self);

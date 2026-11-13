@@ -34,7 +34,13 @@ pub const MAX_DEVICE_GRANTS_PER_CLIENT: usize = 10;
 /// Live CLI device grants allowed per instance (#169, ADR-0047).
 pub const MAX_DEVICE_GRANTS: usize = 1000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
-const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
+/// How long a started GitHub sign-in may take: its state, and the cookie that keeps it with
+/// the starting browser, live this long.
+pub const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
+/// GitHub sign-ins one client may start per minute (SPEC-483 A4).
+pub const GITHUB_STARTS_PER_MINUTE: usize = 10;
+/// Unexpired OAuth states kept per instance: a start past it is refused, none is evicted.
+pub const MAX_OAUTH_STATES: usize = 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
 
 /// Checks a new superadmin password (setup, recovery) and its repeat: they match and the password
@@ -575,31 +581,63 @@ impl App {
         crate::github_callback::callback_url(&self.config.public_url)
     }
 
-    /// Starts GitHub sign-in; returns the authorization URL. `select_account` makes GitHub show
-    /// its account picker (another GitHub account than the browser's current one).
+    /// Whether two secrets are equal, compared in constant time.
+    #[must_use]
+    pub fn same_secret(&self, a: &str, b: &str) -> bool {
+        self.deps
+            .crypto
+            .constant_time_eq(a.as_bytes(), b.as_bytes())
+    }
+
+    /// Starts GitHub sign-in; returns the authorization URL and the state in it, which the
+    /// caller keeps in the starting browser (a cookie): the callback is honoured only there
+    /// (SPEC-483 A2). `select_account` makes GitHub show its account picker (another GitHub
+    /// account than the browser's current one).
     ///
     /// # Errors
     /// `Conflict` when the App is not configured.
-    pub async fn github_sign_in_url(&self, next: &str, select_account: bool) -> AppResult<String> {
+    pub async fn github_sign_in_url(
+        &self,
+        next: &str,
+        select_account: bool,
+        client_key: &str,
+    ) -> AppResult<(String, String)> {
         let app = self.github_app().await?;
-        let state = hex_token(&self.deps.crypto.random_bytes());
         let now = self.now();
+        // Anyone may start a sign-in, and each start stores a state: limited per client and in
+        // all, as the device sign-in's starts are (ADR-0047; SPEC-483 A4).
+        count_client_attempt(
+            &self.github_starts,
+            client_key,
+            now,
+            GITHUB_STARTS_PER_MINUTE,
+            "too many sign-ins; wait a minute",
+        )?;
+        let state = hex_token(&self.deps.crypto.random_bytes());
         let next = local_return_path(next).unwrap_or("/");
-        self.deps
+        let stored = self
+            .deps
             .store
             .insert_oauth_state(
                 &self.deps.crypto.sha256_hex(state.as_bytes()),
                 next,
                 now,
                 now.plus_millis(OAUTH_STATE_TTL_MS),
+                MAX_OAUTH_STATES,
             )
             .await?;
-        Ok(self.deps.github.authorize_url(
+        if !stored {
+            return Err(AppError::Capacity(
+                "too many sign-ins are waiting; try again in a few minutes".into(),
+            ));
+        }
+        let url = self.deps.github.authorize_url(
             &app,
             &state,
             &self.github_redirect_uri(),
             select_account,
-        ))
+        );
+        Ok((url, state))
     }
 
     /// Forgets a sign-in state that GitHub returned without a code (the user denied access), so

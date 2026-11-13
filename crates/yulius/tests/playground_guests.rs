@@ -82,6 +82,7 @@ async fn browser(h: &Harness, id: &str) -> BoxResult<Creds> {
         cookie: Some(cookie),
         csrf: Some(csrf),
         bearer: None,
+        oauth: None,
     })
 }
 
@@ -164,6 +165,7 @@ async fn join(w: &World, code: &str, name: &str) -> BoxResult<(Creds, UserRecord
         cookie: Some(session_from(&joined.set_cookie).ok_or("no session cookie")?),
         csrf: Some(joined.body["csrf_token"].as_str().ok_or("csrf")?.to_owned()),
         bearer: None,
+        oauth: None,
     };
     let id = UserId::parse(joined.body["user"]["id"].as_str().ok_or("id")?)?;
     let user = w.h.store.user(&id).await?.ok_or("guest account")?;

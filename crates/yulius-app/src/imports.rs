@@ -416,7 +416,7 @@ impl App {
         refuse_non_github(owner)?;
         match self.deps.store.sandbox_by_repo(owner, name).await? {
             Some(existing) => {
-                let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
+                let (record, _) = self.require_for(ctx, &existing.id, Action::Work).await?;
                 Ok(record)
             }
             None => {
@@ -1040,7 +1040,7 @@ impl App {
                 None,
             ),
         };
-        self.require(&ctx.user, &sid, Action::Work).await?;
+        self.require_for(ctx, &sid, Action::Work).await?;
         let login = import_login(&ctx.user);
         let prefix = format!("import/{login}");
         let repo_dir = self.sandbox_repo(&sid);

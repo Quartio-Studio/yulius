@@ -30,6 +30,7 @@ async fn setup_superadmin(h: &support::Harness) -> Result<Creds, Box<dyn std::er
         cookie: session_from(&r.set_cookie),
         csrf: r.body["csrf_token"].as_str().map(str::to_owned),
         bearer: None,
+        oauth: None,
     })
 }
 
@@ -378,12 +379,17 @@ async fn github_callback(
     h: &support::Harness,
     query: &str,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    // As the browser that started the sign-in: it holds the state's cookie (SPEC-483 A2).
+    let state = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("state="))
+        .unwrap_or_default();
     call(
         &h.router,
         Method::GET,
         &format!("/api/auth/github/callback?{query}"),
         None,
-        &Creds::default(),
+        &support::started(state),
     )
     .await
 }
@@ -501,7 +507,10 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         denied.location.as_deref(),
         Some("/signin?error=not_admitted&next=/s/studio&login=mallory")
     );
-    assert!(denied.set_cookie.is_none(), "no session for a refused user");
+    assert!(
+        support::session_from(&denied.set_cookie).is_none(),
+        "no session for a refused user"
+    );
 
     let ok = github_login(&h, "code-alice").await?;
     assert_eq!(ok.status, StatusCode::SEE_OTHER);
@@ -510,6 +519,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         cookie: session_from(&ok.set_cookie),
         csrf: None,
         bearer: None,
+        oauth: None,
     };
     let me = call(&h.router, Method::GET, "/api/me", None, &alice).await?;
     assert_eq!(me.body["user"]["login"], "alice");
@@ -612,7 +622,7 @@ async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> Tes
         Some("/signin?error=disabled&next=/s/studio"),
         "a disabled user is told so on the sign-in page"
     );
-    assert!(again.set_cookie.is_none());
+    assert!(support::session_from(&again.set_cookie).is_none());
     Ok(())
 }
 
@@ -650,7 +660,7 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
         Some("/signin?error=not_admitted&next=/s/studio&login=alice"),
         "the login of a linked account admits no one else"
     );
-    assert!(squatter.set_cookie.is_none());
+    assert!(support::session_from(&squatter.set_cookie).is_none());
     let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
     assert_eq!(linked.github_id, Some(11), "the link is kept");
     assert!(h.store.user_by_github_id(31).await?.is_none());
@@ -659,6 +669,105 @@ async fn a_reused_github_login_does_not_take_over_a_linked_account() -> TestResu
     assert_eq!(renamed.location.as_deref(), Some("/s/studio"));
     let linked = h.store.user_by_github_id(11).await?.ok_or("alice")?;
     assert_eq!(linked.github_login.as_deref(), Some("alice-renamed"));
+    Ok(())
+}
+
+/// SPEC-483 A2: a GitHub sign-in completes only in the browser that started it. Its callback
+/// link, handed to someone else, would sign them in as whoever made it (what they then enter as
+/// "themselves" lands in that account); without the start's cookie, or with another start's, it
+/// is refused and the state is not spent, so the starting browser still finishes.
+#[tokio::test]
+async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    h.github.add_user("code-admitted", 22, "admitted-account");
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "admitted-account"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::CREATED);
+
+    let start = call(
+        &h.router,
+        Method::GET,
+        "/api/auth/github/start?next=/s/studio",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    let location = start.location.ok_or("location")?;
+    let state = location
+        .split("state=")
+        .nth(1)
+        .and_then(|rest| rest.split('&').next())
+        .ok_or("state")?
+        .to_owned();
+    let kept = start
+        .set_cookie
+        .ok_or("the start keeps its state in a cookie")?;
+    assert!(
+        kept.starts_with(&format!("__Host-yulius_oauth={state};")),
+        "{kept}"
+    );
+    for part in [
+        "HttpOnly",
+        "SameSite=Lax",
+        "Path=/",
+        "Max-Age=600",
+        "Secure",
+    ] {
+        assert!(kept.contains(part), "{part}: {kept}");
+    }
+
+    let link = format!("/api/auth/github/callback?code=code-admitted&state={state}");
+    let another_start = github_state(&h, "next=/").await?;
+    for elsewhere in [Creds::default(), support::started(&another_start)] {
+        let refused = call(&h.router, Method::GET, &link, None, &elsewhere).await?;
+        assert_eq!(refused.location.as_deref(), Some("/signin?error=expired"));
+        assert!(support::session_from(&refused.set_cookie).is_none());
+    }
+    let done = call(
+        &h.router,
+        Method::GET,
+        &link,
+        None,
+        &support::started(&state),
+    )
+    .await?;
+    assert_eq!(done.location.as_deref(), Some("/s/studio"));
+    assert!(support::session_from(&done.set_cookie).is_some());
+    Ok(())
+}
+
+/// SPEC-483 A4: anyone may start a GitHub sign-in and each start stores a state, so starts are
+/// limited per client: the eleventh within a minute is refused with a reason, storing nothing.
+#[tokio::test]
+async fn github_sign_in_starts_are_limited_per_client() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    configure_github(&h).await?;
+    let nobody = Creds::default();
+    let path = "/api/auth/github/start?next=/s/studio";
+    for _ in 0..yulius_app::auth::GITHUB_STARTS_PER_MINUTE {
+        let started = call(&h.router, Method::GET, path, None, &nobody).await?;
+        assert!(
+            started
+                .location
+                .is_some_and(|location| location.contains("state=")),
+            "a start within the limit goes to GitHub"
+        );
+    }
+    let refused = call(&h.router, Method::GET, path, None, &nobody).await?;
+    assert_eq!(
+        refused.location.as_deref(),
+        Some("/signin?error=busy&next=/s/studio")
+    );
+    assert!(refused.set_cookie.is_none());
     Ok(())
 }
 
@@ -735,6 +844,7 @@ async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() 
         cookie: session_from(&ok.set_cookie),
         csrf: None,
         bearer: None,
+        oauth: None,
     };
     let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
     assert_eq!(me.body["user"]["login"], "Admitted-Account");
@@ -753,7 +863,7 @@ async fn refused_github_sign_ins_return_to_the_sign_in_page_with_their_reason() 
     let replay = github_callback(&h, &format!("code=code-admitted&state={state}")).await?;
     assert_eq!(replay.location.as_deref(), Some("/signin?error=expired"));
     assert!(
-        replay.set_cookie.is_none(),
+        support::session_from(&replay.set_cookie).is_none(),
         "a denied state cannot be replayed"
     );
 

@@ -202,7 +202,7 @@ impl App {
     pub async fn get_sandbox(&self, ctx: &AuthContext, id: &str) -> AppResult<Sandbox> {
         let id = yulius_domain::ids::SandboxId::parse(id)
             .map_err(|_| crate::error::AppError::NotFound)?;
-        let (record, level) = self.require(&ctx.user, &id, Action::View).await?;
+        let (record, level) = self.require_for(ctx, &id, Action::View).await?;
         self.sandbox_view(&record, level).await
     }
 }

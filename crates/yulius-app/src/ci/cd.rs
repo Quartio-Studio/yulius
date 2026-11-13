@@ -595,7 +595,7 @@ impl App {
     /// `NotFound` without read access.
     pub async fn cd_overview(&self, ctx: &AuthContext, sandbox_id: &str) -> AppResult<CdOverview> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::View).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::View).await?;
         self.cd_overview_of(&sandbox, level).await
     }
 
@@ -614,7 +614,7 @@ impl App {
         req: &CdDeploy,
     ) -> AppResult<CdRun> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::Work).await?;
         let env =
             dom::env_name(environment).ok_or_else(|| AppError::Invalid(UNKNOWN_ENV.into()))?;
         let requester = Requester::Person {
@@ -1770,7 +1770,7 @@ impl App {
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel, CdRunRecord)> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, action).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, action).await?;
         let run = self
             .deps
             .store

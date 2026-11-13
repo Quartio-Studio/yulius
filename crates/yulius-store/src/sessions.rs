@@ -157,7 +157,9 @@ impl SessionStore for SqliteStore {
 
     async fn revoke_api_token(&self, user: &UserId, id: &str, at: Timestamp) -> AppResult<bool> {
         let (u, id) = (user.as_str().to_owned(), id.to_owned());
-        self.call(move |c| {
+        // The access epoch grows: a terminal a socket of this token writes to asks again
+        // before its next key, as after a logout (SPEC-247 RMT-001).
+        self.call_access(move |c| {
             let changed = c
                 .execute(
                     "UPDATE api_tokens SET revoked_at = ?1 WHERE id = ?2 AND user_id = ?3 AND revoked_at IS NULL",
@@ -339,17 +341,26 @@ impl SessionStore for SqliteStore {
         next_path: &str,
         at: Timestamp,
         expires_at: Timestamp,
-    ) -> AppResult<()> {
+        max_live: usize,
+    ) -> AppResult<bool> {
         let (h, next) = (state_hash.to_owned(), next_path.to_owned());
+        let max_live = i64::try_from(max_live).unwrap_or(i64::MAX);
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             tx.execute("DELETE FROM oauth_states WHERE expires_at < ?1", [at.0]).map_err(db)?;
+            let live: i64 = tx
+                .query_row("SELECT COUNT(*) FROM oauth_states", [], |row| row.get(0))
+                .map_err(db)?;
+            if live >= max_live {
+                return Ok(false);
+            }
             tx.execute(
                 "INSERT INTO oauth_states (state_hash, next_path, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)",
                 params![h, next, at.0, expires_at.0],
             )
             .map_err(db)?;
-            tx.commit().map_err(db)
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }

@@ -87,12 +87,8 @@ impl App {
             ));
         }
         if let Some(record) = self.own_playground(&ctx.user, &repo.name).await? {
-            self.require(
-                &ctx.user,
-                &record.id,
-                yulius_domain::permission::Action::Work,
-            )
-            .await?;
+            self.require_for(ctx, &record.id, yulius_domain::permission::Action::Work)
+                .await?;
             return Ok(UploadTarget::Into(record.id));
         }
         self.new_playground_branch(manifest)?;

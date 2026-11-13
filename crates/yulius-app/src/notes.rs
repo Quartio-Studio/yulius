@@ -119,7 +119,7 @@ impl App {
             NoteTarget::Sandbox(sandbox) => sandbox,
         };
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, action).await?;
+        self.require_for(ctx, &sid, action).await?;
         Ok(Scope::Sandbox(sid))
     }
 

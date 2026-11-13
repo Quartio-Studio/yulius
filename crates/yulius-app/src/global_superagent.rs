@@ -207,7 +207,7 @@ impl App {
     ) -> AppResult<ShellInfo> {
         if let Some(running) = self.running_global_superagent(&ctx.user.id)
             && self
-                .require(&ctx.user, running.sandbox(), Action::Work)
+                .require_for(ctx, running.sandbox(), Action::Work)
                 .await
                 .is_ok()
         {
