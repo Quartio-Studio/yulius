@@ -1,11 +1,11 @@
 ---
 yulius-task: 1462ec26-59b9-4f46-b3cf-1311cb2c4da3
-status: in-progress
+status: done
 ---
 
 # SPEC-485: a Yulius session runs no plugin language server and is not asked to install one
 
-Status: in-progress
+Status: done
 Date: 2026-11-13
 Owner: Yulius task #467
 Scope authorization: the request of task #467 (2026-11-13): "fix such errors like the yellow
@@ -142,7 +142,7 @@ found for them); Claude Code's own notices about limits and goals (listed under 
 - [x] Every task run and Superagent switches those plugins off in its own settings (LSP-003)
 - [x] The live check with the real CLI, and real sessions shown without the notice (LSP-004)
 - [x] ADR-0327, the architecture document, the operations guide and the changes log (LSP-005)
-- [ ] Every gate green and the independent review in a fresh session answered
+- [x] Every gate green and the independent review in a fresh session answered
 
 ## Acceptance criteria
 
@@ -249,3 +249,114 @@ found for them); Claude Code's own notices about limits and goals (listed under 
   looked at, because out of reach from inside this sandbox: other tasks' terminals (notices are
   not written to transcripts) and other projects' sandboxes; the language-neutral rule covers
   their language servers.
+
+## Evidence
+
+Run in this task's worktree and sandbox on 2026-11-13 with Claude Code 2.1.323. Scripts and logs
+are under the ignored `target/task467/` (the probe scripts also in `$HOME/.cache/yulius-467/`).
+
+**The cause, with the real CLI.** `probe/drive.py` runs the installed `claude` in a terminal
+against a local stand-in for the model API whose "model" writes one `.rs` file; the config dir
+holds a copy of this sandbox's plugin folder. `probe/shapes.py` builds a marketplace of its own.
+
+| Run | Plugin state | Result |
+| --- | --- | --- |
+| a | `true` in the home's `settings.json`, the proxy on `PATH`, no toolchain file | the notice, word for word; log: `error: Unknown binary 'rust-analyzer' in official toolchain 'stable-x86_64-unknown-linux-gnu'.`, `crashed with exit code 1` |
+| b | `true`, `PATH` without `~/.cargo/bin` (also with Yulius's shell prefix kept) | another notice: `its program "rust-analyzer" wasn't found. Check that it's installed and on your PATH.` |
+| — | `false` (this sandbox's state), also with the sandbox's own `.claude.json` | `Total LSP servers loaded: 0`, no notice |
+| — | no entry | not loaded |
+| d | `true` in the home, `false` in `--settings` | `Total LSP servers loaded: 0`, no notice |
+| e | `false` in the home, `true` in `--settings` | loaded, started, the notice |
+| f | not installed, the proxy on `PATH` | the dialog "LSP plugin recommendation"; an Enter: `User response: yes`, the plugin in `installed_plugins.json` (scope `user`) and `true` in `settings.json` |
+| f3 | as f, `lspRecommendationDisabled: true` in `.claude.json` | no dialog; log: `[lspRecommendation] Recommendations are disabled` |
+| g | installed, `false` | no dialog (`Skipping … (already installed)`) |
+| shapes | servers named in the marketplace entry, in the manifest, in `.lsp.json` | `Loaded 1 LSP server(s) from plugin:` for each of the three |
+
+A read alone starts no server (a run whose "model" only read the file loaded the server and
+never started it).
+
+**What a working server costs here.** `ra_measure.py` (an LSP client: initialize, one file
+opened and saved, 4 minutes) in this worktree: `rust-analyzer peak RSS 2.60 GiB; with children
+6.18 GiB; threads 109`; first diagnostics after 9 s; `cargo check` (flycheck) of the workspace
+from second 0 to 80, with `cc` and build scripts in the worktree's `target/`.
+
+**Transcripts.** `scan_notices.py` over the 175 transcript files of the last three days: the
+counts in Decisions. No record holds the language-server notice (Claude Code does not write it).
+
+**Tests.**
+- `cargo nextest run -p yulius-harness`: 167 passed. New: 10 in `claude_plugins`, 1 in
+  `claude_config`, 2 in `tests/launch.rs`; each was seen failing first (the first lookup against
+  a stub that finds nothing: 4 of 6 failed, the other two assert absence and got a positive
+  control or are about a missing folder).
+- `cargo nextest run -p yulius -E 'test(/wiring::harness::/)'`: 6 passed; the new one failed
+  with the list left empty (`left: Null`).
+- Mutations, each on the committed tree and reverted. First round: `plugins_off` never
+  returning a value (2 tests fail); the `lspRecommendationDisabled` line removed (1); every id
+  taken as a plain name (1: `..` reaches a folder outside); `O_NOFOLLOW` dropped from the folder
+  flags (5, the new link test among them). On the reworked lookup: the bytes budget never
+  charged (1); the folder budget never charged (1); the worktree's local settings not read (1);
+  ids of any length (1); `..` in a `source` walked (1); a path outside the sandbox's folders
+  opened as written (2). One mutant survived and is harmless: a path outside taken as relative
+  to the sandbox directory opens nothing outside it.
+- Live, against the real CLI: `YULIUS_LIVE_CLAUDE=1 cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^live_claude::a_runs/)' --run-ignored only`: passed (5.1 s).
+  In each of the seven layouts the CLI alone loads the three servers; with the run's settings
+  none.
+- The whole lookup on the layout the reviewer measured at 370 s and 32 GiB with the first
+  bounds (256 marketplaces, 4096 manifests, here 2 MiB each): the unit test runs in 0.2 s
+  (debug build) and reads at most 16 MiB.
+
+**Real sessions with this build's preparation** (`real-sessions.log`, `sessions/`): the same
+full sessions as above (terminal, the stand-in model writes `src/extra.rs`), the config dir
+prepared and the run's settings planned by this branch's `HarnessAdapter::plan`.
+
+| Session | Notice | Dialog | Server started |
+| --- | --- | --- | --- |
+| plugin `true` in the home, as before this change | yes | no | yes (and exits) |
+| plugin `true` in the home, Yulius's run settings (`enabledPlugins = {"rust-analyzer-lsp@claude-plugins-official": false}`) | no | no | no |
+| plugin not installed, as before this change | no | yes | no |
+| plugin not installed, Yulius's config (`lspRecommendationDisabled = True`) | no | no | no |
+
+In all four the file was written (`Wrote 3 lines`, two model requests). The two sessions with
+Yulius's preparation were run again with the final build (`real-sessions-2.log`): the same.
+
+**A real task session of this project.** This task's own session (started by the deployed
+server at 16:23 UTC, Claude Code 2.1.323): after two `.rs` files written with the Write tool,
+the session's process has no language server among its children and the sandbox no
+`rust-analyzer` process; `claude plugin list` there: `rust-analyzer-lsp@claude-plugins-official
+… Status: ✘ disabled`.
+
+**Gates.** `scripts/dev ci` at 49d9ebfac (after it only this section and the spec's status
+changed): exit 0; `4217 tests run: 4217 passed, 17 skipped` (`gate2.log`; at e877462e9, before
+the review: 4213 passed, `gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
+turned off in Yulius, for this project or the whole instance; nothing was scanned." (disabled,
+not passed). The end-to-end suite was not run: no web UI change.
+
+**Independent review, round 1** (a fresh session given the diff, the spec and the review skill;
+head e877462e9; its notes and probes in `$HOME/.cache/yulius-467-review/`). Verdict: "**REQUEST
+CHANGES** — two major findings in the change's own code: the guarantee the documents state does
+not hold in layouts the real CLI produces (F1), and the lookup's bounds multiply into minutes
+and tens of GiB on the host (F2)." It ran the gate itself (exit 0), the live test, 14 mutants
+(all killed) and differential probes of the real CLI. All findings were own code; each answered:
+- F1 (major): "a language server still loads with Yulius's settings when the marketplace is a
+  directory source", and with plugins switched on with no install record. Fixed: the lookup
+  reads candidates from the settings files too and a marketplace where
+  `known_marketplaces.json` says; the live test now runs those layouts, control first. The
+  documents name what stays uncovered.
+- F2 (major): "each bound is fine alone, their product is not" (370 s, 32.1 GiB). Fixed: one
+  budget for the whole lookup, tested on that layout.
+- F3 (minor): an id of 200 kB made a Superagent's `--settings` argument too long to start.
+  Fixed: ids over 200 bytes are left out and said.
+- F4 (minor): the spec named an Evidence section it did not have. This section.
+- F5 (minor): a plugin with a server and skills is switched off whole. Now said in the spec,
+  ADR-0327 and the operations guide.
+- F6 (minor): "the fail-open is silent". Fixed: the launch logs what it switched off and what
+  it left unread.
+- Nits: `.lsp.json` is now a `stat`; the test comment and the spelled-out type are gone.
+
+**Not tested.** Which session showed the person the notice (not written to transcripts;
+terminals are on the host). Other projects' sandboxes and other languages' servers (the rule is
+by plugin, not by language; the live test uses made-up servers). A Superagent started by the
+real server with a language-server plugin in a person's home (its `--settings` are unit-tested
+and the flag has the same effect as a task run's file). The cases listed under "Not covered, by
+decision".
