@@ -1317,13 +1317,10 @@ async fn an_automatic_promotion_stops_at_a_failed_head() -> TestResult {
         )
         .await?;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    let said = confirmed.body.to_string();
     assert!(
-        confirmed
-            .body
-            .to_string()
-            .contains("Automatic promotion did not happen"),
-        "{}",
-        confirmed.body
+        said.contains("Automatic promotion did not happen") && said.contains("fail"),
+        "{said}"
     );
     assert_eq!(
         f.origin_sha("main")?,
@@ -2654,6 +2651,16 @@ async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
             exit_reason: None,
         })
         .await?;
+    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    f.h.store
+        .transition_task(
+            &TaskId::parse(task)?,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
     Ok(Creds {
         bearer: Some(token.into()),
         ..Creds::default()
@@ -3770,6 +3777,16 @@ impl ArmedTask {
                 exit_reason: None,
             })
             .await?;
+        // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+        f.h.store
+            .transition_task(
+                &TaskId::parse("t1")?,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
         let internal = yulius_server::internal_router(f.h.app.clone())
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
         let agent = Creds {
@@ -4403,6 +4420,71 @@ async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResu
         "production_done",
         "merged at the start (this profile's only branch)"
     );
+    Ok(())
+}
+
+/// SPEC-483 D6: an armed merge lives with the run that armed it, by one rule with and without
+/// a restart. A task whose run only waits (no capacity, a subscription switch) keeps its armed
+/// merge across a restart. A task that was closed loses it: the next pass says so instead of
+/// merging the pull request behind the person's back once its checks pass, and a new server
+/// does not merge it either.
+#[tokio::test]
+async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let (task, sandbox) = (TaskId::parse("t1")?, SandboxId::parse("s1")?);
+    let becomes = |status: TaskStatus| {
+        f.h.store
+            .transition_task(&task, None, status, Some(Activity::Waiting), f.h.app.now())
+    };
+    t.arm().await?;
+    let next_server =
+        || yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = || std::fs::read_to_string(&file).unwrap_or_default();
+
+    // Held, not ended: armed in this process and for the next one.
+    for held in [TaskStatus::WaitingCapacity, TaskStatus::Switching] {
+        becomes(held).await?;
+        f.h.app.merge_armed(&sandbox).await;
+        assert_eq!(t.wait(Value::Null).await?["merge_armed"], true, "{held:?}");
+        next_server().restore_armed_merges().await;
+        assert!(saved().contains("\"t1\""), "{held:?}: {}", saved());
+    }
+
+    // Closed by its person: the armed merge ends, and says why.
+    becomes(TaskStatus::Closed).await?;
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("dropped") && outcome.contains("run ended (closed)"),
+        "{outcome}"
+    );
+    assert!(!saved().contains("\"t1\""), "{}", saved());
+    // Its checks pass afterwards: nothing merges, here or in a new server.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    next_server().resume_armed_merges().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // The same for a merge that a server finds saved for a task closed while it was down.
+    becomes(TaskStatus::Running).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Pending);
+    t.arm().await?;
+    assert!(saved().contains("\"t1\""));
+    becomes(TaskStatus::Closed).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    next_server().resume_armed_merges().await;
+    assert_eq!(
+        f.delivery("t1").await?["stage"],
+        "pr_open",
+        "not merged at the start"
+    );
+    assert!(!saved().contains("\"t1\""), "{}", saved());
     Ok(())
 }
 

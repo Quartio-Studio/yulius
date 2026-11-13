@@ -1200,7 +1200,10 @@ A pass (`App::merge_armed`, one per sandbox at a time) runs at the end of every 
 minutes after the delivery reconcile, and every 20 seconds for a sandbox with something it can
 decide now (a candidate whose run ended, or an armed head whose run passed that is up to date or,
 with no candidate under test, whose agent is idle). It fetches the clone,
-then decides the armed merges in arm order:
+then decides the armed merges in arm order. An armed merge lives with the run that armed it
+(`TaskStatus::keeps_an_armed_merge`): while the task runs or its run is only held (no capacity,
+a subscription switch) it stays armed, also across a restart; once the run ended (the task was
+closed, stopped or failed) the next pass ends it and says so, and the pull request stays open:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
   merges the integration branch into it nor puts it in a candidate, so a moving base never

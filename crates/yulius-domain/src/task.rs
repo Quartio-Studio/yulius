@@ -182,6 +182,19 @@ impl TaskStatus {
         )
     }
 
+    /// Whether a merge its agent armed stays armed in this state: while the task's run lives
+    /// or is only held (a subscription switch, no capacity). An armed merge lives with the run
+    /// that armed it: only a running, idle agent's branch is brought up to date, joins a merge
+    /// train or gets a refusal answered, so a run that ended (closed, stopped, failed) or is
+    /// being stopped ends the armed merge too.
+    #[must_use]
+    pub fn keeps_an_armed_merge(self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Running | Self::Switching | Self::WaitingCapacity
+        )
+    }
+
     /// Whether the task may be archived or continued (no live process, not queued).
     #[must_use]
     pub fn is_resting(self) -> bool {
@@ -1277,5 +1290,29 @@ mod tests {
         assert!(AttemptState::Live.can_become(AttemptState::Killed));
         assert!(!AttemptState::Exited.can_become(AttemptState::Lost));
         assert!(!AttemptState::Live.can_become(AttemptState::Spawning));
+    }
+
+    /// SPEC-483 D6: an armed merge stays armed while its task's run lives or is only held, and
+    /// ends with a run that ended or is being stopped; a task waiting for its first slot has
+    /// armed nothing.
+    #[test]
+    fn an_armed_merge_lives_with_the_run_that_armed_it() {
+        for kept in [
+            TaskStatus::Starting,
+            TaskStatus::Running,
+            TaskStatus::Switching,
+            TaskStatus::WaitingCapacity,
+        ] {
+            assert!(kept.keeps_an_armed_merge(), "{kept:?}");
+        }
+        for ended in [
+            TaskStatus::Queued,
+            TaskStatus::Stopping,
+            TaskStatus::Closed,
+            TaskStatus::Stopped(StopReason::Cancelled),
+            TaskStatus::Stopped(StopReason::ServerLost),
+        ] {
+            assert!(!ended.keeps_an_armed_merge(), "{ended:?}");
+        }
     }
 }

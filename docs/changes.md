@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- An armed merge ends with its task's run (SPEC-483 slice 15, task #465). A merge an agent
+  armed outlived the task: for a task a person had stopped or closed, a green pull request
+  that was up to date was still merged, one behind `dev` waited for ever (bringing it up to
+  date needs a running, idle agent), and after a restart the same merge was dropped, also
+  for a task that only waited for capacity or a subscription switch. One rule now, in every
+  pass and at a start: armed while the task runs or its run is held, ended with a reason
+  ("the task's run ended (closed) …") once the run ended. The pull request stays open.
 - A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
   are green was decided in five places by three rules: a task's merge and the Git page
   asked Yulius CI's run and fell back to GitHub's checks, the remote control added two

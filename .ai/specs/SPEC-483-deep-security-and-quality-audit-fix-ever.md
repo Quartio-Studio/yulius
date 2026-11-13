@@ -50,7 +50,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14, the others follow one by one;
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15, QB1 follows;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -346,6 +346,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   scheduler is about to test: a merge that requires checks could go through before that
   first run existed. Only the remote control compensated.
 
+### Slice 15: an armed merge and its task's run
+
+- **D6 (medium).** The life of an armed merge was the pair of the slot (`slot.merge`) and
+  the task's status, with no rule for "armed, and the task no longer runs".
+  `merge_armed_task` never read the status: a task a person stopped or closed after its
+  agent armed was still merged when its head was green and up to date; green and behind,
+  every pass answered Keep for ever, because bringing a branch up to date
+  (`keep_armed_current`) and joining a merge candidate both need a running, idle agent.
+  `restore_armed_merges` used another rule: after a restart every task not exactly
+  `Running` lost its armed merge, also one in `WaitingCapacity` or `Switching`, although
+  the documents say armed merges are restored.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -632,6 +644,13 @@ no code path reaches; documents, texts shown to agents and people, and code that
   branch has CI, or when the commit brings its own to a branch without any (the scheduler's
   rule for a proposal, CGR-001; whether the scheduler has a pull request to test it for is
   not asked, as it is not for a project with CI).
+- **ARM-001** `TaskStatus::keeps_an_armed_merge` is true for `Starting`, `Running`,
+  `Switching` and `WaitingCapacity`, false for every other state.
+- **ARM-002** A pass (`merge_armed_task`) ends the armed merge of a task whose state does
+  not keep one, before anything else is asked: decided, with "the task's run ended
+  (<state>)" and what to do, and nothing is merged for it later.
+- **ARM-003** A start (`restore_armed_merges`) puts back the armed merges of the tasks whose
+  state keeps one, and forgets the others.
 
 ## Plan
 
@@ -652,6 +671,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
+- [ ] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
 
 ## Acceptance criteria
 
@@ -1013,6 +1033,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-86** The existing tests of a task's delivery, the Git page, the remote control's
   merge and the promotions pass unchanged (pending, unreadable and passed checks of
   GitHub's for a project without Yulius CI among them).
+- **AC-89** The states that keep an armed merge and those that do not, as a table
+  (ARM-001).
+- **AC-90** With a merge armed and its checks pending: the task in `WaitingCapacity`, then
+  `Switching`, stays armed after a pass, and the saved merge is kept by a new server's
+  restore. Closed: the next pass ends it ("dropped", "run ended (closed)"), the saved
+  merge is gone, and with the checks passed neither a pass nor a new server's start merges
+  the pull request. A merge saved for a task that was closed while the server was down is
+  not merged at the start and is forgotten.
+- **AC-91** The existing tests of armed merges, merge trains and the playground's delivery
+  pass with their tasks running (a live run in a fixture is a running task now).
 
 ## Test plan
 
@@ -1182,6 +1212,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `delivery::an_automatic_promotion_goes_on_the_checks_of_its_merge` (AC-87),
   `delivery::an_automatic_promotion_stops_at_a_failed_head` (AC-88);
   `delivery`, `remote_mcp`, `merge_train` and `playground` as they are (AC-86).
+- Slice 15: `yulius-domain` `task::tests::an_armed_merge_lives_with_the_run_that_armed_it`
+  (AC-89); `yulius` `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-90); `delivery`,
+  `merge_train` and `playground` (AC-91).
 
 ## Decisions
 
@@ -1245,6 +1278,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 15 (no decision record: DLV-205's sentence "put back at startup for tasks still
+  running", made the rule of every pass too): an armed merge lives with the run that armed
+  it. The other way was weighed: the order stands whatever becomes of the task, so a
+  closed task's green pull request merges. It was not taken, for three reasons. Everything
+  that moves an armed merge forward already needs a running, idle agent (its branch
+  brought up to date, a place in a merge candidate, a refusal answered), so the order could
+  only be kept for the one case that needs nothing more. A person who stops or closes a
+  task has ended what Yulius does for it, and a merge afterwards is a surprise. And a
+  restart already decided this way. "Held" states keep the merge (the run is there and
+  comes back by itself); `Stopping` does not (the run is being ended). The agent's own
+  message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1418,7 +1462,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 15 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |

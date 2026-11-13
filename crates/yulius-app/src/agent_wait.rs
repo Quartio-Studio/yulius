@@ -315,7 +315,8 @@ impl App {
         }
     }
 
-    /// Puts back the armed merges of running tasks after a restart (DLV-205); the others are
+    /// Puts back the armed merges after a restart (DLV-205) for the tasks whose run keeps one
+    /// (`TaskStatus::keeps_an_armed_merge`, the rule every pass decides by); the others are
     /// forgotten.
     pub async fn restore_armed_merges(&self) {
         let path = self.config.data_dir.join(ARMED_MERGES_FILE);
@@ -329,11 +330,11 @@ impl App {
             let Ok(task_id) = TaskId::parse(&entry.task) else {
                 continue;
             };
-            let running = matches!(
+            let kept = matches!(
                 self.deps.store.task(&task_id).await,
-                Ok(Some(task)) if task.status == yulius_domain::task::TaskStatus::Running
+                Ok(Some(task)) if task.status.keeps_an_armed_merge()
             );
-            if !running {
+            if !kept {
                 self.save_armed(&task_id, None);
                 continue;
             }
@@ -622,6 +623,17 @@ impl App {
     /// Merges one armed task when its checks passed; says whether to keep waiting or how it
     /// ended.
     async fn merge_armed_task(self: &Arc<Self>, task: &TaskRecord, armed: ArmedMerge) -> Verdict {
+        // An armed merge lives with the run that armed it (SPEC-483 D6): a task a person
+        // stopped or closed is not merged behind their back, and one that could only wait for
+        // an agent that is gone does not wait for ever.
+        if !task.status.keeps_an_armed_merge() {
+            return Verdict::Decided(format!(
+                "The merge you armed was dropped: the task's run ended ({}) before the merge \
+                 could be made. Its pull request stays open: continue the task and call \
+                 `delivery_merge` again with the reviewed head, or merge it on GitHub.",
+                task.status.as_str()
+            ));
+        }
         let head = match task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
