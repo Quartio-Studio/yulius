@@ -607,8 +607,10 @@ proxy of its own on the loopback (an ephemeral port, open while the browser runs
 Yulius's egress proxy: it reaches the internet and the host's network as the sandbox's own
 processes do, and of local addresses only its sandbox's dev-server ports and the welcome page
 (ADR-0321). Nothing is configured for it. A page that should load and answers "the sandbox
-browser does not load …" names a local address outside the sandbox's port range: serve it on
-one of the sandbox's ports.
+browser does not load …" names a local address outside the sandbox's port range, or a name
+that only points at one: serve it on one of the sandbox's ports and open it as
+`localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
+`ProxySettings`): a policy wins over what Yulius starts Chrome with.
 
 ### Sandbox isolation
 

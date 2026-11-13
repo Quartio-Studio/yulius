@@ -57,12 +57,21 @@ What Chrome does with a proxy was measured on Chrome 157: `--proxy-server` alone
     dev server at `localhost:<port>` works as before);
   - of Yulius's internal listener, the welcome page and its port list, by plain request only:
     the proxy reads the path, and a tunnel to that listener, whose path it could not read, is
-    refused.
+    refused; of its public listener, at that listener's own address, nothing, whatever the
+    sandbox's ports are.
+- **A name is not an address.** The loopback's ports and the welcome page are reached only by
+  an address written out or by `localhost` and the names below it, which are the loopback by
+  definition and are not asked of a resolver (hosts without one for them exist). A name a
+  resolver answers with a local address reaches nothing: its owner chooses the answer, and
+  could give a public address for a page and the loopback for that page's next request, which
+  the page would then read as its own origin. Chrome's own defence against that does not
+  apply here, since every connection it makes ends at the proxy.
 - **Nothing of an agent run's proxy applies.** No interception, no secret added, no answer
   redacted or judged by its encoding, and the policy of agent runs is not asked: the page is
   the sandbox's, and a secret injected into a page's requests would be the page's script's to
   use. A browser's connections count toward its sandbox's share of the proxy (SPEC-353) as one
-  more run.
+  more run, and a plain request waits for its answer as an agent's does (SPEC-369: the bound
+  restarts while its body is still being sent).
 - **The address guard stays.** It keeps Yulius's public origin and previews out of its own
   browser, which is not a matter of local addresses, and answers before a connection is made.
 
@@ -110,5 +119,18 @@ What Chrome does with a proxy was measured on Chrome 157: `--proxy-server` alone
   its loopback anyway. Sandboxed runs cannot reach it (it is on the host's loopback).
 - A developer's machine without sandboxes gets the same rule: the project's port range on the
   loopback, not the rest of the machine's.
+- A dev server reached by a name that points at `127.0.0.1` (a wildcard DNS service, an entry
+  in a DNS zone) no longer loads; `localhost`, a name below it or the address does.
+- A managed Chrome policy on the host that sets a proxy (`ProxyMode`, `ProxySettings`) wins
+  over the switches and would undo this; Yulius's own policy file sets none, and
+  `docs/operations.md` says not to add one.
+- A browser's proxy takes a free port of the host. New sandboxes' port ranges are given from
+  20000 upward and are never given again, so after some hundreds of sandboxes they reach the
+  ports the system hands out, and a proxy can sit on a port of another sandbox's range, which
+  is then not relayed while that browser runs (issue #1249; the allocation is older than this
+  change). A page cannot use such a listener as a proxy of its own: what reaches it through
+  another browser's proxy is a path-only request or a tunnel's bytes.
 - Not covered: what a viewer or page does to the public internet from the host's address
   (as before), and Chrome's own windows (ADR-0318's policy).
+- Not tested: WebTransport and other protocols over UDP (the switches turn QUIC and
+  non-proxied WebRTC off; their effect was not measured).

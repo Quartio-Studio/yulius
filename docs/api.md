@@ -1200,7 +1200,7 @@ resolves to nothing, the run gets the server without that variable or token.
     form of its listeners) are refused with `url_refused`, and pages' own requests to them fail as
     blocked (SPEC-001 BRW-008). The browser goes out through a proxy of its own and reaches what
     its sandbox's processes reach: of local addresses only its sandbox's dev-server ports on
-    `localhost` (and the welcome page). Another sandbox's port, a service of the host, a
+    `localhost` (by that name, a name below it or the address; and the welcome page). Another sandbox's port, a service of the host, a
     link-local address: a plain request is answered 403 "the sandbox browser does not load …",
     a tunnel (HTTPS, a WebSocket) does not connect, for the agents' tools, a viewer's address
     bar and a page's own requests alike (ADR-0321).

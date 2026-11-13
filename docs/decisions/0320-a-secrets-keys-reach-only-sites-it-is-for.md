@@ -66,9 +66,11 @@ has the focus inside; a fenced frame is in no list of frames.
   (`SecretPageLeaving`). A navigation inside the document (a fragment, `pushState`) is none.
   The record holds 256 frames per tab. When more of a tab's are on their way, nothing is
   known of that tab for 30 seconds, and when Chrome's events were skipped, of none: fills
-  then answer "try again" instead of typing. An address longer than 2048 bytes is kept as no
-  address, which no secret is for (a cut one could read as another site's: what comes before
-  the host can be that long).
+  then answer "try again" instead of typing. Of an address longer than 2048 bytes its site
+  is kept (scheme, host and port: a sign-in redirect with a long query to a site the secret
+  is for does not refuse a fill), and when that is too long as well, no address, which no
+  secret is for. A cut address is never kept: it could read as another site's, as what comes
+  before the host can be that long.
 - **The frames are asked again after the keys.** A frame's script can take the focus back
   between the look and the keys. When, after the typing, the focus is not in a text field of
   the page and the page holds a frame of a site the secret is not for (or the focus is on a

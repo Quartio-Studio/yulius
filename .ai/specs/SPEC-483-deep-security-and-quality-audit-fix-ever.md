@@ -365,8 +365,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **FSR-005** The browser keeps the address of a navigation to another document Chrome
   announced for a frame (`Page.frameStartedNavigating`; `Page.frameRequestedNavigation` for
   this tab) until the frame arrived, stopped loading or was detached, the tab's session ended
-  or 30 s passed; at most 256 frames per tab; an address over 2048 bytes is kept as none (no
-  secret is for it). A same-document navigation is not kept. Past the bound nothing is known
+  or 30 s passed; at most 256 frames per tab; of an address over 2048 bytes its site is kept
+  (scheme, host and port), or none when that is too long as well (no secret is for it); never
+  a cut address. A same-document navigation is not kept. Past the bound nothing is known
   of that tab for 30 s, and when events were skipped, of none.
 - **FSR-006** The refusals reach the application as a page the secret is not for (403), the
   reports as a secret gone astray (with its activity entry).
@@ -390,12 +391,17 @@ no code path reaches; documents, texts shown to agents and people, and code that
   browser asked for before the egress proxy runs is not started.
 - **BNR-003** Through its proxy a browser reaches, by the addresses the proxy resolved: what
   the egress proxy lets an agent run reach; on the loopback its sandbox's ports only; of the
-  internal listener the plain paths of the welcome page only (no other path, no tunnel).
+  internal listener the plain paths of the welcome page only (no other path, no tunnel); of
+  the public listener at its own address nothing. The loopback and the welcome page are
+  reached only by an address or by `localhost` and names below it (which no resolver is asked
+  for); a name resolved to a local address reaches nothing.
   Anything else is refused before a connection is made: 403 naming the sandbox's ports for a
   plain request, 403 to `CONNECT`.
-- **BNR-004** A browser's requests are neither intercepted nor changed nor redacted, need no
-  credential, never ask the policy of agent runs, and count toward the sandbox's share of the
-  proxy's connections.
+- **BNR-004** A browser's requests are neither intercepted nor changed nor redacted (the
+  headers of one hop and what an address carries before its host apart), need no credential,
+  never ask the policy of agent runs, and count toward the share of the proxy's connections
+  its sandbox's agent runs have. A plain request's answer is waited for with SPEC-369's
+  bound, which restarts with every piece of its body sent on.
 
 ## Plan
 
@@ -572,8 +578,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `vault.agent.fill` activity entry names it.
 - **AC-46** The record of announced navigations: an entry counts for 30 s, a settled frame's
   and an ended session's are gone, past 256 frames of a tab (none older than 30 s) nothing
-  is known of that tab for 30 s while other tabs' are, after lost events of none, and an
-  address over 2048 bytes is kept as none (one that would read as a bound host when cut).
+  is known of that tab for 30 s while other tabs' are, after lost events of none, and of an
+  address over 2048 bytes the site is kept (for one that would read as a bound host when
+  cut, the site it really names; for a long query, its own site), none when the site is too
+  long or there is none.
 - **AC-47** Through the MCP tool, the field `username` is typed neither with the focus in
   another site's frame, nor into a tab on its way to another site, nor into a tab that moved
   on unheard; it is typed on the bound page, and a frame that took the focus is reported.
@@ -581,16 +589,26 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `::1` and `127.0.0.2` yes; a port outside, `0.0.0.0`, link-local and IPv4-mapped loopback
   and link-local addresses no; a public and a private address yes; the pages' listener only
   for a plain request whose path begins as the welcome page's, also bound to every address
-  and with its port inside the sandbox's range.
-- **AC-49** Over real sockets: a plain request and a tunnel to the sandbox's port arrive (by
-  address and by `localhost`, the host header as asked); to another loopback port
+  and with its port inside the sandbox's range; the public listener at its own address never,
+  also with its port inside the range. For a name's answer (not `localhost`, a name below it
+  or an address): no loopback port, not the welcome page; a public address yes. A refusal
+  names the sandbox's ports, or says that none is known.
+- **AC-49** Over real sockets: a plain request (by address, `localhost` and `app.localhost`,
+  the host header as asked) and a tunnel (by address and `localhost`) to the sandbox's port
+  arrive; a name that resolves to that port, or to the welcome page's listener, gets 403 by
+  plain request and by tunnel and nothing arrives; to another loopback port
   (`127.0.0.1`, `localhost`, `[::1]`, `127.0.0.2`, `0.0.0.0`), `169.254.169.254`, `[fe80::1]`
   and `[::ffff:127.0.0.1]` both are answered 403 and nothing arrives; the welcome page is
   served, other paths of its listener and a tunnel to it are not.
 - **AC-50** A browser's request arrives with its body and its own headers, without the
   proxy's hop headers and without a credential an agent's proxy would add; the answer comes
   back with the secret value its origin echoed and its `content-encoding`; the policy of
-  agent runs was not asked once; with a share of one connection a second tunnel is refused.
+  agent runs was not asked once. A header the request's `Connection` lists is not sent on,
+  the origin's own hop headers do not come back, and a user and password before the host
+  reach neither the origin's `Host` nor an error text. With a share of one connection, an
+  agent run's tunnel leaves none for the browser and the browser's none for a run. An upload
+  slower in all than the head bound, sending throughout, gets its answer; a server that
+  never answers gets 504 after the bound.
 - **AC-51** `chromium_args` with a proxy hold the five switches before an operator's extra
   ones and none without; with a network, each browser's arguments name its own proxy, which
   is open while it runs and closed after a stop, a crash's restart and a failed start; a
@@ -598,7 +616,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-52** As the server wires it: before the egress proxy is bound no proxy opens; `s1`'s
   proxy reaches a server in `s1`'s ports and not one in `s2`'s, and the other way round;
   neither reaches a service of the host or the internal listener beyond the welcome page; a
-  lease let go closes its listener; an unknown sandbox's proxy answers nothing.
+  lease let go closes its listener; an unknown sandbox's proxy answers nothing; once the
+  egress proxy is gone no proxy opens. The server's browser configuration has a network, its
+  pages are the two the guard lets through, and the public listener is among those no
+  browser reaches.
 - **AC-53** On a real Chrome (opt-in): behind its proxy it shows its sandbox's server by
   `localhost` and `127.0.0.1` and the welcome page; navigations to another sandbox's port, a
   host service, the internal API, `169.254.169.254` and both over HTTPS show none of those
@@ -703,14 +724,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `real_chromium::a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium` and
   `real_chromium::a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` (AC-44).
 - Slice 9: `yulius-egress` `browser::tests::a_browser_reaches_its_sandboxes_ports_and_no_other_local_address`
-  and `browser::tests::of_yulius_a_browser_gets_its_pages_only` (AC-48); `tests/browser.rs`
-  `a_browser_loads_its_sandboxes_ports_and_no_other_local_address` and
+  `browser::tests::a_name_that_resolved_to_a_local_address_is_refused`,
+  `browser::tests::of_yulius_a_browser_gets_its_pages_only` and
+  `browser::tests::a_refusal_names_the_sandboxes_ports` (AC-48); `tests/browser.rs`
+  `a_browser_loads_its_sandboxes_ports_and_no_other_local_address`,
+  `a_name_that_resolves_to_the_loopback_reaches_nothing_there` and
   `of_yulius_the_browser_gets_its_welcome_page_only` (AC-49),
-  `nothing_is_added_to_or_taken_from_a_browsers_requests` and
-  `a_browsers_tunnels_count_toward_its_sandboxes_share` (AC-50); `yulius-browser`
+  `nothing_is_added_to_or_taken_from_a_browsers_requests`,
+  `a_browsers_tunnels_count_toward_its_sandboxes_share` and
+  `a_browsers_upload_is_not_cut_and_a_silent_server_is_given_up` (AC-50); `yulius-browser`
   `manager::tests::chromium_args_send_everything_through_the_browsers_proxy` and
   `manager::a_browser_runs_behind_its_own_proxy_or_not_at_all` (AC-51); `yulius`
-  `browser_network::each_browsers_proxy_reaches_its_own_sandboxes_ports` (AC-52) and, opt-in,
+  `browser_network::each_browsers_proxy_reaches_its_own_sandboxes_ports` and
+  `serve::tests::every_sandbox_browser_is_configured_behind_its_proxy` (AC-52) and, opt-in,
   `browser_network::a_real_chromium_reaches_its_sandboxes_ports_and_no_other_local_address`
   (AC-53). The nits left by slice 8's review:
   `instance::tests::an_address_too_long_to_keep_is_kept_by_its_site`.
