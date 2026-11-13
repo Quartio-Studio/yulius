@@ -9,6 +9,22 @@ const TEAM_VALUE = 'mock-not-a-real-password';
 const AGENT_VALUE = 'mock-agent-value-1';
 const MOCK_CODE = '123456';
 
+/** Finishes a two-factor setup whose dialog was closed before: the key is the one added then. */
+async function finishTwoFactor(screen: any) {
+  const pending = screen.getByRole('dialog', 'Set up two-factor');
+  await expect(pending.getByText(/Finish setting up two-factor/)).toBeVisible();
+  await screen.getByLabel('Code from your app').fill(MOCK_CODE);
+  await pending.getByRole('button', 'Unlock').click();
+  await expect(pending).toBeHidden();
+}
+
+type MockSecret = { id: string; hosts: string[]; env_files?: string; auto_allow?: boolean; cd_prod?: boolean; name: string };
+/** An agent secret as the mock holds it, by id or name. */
+const mockSecret = (browser: any, key: string): Promise<MockSecret> => browser.evaluate((k: string) => {
+  const found = (window as unknown as { __yuliusMock: { vault: { agent: MockSecret[] } } }).__yuliusMock.vault.agent.find((s) => s.id === k || s.name === k)!;
+  return { id: found.id, name: found.name, hosts: found.hosts, env_files: found.env_files || 'no', auto_allow: Boolean(found.auto_allow), cd_prod: Boolean(found.cd_prod) };
+}, key);
+
 /** Sets up two-factor in the dialog a first reveal opens (SPEC-040): a wrong code is refused. */
 async function setUpTwoFactor(screen: any, browser: any) {
   const setup = screen.getByRole('dialog', 'Set up two-factor');
@@ -237,7 +253,21 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(card.getByText('Task #107 asks to send it to')).toBeVisible();
   await expect(card.getByText('api.vidoc.test')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY').click();
+  // SPEC-483 V5 (ADR-0317): the secret is allowed use by use, so sending it to a new host needs
+  // the person's two-factor code, as reading it does; nothing is bound before.
+  const allow = screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY');
+  await allow.click();
+  const code = screen.getByRole('dialog', 'Set up two-factor');
+  await expect(code).toBeVisible();
+  expect((await mockSecret(browser, 'as_vidoc')).hosts).toEqual([]);
+  // Closing the dialog answers nothing: the request still waits, with its Allow.
+  await code.getByRole('button', 'Cancel').click();
+  await expect(code).toBeHidden();
+  await expect(card.getByText('Task #107 asks to send it to')).toBeVisible();
+  await expect(allow).toBeEnabled();
+  expect((await mockSecret(browser, 'as_vidoc')).hosts).toEqual([]);
+  await allow.click();
+  await finishTwoFactor(screen);
   await expect(card.getByText(/asks to send it to/)).toBeHidden();
   await expect(card.getByText(/Not sent anywhere yet/)).toBeHidden();
   await expect(card.getByText('api.vidoc.test')).toBeVisible();
@@ -336,7 +366,7 @@ test('an agent’s host request shows its Allow on the open page at once', async
 // hosts it shows, and a request that changes under the person's pointer or keyboard gets an Allow
 // that is off for a moment, so a click meant for the old one cannot allow a host never seen.
 test('an Allow whose hosts just changed is off for a moment', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents'));
+  await app.open(mock('/s/studio/secrets?section=agents', '&vault=unlocked'));
   await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeEnabled();
   // The person is on the Allow (keyboard focus) when the hosts change. The moment the new Allow
   // is drawn, before any timer could change it, its state is noted and it is clicked.
@@ -370,7 +400,7 @@ test('an Allow whose hosts just changed is off for a moment', async ({ app, brow
 // Review of SPEC-209 (L1): an answer on its way is not undone by a live update, which would give
 // back enabled buttons for a request about to be gone; the reload after the answer catches up.
 test('a live update waits for an answer on its way', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env'));
+  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env&vault=unlocked'));
   const allow = screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files');
   await allow.click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as Asking).__yuliusMock.heldWaiting)).toBe(1);
@@ -408,7 +438,11 @@ test('a person allows an agent to copy a secret into .env, then revokes it', asy
   const card = browser.locator('.item-card:has-text("STRIPE_KEY")');
   await expect(card.getByText(/Task #111 asks to copy its value into the project’s git-ignored \.env/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // Agents read what a `.env` file holds: the allowance needs the two-factor code (ADR-0317).
   await screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files').click();
+  await expect(screen.getByRole('dialog', 'Set up two-factor')).toBeVisible();
+  expect((await mockSecret(browser, 'as_stripe')).env_files).toBe('asked');
+  await setUpTwoFactor(screen, browser);
   await expect(card.getByText(/asks to copy/)).toBeHidden();
   await expect(card.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
   await screen.getByRole('button', 'Stop agents copying STRIPE_KEY into .env files').click();
@@ -423,7 +457,11 @@ test('a person allows a secret for production deploys, then revokes it', async (
   await app.open(mock('/s/studio/secrets?section=agents'));
   const card = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
   await expect(card.getByText(/Production deploys \(CD\) do not get it/)).toBeVisible();
+  // Production deploys run the repository's command with the value: the code first (ADR-0317).
   await screen.getByRole('button', 'Let production deploys (CD) get VIDOC_API_KEY').click();
+  await expect(screen.getByRole('dialog', 'Set up two-factor')).toBeVisible();
+  expect((await mockSecret(browser, 'as_vidoc')).cd_prod).toBe(false);
+  await setUpTwoFactor(screen, browser);
   await expect(card.getByText('Production deploys (CD) get its value; agents never do.')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Stop production deploys getting VIDOC_API_KEY').click();
@@ -433,7 +471,7 @@ test('a person allows a secret for production deploys, then revokes it', async (
 // Task #191 (SPEC-204, #621): "i couldnt set allow this for production deploys". A production
 // secret is exclusive (ADR-0109), so the page offers neither side of it where the server refuses.
 test('a secret agents use offers no production allowance, and a production secret no Allow for agents', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents'));
+  await app.open(mock('/s/studio/secrets?section=agents', '&vault=unlocked'));
   // STRIPE_KEY is sent to api.stripe.com: no button, no warning, and what to do instead.
   const stripe = browser.locator('.item-card:has-text("STRIPE_KEY")');
   await expect(stripe.getByText(/Production deploys never get a secret agents use/)).toBeVisible();
@@ -911,7 +949,18 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   await expect(edit.getByRole('switch', 'Let agents set it up')).not.toBeChecked();
   await edit.getByRole('switch', 'Let agents set it up').click();
   await edit.getByRole('button', 'Save').click();
+  // Agents then send it where they choose: the code first, over the open form (ADR-0317).
+  // Closing the code dialog saves nothing and leaves the form open, as it was filled.
+  const code = screen.getByRole('dialog', 'Set up two-factor');
+  await code.getByRole('button', 'Cancel').click();
+  await expect(code).toBeHidden();
+  await expect(edit).toBeVisible();
+  await expect(edit.getByRole('switch', 'Let agents set it up')).toBeChecked();
+  expect((await mockSecret(browser, 'MANUAL_KEY')).auto_allow).toBe(false);
+  await edit.getByRole('button', 'Save').click();
+  await finishTwoFactor(screen);
   await expect(edit).toBeHidden();
+  expect((await mockSecret(browser, 'MANUAL_KEY')).auto_allow).toBe(true);
   await expect(card.getByText('Agents set it up')).toBeVisible();
 
   // Team secrets: this sandbox's by default, team-wide on request; each badged.

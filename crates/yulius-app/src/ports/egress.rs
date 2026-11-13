@@ -156,6 +156,7 @@ pub trait EgressPolicy: Send + Sync {
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool;
     /// Rewrites a request to a bound host (placeholders, injected header).
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision;
-    /// The values (and their encodings) to redact from responses the client receives.
-    async fn egress_redactor(&self, client: &EgressClient) -> Arc<PlainMatcher>;
+    /// The values (and their encodings) to redact from responses the client receives; `None`
+    /// when they cannot be read: the proxy then sends nothing, as it could not check the answer.
+    async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>>;
 }

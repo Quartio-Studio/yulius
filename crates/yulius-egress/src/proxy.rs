@@ -547,6 +547,8 @@ struct Outgoing {
     method: Method,
     path: String,
     headers: Vec<(String, Vec<u8>)>,
+    /// What to redact from the answer, read before anything is sent.
+    matcher: Arc<PlainMatcher>,
 }
 
 /// A response body redacted as it streams.
@@ -831,13 +833,7 @@ impl EgressProxy {
         };
         drop(ended);
         let response = self
-            .send(
-                &client,
-                &upstream,
-                outgoing,
-                body,
-                Some(self.response_head_timeout),
-            )
+            .send(&upstream, outgoing, body, Some(self.response_head_timeout))
             .await;
         drop(permit);
         response
@@ -909,7 +905,7 @@ impl EgressProxy {
         B::Error: Into<BoxError>,
     {
         match self.prepare(client, upstream, &parts).await {
-            Ok(outgoing) => self.send(client, upstream, outgoing, body, None).await,
+            Ok(outgoing) => self.send(upstream, outgoing, body, None).await,
             Err((status, message)) => text(status, &message),
         }
     }
@@ -937,6 +933,13 @@ impl EgressProxy {
             .flat_map(|v| v.split(','))
             .map(|v| v.trim().to_ascii_lowercase())
             .collect();
+        let Some(matcher) = self.policy.egress_redactor(client).await else {
+            return Err((
+                503,
+                "Yulius proxy: agent secrets cannot be read right now, so the answer could not be checked for them; nothing was sent, try again"
+                    .to_owned(),
+            ));
+        };
         let path = parts
             .uri
             .path_and_query()
@@ -971,6 +974,7 @@ impl EgressProxy {
             method: parts.method.clone(),
             path,
             headers,
+            matcher,
         })
     }
 
@@ -980,7 +984,6 @@ impl EgressProxy {
     /// bounded.
     async fn send<B>(
         &self,
-        client: &EgressClient,
         upstream: &Upstream,
         outgoing: Outgoing,
         body: B,
@@ -994,6 +997,7 @@ impl EgressProxy {
             method,
             path,
             headers,
+            matcher,
         } = outgoing;
         let mut builder = self.http.request(method, upstream.url(&path));
         for (name, value) in headers {
@@ -1049,45 +1053,41 @@ impl EgressProxy {
                 );
             }
         };
-        self.respond(client, response).await
+        respond(response, matcher)
     }
+}
 
-    async fn respond(
-        &self,
-        client: &EgressClient,
-        response: reqwest::Response,
-    ) -> Response<EgressBody> {
-        let matcher = self.policy.egress_redactor(client).await;
-        if !matcher.is_empty()
-            && let Some(encoding) = response
-                .headers()
-                .get(header::CONTENT_ENCODING)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_ascii_lowercase())
-            && encoding != "identity"
-        {
-            return text(
-                502,
-                &format!(
-                    "Yulius proxy: the response is compressed ({encoding}) and cannot be checked for agent secrets; request it without Accept-Encoding"
-                ),
-            );
-        }
-        let mut builder = Response::builder().status(response.status().as_u16());
-        for (name, value) in response.headers() {
-            if hop(name.as_str()) || name == header::CONTENT_LENGTH {
-                continue;
-            }
-            let (redacted, _) = redact_all(matcher.as_ref(), value.as_bytes());
-            if let Ok(value) = HeaderValue::from_bytes(&redacted) {
-                builder = builder.header(name, value);
-            }
-        }
-        let body = redacting_body(response.bytes_stream(), matcher);
-        builder
-            .body(body)
-            .unwrap_or_else(|_| text(502, "Yulius proxy: invalid upstream response"))
+/// The upstream's answer for the client, redacted with `matcher` as it streams.
+fn respond(response: reqwest::Response, matcher: Arc<PlainMatcher>) -> Response<EgressBody> {
+    if !matcher.is_empty()
+        && let Some(encoding) = response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim().to_ascii_lowercase())
+        && encoding != "identity"
+    {
+        return text(
+            502,
+            &format!(
+                "Yulius proxy: the response is compressed ({encoding}) and cannot be checked for agent secrets; request it without Accept-Encoding"
+            ),
+        );
     }
+    let mut builder = Response::builder().status(response.status().as_u16());
+    for (name, value) in response.headers() {
+        if hop(name.as_str()) || name == header::CONTENT_LENGTH {
+            continue;
+        }
+        let (redacted, _) = redact_all(matcher.as_ref(), value.as_bytes());
+        if let Ok(value) = HeaderValue::from_bytes(&redacted) {
+            builder = builder.header(name, value);
+        }
+    }
+    let body = redacting_body(response.bytes_stream(), matcher);
+    builder
+        .body(body)
+        .unwrap_or_else(|_| text(502, "Yulius proxy: invalid upstream response"))
 }
 
 /// An opaque tunnel to a host without agent secrets.

@@ -70,15 +70,9 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let prod = created.body["id"].as_str().ok_or("id")?.to_owned();
-    let production = call(
-        &h.router,
-        Method::POST,
-        &format!("/api/agent-secrets/{prod}/cd-prod"),
-        Some(json!({"allow": true})),
-        &writer,
-    )
-    .await?;
-    assert_eq!(production.status, StatusCode::OK, "{}", production.body);
+    // Set up in the store: allowing production through the API needs a two-factor unlock
+    // (ADR-0317), which these tests ask of a session that has none yet.
+    assert!(h.store.vault_set_cd_prod(&prod, false, true).await?);
     let other = call(
         &h.router,
         Method::POST,
@@ -567,15 +561,7 @@ async fn copies_are_answered_only_where_and_by_whom_they_may_be() -> TestResult 
     .await?;
     assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
     let gid = global.body["id"].as_str().ok_or("id")?.to_owned();
-    let production = call(
-        &w.h.router,
-        Method::POST,
-        &format!("/api/agent-secrets/{gid}/cd-prod"),
-        Some(json!({"allow": true})),
-        &w.admin,
-    )
-    .await?;
-    assert_eq!(production.status, StatusCode::OK, "{}", production.body);
+    assert!(w.h.store.vault_set_cd_prod(&gid, false, true).await?);
     let asked = ask(
         &w,
         TOKEN,

@@ -27,6 +27,9 @@ const EXISTING: &str = concat!("sk_live_", "51ExistingValue9q2w");
 struct World {
     h: support::Harness,
     writer: Creds,
+    /// Alice's browser, the vault unlocked: what allowing `.env` copies of a secret allowed use
+    /// by use needs (ADR-0317).
+    person: Creds,
     worktree: PathBuf,
     home: PathBuf,
 }
@@ -71,9 +74,11 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let person = crate::secrets::unlocked(&h, "u-alice").await?;
     Ok(World {
         h,
         writer,
+        person,
         worktree,
         home,
     })
@@ -127,7 +132,7 @@ async fn allow_env(w: &World, name: &str) -> TestResult {
         Method::POST,
         &format!("/api/agent-secrets/{}/env", record.id),
         Some(json!({"allow": true, "env_files": record.env_files.as_str(), "env_requested_by": record.env_requested_by})),
-        &w.writer,
+        &w.person,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);

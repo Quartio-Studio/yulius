@@ -34,6 +34,17 @@ pub enum Revealed<T> {
     ReauthRequired(ReauthStatus),
 }
 
+/// Why an edit of a team secret changed nothing: someone saved it between this edit's read and
+/// its write (the edit would have sealed the value it read over theirs, SPEC-483 V3), or it was
+/// deleted.
+fn update_refused(still_there: bool) -> AppError {
+    if still_there {
+        AppError::Conflict("someone saved this secret meanwhile: reload and save again".into())
+    } else {
+        AppError::NotFound
+    }
+}
+
 /// Validates a reveal request: its purpose (`show` or `copy`) and fields (`value`, `notes`).
 pub(super) fn reveal_request(request: &RevealRequest) -> AppResult<(&str, Vec<String>)> {
     let purpose = request.purpose.as_deref().unwrap_or("show");
@@ -280,7 +291,7 @@ impl App {
     /// value needs no re-authentication (it reveals nothing).
     ///
     /// # Errors
-    /// `NotFound`, `Invalid`, store failures.
+    /// `NotFound`, `Invalid`, `Conflict` when someone saved it meanwhile, store failures.
     pub async fn update_team_secret(
         &self,
         ctx: &AuthContext,
@@ -315,7 +326,8 @@ impl App {
             record.value_updated_at = now;
         }
         if !self.deps.store.vault_update(&record, &seen).await? {
-            return Err(AppError::NotFound);
+            let still_there = self.deps.store.vault_get(id).await?.is_some();
+            return Err(update_refused(still_there));
         }
         self.vault_audit(
             &Self::vault_actor(ctx),
@@ -576,5 +588,21 @@ impl App {
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review of SPEC-483 slice 5: since an edit compares the sealed value it read, the second
+    /// of two edits of one team secret changes nothing. It is told to reload (409), not that
+    /// the secret is gone; a deleted one is.
+    #[test]
+    fn an_edit_overtaken_by_another_is_told_to_reload() {
+        let overtaken = update_refused(true);
+        assert_eq!(overtaken.code(), "conflict");
+        assert!(overtaken.to_string().contains("reload"), "{overtaken}");
+        assert_eq!(update_refused(false), AppError::NotFound);
     }
 }

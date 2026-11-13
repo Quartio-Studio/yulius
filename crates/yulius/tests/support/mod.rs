@@ -670,6 +670,8 @@ pub struct Resp {
     pub status: StatusCode,
     pub body: serde_json::Value,
     pub set_cookie: Option<String>,
+    /// Every `Set-Cookie` of the response, in order.
+    pub set_cookies: Vec<String>,
     pub location: Option<String>,
     pub cache_control: Option<String>,
 }
@@ -727,6 +729,13 @@ pub async fn call(
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let set_cookies = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .collect();
     let location = resp
         .headers()
         .get(header::LOCATION)
@@ -743,6 +752,7 @@ pub async fn call(
         status,
         body,
         set_cookie,
+        set_cookies,
         location,
         cache_control,
     })
@@ -778,6 +788,7 @@ pub async fn send(
         status,
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
+        set_cookies: Vec::new(),
         location: None,
         cache_control: None,
     })

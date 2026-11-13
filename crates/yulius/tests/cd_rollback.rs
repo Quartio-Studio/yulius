@@ -967,6 +967,7 @@ async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
             &f.secret,
             (now.env_files, now.env_requested_by.as_deref()),
             (EnvFiles::No, None),
+            None,
         )
         .await?;
     std::fs::remove_file(f.marks.join("hold"))?;

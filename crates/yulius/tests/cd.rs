@@ -286,6 +286,7 @@ impl Fixture {
                     &self.secret,
                     (now.env_files, now.env_requested_by.as_deref()),
                     (EnvFiles::Allowed, None),
+                    None,
                 )
                 .await?
         );
@@ -1307,13 +1308,15 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     .await?;
     f.prove("main").await?;
     let secret_path = format!("/api/agent-secrets/{}", f.secret);
+    // Letting agents set it up needs the two-factor unlock (ADR-0317).
+    let person = crate::secrets::unlocked(&f.h, "u-alice").await?;
     let auto = |on: bool| {
         call(
             &f.h.router,
             Method::PATCH,
             &secret_path,
             Some(json!({"auto_allow": on})),
-            &f.alice,
+            &person,
         )
     };
     let on = auto(true).await?;
@@ -1362,7 +1365,19 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     assert_eq!(auto(false).await?.status, StatusCode::OK);
     let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
-    let allowed = cd_prod(true).await?;
+    // Production deploys run the repository's command with the value: allowing it is the
+    // person's, after their two-factor code, never a token's (ADR-0317).
+    let token = cd_prod(true).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert_eq!(token.body["error"]["code"], "forbidden");
+    let allowed = call(
+        &f.h.router,
+        Method::POST,
+        &cd_prod_path,
+        Some(json!({"allow": true})),
+        &person,
+    )
+    .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     let again = auto(true).await?;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
@@ -1407,7 +1422,7 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{}", f.secret),
         Some(json!({"hosts": ["api.example.com"]})),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(hosts.status, StatusCode::OK, "{}", hosts.body);
@@ -1488,6 +1503,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
                 &f.secret,
                 (now.env_files, now.env_requested_by.as_deref()),
                 (EnvFiles::No, None),
+                None,
             )
             .await?
     );
@@ -1500,10 +1516,33 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         "{}",
         waiting.body
     );
-    // Someone who manages the secret (its maker) allows it on the Secrets page.
-    let allowed = cd_prod(true).await?;
+    // Someone who manages the secret (its maker) allows it on the Secrets page, after their
+    // two-factor code (ADR-0317): a session without the unlock is asked for it.
+    let person = crate::secrets::browser_session(&f.h, "u-alice").await?;
+    let allow_as_person = || {
+        call(
+            &f.h.router,
+            Method::POST,
+            &cd_prod_path,
+            Some(json!({"allow": true})),
+            &person,
+        )
+    };
+    let locked = allow_as_person().await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(f.prod_secret_state().await?, "not_allowed");
+    crate::secrets::enroll(&f.h, &person).await?;
+    let allowed = allow_as_person().await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["cd_prod"], true);
+    assert_eq!(f.prod_secret_state().await?, "ready");
+    // Revoking sends the value nowhere new: a token may, without a code.
+    let revoked = cd_prod(false).await?;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body["cd_prod"], false);
+    assert_eq!(f.prod_secret_state().await?, "not_allowed");
+    assert_eq!(allow_as_person().await?.status, StatusCode::OK);
     assert_eq!(f.prod_secret_state().await?, "ready");
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);

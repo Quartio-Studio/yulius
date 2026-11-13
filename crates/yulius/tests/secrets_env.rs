@@ -152,7 +152,7 @@ async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
         let id = w.id.clone();
         async move {
             store
-                .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Asked, Some(by)))
+                .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Asked, Some(by)), None)
                 .await
         }
     };
@@ -684,7 +684,7 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
         assert_eq!(refused["isError"], true, "{args}: {refused}");
     }
     w.h.store
-        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None), None)
         .await?;
     for path in [
         "README.md",
@@ -786,10 +786,15 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
         EnvFiles::No
     );
     w.h.store
-        .vault_set_env_files(&weird, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .vault_set_env_files(
+            &weird,
+            (EnvFiles::No, None),
+            (EnvFiles::Allowed, None),
+            None,
+        )
         .await?;
     w.h.store
-        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None), None)
         .await?;
     let refused = copy(json!({"secrets": ["STRIPE_KEY", "WEIRD_KEY"]})).await?;
     assert_eq!(refused["isError"], true, "{refused}");
@@ -798,7 +803,12 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
     // One allowed, one not: nothing written, only the unallowed one waits.
     answer(&w, &w.writer, false).await?;
     w.h.store
-        .vault_set_env_files(&weird, (EnvFiles::Allowed, None), (EnvFiles::No, None))
+        .vault_set_env_files(
+            &weird,
+            (EnvFiles::Allowed, None),
+            (EnvFiles::No, None),
+            None,
+        )
         .await?;
     let created = call(
         &w.h.router,
@@ -810,7 +820,7 @@ async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
     .await?;
     let docs = created.body["id"].as_str().ok_or("id")?.to_owned();
     w.h.store
-        .vault_set_env_files(&docs, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .vault_set_env_files(&docs, (EnvFiles::No, None), (EnvFiles::Allowed, None), None)
         .await?;
     let mixed = copy(json!({"secrets": ["DOCS_KEY", "STRIPE_KEY"]})).await?;
     assert_ne!(mixed["isError"], true, "{mixed}");
@@ -921,7 +931,7 @@ async fn a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mo
     std::fs::write(&example, "A=\n")?;
     std::fs::set_permissions(&example, std::fs::Permissions::from_mode(0o755))?;
     w.h.store
-        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None), None)
         .await?;
     let copied = copy().await?;
     assert_ne!(copied["isError"], true, "{copied}");
@@ -1089,7 +1099,7 @@ async fn multi_line_keys_reach_the_env_byte_identical_to_their_files() -> TestRe
         let id = created.body["id"].as_str().ok_or("id")?.to_owned();
         assert!(
             w.h.store
-                .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+                .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Allowed, None), None)
                 .await?
         );
         ids.push(id);

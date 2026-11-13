@@ -1578,11 +1578,12 @@ fn sha256_file(path: &Path) -> AppResult<String> {
 /// Writes a read-only copy of `src` at `dest` (temporary file, fsync, rename).
 pub(crate) fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
     let mut input = File::open(src).map_err(AppError::internal)?;
-    copy_immutable_from(&mut input, dest)
+    copy_immutable_from(&mut input, dest).map(|_| ())
 }
 
-/// Writes what `input` holds as a read-only file at `dest` (temporary file, fsync, rename).
-pub(crate) fn copy_immutable_from(input: &mut impl io::Read, dest: &Path) -> AppResult<()> {
+/// Writes what `input` holds as a read-only file at `dest` (temporary file, fsync, rename) and
+/// says how many bytes that was.
+pub(crate) fn copy_immutable_from(input: &mut impl io::Read, dest: &Path) -> AppResult<u64> {
     let parent = dest
         .parent()
         .ok_or_else(|| AppError::Internal("transcript path without parent".into()))?;
@@ -1590,16 +1591,18 @@ pub(crate) fn copy_immutable_from(input: &mut impl io::Read, dest: &Path) -> App
     let mut tmp_name = dest.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
-    {
+    let copied = {
         let mut output = File::create(&tmp).map_err(AppError::internal)?;
-        io::copy(input, &mut output).map_err(AppError::internal)?;
+        let copied = io::copy(input, &mut output).map_err(AppError::internal)?;
         output.sync_all().map_err(AppError::internal)?;
-    }
+        copied
+    };
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o444)).map_err(AppError::internal)?;
     fs::rename(&tmp, dest).map_err(AppError::internal)?;
     File::open(parent)
         .and_then(|dir| dir.sync_all())
-        .map_err(AppError::internal)
+        .map_err(AppError::internal)?;
+    Ok(copied)
 }
 
 /// Moves a staged directory into place (rename; merges into an existing directory).

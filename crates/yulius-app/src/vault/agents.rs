@@ -6,8 +6,8 @@
 //! two-factor unlock. Agents never do.
 
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretView, CopyRequestView, RevealRequest,
-    SecretReveal,
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, CopyRequestView, ReauthStatus,
+    RevealRequest, SecretReveal,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
@@ -127,6 +127,29 @@ fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) 
 }
 
 impl App {
+    /// Checks the two-factor unlock before the value of an agent secret people allow use by use
+    /// (`auto_allow` off, production ones among them) may go somewhere new: a host it is not
+    /// bound to, `.env` files, or wherever agents bind it themselves (SPEC-483 V5, ADR-0317).
+    /// Sending a value to a server of one's choice reads it, so it needs what a reveal needs.
+    /// Nothing is asked for a secret agents set up: they bind its hosts without a person.
+    pub(super) async fn fresh_to_widen(
+        &self,
+        ctx: &AuthContext,
+        record: &VaultSecretRecord,
+    ) -> AppResult<Option<ReauthStatus>> {
+        if record.auto_allow {
+            return Ok(None);
+        }
+        if ctx.session_hash.is_none() {
+            return Err(AppError::Forbidden(format!(
+                "{} is allowed use by use: where its value goes is changed on the Secrets page, \
+                 after entering your two-factor code",
+                record.name
+            )));
+        }
+        self.fresh_or_status(ctx).await
+    }
+
     /// Whether `ctx` may change, delete, reveal and answer for a secret of `scope` (MAN-001..003).
     pub(super) async fn require_manage_agent(
         &self,
@@ -577,7 +600,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         patch: &AgentSecretPatch,
-    ) -> AppResult<AgentSecretView> {
+    ) -> AppResult<Revealed<AgentSecretView>> {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, &record.scope()).await?;
         if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
@@ -628,6 +651,23 @@ impl App {
                 .as_deref()
                 .or(record.header_name.as_deref()),
         )?;
+        // A host it was not bound to, or agents binding it from now on: its value may go
+        // somewhere new (ADR-0317).
+        let bound: Vec<HostPattern> = record
+            .hosts
+            .iter()
+            .filter_map(|h| HostPattern::parse(h).ok())
+            .collect();
+        let widens = toggled == Some(true)
+            || patch.hosts.is_some()
+                && meta
+                    .hosts
+                    .iter()
+                    .filter_map(|h| HostPattern::parse(h).ok())
+                    .any(|h| !bound.contains(&h));
+        if widens && let Some(status) = self.fresh_to_widen(ctx, &record).await? {
+            return Ok(Revealed::ReauthRequired(status));
+        }
         let mut changed: Vec<&str> = Vec::new();
         if patch.name.is_some() {
             changed.push("name");
@@ -702,7 +742,7 @@ impl App {
             )
             .await?;
         }
-        self.agent_view(&record, true).await
+        Ok(Revealed::Values(self.agent_view(&record, true).await?))
     }
 
     /// `DELETE /api/agent-secrets/{id}`.
@@ -796,7 +836,8 @@ impl App {
 }
 
 /// Why the store refused `record`, an edit of `seen`, from the row as it is `now`: gone; or its
-/// hosts or switch changed meanwhile (an agent bound a host, a person switched it), or it was
+/// hosts, switch or value changed meanwhile (an agent bound a host, a person switched or rotated
+/// it), or it was
 /// allowed for production, which agents never set up and which binds no new host (SPEC-262
 /// VTR-001): nothing is undone unseen.
 fn update_refused(
@@ -813,8 +854,8 @@ fn update_refused(
             AppError::Conflict(super::PRODUCTION_SECRET.into())
         }
         Some(_) => AppError::Conflict(
-            "the secret changed meanwhile (an agent bound a host, or someone changed it): \
-             reload and save again"
+            "the secret changed meanwhile (an agent bound a host, or someone changed it or its \
+             value): reload and save again"
                 .into(),
         ),
         None => AppError::NotFound,

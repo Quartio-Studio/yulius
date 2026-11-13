@@ -227,6 +227,9 @@ impl VaultStore for SqliteStore {
     ) -> AppResult<bool> {
         let r = record.clone();
         let (seen_hosts, seen_auto) = (to_json(&seen.hosts), i64::from(seen.auto_allow));
+        // The sealed value the edit read: an edit writes it back, so one read before a
+        // rotation would undo it (SPEC-483 V3).
+        let seen_value = seen.envelope.ciphertext.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             ensure_agent_unique(&tx, &r)?;
@@ -236,7 +239,8 @@ impl VaultStore for SqliteStore {
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
                      updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
                      WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
-                     AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15)",
+                     AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15) \
+                     AND ciphertext = ?17",
                     params![
                         r.id,
                         r.name,
@@ -254,6 +258,7 @@ impl VaultStore for SqliteStore {
                         i64::from(r.auto_allow),
                         seen_hosts,
                         seen_auto,
+                        seen_value,
                     ],
                 )
                 .map_err(db)?;
@@ -426,8 +431,8 @@ impl VaultStore for SqliteStore {
         request: &[String],
         bound: &[String],
         hosts: &[String],
-        by: &str,
-        at: Timestamp,
+        (by, at): (&str, Timestamp),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool> {
         let (id, request, bound, hosts, by) = (
             id.to_owned(),
@@ -442,8 +447,8 @@ impl VaultStore for SqliteStore {
                     "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
                      updated_by = ?5, updated_at = ?6 \
                      WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3 \
-                     AND NOT (cd_prod = 1 AND ?4 != ?3)",
-                    params![id, request, bound, hosts, by, at.0],
+                     AND NOT (cd_prod = 1 AND ?4 != ?3) AND (?7 IS NULL OR auto_allow = ?7)",
+                    params![id, request, bound, hosts, by, at.0, auto_allow.map(i64::from)],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -589,6 +594,7 @@ impl VaultStore for SqliteStore {
         id: &str,
         from: (EnvFiles, Option<&str>),
         to: (EnvFiles, Option<&str>),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool> {
         let (id, from_state, from_by, to_state, to_by) = (
             id.to_owned(),
@@ -602,8 +608,16 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
                      WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
-                     AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1)",
-                    params![id, from_state, from_by, to_state, to_by],
+                     AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1) \
+                     AND (?6 IS NULL OR auto_allow = ?6)",
+                    params![
+                        id,
+                        from_state,
+                        from_by,
+                        to_state,
+                        to_by,
+                        auto_allow.map(i64::from)
+                    ],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -1107,28 +1121,39 @@ mod tests {
         let no = (EnvFiles::No, None);
         assert!(
             store
-                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#1")))
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#1")), None)
                 .await?
         );
         assert!(
             !store
-                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#2")))
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#2")), None)
                 .await?,
             "it is no longer unasked"
         );
         assert!(
             !store
-                .vault_set_env_files("a", (EnvFiles::Asked, None), (EnvFiles::Allowed, None))
+                .vault_set_env_files(
+                    "a",
+                    (EnvFiles::Asked, None),
+                    (EnvFiles::Allowed, None),
+                    None
+                )
                 .await?,
             "a person who saw no asker answers nothing"
         );
+        // An answer that depended on `auto_allow` holds only while it still is what was read
+        // (SPEC-483 slice 5, review: no unlock was asked because agents set the secret up).
+        let auto = store.vault_get("a").await?.ok_or("row")?.auto_allow;
+        let seen = (EnvFiles::Asked, Some("#1"));
+        assert!(
+            !store
+                .vault_set_env_files("a", seen, (EnvFiles::Allowed, None), Some(!auto))
+                .await?,
+            "its auto_allow is not what the answer read"
+        );
         assert!(
             store
-                .vault_set_env_files(
-                    "a",
-                    (EnvFiles::Asked, Some("#1")),
-                    (EnvFiles::Allowed, None)
-                )
+                .vault_set_env_files("a", seen, (EnvFiles::Allowed, None), Some(auto))
                 .await?
         );
         let got = store.vault_get("a").await?.ok_or("row")?;
@@ -1170,20 +1195,28 @@ mod tests {
         for (request, seen) in [(hosts(&["x.test"]), &bound), (hosts(&["new.test"]), &both)] {
             assert!(
                 !store
-                    .vault_answer_request("a", &request, seen, &both, "u1", Timestamp(9))
+                    .vault_answer_request("a", &request, seen, &both, ("u1", Timestamp(9)), None)
                     .await?
             );
         }
+        // Nor does one that depended on another `auto_allow` than the row has now.
+        let auto = store.vault_get("a").await?.ok_or("row")?.auto_allow;
+        let asked = hosts(&["new.test"]);
         assert!(
-            store
+            !store
                 .vault_answer_request(
                     "a",
-                    &hosts(&["new.test"]),
+                    &asked,
                     &bound,
                     &both,
-                    "u1",
-                    Timestamp(9)
+                    ("u1", Timestamp(9)),
+                    Some(!auto)
                 )
+                .await?
+        );
+        assert!(
+            store
+                .vault_answer_request("a", &asked, &bound, &both, ("u1", Timestamp(9)), Some(auto))
                 .await?
         );
         let got = store.vault_get("a").await?.ok_or("row")?;
@@ -1704,7 +1737,7 @@ mod tests {
         store.vault_insert(&fresh).await?;
         assert!(
             store
-                .vault_set_env_files("e", asked, (EnvFiles::Allowed, None))
+                .vault_set_env_files("e", asked, (EnvFiles::Allowed, None), None)
                 .await?
         );
         assert!(
@@ -1720,13 +1753,13 @@ mod tests {
         assert!(store.vault_set_cd_prod("f", false, true).await?);
         assert!(
             !store
-                .vault_set_env_files("f", asked, (EnvFiles::Allowed, None))
+                .vault_set_env_files("f", asked, (EnvFiles::Allowed, None), None)
                 .await?,
             "a production secret is never copied into .env files"
         );
         assert!(
             store
-                .vault_set_env_files("f", asked, (EnvFiles::No, None))
+                .vault_set_env_files("f", asked, (EnvFiles::No, None), None)
                 .await?,
             "dismissing the request still works"
         );
@@ -1741,7 +1774,7 @@ mod tests {
         store.vault_insert(&third).await?;
         assert!(
             store
-                .vault_answer_request("h", &one, &none, &one, "u1", Timestamp(9))
+                .vault_answer_request("h", &one, &none, &one, ("u1", Timestamp(9)), None)
                 .await?
         );
         assert!(
@@ -1759,7 +1792,7 @@ mod tests {
         assert!(store.vault_set_cd_prod("p", false, true).await?);
         assert!(
             !store
-                .vault_answer_request("p", &one, &none, &one, "u1", Timestamp(9))
+                .vault_answer_request("p", &one, &none, &one, ("u1", Timestamp(9)), None)
                 .await?,
             "a production secret is never bound to hosts"
         );
@@ -1774,11 +1807,43 @@ mod tests {
         assert!(store.vault_update(&described, &seen).await?);
         assert!(
             store
-                .vault_answer_request("p", &one, &none, &none, "u1", Timestamp(9))
+                .vault_answer_request("p", &one, &none, &none, ("u1", Timestamp(9)), None)
                 .await?
         );
         let got = store.vault_get("p").await?.ok_or("row")?;
         assert!(got.cd_prod && got.hosts.is_empty() && got.env_files == EnvFiles::No);
+        Ok(())
+    }
+
+    /// SPEC-483 V3: every edit writes the sealed value it read back. One read before a
+    /// rotation would write the old value over the new one, and the person who rotated was
+    /// told it worked: the edit is refused, and one read again goes through.
+    #[tokio::test]
+    async fn an_edit_read_before_a_rotation_does_not_undo_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        store
+            .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))
+            .await?;
+        let seen = store.vault_get("a").await?.ok_or("row")?;
+        let mut rotated = seen.clone();
+        rotated.envelope.ciphertext = vec![7, 7];
+        rotated.value_updated_at = Timestamp(5);
+        assert!(store.vault_update(&rotated, &seen).await?);
+
+        let mut described = seen.clone();
+        described.description = "edited by someone who read the old row".into();
+        assert!(
+            !store.vault_update(&described, &seen).await?,
+            "an edit read before the rotation"
+        );
+        let got = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(got.envelope.ciphertext, vec![7, 7]);
+        assert_eq!(got.value_updated_at, Timestamp(5));
+
+        let mut again = got.clone();
+        again.description = "edited after a reload".into();
+        assert!(store.vault_update(&again, &got).await?);
         Ok(())
     }
 

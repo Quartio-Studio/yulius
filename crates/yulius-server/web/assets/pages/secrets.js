@@ -638,8 +638,11 @@ function agentHosts(ctx, secret, act, changed) {
     const answer = (allow) => !settling && act(async () => {
       buttons.forEach((b) => { b.disabled = true; });
       try {
-        const saved = await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
-        toast(allow ? `Allowed. Agents can use ${saved.name} on ${shown.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
+        // Allowing sends the value somewhere new: for a secret allowed use by use the server asks
+        // for the two-factor code first (ADR-0317). `null`: the person closed the code dialog.
+        const send = () => ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
+        const saved = allow ? await withReauth(ctx, send) : await send();
+        if (saved) toast(allow ? `Allowed. Agents can use ${saved.name} on ${shown.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
       } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t dismiss'); }
     });
     const asked = shown.join(', ');
@@ -674,8 +677,10 @@ function agentEnvFiles(ctx, secret, act) {
     buttons.forEach((b) => { b.disabled = true; });
     try {
       // The answer names what is shown here: the server refuses it if it changed meanwhile.
-      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow, env_files: secret.env_files, env_requested_by: secret.env_requested_by });
-      toast(allow ? `Allowed. Agents can copy ${secret.name} into .env files.` : (secret.env_files === 'allowed' ? 'Revoked. Copies already written stay until someone removes them or rotates the value.' : 'Dismissed.'), { kind: 'ok' });
+      const send = () => ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow, env_files: secret.env_files, env_requested_by: secret.env_requested_by });
+      // Agents read what a `.env` file holds: as a host request's Allow (ADR-0317).
+      const saved = allow ? await withReauth(ctx, send) : await send();
+      if (saved) toast(allow ? `Allowed. Agents can copy ${secret.name} into .env files.` : (secret.env_files === 'allowed' ? 'Revoked. Copies already written stay until someone removes them or rotates the value.' : 'Dismissed.'), { kind: 'ok' });
     } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t change it'); }
   });
   const asked = secret.env_files === 'asked';
@@ -717,8 +722,11 @@ function agentCdProd(ctx, secret, act) {
   const answer = (allow) => act(async () => {
     button.disabled = true;
     try {
-      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
-      toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
+      // Production deploys run the repository's command with the value: allowing it asks for
+      // the two-factor code (ADR-0317). `null`: the person closed the code dialog.
+      const send = () => ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
+      const saved = allow ? await withReauth(ctx, send) : await send();
+      if (saved) toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
     } catch (error) { errorToast(error, 'Couldn’t change it'); }
   });
   const button = !secret.can_manage ? null : secret.cd_prod
@@ -899,7 +907,9 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         if (values.value && [...values.value].length < 8) return invalid(form.value, 'At least 8 characters: shorter values cannot be recognised and hidden.');
         if (values.injection === 'header' && !values.header_name) return invalid(form.header, 'Name the header.');
         if (values.injection === 'basic' && !secret.has_username && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
-        if (secret) await ctx.api.patch(`/api/agent-secrets/${enc(secret.id)}`, values);
+        // A new host of a secret allowed use by use, or letting agents set it up, needs the
+        // two-factor code (ADR-0317); closing its dialog keeps the form open.
+        if (secret) { if (!(await withReauth(ctx, () => ctx.api.patch(`/api/agent-secrets/${enc(secret.id)}`, values)))) return false; }
         else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`, values);
         toast(secret ? 'Saved.' : `${scope === 'sandbox' ? 'Agent' : scope === 'instance' ? 'Global' : 'Personal'} secret added${scope === 'sandbox' ? '' : ` and switched on for ${sandbox.name}`}. New agent sessions get its placeholder.`, { kind: 'ok' });
         reload();

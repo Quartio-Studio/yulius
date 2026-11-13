@@ -81,6 +81,11 @@ another way to the same thing:
   Superagent over REST gets 403 and needs an `operate` token.
 - A sign-in started in one browser cannot be finished in another, and third-party cookie
   blocking does not matter: the cookie is first-party on a top-level navigation.
+- One browser holds one started sign-in: a second start (another tab, the account picker)
+  replaces the cookie, and the first tab's callback answers `expired`; signing in again works.
+- The 1000 waiting states are shared by GitHub sign-in and the App manifest setup: starts
+  from many clients can keep both at `busy` until states expire (10 minutes), the trade-off
+  ADR-0047 made for device sign-in.
 - `?lab=` does nothing on a real instance; the e2e suite's lab test runs in mock mode.
 - A project whose environment after production has a command needs an administrator for
   it, with `"slug"` in the request; a manual checkpoint (no command) is confirmed as before.

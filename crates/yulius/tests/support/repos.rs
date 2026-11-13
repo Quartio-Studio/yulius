@@ -1170,6 +1170,7 @@ pub async fn call_raw(
         status,
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
+        set_cookies: Vec::new(),
         location: None,
         cache_control: None,
     })
