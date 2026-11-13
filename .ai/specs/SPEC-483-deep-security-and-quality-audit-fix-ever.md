@@ -625,7 +625,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **CHK-002** A task's delivery, the Git page, the remote control's merge, a promotion pull
   request and a fast-forward promotion use CHK-001. With `require_checks`, both promotions
   refuse failing, pending and unreadable checks at the integration head and go on passed
-  checks or none.
+  checks or none. A fast-forward that is the profile's automatic promotion right after a
+  merge also goes while that head's checks are pending.
 - **CHK-003** `ci_gate_result` is "pending" for a commit without a run when Yulius CI will
   test it: the integration branch has CI, or the commit brings its own to a branch without
   any (CGR-001 for a proposal).
@@ -999,6 +1000,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-85** In a project without CI: a pull request without jobs has no verdict of Yulius
   CI; one that brings a job is pending before the scheduler's round and passed after its
   run.
+- **AC-87** With automatic promotion, required checks and Yulius CI as the project's CI: a
+  merge is refused while the pull request's head has no run, goes once its run passed, and
+  the production branch is fast-forwarded to the merge's commit with it, although that
+  commit has no run of its own.
 - **AC-86** The existing tests of a task's delivery, the Git page, the remote control's
   merge and the promotions pass unchanged (pending, unreadable and passed checks of
   GitHub's for a project without Yulius CI among them).
@@ -1167,7 +1172,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `playground::a_task_that_repairs_a_broken_configuration_is_tested_with_its_own` (AC-82).
 - Slice 14: `yulius` `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`
   (AC-83), `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out`
-  (AC-84), `local_ci::a_pull_request_that_brings_ci_waits_for_its_first_run` (AC-85);
+  (AC-84), `local_ci::a_pull_request_that_brings_ci_waits_for_its_first_run` (AC-85),
+  `delivery::an_automatic_promotion_goes_on_the_checks_of_its_merge` (AC-87);
   `delivery`, `remote_mcp`, `merge_train` and `playground` as they are (AC-86).
 
 ## Decisions
@@ -1236,7 +1242,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
   to the same checks as one by pull request (it had none): what reaches production is the
-  same commit either way, and `require_checks` is the profile's word for both. The
+  same commit either way, and `require_checks` is the profile's word for both. One
+  promotion is not held to a verdict of its own: the automatic one (`auto_promote`), which
+  is part of the merge it follows. That merge needed green checks on a current head, the
+  commit it made has no run yet, and nothing would promote later if this were refused as
+  pending; a verdict that is already there (failed, unreadable) still stops it. The
   "pending before the first run" case moved from the remote control into `ci_gate_result`,
   so that a task's `delivery_merge` waits for it too; it costs one read of the commit's
   `yulius.toml` per question, only in a project without CI and only for a commit without
@@ -2309,34 +2319,3 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
   skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
   rustdoc passed.
-
-### Slice 14 (2026-11-13)
-
-- **Slice 13's delivery.** Pull request #1254 merged into `dev` at e3c85c345. Its first
-  Yulius CI run failed in one test of another area
-  (`task_done::a_stop_settles_a_run_no_server_holds`, "the run's host still runs": the
-  known flake of issue #1190, where this occurrence is noted); the run was repeated once
-  at the same head and passed. Its review approved that head in its second round; the two
-  nits left (a sentence about playgrounds, an arm that cannot be reached) are answered
-  here.
-- **The defects, by their tests on the code before** (`target/audit/slice14/mutations.log`,
-  the first two cases, which are the old code): with the promotion pull request's check
-  gone, `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr` failed; with
-  the fast-forward's check gone,
-  `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out` failed
-  (it promoted past a failed run).
-- **Tests failing without their fix** (`target/audit/slice14/mutate.py`, 5 cases, each
-  failed its tests): a promotion pull request reading no checks; a fast-forward promotion
-  reading none; GitHub's checks deciding where Yulius CI ran; failing checks allowing what
-  requires them; a commit that brings CI without checks before its first run.
-- **The suites:** `2679 tests run: 2679 passed` for the app and the binary
-  (`target/audit/slice14-suite1.log`).
-- **Gate.** `scripts/dev ci` at `8689e89fc`: exit 0; `4212 tests run: 4212 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** A promotion in a project without Yulius CI whose GitHub checks fail
-  (pending and unreadable are tested, as before); an automatic promotion (`auto_promote`)
-  past a failed run (it goes through the same function; its test promotes on a head
-  without a run); the cost of the extra read in a project without CI.
