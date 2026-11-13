@@ -37,15 +37,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
      Git attributes and hook files written by path (C1, D1, D2): merged, pull request #1241;
   3. what the host reads where an agent can write: transcripts, `upper/etc/passwd`, numbered
      directories, disk usage (C2, C3, C5, I4): merged, pull request #1242;
-  4. access rules of the public API and the merge gate (A1-A4, W1, D3, P8);
-  5. the sandbox browser (E1-E3);
-  6. the vault's remaining rules (V3-V6);
-  7. delivery and CI decided once (D4-D6, QB1);
-  8. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
-  9. documents and shipped texts against the code (P1-P14, QB9);
-  10. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
-  11. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
-  12. efficiency (QA8, QB5, QC1, QC6).
+  4. access rules of the public API and the merge gate (A1-A4, W1, D3, P8): merged, pull
+     request #1243;
+  5. the vault's rules on every path (V3-V5);
+  6. the sandbox browser (E1-E3, W1b, C4);
+  7. the host's own Git in a clone its agents write (G1);
+  8. production secrets decided once (V6);
+  9. delivery and CI decided once (D4-D6, QB1);
+  10. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
+  11. documents and shipped texts against the code (P1-P14, QB9);
+  12. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
+  13. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
+  14. efficiency (QA8, QB5, QC1, QC6).
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -130,6 +133,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **P8 (medium).** `dlv_start_environment_run` needs Work and `confirm: true` whatever the
   environment follows.
 
+### Slice 5: the vault's rules on every path
+
+- **V5 (medium).** A reveal asks for the caller's two-factor unlock (`fresh_or_status`:
+  `reveal_agent_secret`, `answer_copy_request`). `update_agent_secret` (new `hosts`,
+  `auto_allow: true`), `answer_host_request` and `answer_env_files` ask for write access only,
+  by a session or a token; the remote MCP's `secret_update` and `secret_hosts_answer` call
+  them. A secret with `auto_allow` on is bound to hosts by agents themselves
+  (`requests.rs` `auto_bind`), so only one with it off is guarded by its bindings.
+- **V4 (medium).** `terminal_redactor` turns a failed load into `None`; `scrub_output` stores
+  it with the current generation and passes bytes through. `egress_redactor` turns it into an
+  empty matcher; `EgressProxy::respond` then also skips its refusal of compressed answers.
+  `terminal_snapshot` and `redact_for_sandbox` withhold.
+- **V3 (medium).** `vault_update`'s `WHERE` compares hosts, `auto_allow` and `cd_prod` with what
+  the edit read, not `ciphertext`; `update_agent_secret` seals the payload it read again.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -209,6 +227,22 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **ACR-007** The command of an environment that follows production starts only for an
   administrator with the project's slug in `slug`; a manual checkpoint is confirmed as before.
 
+- **VLR-001** For an agent secret with `auto_allow` off, binding a host it is not bound to
+  (`PATCH`, the answer to a host request), allowing `.env` copies and switching `auto_allow` on
+  need a browser session whose two-factor unlock is fresh: otherwise 403 `reauth_required`
+  with the status (a session) or 403 `forbidden` naming the Secrets page (an API token), and
+  nothing changes. A description, a name, a value, fewer or the same hosts, a dismissal and a
+  revocation need neither. A secret with `auto_allow` on is unchanged.
+- **VLR-002** The Secrets page asks for the code on those answers and repeats the request;
+  closing the dialog leaves the request waiting and an edit form open. The mock refuses as the
+  server does.
+- **VLR-003** While a sandbox's agent secrets cannot be read, its terminals show one notice and
+  no output, and ask again at the next chunk; once they can, output flows redacted.
+- **VLR-004** The proxy reads the values to redact before it sends a request and answers 503,
+  sending nothing, when it cannot.
+- **VLR-005** An edit of a secret whose sealed value changed since it was read is refused (409)
+  and changes nothing.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -217,7 +251,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 1: redaction fingerprints say a few bits and are fixed per sandbox (merged, #1240)
 - [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles (merged, #1241)
 - [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
-- [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in, reviewed
+- [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
+- [ ] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation, reviewed
 
 ## Acceptance criteria
 
@@ -290,6 +325,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-23** A writer's run of a production-stage command is 403, an administrator's without
   the slug or with another is 422, with it 200.
 
+- **AC-24** A new host and an allowed `.env` copy of a secret with `auto_allow` off answer 403
+  `forbidden` to a token and 403 `reauth_required` to a session without the unlock, changing
+  nothing; with the unlock 200; 11 minutes later `reauth_required` again. A description, the
+  same hosts in another case, fewer hosts and a revocation pass with a token; a host removed
+  is new again. A token binds a host of a secret with `auto_allow` on.
+- **AC-25** The remote MCP's `secret_update` (a new host) and `secret_hosts_answer` (allow) are
+  refused for such a secret with "allowed use by use" and "Secrets page"; its description and a
+  dismissal pass.
+- **AC-26** On the Secrets page, Allow of a host request, Allow of `.env` copies and Save of an
+  edit that lets agents set a secret up open the two-factor dialog first and complete after
+  the code; nothing is bound before it.
+- **AC-27** A terminal whose secrets fail to load shows the notice once and nothing of two
+  chunks holding a value; after a load it shows them redacted; without agent secrets output
+  passes.
+- **AC-28** A request through the proxy of a run whose secrets cannot be read answers 503
+  ("nothing was sent") to a bound host and to a plain one, and the upstream sees nothing.
+- **AC-29** An update of a row whose ciphertext changed since it was read changes nothing and
+  reports no row.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -341,6 +395,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   refusal table (AC-22), the delivery test of the `rollout` command (AC-23); the e2e suite
   (the web UI changed).
 
+- Slice 5: `secrets::a_use_by_use_secret_goes_somewhere_new_only_after_two_factor` (AC-24),
+  `secrets::agents_request_hosts_and_people_allow_them` and
+  `secrets::agents_bind_the_hosts_of_a_secret_they_set_up` (the token and the locked session
+  on a host request and on `auto_allow`), `remote_mcp` (AC-25), e2e `secrets.e2e.ts` "a person
+  allows the hosts an agent asked for", "a person allows an agent to copy a secret into .env,
+  then revokes it" and "a new agent secret lets agents set it up unless turned off" (AC-26),
+  `yulius-app` `vault::terminal::tests::output_is_withheld_while_agent_secrets_cannot_be_read`
+  (AC-27), `yulius-egress` `proxy::a_request_whose_answer_cannot_be_checked_for_secrets_is_not_sent`
+  (AC-28), `yulius-store` `an_edit_read_before_a_rotation_does_not_undo_it` (AC-29).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -362,6 +426,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   in every access check; the sign-in bound to its browser by a cookie holding the state; the
   lab not shipped; the base as a fact of the merge rule; production-stage commands under
   `cd::may_deploy`. The response headers' missing script and style policy is finding W1b.
+- [ADR-0317](../../docs/decisions/0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md):
+  the unlock before a secret allowed use by use goes somewhere new, not for one agents set up;
+  tokens refused; redaction that cannot load withholds, the proxy before it sends; an edit
+  compares the sealed value.
+- From the review of slice 4 (its two minor findings and three of five nits are in slice 5):
+  `form_train` does not skip an armed pull request that was pointed at another branch. It is
+  left so: skipping needs a GitHub read per candidate on every look, and such a train is
+  refused when it lands (`WrongBase`) and the armed merge dropped, so the cost is one train.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -380,53 +452,53 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | fixed (slice 2) |
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
-| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 3a |
+| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 7 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
 | I4 | host reads | `record_number` lists a directory through a link | low | fixed (slice 3) |
-| A1 | access | A `read` API token reads the working tree (ignored `.env` included) over REST GET | medium | slice 4 |
-| A2 | access | GitHub sign-in is not bound to the browser that started it | low | slice 4 |
-| A3 | access | Revoking an API token leaves its open terminal sockets typing for up to 30 s | low | slice 4 |
-| A4 | access | `GET /api/auth/github/start` stores states without a limit | low | slice 4 |
-| W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | slice 4 |
-| D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | slice 4 |
-| P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | slice 4 |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 5 |
-| E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | slice 5 |
-| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 5 |
-| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 5 |
-| V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | slice 6 |
-| V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | slice 6 |
-| V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | slice 6 |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 6 |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 7 |
-| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 7 |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 7 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 7 |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 8 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 8 |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 8 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 8 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 8 |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 8 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 8 |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 8 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 8 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 8 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 8 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 8 |
-| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 9 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 9 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 10 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 10 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 10 |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 10 |
-| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 11 |
-| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 11 |
-| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 11 |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 12 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 5 |
+| A1 | access | A `read` API token reads the working tree (ignored `.env` included) over REST GET | medium | fixed (slice 4) |
+| A2 | access | GitHub sign-in is not bound to the browser that started it | low | fixed (slice 4) |
+| A3 | access | Revoking an API token leaves its open terminal sockets typing for up to 30 s | low | fixed (slice 4) |
+| A4 | access | `GET /api/auth/github/start` stores states without a limit | low | fixed (slice 4) |
+| W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
+| D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
+| P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 6 |
+| E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | slice 6 |
+| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 6 |
+| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 6 |
+| V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | slice 5 |
+| V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | slice 5 |
+| V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | slice 5 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 8 |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 9 |
+| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 9 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 9 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 9 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 10 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 10 |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 10 |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 10 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 10 |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 10 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 10 |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 10 |
+| E7 | move | An unreadable move mark does nothing and stays | low | slice 10 |
+| QC8 | store | `tasks.closed_at` is never cleared | low | slice 10 |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 10 |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 10 |
+| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 11 |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 11 |
+| W7 | web UI | Dead exports and CSS rules | low | slice 12 |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 12 |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 12 |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 12 |
+| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 13 |
+| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 13 |
+| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 13 |
+| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 14 |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 6 |
 
 ## Evidence
 
