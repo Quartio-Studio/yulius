@@ -374,7 +374,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
-- [ ] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
+- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
 
 ## Acceptance criteria
 
@@ -1158,15 +1158,53 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   during a navigation, so only the fake reaches it. A frame nested in another site's frame
   in a process of its own on a real Chrome (the fake lists such targets; the real test uses
   one frame). Chromium builds other than Google Chrome 157.
-- **Review of slice 8, round 1** (head a3320e970): request changes; open, not yet answered.
-  Own code: (1, major) the frame check hangs on a focus test that fails open for `<object>`,
-  `<embed>`, a frame in a closed shadow root and `<fencedframe>`: the focus counts as "in the
-  page" only on a text field of a document the probe read, anything else asks the frames;
-  (2, minor) nothing is asked again between the look and the keys (ask `leaving` again before
-  the keys, refuse when the document changed after the focus, report a frame that took the
-  focus as astray); (3, minor) `State.leaving` has no bound and only the main frame's entry is
-  read; (4, minor) untested branches (`Page.frameRequestedNavigation` and its disposition,
-  `Page.frameNavigated`, the session's end, the 30 s, a page that cannot be read, the order of
-  focus and look); nits: lost events (`Lagged`), the two error texts, honest refusals the ADR
-  does not name, the ADR's sentence on nested frames. Pre-existing (major): finding E10.
-  The reviewer's notes: `$HOME/.cache/yulius-review-465/slice8.md`.
+- **Review of slice 8, round 1** (head a3320e970): request changes. Own code, all answered
+  test-first:
+  1. (major) the frame check hung on a focus test that failed open for `<object>`, `<embed>`,
+     a frame in a closed shadow root and `<fencedframe>`. Now only a text field of a document
+     the probe read is the page's own; anything else asks the frames; a fenced frame is
+     refused. On Chrome 157, with round 1's gate, the secret was typed into `localhost` in an
+     `object` and in a closed shadow root's frame of a `127.0.0.2` page
+     (`target/audit/slice8/real-chrome-mutations.log`); with the fix both are refused.
+  2. (minor) nothing was asked again between the look and the keys: the document is read
+     again after the focus (a changed one gets nothing typed), where the frames are going is
+     asked last, and a frame that has the focus after the keys is reported
+     (`SecretFrameAstray`, with an activity entry).
+  3. (minor) the record of announced navigations had no bound and only the main frame was
+     asked: `Leaving` holds 256 frames, drops a frame's entry when it is detached, counts
+     nothing older than 30 s and says "not known" past its bound; every frame of the page's
+     tree is asked.
+  4. (minor) untested branches: the fake sends any page event (`emit`); the tests cover
+     `Page.frameRequestedNavigation` and its disposition, `Page.frameNavigated`,
+     `Page.frameDetached`, a frame of the page, an announcement during the look, the 30 s,
+     the bound, a session's end, a page that cannot be read, frames that cannot be told, and
+     the order of focus and look. The last step of the leaving test now does what it says.
+  Nits: skipped events lose the record ("try again" for 30 s); the frame error says what is
+  known ("the focus is not in a field of this page itself, and the page holds a frame of
+  …"); an address without a host is "an unknown site"; ADR-0320 names the page that cannot be
+  read, the address of another program, and the frames inside an out-of-process frame that
+  are not asked. Two lines stay without a test of their own (Decisions say why).
+  Pre-existing (major), finding E10: fixed here (`tool_type_beside_secret`).
+- **Tests failing without their fix, after the review** (`target/audit/slice8/mutate.py`, 28
+  cases, `mutations2.log`): each failed its test: the frames not asked (browser, MCP), round
+  1's gate, a fenced frame typed into, frames in other processes not asked, frames that
+  cannot be listed typed into, a page that cannot be read typed into, the page read before
+  the focus, a page that changed since the look typed into, a frame that took the focus not
+  reported (browser, MCP), where the tab is going not asked (browser, MCP) or asked before
+  the look, only the main frame's way asked, a navigation given up, arrived, or of a detached
+  frame still standing, only a link's navigation counting, a same-document one counting,
+  another tab's counting, the requested navigation not kept, an old announcement standing
+  for ever, nothing lost past the bound, a session's end keeping its frames, lost
+  announcements forgotten at once, and the user name typed without the page rule (E10).
+- **Real browser after the review** (Chrome 157): the four opt-in tests passed; the frame
+  test now also covers an `object`, a closed shadow root's frame that takes the focus by
+  itself, the user name's path, and the page's own field beside a frame (typed).
+- **The gate after the review.** At `c323db624` it failed in
+  `superagent_browser::the_global_superagent_drives_a_named_projects_browser`: the fake's
+  new focus kinds called an unnamed focused password field "other", so a screenshot was
+  refused (a fault of the fake, fixed there). `scripts/dev ci` at `b71c09db1`: exit 0; `4160
+  tests run: 4160 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Not tested here, added by the review's answers.** A fenced frame on a real Chrome (the
+  probe names the element; no page with one was built). The loss of announcements on skipped
+  events, end to end (the function is unit-tested).
