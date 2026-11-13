@@ -10,6 +10,10 @@ use std::rc::Rc;
 
 /// Entries visited at most per measurement.
 pub const MAX_ENTRIES: u64 = 4_000_000;
+/// Folders nested deeper than this below a root are counted but not listed: the walk holds one
+/// handle per level on the way down, and the depth is the sandbox's to choose (a chain of tens
+/// of thousands of folders would use up the server's file descriptors).
+pub const MAX_DEPTH: usize = 128;
 /// Largest consumers kept per measurement (SPEC-059 DSK-202).
 pub const LARGEST: usize = 5;
 
@@ -20,7 +24,7 @@ pub struct Usage {
     pub bytes: u64,
     /// Entries visited.
     pub entries: u64,
-    /// The bound was reached; `bytes` is a lower bound.
+    /// A bound was reached ([`MAX_ENTRIES`], [`MAX_DEPTH`]); `bytes` is a lower bound.
     pub truncated: bool,
     /// The [`LARGEST`] largest consumers, largest first: a labelled root as one, else the
     /// directories two levels below an unlabelled root (`worktrees/<task>`, `ci/jobs`) and its
@@ -114,6 +118,10 @@ pub fn measure(roots: &[(&Path, Option<&str>)]) -> Usage {
                     }
                 }
                 if is_dir && stat.st_dev == device {
+                    if depth + 1 >= MAX_DEPTH {
+                        usage.truncated = true;
+                        continue;
+                    }
                     let child = Pending::Child(Rc::clone(&dir), name.to_owned());
                     stack.push((child, below, depth + 1, group));
                 }
@@ -183,6 +191,33 @@ mod tests {
         let linked_root = dir.path().join("linked-root");
         std::os::unix::fs::symlink(&outside, &linked_root)?;
         assert_eq!(measure(&[(&linked_root, Some("system"))]), Usage::default());
+        Ok(())
+    }
+
+    /// ADR-0315: the walk holds one handle per level, so folders nested deeper than
+    /// [`MAX_DEPTH`] are counted and not listed, and the measurement says it is a lower bound.
+    #[test]
+    fn folders_nested_deeper_than_the_bound_are_not_listed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        // Two folders per level, so each level's handle waits for its sibling.
+        let mut at = dir.path().to_path_buf();
+        for level in 0..MAX_DEPTH + 20 {
+            std::fs::create_dir(at.join("side"))?;
+            at.push("down");
+            std::fs::create_dir(&at)?;
+            if level == MAX_DEPTH + 10 {
+                std::fs::write(at.join("deep"), vec![7u8; 256 * 1024])?;
+            }
+        }
+        let usage = measure(&[(dir.path(), None)]);
+        assert!(usage.truncated, "{usage:?}");
+        assert!(
+            usage.bytes < 256 * 1024,
+            "the file below the bound is not counted"
+        );
+        let entries = u64::try_from(2 * MAX_DEPTH).unwrap_or(0);
+        assert!(usage.entries <= entries + 1, "{usage:?}");
         Ok(())
     }
 

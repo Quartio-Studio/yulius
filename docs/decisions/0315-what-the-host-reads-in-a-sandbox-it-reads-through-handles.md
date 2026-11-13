@@ -40,8 +40,11 @@ follow no link. The audit of task #465 found five readers that still went by pat
   below it from its parent with `O_NOFOLLOW`, the file with `O_NOFOLLOW | O_NONBLOCK`, and only
   a regular file is read; its size is asked of the same handle. A transcript outside the
   sandbox directory is a copy in the server's own folders and is opened the same way at its
-  name. The readers take the open file. The harness's tail opens the file the same way at its
-  name on every poll.
+  name. The readers take the open file; one that is missing or no regular file reads as "no
+  transcript", not as a server error, and which of a task's two transcripts is read is decided
+  without following a link. Continuing an imported session copies its transcript from such a
+  file and its side files folder by folder through handles (regular files only, 8 levels,
+  10 000 entries). The harness's tail opens the file the same way at its name on every poll.
 - **The sandbox adapter reads `passwd` and `group` itself** (`manager::system_file_text`) and
   hands the text on: `upper`, `etc` and the file from one handle to the next, a regular file of
   at most 1 MiB. Anything else at the name or over `etc` (a link, a whiteout, a FIFO, a larger
@@ -50,9 +53,14 @@ follow no link. The audit of task #465 found five readers that still went by pat
   `files::open_dirs_below`; a link on the way gives no names.
 - **Disk usage is measured from handles**: a folder is opened from its parent's handle without
   following a link and its entries are looked at with `fstatat` from it. A root that is a link
-  is not measured.
+  is not measured. The walk holds one handle per level on the way down, so folders nested
+  deeper than 128 below a root are counted and not listed, and the measurement then says it is
+  a lower bound (a path walk stopped at the path length limit; a handle walk has none, and the
+  depth is the sandbox's to choose).
 - **An untracked file is read** from the worktree's folder through `yulius_git::handles`, at
-  most one byte more than is shown; a link or a FIFO is listed without lines.
+  most one byte more than is shown; a link or a FIFO is listed without lines. The anchor is
+  the worktree's folder, the one Git itself was just run in: a link put above it (at
+  `worktrees`) misleads Git first, which is finding G1 of SPEC-483, not this reader.
 
 ## Alternatives
 
@@ -75,5 +83,6 @@ follow no link. The audit of task #465 found five readers that still went by pat
 - A sandbox system whose `/etc/passwd` or `/etc/group` is a link, or larger than 1 MiB, gives
   people there the generated lines only (their own user, `root`, `nobody`).
 - The join record's `system_passwd` and `system_group` carry text instead of a path.
-- The measurement opens one handle per folder on the way to the one it lists; it visits the
-  same entries as before, and a linked root counts nothing where it counted one entry.
+- The measurement opens one handle per folder on the way to the one it lists, at most 129; it
+  visits the same entries as before down to that depth, and a linked root counts nothing where
+  it counted one entry.

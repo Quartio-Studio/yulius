@@ -158,7 +158,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   with `O_NOFOLLOW`, the file with `O_NOFOLLOW | O_NONBLOCK`, and only a regular file is read;
   its size comes from the same handle. A path outside the sandbox directory (the server's own
   copy) is opened the same way at its name. The harness's tail opens its file that way at its
-  name on every poll.
+  name on every poll. A transcript that is missing or no regular file reads as none (no
+  500). Continuing an imported session copies its transcript and side files through handles.
 - **HRD-002** The sandbox adapter reads `upper/etc/<name>` through handles (no link followed,
   never waiting), at most 1 MiB of a regular UTF-8 file, else the base's; what hides the base's
   file in the sandbox gives nothing. The join record carries the text.
@@ -166,7 +167,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `open_dirs_below`; a link on the way lists nothing; a checkout in a folder of the server's
   own is listed from there.
 - **HRD-004** `usage::measure` opens each folder from its parent's handle and looks at its
-  entries from that handle; the counts and the largest consumers are as before.
+  entries from that handle; the counts and the largest consumers are as before. Folders
+  nested deeper than 128 are counted, not listed, and the measurement is marked truncated.
 - **HRD-005** The review reads an untracked file through handles from the worktree's folder;
   a link at its name or on the way, a FIFO, `..` and an absolute path are listed without lines.
 - **HRD-006** `install_pre_push_guard` refuses a worktree whose common directory is not the

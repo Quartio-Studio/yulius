@@ -496,7 +496,7 @@ fn page_chars(entry: &TranscriptEntry) -> usize {
 ///
 /// # Errors
 /// `NotFound` when the file or a folder on the way is missing; `InvalidInput` for a link or
-/// anything that is not a regular file; other I/O failures.
+/// anything that is not a regular file ([`unreadable`] tells both); other I/O failures.
 pub fn open(anchor: &Path, path: &Path) -> io::Result<File> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::Mode;
@@ -508,6 +508,12 @@ pub fn open(anchor: &Path, path: &Path) -> io::Result<File> {
     };
     let fd = match path.strip_prefix(anchor) {
         Ok(below) => {
+            if !below
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(not_a_file());
+            }
             let name = below.file_name().ok_or_else(not_a_file)?;
             let folders: Vec<&std::ffi::OsStr> = below
                 .parent()
@@ -523,6 +529,17 @@ pub fn open(anchor: &Path, path: &Path) -> io::Result<File> {
         return Err(not_a_file());
     }
     Ok(file)
+}
+
+/// Whether `err` of [`open`] says there is no transcript to read: it is missing, or what is in
+/// its place is no regular file (a link or a FIFO an agent put there). A reader shows that as
+/// no transcript, not as a failure of the server.
+#[must_use]
+pub fn unreadable(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+    )
 }
 
 /// Reads entries from line `from`: at most `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) and about
