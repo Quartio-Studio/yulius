@@ -64,15 +64,16 @@ has the focus inside; a fenced frame is in no list of frames.
   passed. Right before the keys, a page with a frame (itself or one in its tree) on its way to
   an address the secret may not be typed into gets nothing typed and that site is named
   (`SecretPageLeaving`). A navigation inside the document (a fragment, `pushState`) is none.
-  The record holds 256 frames and the first 2048 bytes of an address; when more are on their
-  way, or Chrome's events were skipped, nothing is known for 30 seconds and fills answer "try
-  again" instead of typing.
-- **A frame that has the focus after the keys is reported.** A frame's script can take the
-  focus back between the look and the keys. When, after the typing, the focus is in a
-  document the page cannot read and the page holds a frame of a site the secret is not for
-  (or the focus is on a fenced frame), the tool fails with that site
-  (`SecretFrameAstray`), and the secret's activity records it, as for ADR-0319's page that
-  moved on.
+  The record holds 256 frames per tab. When more of a tab's are on their way, nothing is
+  known of that tab for 30 seconds, and when Chrome's events were skipped, of none: fills
+  then answer "try again" instead of typing. An address longer than 2048 bytes is kept as no
+  address, which no secret is for (a cut one could read as another site's: what comes before
+  the host can be that long).
+- **The frames are asked again after the keys.** A frame's script can take the focus back
+  between the look and the keys. When, after the typing, the focus is not in a text field of
+  the page and the page holds a frame of a site the secret is not for (or the focus is on a
+  fenced frame), the tool fails with that site (`SecretFrameAstray`), and the secret's
+  activity records it, as for ADR-0319's page that moved on.
 - **A user name and a one-time code go where the secret goes.** They are typed under all of
   the above and ADR-0319 (`tool_type_beside_secret`), and stay what they were for
   screenshots: not remembered as typed secrets.
@@ -126,8 +127,14 @@ has the focus inside; a fenced frame is in no list of frames.
 - A user name or a one-time code is no longer typed into a tab that moved on, a frame of
   another site or a page on its way to one; the answers are the secret's.
 - Still reported afterwards, not prevented: a navigation the page starts by itself after the
-  look (a script's redirect on the last key), and a frame's script that takes the focus
-  between the look and the keys. The page is one the secret is for.
+  look (a script's redirect on the last key), a frame's script that takes the focus between
+  the look and the keys, and a navigation Chrome announced in the last moment before the keys
+  (its events are read apart from its answers, so one sent just before the last answer may
+  not have been read yet). The page is one the secret is for.
+- The report after the keys can be a false alarm: a page whose own script moves the focus
+  off the field while it is typed (to its button, say) and that holds a frame of another site
+  answers as if that frame could have the secret, though it is in the page's field. It says
+  "may".
 - Not asked: frames inside a frame that runs in a process of its own, when they run in that
   frame's process (they are of its site, or documents it wrote itself). The outer frame is at
   an address the secret is bound to; what that site embeds from itself is its page.
