@@ -672,7 +672,6 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     // #3 delivers a part of its plan: one slice is still ahead (SPEC-484 PLN-003).
     {
         use yulius_app::model::StepRecord;
-        use yulius_app::ports::store::CoordinationStore;
         use yulius_domain::ids::StepId;
         let task = TaskId::parse("t3")?;
         let steps = [("This slice", "done"), ("Later slice", "pending")]
