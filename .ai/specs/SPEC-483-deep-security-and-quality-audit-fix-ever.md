@@ -277,17 +277,24 @@ no code path reaches; documents, texts shown to agents and people, and code that
   counted as they are read; past it the import is refused and the file in hand leaves no copy.
 
 - **BRL-001** `yulius host setup` and `yulius host check` write the browser policy
-  (`yulius.json`: no file selection dialogs, no DevTools, no downloads, no printing, `file:`,
-  `view-source:`, `chrome:` and `devtools:` pages blocked, the File System Access API blocked,
-  no extensions, and a version marker) into the managed policy directories of Google Chrome
-  and Chromium, and report it as every other item.
-- **BRL-002** A browser on a virtual display asks itself whether that policy is in force
-  (navigating a hidden tab to the marker address: blocked by the administrator, or not) when
-  it starts, and again, at most every 10 seconds, when input is refused.
-- **BRL-003** While it is not in force, a viewer's pointer and key input on a virtual display
-  is refused and the viewer is told why and what an administrator runs; watching, the tab
-  bar, the address bar and the agents' tools work as before. A headless browser, which shows
-  no window of its own, is unchanged.
+  (`yulius.json`: no file selection dialogs, no downloads, no printing, the File System Access
+  API blocked, no extension installs, only web addresses (so no `file:`, `view-source:`,
+  `chrome:` or `devtools:` page and no address handed to another program), and a version
+  marker) into the managed policy directories of Google Chrome and Chromium, and report it as
+  every other item. The update helper's unit may write those directories: the shipped unit
+  lists them, and the setup writes a drop-in for a unit from before.
+- **BRL-002** A browser on a virtual display is asked whether that policy is in force
+  (a hidden tab, known by its id, navigated to the marker address: blocked by the
+  administrator, or not; 3 seconds at most) at the first button or key press; a "no" is asked
+  again after 5 seconds, a "yes" after 5 minutes.
+- **BRL-003** While it is not in force, a viewer's button presses, key presses and typed text
+  on a virtual display are refused and the viewer is told why and what an administrator runs;
+  moving the pointer, scrolling, releases, watching, the tab bar, the address bar and the
+  agents' tools work as before. A headless browser, which shows no window of its own, is
+  unchanged.
+- **BRL-005** The probe's tab is never listed; a page that opens a window at the probe's
+  address gets an ordinary tab. A target created as a page of Chrome's own is no tab; a tab
+  that goes to one stays a tab.
 - **BRL-004** `yulius doctor` says whether the policy is installed.
 
 ## Plan
@@ -413,10 +420,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-35** Host setup writes the policy file where it is missing or differs and leaves an
   equal one alone; the dry run says so and writes nothing; the check mode writes it.
 - **AC-36** A browser on a (fake) display whose Chrome does not block the marker refuses a
-  viewer's mouse and key input with the reason and types nothing on the display; one that
-  blocks it takes input; after the policy appears, input is taken without a restart.
+  viewer's button press, key press and typed text with the reason and presses nothing on the
+  display, while releases and moves pass; one probe serves them; after the policy appears,
+  input is taken without a restart. A window a page opens at the probe's address is listed
+  and shown; a page of Chrome's own is not.
 - **AC-37** Against a real Chrome (opt-in): with the policy installed a click on a file input
-  opens no window; without it the click is refused and opens none.
+  opens no window, the accelerators for Open, Save, Print, the page's source and the
+  developer tools open no window and no page of Chrome's, and a link to another program's
+  address is blocked as a page; without it the click is refused and opens none.
+- **AC-38** A helper unit that may write the modules list but not the policy directories: the
+  re-check says to run the setup, the setup writes the drop-in with the directories, and the
+  re-check is then satisfied.
 
 ## Test plan
 
@@ -490,6 +504,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-35), `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` (AC-36),
   `yulius-browser` `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`
   (AC-37, opt-in: `YULIUS_TEST_CHROMIUM`), `policy::tests`, `browser::chromes_own_pages_are_no_tabs`,
+  `browser::a_page_cannot_hide_a_window_behind_the_probes_address`,
+  `host_setup::tests::a_helper_from_before_the_browser_policy_gets_its_drop_in_anew` (AC-38),
   `doctor::tests::the_browser_policy_line_warns_until_host_setup_wrote_it`, e2e
   `browser.e2e.ts` "a sandbox browser without the host policy says once that clicks and keys
   are off"; `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once` (the
