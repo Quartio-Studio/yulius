@@ -1,11 +1,11 @@
 ---
 yulius-task: 3936a7cc-f429-472d-8370-43b2e879bf90
-status: in-progress
+status: done
 ---
 
 # SPEC-484: a task's steps show all the work it knows of
 
-Status: in-progress
+Status: done
 Date: 2026-11-13
 Owner: Yulius task #466
 Scope authorization: the request of task #466 (by MrFishPL, 2026-11-13): "A task's step count is
@@ -173,7 +173,7 @@ to the person.
 - [x] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
 - [x] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
 - [x] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
-- [ ] Independent review's findings answered test-first
+- [x] Independent review's findings answered test-first
 
 ## Acceptance criteria
 
@@ -322,7 +322,7 @@ Commands run in this task's worktree, at the head named. Logs are kept in the ig
   the count grew in 184, in 69 right after n/n or (n-1)/n) and `step-additions.txt` (613 added
   steps by kind). The numbers in Context are these files'; the reviewer recounted them.
 - **Each test fails without its change.** `python3 target/evidence/mutants.py` undoes one
-  change at a time on a clean tree and runs the tests that pin it: 28 mutants at 39db6b6c2,
+  change at a time on a clean tree and runs the tests that pin it: 28 mutants at 207e6ebd8,
   "every mutant was killed" (`mutants.log`). They cover the merge rule (both ways), the call's
   two holds, the turn's end, a head the pull request already has, the wording above an open
   pull request, the playground's whole-plan squash, the three merged messages and the two
@@ -378,16 +378,33 @@ Commands run in this task's worktree, at the head named. Logs are kept in the ig
     skills test, `STATE_MAX_STEPS` and the two sentences rule 3 lost (now in PLN-004 and
     PLN-006), "(not pushed to its open pull request)", and when a new pull request opens for
     work after a merge.
-- **The gate.** `scripts/dev ci` at 83944755d, before the review: exit 0 (`gate-1.log`,
-  "4218 tests run: 4218 passed, 16 skipped"; the reviewer's own run at 2c4a4318c: PASS). At
-  39db6b6c2, with the answers: clippy, the macOS build and the repository check pass, and of
-  4220 tests one fails (`gate-2.log`): `task_done::a_stop_settles_a_run_no_server_holds`, "the
-  run's host still runs", the open issue #1190 ("fails … under full-gate load"; the load
-  average was 74), in code this change does not touch; alone it passed three times in a row.
+- **The independent review, round 2** (the same reviewer, head 5a7ed78ef): "**approve.** Every
+  round-1 finding is answered, and each of the three majors now has a test built to fail
+  without its fix. The delta brings no new blocker, major or minor: five nits, the author's
+  call." Its own gate and e2e suite passed at that head. The nits, answered in 207e6ebd8:
+  - n1 (at the tight budget the nudges are cut too): PLN-005 now says at which budget the
+    order helps; the briefing's code is left as it is.
+  - n2 (a playground assertion that could not fail): removed, with the claim in the test's
+    comment.
+  - n3 (the assertion that `merged_text` without a next step names no steps ahead): back.
+  - n4 (`delivery-pipeline`, section 6): it says that the next step's work begins once the pull
+    request is merged, and that a playground delivers a task once.
+  - n5 (pre-existing: a playground task's delivery view lists `open_pr` and `promote`): read
+    in the code (`candidates` knows no playground) and filed as issue #1258; outside this
+    change, which touches neither `candidates` nor the view's next actions.
+- **The gate.** `scripts/dev ci` at 207e6ebd8, the last head with code: exit 0 (`gate-3.log`,
+  "4225 tests run: 4225 passed, 16 skipped", clippy, the macOS build, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`). Earlier runs: at 83944755d before the review, exit 0
+  (`gate-1.log`); at 39db6b6c2 one test of 4220 failed (`gate-2.log`):
+  `task_done::a_stop_settles_a_run_no_server_holds`, "the run's host still runs", the open
+  issue #1190 ("fails … under full-gate load"; the load average was 74), in code this change
+  does not touch; alone it passed three times in a row, and in the two later runs of the gate
+  (the reviewer's at 5a7ed78ef, this one).
 - **The e2e suite.** `cd e2e && npx e2e run` at 39db6b6c2: 1021 passed, 1 skipped, exit 0
-  (`e2e-2.log`). An earlier run at 83944755d had one failure, `tests/cd.e2e.ts` "a needs_you
-  decision reads Decide, and an action alone only To do" (open issue #1171, load), which
-  passed alone (26 of 26).
+  (`e2e-2.log`); the reviewer's run at 5a7ed78ef: the same. Nothing under
+  `crates/yulius-server/web` or `e2e/` changed after it. An earlier run at 83944755d had one
+  failure, `tests/cd.e2e.ts` "a needs_you decision reads Decide, and an action alone only To
+  do" (open issue #1171, load), which passed alone (26 of 26).
 - **The strip, seen.** `target/evidence/strip.png` (mock `planfirst=4`, 1280 px): "#12 Checkout
   API  Step 3/7 · 4 at first · Implement checkout API". At 760 px the count gives way whole,
   as before.
@@ -397,7 +414,11 @@ Commands run in this task's worktree, at the head named. Logs are kept in the ig
   same tree (`git diff --quiet 67ab28d09 1afaa65af`: exit 0), taken with `-s ours`; #465's
   slice 12 (1206541e1) merged for real: one conflict, the migration list (dev's 0055 is schema
   version 55, this task's 0056 is 56), and the decision index repaired after the union merge
-  repeated ADR-0323's line.
+  repeated ADR-0323's line; #465's slice 13 (3e3b09e13) merged without a conflict, and clippy
+  and the tests of what it touched (the merge train, CI, playgrounds: 285) passed on the result.
+- **The head with this Evidence** differs from 207e6ebd8 by this document only (status, the
+  last Plan item, this section). The reviewer's look at it is named in the merge's review
+  summary, since its verdict cannot be in the commit it judges.
 - **Not tested, and why.** The running server (397d5bdd, the instance's own build) has the
   old rules, so this task's own delivery cannot show a merge with steps ahead: its steps are
   all finished before its merge. A live session's reading of the new briefing and tool texts
