@@ -64,7 +64,8 @@ alternate's refs).
   program). For that command the transports are pinned to `file` (a rewritten address cannot
   make it an `ssh:` one, whose command the configuration names), the command for listing an
   alternate's refs is emptied, and none of the adapter's own configuration is passed, which
-  is where a token travels.
+  is where a token travels. *Amended by 0323:* such a transfer is never made in a sandbox's
+  folder; a clone's transfers are made in a repository of the server's own.
 - **A remote's name stands for a folder only when it is the sandbox's own origin.** A
   transfer by a remote's name (`origin`) reads the address from the clone's configuration,
   which the agents write. An address that is a folder of this machine is taken only when it
@@ -72,7 +73,8 @@ alternate's refs).
   then names that folder itself, so the remote's own settings (a program for the other side)
   do not apply. Any other folder is not reached and the shell is not allowed: the transfer
   fails. A playground's scratch clone pushes to its origin by a path the application gives
-  (`GitPort::push_to_folder`).
+  (`GitPort::push_to_folder`). *Amended by 0323:* the transfer with that folder is made in a
+  courier, not in the clone.
 - **No Landlock, no Git.** On a kernel that does not enforce Landlock the launcher refuses
   to start Git and says why; `yulius doctor` checks it ("git confinement"). macOS, where
   runs are not contained either, runs Git as before.
@@ -118,14 +120,17 @@ alternate's refs).
 - The program loader is among what may be executed (the kernel starts every program through
   it), and it runs any file it can read. "Git's own programs only" therefore rests on Git
   never starting a configured word with an argument an agent chooses, and, where the shell
-  is allowed, on the other folder of the transfer being one Yulius names and on Git starting
-  no transfer of its own there (it fetched a missing object from a remote the clone names,
-  with the clone's command for the other side). All three are made explicit and central by
-  [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
+  is allowed, on the other folder of the transfer being one Yulius names and on the command
+  reading no configuration an agent writes: a transfer between folders made in the clone ran
+  what the clone names for a transfer through the shell.
+  [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)
+  makes the first explicit and central and replaces the second: no command in a sandbox's
+  folder may start the shell, and a clone's transfers are made in a repository of the
+  server's own.
 - Was open, finding G2: for a transfer with GitHub, the clone's configuration shaped the
   connection that carries the server's token (`http.<url>.proxy`, `http.<url>.sslVerify`:
   a key for a URL beats the command line). Closed by
   [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
 - Tests' stand-ins for GitHub are folders, so their adapter allows the shell in every
-  command (`with_local_origins`, `with_github_base`); the tests of this decision use the
-  adapter as the server builds it.
+  command that is not in a sandbox's folder (`with_local_origins`, `with_github_base`); the
+  tests of this decision use the adapter as the server builds it.

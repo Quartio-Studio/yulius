@@ -1413,17 +1413,16 @@ write only the folders the command works in (a sandbox's clone, worktrees and im
 worktrees; what else a command touches is named where it is made). A clone's configuration
 can then make the server's Git run nothing, and a link in the clone leads it nowhere
 outside. Only a transfer between two folders Yulius names may start the shell, with its
-transports pinned to `file`
-([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A transfer with GitHub,
-which carries the server's token, is not made in the clone at all: a courier, a bare repository
-of the server's own in `<data>/git-couriers` that borrows the clone's objects, fetches or
-pushes with the token, and the clone takes a fetch's result from it as from any folder; a new
-clone is made in a courier and copied. No command in a sandbox's folder, and none that writes a
-new repository there, gets the adapter's own configuration, where the token travels. What the
-server itself commits and pushes (a change from the remote control, an empty repository's first
-commit) is made in `<data>/changes`, not in the sandbox's folder. No Git command asks a program
-for a password, fetches a missing object from a remote the clone names or goes into a
-submodule, and a new clone's files are checked out by a command that may start no shell
+transports pinned to `file`, and never in a sandbox's folder
+([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A clone's transfers,
+with GitHub (which carry the server's token) and with a playground's origin (which need the
+shell), are not made in the clone at all: a courier, a bare repository of the server's own in
+`<data>/git-couriers`, fetches or pushes on the clone's objects, and the refs travel as data
+(the server lists them, the clone's Git sets them); a new clone is an empty repository filled
+that way. No command in a sandbox's folder, and none that writes a new repository there, gets
+the adapter's own configuration, where the token travels, or the shell. What the server itself
+commits and pushes (a change from the remote control, an empty repository's first commit) is
+made in `<data>/changes`, not in the sandbox's folder
 (`yulius_git::courier`,
 [decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
 
@@ -1434,10 +1433,11 @@ flowchart LR
   G -->|"read, write"| S["<data>/sandboxes/<id>, <data>/import-worktrees/<id>"]
   G -->|"read"| SYS["/usr, /lib, /etc"]
   G -.->|"refused"| X["/bin/sh and other programs, <data> beyond the sandbox, other sandboxes"]
-  G -->|"transfer Yulius names: + /bin/sh, file transport only"| O["<data>/playgrounds/<id>.git, CD mirror"]
-  SRV -->|"fetch, push with the token"| CO["courier in <data>/git-couriers: the server's own configuration, the clone's objects borrowed"]
-  CO -->|"HTTPS"| GH["GitHub"]
-  CO -->|"transfer Yulius names, no token"| S
+  SRV -->|"a clone's fetch, push, listing"| CO["courier in <data>/git-couriers: the server's own configuration, the clone's objects"]
+  CO -->|"HTTPS, with the token"| GH["GitHub"]
+  CO -->|"transfer between folders: + /bin/sh, file transport only, no token"| O["<data>/playgrounds/<id>.git"]
+  CO -->|"objects"| S
+  SRV -->|"refs as data: for-each-ref, update-ref"| G
 ```
 
 ```mermaid

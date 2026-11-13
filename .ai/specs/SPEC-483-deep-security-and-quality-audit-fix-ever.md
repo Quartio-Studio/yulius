@@ -61,7 +61,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       found in slice 10): taken next, as slice 11 of the Plan (the earlier number 11, V6,
       follows it);
   20. no command that reads a clone's configuration may start the shell (G5, from the review
-      of slice 11): taken right after it, as slice 12 of the Plan.
+      of slice 11): taken into slice 11 itself, whose own step it concerns.
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -290,11 +290,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   new clone from its courier (added in round 1) checked the files out in a command that may
   start the shell, while the new repository's configuration was already the sandbox's to
   write: a filter appended to it ran.
-- **G5 (the class of G3, medium, open).** Wherever a command that reads a clone's
-  configuration may start the shell, each way that configuration can make the shell run
-  something has to be found and switched off. Three were (G3 and the two above); the
-  commands concerned are a fetch, a push, a listing and a clone without files. The rule
-  that needs no list is slice 20.
+- **G5 (the class of G3, high).** Wherever a command that reads a clone's configuration may
+  start the shell, each way that configuration can make the shell run something has to be
+  found and switched off. Round 3 of the review found the next: `fetch.bundleURI` in the
+  clone makes a fetch download a bundle over HTTP whatever transports the command allows,
+  and when the address asks for a password Git starts the clone's credential helper through
+  the shell (reproduced by the reviewer on the folder fetch; here by the new test against
+  the code of round 2, `target/audit/slice11/n3-before.log`: "the clone's bundle address
+  was connected to", four times). The commands concerned were a playground's fetch, push
+  and listing (slice 10), and the clone's fetch from a courier and a new clone's copy (this
+  slice). Closed here by a rule instead of a list: no such command may start the shell.
 
 ## Requirements
 
@@ -497,37 +502,46 @@ no code path reaches; documents, texts shown to agents and people, and code that
   command's own sandbox; otherwise it is made by the name, without shell or reach.
 - **GCR-005** `yulius doctor` reports whether Git can be confined on the host.
 
-- **TKR-001** A confined fetch, push or listing of a clone in a sandbox's folder with a
-  remote whose address (`remote.<name>.url`) is anything but the sandbox's own origin folder
-  is made in a courier: a bare repository in `<data>/git-couriers`, made for it and removed
-  after it. For a fetch and a push it has the clone's objects as its alternate; they must
-  lie in the sandbox's own folders (links followed on both sides) at a path of one line. A
-  remote without such an address is refused there.
+- **TKR-001** A confined fetch, push or listing of a clone in a sandbox's folder is made in
+  a courier: a bare repository in `<data>/git-couriers`, made for it and removed after it.
+  The remote's address is `remote.<name>.url` of the clone, or a folder the caller names; a
+  remote without such an address is refused. For a fetch and a push the courier's commands
+  work on the clone's objects (`GIT_OBJECT_DIRECTORY`; its `shallow` file a link to the
+  clone's), which must lie in the sandbox's own folders (links followed on both sides).
 - **TKR-002** A fetch through a courier leaves the clone's `refs/remotes/<remote>/*` as a
-  fetch by name with pruning would, and gives a clone without `refs/remotes/<remote>/HEAD`
-  the one the remote names; a push sends the commit of the given branch and is refused when
-  it would rewind the remote; the listing answers the remote's branch. No process of the
-  clone's works in the courier before the last step that carries the token.
+  fetch by name with pruning would, brings the tags that come with them (none for a refresh
+  of the branches alone) without touching a tag the clone has, and gives a clone without
+  `refs/remotes/<remote>/HEAD` the one the remote names; a push sends the commit of the
+  given branch and is refused when it would rewind the remote; the listing answers the
+  remote's branch. The refs travel as data: the clone's are listed and written into the
+  courier, the courier's are listed and set in the clone by `update-ref --stdin`. The
+  courier's fetch runs no maintenance.
 - **TKR-003** A command whose folder is a sandbox's, a command without a folder that writes
   into one, and a transfer between folders get none of the adapter's `GIT_CONFIG_COUNT`,
   `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`; a command in a folder of the server's own
   gets them.
 - **TKR-004** Every command of the runner carries the constant options that switch off the
-  `ssh` and `git` transports, signing (of commits, tags and pushes), signatures and the
-  alternate-refs command, and pin `push.recurseSubmodules` and `submodule.recurse` off, and
-  `GIT_EDITOR=:`, an empty `GIT_ASKPASS` and `GIT_NO_LAZY_FETCH=1`; every `diff`, `log`, `show`, `diff-tree`, `diff-index` and
-  `diff-files` carries `--no-ext-diff --no-textconv` right after its name, once (a call
-  site's own copy among its options is dropped; the same word past `--` stays).
+  `ssh` and `git` transports, signing (of commits, tags and pushes), signatures, the
+  alternate-refs command, going into submodules (`push.recurseSubmodules`,
+  `submodule.recurse`), credential helpers, a bundle address and a negotiating push, and
+  `GIT_EDITOR=:`, an empty `GIT_ASKPASS` and `GIT_NO_LAZY_FETCH=1`; every `diff`, `log`,
+  `show`, `diff-tree`, `diff-index` and `diff-files` carries `--no-ext-diff --no-textconv`
+  right after its name, once (a call site's own copy among its options is dropped; the same
+  word past `--` stays).
 - **TKR-005** A command for a sandbox whose folder does not exist reaches that folder only,
   not the folder of all sandboxes, and makes nothing; which sandbox a path lies in is read
   from the path without its `.` and `..` parts.
-- **TKR-006** A clone from an address that is no folder into a sandbox's folder is made in
-  a courier and copied from there, with the address as its origin's. Every clone into a
-  sandbox's folder is copied without its files (`--no-checkout`), which are then checked
-  out by a command in the clone that is no transfer between folders. The first commit of an
-  empty repository is made in `<data>/changes`, never in the sandbox's folder.
+- **TKR-006** A clone into a sandbox's folder is an empty repository with the address as
+  its origin's, filled by a fetch through a courier, with the remote's default branch
+  checked out and following it; of an empty remote, a repository without a commit. The
+  first commit of an empty repository is made in `<data>/changes`, never in the sandbox's
+  folder.
 - **TKR-007** `yulius doctor` fails a host whose Git, told `GIT_NO_LAZY_FETCH=1`, still
   starts a promisor remote's command for a missing object.
+- **TKR-008** No confined command in a sandbox's folder (its own folder is one, or it has
+  none and writes into one) may start the shell, also where the tests' stand-in for GitHub
+  gives the shell to every other command; a transfer between folders there is refused
+  before anything is started.
 
 ## Plan
 
@@ -783,12 +797,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and for its full address) and no certificate check, and the remote at an address where
   nothing listens: the server's fetch-and-merge, push and listing fail, no answer holds the
   token, the proxy was never connected to, and `<data>/git-couriers` is empty afterwards.
-  With the clone's objects a link to a folder outside the sandbox that Git can read, and
-  with them at a path of two lines, a fetch and a push are refused for that reason, and the
-  listing is still tried. A worktree whose `commondir` names another sandbox's repository
-  gets no transfer. With `remote.origin.url` unset and `origin` rewritten to the test's
-  listener (and the loader as `core.askPass`), all three are refused for the missing
-  address and the listener is never connected to.
+  With the clone's objects a link to a folder outside the sandbox that Git can read, a
+  fetch and a push are refused for that reason, and the listing is still tried; with them
+  at a path inside the sandbox that holds a line break, the transfers are tried. A worktree
+  whose `commondir` names another sandbox's repository gets no transfer. With
+  `remote.origin.url` unset and `origin` rewritten to the test's listener (and the loader
+  as `core.askPass`), all three are refused for the missing address and the listener is
+  never connected to.
 - **AC-62** With the tests' stand-in for GitHub (an address rewritten to a folder in the
   server's own configuration only): a clone into a sandbox's folder that has what a clone
   has (the checked-out default branch following the remote's, its branches, a tag, the note
@@ -798,13 +813,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   made when the clone has none; an empty remote cloned, fetched, and noted once it has a
   branch; no courier left after any of it. The same clone, push and fetch with the data
   folder reached through a link.
-- **AC-63** The runner's command: in a sandbox's folder, and for a clone that writes into
-  one, no `GIT_CONFIG_COUNT`/`KEY_<n>`/`VALUE_<n>` of the adapter, another variable of its
-  kept; in a folder of the server's own (also when it borrows a sandbox's objects) and for a
-  command that writes elsewhere, all of it; the constant options and environment on every
-  command; the two diff options right after the name of each command that can make a diff,
-  past the command's own `-c` pairs, not twice among the options, kept past `--`, and on no
-  other command.
+- **AC-63** The runner's command: in a sandbox's folder, and for a command that writes a
+  new repository into one, no `GIT_CONFIG_COUNT`/`KEY_<n>`/`VALUE_<n>` of the adapter,
+  another variable of its kept; in a folder of the server's own (also when it works on a
+  sandbox's objects) and for a command that writes elsewhere, all of it; the constant
+  options and environment on every command; the two diff options right after the name of
+  each command that can make a diff, past the command's own `-c` pairs, not twice among the
+  options, kept past `--`, and on no other command. A transfer between folders made in a
+  courier gets the shell, the `file` transport only and no adapter configuration; made in
+  a sandbox's clone or into a new repository there, it is refused; with the shell given to
+  every command, a command in a sandbox's folder still gets none. A command given input
+  reads all of it.
 - **AC-64** With the clone naming the program loader as external diff, diff driver, text
   conversion, `ssh` command and signing program, and a new file in a folder that is a
   program: the server's status, review, diff, log, commit, fetch and push start nothing.
@@ -831,6 +850,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   whose command leaves a marker, in the new repository's configuration from the moment it
   exists: the clone ends with its files as committed, the filter in its configuration, and
   no marker.
+- **AC-70** With the clone naming a bundle address at the test's listener (which asks for a
+  password), a credential helper that leaves a marker (generally and for that address) and
+  a negotiating push: the server's push to the playground's origin arrives, the listing
+  answers it, a fetch-and-merge brings the origin's new commit, a refresh of the branches
+  brings a new branch and no tag, a fetch by the remote's name brings the tag; the listener
+  was never connected to and there is no marker.
+- **AC-71** A playground's origin whose history ends early (a shallow copy, two of three
+  commits) is cloned into the sandbox's folder: the clone has the two commits, the same
+  `shallow` file as the origin, and passes `git fsck`; so after a second fetch.
 
 ## Test plan
 
@@ -964,14 +992,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `git_confined::a_missing_object_is_not_fetched_with_the_clones_command` (AC-65),
   `git_confined::a_push_goes_into_no_submodule` (AC-68),
   `git_confined::a_filter_added_to_a_new_clone_is_not_run` (AC-69),
+  `git_confined::a_clones_transfer_settings_reach_no_transfer` (AC-70),
+  `git_confined::a_shallow_origin_makes_a_whole_shallow_clone` and
+  `playground::a_shallow_repository_keeps_its_branches` (AC-71),
   `projects::a_refused_first_commit_leaves_onboarding_pending` (AC-66),
   `git_confined::the_doctor_reports_the_confinement` and
   `doctor::tests::a_git_that_fetches_missing_objects_fails` (AC-67);
-  `yulius-git` `runner::tests::a_confined_command_is_the_launcher_with_its_sandboxes_folders`
-  and `runner::tests::nothing_is_started_with_an_argument_of_the_clones` (AC-63),
+  `yulius-git` `runner::tests::a_confined_command_is_the_launcher_with_its_sandboxes_folders`,
+  `runner::tests::nothing_is_started_with_an_argument_of_the_clones`,
+  `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` and
+  `runner::tests::a_command_reads_what_it_is_given` (AC-63, TKR-008),
   `tests::a_command_reaches_its_own_sandboxes_folders` (TKR-005),
-  `courier::tests::the_clones_branches_become_lines_of_the_couriers_refs` and
-  `courier::tests::the_remotes_head_names_its_default_branch` (TKR-002).
+  `courier::tests::a_list_of_refs_is_read_line_by_line`,
+  `courier::tests::the_clones_refs_follow_the_couriers` and
+  `courier::tests::the_remotes_head_names_its_default_branch` (TKR-002). Every test of
+  `yulius` that uses the real adapter with a playground or the stand-in for GitHub now
+  makes its transfers through a courier (AC-60).
 
 ## Decisions
 
@@ -1055,6 +1091,27 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   by the server itself would follow links that Git, confined, cannot). Both are again cases
   of one class, which this slice closes case by case and names as G5; the next slice takes
   the shell from every command that reads a clone's configuration.
+- From the review of slice 11, round 3 (one major: a third case of the class, in this
+  slice's own step): the list is given up for the rule, here and not in a later slice. The
+  delivery rule says to split a change after three rounds; what round 3 found cannot be
+  split off, because the step it is in (the clone's fetch from a courier) is what makes
+  the slice work, and merging the slice without it would add a command that may start the
+  shell to every GitHub sandbox's clone. So the slice is finished by the design the three
+  rounds point to, which also makes it smaller in what it claims (a rule in two places of
+  the runner instead of a list), and is reviewed anew by a fresh reviewer who has not seen
+  the earlier rounds. The design: a courier for every transfer of a clone, a playground's
+  too; the courier's commands work on the clone's objects (`GIT_OBJECT_DIRECTORY`, chosen
+  over an alternate plus a transfer into the clone, which is the command that had to go,
+  and over the server copying packs itself, which would write in a sandbox's folder
+  outside Git's confinement), with maintenance off for them (the courier knows only the
+  remote's branches, and would take the clone's own commits for unreachable); refs as data
+  through `update-ref --stdin` (the runner learns to give a command input); the clone's
+  `shallow` file through a link in the courier, which Git reads and replaces in place (a
+  playground made of a shallow upload); a new clone as `init`, a fetch and a `checkout`.
+  This replaces what rounds 1 and 2 chose for the same steps (the clone's fetch from the
+  courier, a new clone copied from a courier and then copied without its files, the
+  objects lent through an alternates file and its one-line rule). The earlier pins stay as
+  depth.
 - From the review of slice 10 (four nits, answered in slice 11): the loader (what the claim
   rests on is in ADR-0322 and enforced in the runner); a sandbox being made gets its own
   folder; what `/etc` and `/usr` readable means is in ADR-0322 already; the safety of a
@@ -1110,7 +1167,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 11 |
 | G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | slice 11 |
 | G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | slice 11 |
-| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders; what the configuration can make the shell run is switched off case by case (a missing object, a push into submodules, a new clone's filter), not by a rule (review of slice 11) | medium | slice 20 (next) |
+| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders, and the shell runs what that configuration names for a transfer (a promisor remote's command, a submodule's remote's, a credential helper for a bundle address, a new clone's filter) (review of slice 11) | high | slice 11 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |

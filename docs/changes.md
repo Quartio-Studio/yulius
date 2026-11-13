@@ -10,17 +10,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no
   certificate check) beat the server's own: the connection, token included, could go through
-  a proxy the agents run. Such a transfer is now made in a repository of the server's own
-  that borrows the clone's objects (`<data>/git-couriers`, empty between transfers), and no
-  command in a sandbox's folder gets the token in its environment; a new clone is made
-  there too and copied, and an empty repository's first commit is made in `<data>/changes`
+  a proxy the agents run. And a transfer with a playground's origin, a folder, started the
+  shell in the clone, which ran what the clone's configuration names for a transfer (the
+  command of a remote to fetch a missing object from, of a submodule's remote, a helper for
+  a password). Every transfer of a sandbox's clone is now made in a repository of the
+  server's own that works on the clone's objects (`<data>/git-couriers`, empty between
+  transfers), with the refs written as data; a new clone is an empty repository filled
+  that way. No command in a sandbox's folder gets the token in its environment or may
+  start the shell, and an empty repository's first commit is made in `<data>/changes`
   instead of the sandbox's folder. Also, for every Git command of the server in one place:
   no external diff or text conversion, no signing, no editor, no `ssh` or `git` transport,
-  no program asked for a password, no missing object fetched from a remote the clone
-  names (its command for the other side ran in a push to a playground's origin), no push
-  into a submodule (the same, by the submodule's configuration), and a new clone's files
-  checked out by a command that starts no shell (a filter added to the new clone's
-  configuration while it was made ran).
+  no program or helper asked for a password, no missing object fetched, no going into
+  submodules, no bundle downloaded.
   `yulius doctor` checks the host's Git for the last one as "git missing objects": Git
   2.45.1 or a patched release of the system's (Ubuntu 24.04's has it).
 - The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
