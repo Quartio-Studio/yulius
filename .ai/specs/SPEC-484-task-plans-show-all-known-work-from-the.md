@@ -139,7 +139,7 @@ to the person.
 - [x] The cause named with evidence from real tasks, and the spec
 - [x] A pull request merges with later steps still ahead: the merge rule, `delivery_merge`, what the agent hears
 - [x] A plan holds every slice: 60 steps, no "too fine" nudge, a nudge when it reads complete
-- [ ] The briefing and the tools' texts tell agents to plan all the known work
+- [x] The briefing and the tools' texts tell agents to plan all the known work
 - [ ] Skills, workflows and templates say the same rule, checked against the constants
 - [ ] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
 - [ ] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
