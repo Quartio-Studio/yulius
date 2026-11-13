@@ -43,26 +43,40 @@ still never typed behind text that is there (SPEC-480).
   no test could tell an empty box from a filled one.
 - **What the real tool draws** (Claude Code 2.1.323, full screen as Yulius runs it
   (`CLAUDE_CODE_NO_FLICKER=1`), in a PTY against a local stub of the model API, rendered with
-  the `vt100` crate the hub uses; scripts and runs in `$HOME/.cache/yulius-task-470`). The
+  the `vt100` crate the hub uses; 401 screens over 43 runs, the author's and the independent
+  reviewer's, in `$HOME/.cache/yulius-task-470` and `$HOME/.cache/yulius-review-470`). The
   prompt box is one row `❯` between two rows of `─` across the whole width, on the alternate
   screen, and the terminal's cursor is parked at the box's first cell (column 2 of that row)
   while the box is empty. What was seen:
   - empty box (fresh, mid-turn, after a turn, after Escape idle and mid-turn, after a declined
-    permission dialog, after `Ctrl+U`, with the terminal unfocused, 120 and 50 columns wide,
-    with the shortcut help open below it): `❯` alone, cursor at column 2;
+    permission dialog, after `Ctrl+U`, with the terminal unfocused, from 120 down to 20 columns
+    wide, with the shortcut help open below it, in vim mode, in all six built-in themes): `❯`
+    alone, cursor at column 2, rules not dim;
   - a draft: its text after `❯` in normal intensity, the cursor behind it; with the cursor
     moved to the start (`Ctrl+A`) the cursor is at column 2 and the text stays in normal
-    intensity, focused or not, idle or mid-turn; a one-character draft under the cursor is
-    one inverse cell; a pasted block is `[Pasted text #1 +39 lines]` in normal intensity; a
-    draft of several rows (a first row left empty, or wrapped) has more than one row between
-    the rules;
+    intensity, focused or not, idle or mid-turn, in every theme; a one-character draft under
+    the cursor is one inverse cell; a pasted block is `[Pasted text #1 +39 lines]` and an
+    image `[Image #1]` in normal intensity; a draft of several rows (a first row left empty,
+    or wrapped) has more than one row between the rules;
   - what Claude Code draws in an empty box by itself: its prompt suggestion (on by default)
     and "Press up to edit queued messages", both **dim** with the cursor at column 2 (the
     first character inverse under the caret while focused, dim when not). A paste into a box
     that shows a suggestion replaces it: the prompt hook got the pasted message alone;
+  - the row above the upper rule is Claude Code's hint row: blank, or a notice that lasts
+    seconds ("Ctrl+Y to paste deleted text" was gone 21 s after the deletion), or `› stashed`
+    for as long as a draft is put aside with the stash key (`Ctrl+S`; seen 67 s later, and
+    down to 10 columns and 4 rows). A stashed draft leaves the box empty and comes back into
+    it, with no keystroke, after the next submit or local command (review run r1: a first
+    pasted message went alone, a second was submitted as "my precious draftMessage from
+    Yulius two");
+  - the agents view (Left arrow from an empty box) has a box of its own, which starts a new
+    background session with what is entered into it (review run r13: a second `SessionStart`).
+    Its rules are dim in every theme, the conversation's never are; its placeholder is grey
+    in five themes and dim, like a suggestion, under `dark-ansi`;
   - other states have no such box at the cursor: shell mode (`!` instead of `❯`), the history
     search (a labelled upper rule and the entry's text), the rewind list, a permission dialog,
-    the transcript view, the agents view (its box holds a grey, not dim, placeholder).
+    the transcript view, the 17 slash-command dialogs the review opened, a footer pill that
+    has the keys (the cursor leaves the box).
 - **What exists to build on.** ADR-0309 ends: "a later, proven way to know the box is empty
   only has to move `box_emptied_ms`". The hub keeps each session's screen in a `vt100` parser
   (`Hub`), with cell attributes and the cursor; a reattached run's hub is rebuilt from the
@@ -81,20 +95,23 @@ still never typed behind text that is there (SPEC-480).
   types as into any session.
 - EBX-002 (what counts as shown empty). Exactly what the probes saw: the alternate screen; the
   cursor in column 2 of a row that starts with `❯` and a blank; the rows directly above and
-  below consist of `─` across the whole width; and from column 2 on that row holds nothing, or
-  only dim text (Claude Code's own suggestion or hint): every non-blank cell is dim, except
-  that the cell under the cursor may be inverse when a dim cell follows it. Anything else is
-  not proof, and the hold stays as SPEC-480 has it: text in normal intensity, a second row in
-  the box, another prompt character, a labelled rule, a dialog or another view, the main
-  screen, a withheld screen, a Claude Code that draws differently.
+  below consist of `─` across the whole width and are not dim (the agents view's are); the
+  row above the upper rule is blank (a hint there, `› stashed` above all, is no proof); and
+  from column 2 on the box's row holds nothing, or only dim text (Claude Code's own suggestion
+  or hint): every non-blank cell is dim, except that the cell under the cursor may be inverse
+  when a dim cell follows it. Anything else is not proof, and the hold stays as SPEC-480 has
+  it: text in normal intensity, a second row in the box, another prompt character, a labelled
+  or dim rule, a hint above the box, a dialog or another view, the main screen, a withheld
+  screen, a Claude Code that draws differently.
 - EBX-003 (the minute stays). A keystroke of the last minute holds a message as before
   (SPEC-480 DRF-002), whatever the screen shows: the person is at the keyboard, and the screen
   may be behind their key.
 - EBX-004 (the hold ends). A box seen empty counts as emptied at the keystroke that was judged:
   the draft's mark leaves the run folder and the flag of a held message ends (SPEC-480
   DRF-007, DRF-009), as after a prompt submitted from the box. A key typed after that is a
-  possible draft of its own. This also holds for a draft known from its mark alone (after a
-  restart of the server): the screen is what the session shows now.
+  possible draft of its own, also one typed while the mark and the flag are ended: the hold
+  is judged again before anything is pasted. This also holds for a draft known from its mark
+  alone (after a restart of the server): the screen is what the session shows now.
 - EBX-005 (a flag of a held message does not stop the pull-request watch). A task flagged only
   because a message waits for a possible draft, whose screen shows the prompt box empty, still
   gets the watch's tries, so a box that became empty (a person cleared it, or the flag is older
@@ -135,13 +152,19 @@ still never typed behind text that is there (SPEC-480).
   the command still waits; after it the next pass types the command, which the agent reads
   alone, and the flag is gone.
 - AC4 (EBX-002; pure rule). `prompt_box::shown_empty` over screens drawn as the probes saw
-  them: true for the empty box (focused, unfocused, narrow, help below), the suggestion
+  them: true for the empty box (focused, unfocused, help below, text deleted), the suggestion
   (focused and not) and the queue hint; false for a draft (cursor behind it, cursor at its
-  start, one character under the cursor, a pasted block, a second row, wrapped), shell mode,
-  the history search, the rewind list, a permission dialog, the transcript view, the agents
-  view, the same box on the main screen, a box without its lower rule, a cursor elsewhere.
-- AC5 (EBX-002). A hub rebuilt from a snapshot of a screen with an empty box, and of one with
-  a suggestion, still reads it as shown empty; one with a draft does not.
+  start, one character under the cursor, a character behind a blank or behind the cursor's, a
+  pasted block, a second row, wrapped), a hint above the box (`› stashed`, deleted text), the
+  agents view under `dark-ansi` (dim rules, one or both), shell mode, the history search, the
+  rewind list, a permission dialog, the transcript view, the agents view's grey placeholder,
+  the same box on the main screen, at the screen's top, without its lower rule, a cursor
+  elsewhere. The same reader over all 401 captured screens of the real tool (`verdicts.py`):
+  no screen with typed text, a stash or the agents view reads empty.
+- AC5 (EBX-002, EBX-004). A hub rebuilt from a snapshot of a screen with an empty box, and of
+  one with a suggestion, still reads it as shown empty; one with a draft does not. With real
+  processes and a restarted server: a key that left nothing in the box before the restart
+  holds a message within the minute and none after it; the mark is gone.
 - AC6 (EBX-005). With real processes: text left in the box holds a pull request's news of a
   red run; eleven minutes later the task is flagged and a second pass leaves it so. The person
   clears the text and sends nothing: past the minute the watch types the news, the agent reads
@@ -149,6 +172,9 @@ still never typed behind text that is there (SPEC-480).
   empty or not. Fails without EBX-005: the news is never typed. Pure rule
   (`held_message_flag_outlived`): only that flag over a box shown empty outlived its reason.
 - AC7 (EBX-007). The documents name the rule; the gate's document checks pass.
+- AC8 (EBX-004). A key recorded between the screen's reading and the paste (a pause point)
+  gets the message refused; nothing is typed. With an agent that runs no hooks, a box seen
+  empty alone ends the flag and removes the mark.
 
 ## Test plan
 
@@ -161,7 +187,11 @@ still never typed behind text that is there (SPEC-480).
   Code does.
 - `crates/yulius-app/src/prompt_box.rs`: unit tests of AC4, each screen written as the bytes
   that draw what the probe rendered (attributes included).
-- `crates/yulius-app/src/hub.rs`: AC5.
+- `crates/yulius-app/src/hub.rs`: AC5 (`a_snapshot_keeps_the_prompt_box_readable`);
+  `crates/yulius/tests/task_message.rs`:
+  `a_key_before_a_restart_that_left_nothing_holds_no_message` (AC5, through the process
+  host's own snapshot) and `a_key_typed_while_the_empty_box_is_taken_in_holds_the_message`
+  (AC8, at the pause point `race::Point::BoxSeenEmpty`).
 - `crates/yulius/tests/task_message.rs`:
   `a_flag_of_a_held_message_does_not_stop_the_pull_request_watch` (AC6), with the pull
   request, its head and its red run as `pr_watch.rs` sets them up; the pure rule in
@@ -172,9 +202,10 @@ still never typed behind text that is there (SPEC-480).
 - `crates/yulius-domain/src/intake.rs`: `an_empty_box_ends_a_possible_draft_after_the_minute`
   (EBX-003, EBX-004).
 - SPEC-480's tests stay green unchanged: their fake agent draws no box, so nothing is proven
-  empty there.
+  empty there. The fake agent's `--tui` keeps the row above its box blank, as Claude Code's
+  hint row is.
 - Mutation checks by hand (Evidence): each clause of EBX-002 removed makes a unit test fail;
-  without the minute AC1 fails; without ending the flag AC3 fails.
+  without the minute AC1 fails; without ending the mark and the flag the hookless test fails.
 
 ## Decisions
 
@@ -196,6 +227,14 @@ still never typed behind text that is there (SPEC-480).
 - **The cursor must be in the box.** A transcript can show a picture of an empty box (this
   repository's own tests print one); Claude Code parks the cursor in the real one, and in a
   dialog or list while that has the keys.
+- **A hint above the box is no proof, whatever it says** (review round 1). The stash is the
+  reason: a stashed draft is not in the box, but it returns there by itself after the next
+  submit, so the message after the one typed now would be glued to it. The rule reads the
+  row, not the word "stashed": a renamed hint still refuses. Other notices there last seconds
+  and cost one try of a watch.
+- **Dim rules are not the prompt box's** (review round 1). The agents view's box takes a paste
+  and Enter as a new background session, and under `dark-ansi` its placeholder is dim. Its
+  rules are dim in all six themes and the conversation's in none, over every captured screen.
 - **The alternate screen is required.** Only the full-screen renderer was probed, and Yulius
   runs no other (`FULL_SCREEN_ENV`).
 - **The minute is kept** rather than trusting the screen at once: the hub's screen follows a
@@ -205,8 +244,12 @@ still never typed behind text that is there (SPEC-480).
 - **The texts stay.** "Send what you typed in the terminal, or clear it and send any prompt"
   is still right where the screen proves nothing; where it does, clearing alone is enough,
   which the guide says.
-- **Limits, not fixed here.** The restart on a newer Claude Code (SPEC-468 `App::has_draft`)
-  and the `/compact` typist for a full context keep their own keystroke rules: they err toward
-  leaving the session alone and flag nobody. Other Claude Code versions were not probed: where
-  they draw the box differently, SPEC-480's hold stays. The person's keys in the 300 ms between
-  Yulius's paste and its Enter still join the message (ADR-0178).
+- **Limits, not fixed here.** Text Claude Code puts back into the box with no keystroke after
+  a person's own submit (a stash restored) is unknown to SPEC-480's rule and typed behind:
+  pre-existing, issue #1264. The restart on a newer Claude Code (`App::has_draft`, SPEC-468)
+  and the `/compact` typist for a full context ask the keystroke rule alone and never the
+  screen; `has_draft` reads `box_emptied_ms`, so once a message was typed into a box seen
+  empty, that key is no draft for the restart either. Other Claude Code versions were not
+  probed: where they draw the box differently, SPEC-480's hold stays. The person's keys in
+  the 300 ms between Yulius's paste and its Enter still join the message (ADR-0178). Whether
+  the browser terminal passes `Ctrl+S` on was not checked; the rule does not depend on it.

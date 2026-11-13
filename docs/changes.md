@@ -12,9 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   or an answered dialog a task got no pull request's news and read "Needs your action: Yulius
   has a message for this session and does not type it" over an empty prompt box. A minute
   after the key Yulius now looks at the session's screen: Claude Code's prompt box shown with
-  nothing typed in it (probed with the real 2.1.323; its own grey suggestion counts as
-  nothing) ends the hold and the flag, and the message is typed. Text in the box holds
-  messages as before, and clearing it releases them without a prompt.
+  nothing typed in it (probed with the real 2.1.323 in every built-in theme; its own dimmed
+  suggestion counts as nothing, a stashed draft or the agents view is no empty box) ends the
+  hold and the flag, and the message is typed. Text in the box holds messages as before, and
+  clearing it releases them without a prompt.
 - A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
   #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
   pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and

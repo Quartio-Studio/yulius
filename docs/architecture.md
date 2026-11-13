@@ -1848,8 +1848,8 @@ and its terminal says so once the person's last key is ten minutes old; the key 
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run; a prompt box the hub's screen shows empty
 (`prompt_box::shown_empty`: the one picture Claude Code 2.1.323 draws, the cursor in a row `❯`
-between two rules with nothing or only dim text in it) ends the hold, its mark and its flag
-once the minute after the key has passed,
+between two undimmed rules, a blank hint row above, nothing or only dim text in it) ends the
+hold, its mark and its flag once the minute after the key has passed,
 [SPEC-488](../.ai/specs/SPEC-488-fix.md),
 [decision 0329](decisions/0329-a-prompt-box-the-screen-shows-empty-holds-no-message.md)), while Claude Code's
 folder-trust dialog shows
