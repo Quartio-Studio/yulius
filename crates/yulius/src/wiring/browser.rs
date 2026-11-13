@@ -49,7 +49,8 @@ fn failure(error: BrowserError) -> BrowserFailure {
         | BrowserError::ExitedEarly { .. }
         | BrowserError::Cdp(_)
         | BrowserError::NavigationFailed(_)
-        | BrowserError::Display(_) => BrowserFailureKind::Upstream,
+        | BrowserError::Display(_)
+        | BrowserError::Network(_) => BrowserFailureKind::Upstream,
     };
     BrowserFailure::new(kind, error.to_string())
 }

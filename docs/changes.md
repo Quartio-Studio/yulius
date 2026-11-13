@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- The sandbox browser reaches what its sandbox reaches (SPEC-483 slice 9, task #465,
+  ADR-0321). Chrome runs on the host, and connected by itself: through the browser tools an
+  agent could open another project's dev server (`localhost:<its port>`), a service on the
+  host's loopback, a cloud's metadata address, or Yulius's internal listener by a name the
+  address guard did not list. Each browser now starts behind a proxy of its own, served by
+  the egress proxy, for every address: of local ones it reaches its own sandbox's dev ports
+  and the welcome page, nothing else; no secret is added to what a page sends. A browser
+  whose proxy cannot be opened is not started. Nothing to configure.
 - `browser_fill_secret` types neither into a frame of another site nor into a tab that is
   leaving (SPEC-483 slice 8, task #465, ADR-0320). The keys go to the element with the focus:
   with the focus in a document of another site inside a page of the secret's host (an

@@ -894,7 +894,7 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
         assert_eq!(astray["isError"], true, "{astray}");
         assert!(
             tool_text(&astray).as_str().is_some_and(|t| {
-                t.contains("the focus left this page's field while the secret was typed")
+                t.contains("after the secret was typed the focus is not in a field of this page")
                     && t.contains("a frame of evil.example")
                     && !t.contains(USER)
             }),

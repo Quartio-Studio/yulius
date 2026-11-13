@@ -1198,7 +1198,12 @@ resolves to nothing, the run gets the server without that variable or token.
     missing or the browser stops, the server sends an `upstream` error with the reason and closes
     with 1011. Addresses of Yulius itself (its public origin and its subdomains, every loopback
     form of its listeners) are refused with `url_refused`, and pages' own requests to them fail as
-    blocked (SPEC-001 BRW-008).
+    blocked (SPEC-001 BRW-008). The browser goes out through a proxy of its own and reaches what
+    its sandbox's processes reach: of local addresses only its sandbox's dev-server ports on
+    `localhost` (by that name, a name below it or the address; and the welcome page). Another sandbox's port, a service of the host, a
+    link-local address: a plain request is answered 403 "the sandbox browser does not load …",
+    a tunnel (HTTPS, a WebSocket) does not connect, for the agents' tools, a viewer's address
+    bar and a page's own requests alike (ADR-0321).
 - New tabs of the sandbox Chrome open `GET /browser/welcome?sandbox=<id>` on the internal
   (loopback) listener: the sandbox name and links to its listening dev-server ports (probed on
   127.0.0.1 every 5 s via `/browser/welcome/ports`; Yulius's own ports are never listed).

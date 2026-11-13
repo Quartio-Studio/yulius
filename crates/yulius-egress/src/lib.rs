@@ -11,9 +11,11 @@
 //! The application decides through [`yulius_app::ports::egress::EgressPolicy`]; this adapter
 //! owns sockets, TLS and HTTP.
 
+mod browser;
 mod ca;
 mod proxy;
 
+pub use browser::{BrowserEgress, serve_browser};
 pub use ca::{
     CaError, CertificateAuthority, generate_ca_material, pem_certificates, run_ca_bundle,
 };

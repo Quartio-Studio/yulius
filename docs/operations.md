@@ -602,6 +602,16 @@ rewrites the files; on a host that never ran the setup with this version, run
 Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab, and the browser
 policy.
 
+Chrome is also on the host's network, not its sandbox's. Each browser therefore runs behind a
+proxy of its own on the loopback (an ephemeral port, open while the browser runs), served by
+Yulius's egress proxy: it reaches the internet and the host's network as the sandbox's own
+processes do, and of local addresses only its sandbox's dev-server ports and the welcome page
+(ADR-0321). Nothing is configured for it. A page that should load and answers "the sandbox
+browser does not load …" names a local address outside the sandbox's port range, or a name
+that only points at one: serve it on one of the sandbox's ports and open it as
+`localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
+`ProxySettings`): a policy wins over what Yulius starts Chrome with.
+
 ### Sandbox isolation
 
 Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'

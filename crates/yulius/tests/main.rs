@@ -19,6 +19,7 @@ mod auto_choice;
 mod automation_start;
 mod automations;
 mod browser;
+mod browser_network;
 mod cd;
 mod cd_rollback;
 mod ci_setup;

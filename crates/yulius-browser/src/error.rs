@@ -116,6 +116,10 @@ pub enum BrowserError {
     /// The virtual display could not start or stopped (SPEC-002 ADR-15).
     #[error("virtual display: {0}")]
     Display(String),
+    /// The browser's way out (its proxy, ADR-0321) could not be opened: it was not started,
+    /// as it would reach the host's own addresses without it.
+    #[error("the sandbox browser's network could not be set up, so it was not started: {0}")]
+    Network(#[source] std::io::Error),
     /// Discrete input (a click, a key, text) backed up because the display's X server stopped
     /// taking input; it was not delivered. Moves never do (they are coalesced).
     #[error("the sandbox browser is not taking input right now; that input was not delivered")]
@@ -149,7 +153,7 @@ pub enum BrowserError {
     /// holds a frame of a site the secret may not be typed into (it took the focus, or came,
     /// while the keys were sent): part of the secret may be in that frame.
     #[error(
-        "the focus left this page's field while the secret was typed, and the page holds a frame of {0}, which is not a site this secret may be typed into: part of the secret may be in that frame. Tell the secret's person, who may want to replace it"
+        "after the secret was typed the focus is not in a field of this page, and the page holds a frame of {0}, which is not a site this secret may be typed into: part of the secret may be in that frame. Tell the secret's person, who may want to replace it"
     )]
     SecretFrameAstray(String),
     /// The tab's document changed while a secret was typed, to a page it may not be typed
@@ -199,7 +203,8 @@ impl BrowserError {
             | Self::Spawn(_)
             | Self::StartupTimeout { .. }
             | Self::ExitedEarly { .. }
-            | Self::Display(_) => ViewerErrorCode::Upstream,
+            | Self::Display(_)
+            | Self::Network(_) => ViewerErrorCode::Upstream,
             Self::Profile(_) | Self::NotReaped { .. } => ViewerErrorCode::Internal,
         }
     }
