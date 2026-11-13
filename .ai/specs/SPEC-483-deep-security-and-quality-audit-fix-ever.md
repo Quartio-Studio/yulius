@@ -625,11 +625,13 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **CHK-002** A task's delivery, the Git page, the remote control's merge, a promotion pull
   request and a fast-forward promotion use CHK-001. With `require_checks`, both promotions
   refuse failing, pending and unreadable checks at the integration head and go on passed
-  checks or none. A fast-forward that is the profile's automatic promotion right after a
-  merge also goes while that head's checks are pending.
-- **CHK-003** `ci_gate_result` is "pending" for a commit without a run when Yulius CI will
-  test it: the integration branch has CI, or the commit brings its own to a branch without
-  any (CGR-001 for a proposal).
+  checks or none. A fast-forward that is the profile's automatic promotion (after a merge,
+  or after an integration environment of a merged change) also goes while that head's
+  checks are pending; failing and unreadable checks stop it, and its note says so.
+- **CHK-003** `ci_gate_result` is "pending" for a commit without a run when the integration
+  branch has CI, or when the commit brings its own to a branch without any (the scheduler's
+  rule for a proposal, CGR-001; whether the scheduler has a pull request to test it for is
+  not asked, as it is not for a project with CI).
 
 ## Plan
 
@@ -1004,6 +1006,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   merge is refused while the pull request's head has no run, goes once its run passed, and
   the production branch is fast-forwarded to the merge's commit with it, although that
   commit has no run of its own.
+- **AC-88** With automatic promotion, required checks, a manual integration environment and
+  a failed run of Yulius CI at the integration head: confirming the environment promotes
+  nothing, the answer says "Automatic promotion did not happen", and the production branch
+  stays; once a newer run passed, a person's promotion fast-forwards it.
 - **AC-86** The existing tests of a task's delivery, the Git page, the remote control's
   merge and the promotions pass unchanged (pending, unreadable and passed checks of
   GitHub's for a project without Yulius CI among them).
@@ -1173,7 +1179,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 14: `yulius` `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`
   (AC-83), `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out`
   (AC-84), `local_ci::a_pull_request_that_brings_ci_waits_for_its_first_run` (AC-85),
-  `delivery::an_automatic_promotion_goes_on_the_checks_of_its_merge` (AC-87);
+  `delivery::an_automatic_promotion_goes_on_the_checks_of_its_merge` (AC-87),
+  `delivery::an_automatic_promotion_stops_at_a_failed_head` (AC-88);
   `delivery`, `remote_mcp`, `merge_train` and `playground` as they are (AC-86).
 
 ## Decisions
@@ -1243,10 +1250,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   head, which is the promotion pull request's head too. A fast-forward promotion is held
   to the same checks as one by pull request (it had none): what reaches production is the
   same commit either way, and `require_checks` is the profile's word for both. One
-  promotion is not held to a verdict of its own: the automatic one (`auto_promote`), which
-  is part of the merge it follows. That merge needed green checks on a current head, the
-  commit it made has no run yet, and nothing would promote later if this were refused as
-  pending; a verdict that is already there (failed, unreadable) still stops it. The
+  promotion does not wait for a verdict of its own: the automatic one (`auto_promote`),
+  wherever it starts (after a merge, or after the last integration environment of a merged
+  change). What it promotes went in on green checks of a current head, the commit the merge
+  made may have no run yet, and nothing would promote later if this were refused as
+  pending; a verdict that is already there (failed, unreadable) stops it. Narrowing the
+  exception to the merge's own commit was weighed (review of this slice) and not taken: a
+  promotion after an environment that finishes before the head's run would then never
+  happen, where before this slice a fast-forward read no checks at all. The
   "pending before the first run" case moved from the remote control into `ci_gate_result`,
   so that a task's `delivery_merge` waits for it too; it costs one read of the commit's
   `yulius.toml` per question, only in a project without CI and only for a commit without

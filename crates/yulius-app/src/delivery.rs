@@ -3911,12 +3911,14 @@ impl App {
                 // What goes to production is the integration head: its checks decide, as a
                 // promotion pull request's do (the head is the same commit).
                 if profile.require_checks {
-                    // The automatic promotion is part of the merge it follows: the checks
-                    // that allowed that merge, on a current head, are its checks, and the
-                    // integration head they made has no run of its own yet. Only a verdict
-                    // that is there (failed, unreadable) stops it.
-                    let part_of_the_merge = matches!(by, Initiator::Policy);
-                    self.dlv_checks_allow(sandbox, token, &integration_sha, part_of_the_merge)
+                    // An automatic promotion (after a merge, or after the last integration
+                    // environment of a merged change) does not wait for a verdict of the
+                    // integration head: what it promotes went in on green checks of a current
+                    // head, the commit the merge made may have no run yet, and nothing
+                    // promotes later if this one is refused as pending. A verdict that is
+                    // there (failed, unreadable) stops it.
+                    let automatic = matches!(by, Initiator::Policy);
+                    self.dlv_checks_allow(sandbox, token, &integration_sha, automatic)
                         .await?;
                 }
                 github

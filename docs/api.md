@@ -660,7 +660,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
   through Yulius once no integration environment is pending; the outcome is added to `notes`
-  and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
+  and audited. With `require_checks`, an automatic fast-forward does not wait for the
+  integration head's own checks (they may not have reported yet), and is stopped by failing
+  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
   independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration

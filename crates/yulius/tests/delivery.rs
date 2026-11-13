@@ -1264,6 +1264,86 @@ async fn an_automatic_promotion_goes_on_the_checks_of_its_merge() -> TestResult 
     Ok(())
 }
 
+/// SPEC-483 D5: an automatic promotion goes while the integration head's checks have not
+/// reported, wherever it starts (after a merge, after an integration environment), and is
+/// stopped by a verdict that is there: with a failed run of Yulius CI at that head, the
+/// environment's confirmation promotes nothing and says why; a person promotes once the run
+/// passed.
+#[tokio::test]
+async fn an_automatic_promotion_stops_at_a_failed_head() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let custom = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "custom", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": true,
+                "require_checks": true,
+                "environments": [
+                    {"name": "staging", "after": "integration", "verify": "manual", "command": null}
+                ]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(custom.status, StatusCode::OK, "{}", custom.body);
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    commit_file(&wt, "landing.txt", "v1", "Landing")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    f.h.github
+        .set_checks(&git(&wt, &["rev-parse", "HEAD"])?, ChecksState::Success);
+    let main_before = f.origin_sha("main")?;
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(f.origin_sha("main")?, main_before, "staging comes first");
+    let quartio = f.origin_sha("quartio")?;
+    yulius_ci_run(&f.h.store, "run-q-1", &quartio, RunState::Failed, 10).await?;
+    let confirmed = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/staging/confirm",
+            Some(json!({"confirm": true})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert!(
+        confirmed
+            .body
+            .to_string()
+            .contains("Automatic promotion did not happen"),
+        "{}",
+        confirmed.body
+    );
+    assert_eq!(
+        f.origin_sha("main")?,
+        main_before,
+        "a failed head is not promoted"
+    );
+    yulius_ci_run(&f.h.store, "run-q-2", &quartio, RunState::Passed, 20).await?;
+    let promoted = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
+    assert_eq!(f.origin_sha("main")?, quartio);
+    Ok(())
+}
+
 /// A run of Yulius CI at `sha` of branch `dev`, ended in `state`, queued at `at` (the newest
 /// run of a commit is its verdict).
 async fn yulius_ci_run(
