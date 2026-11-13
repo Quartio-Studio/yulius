@@ -2001,3 +2001,31 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   test takes the variable away from this machine's Git); a repository of SHA-256 objects
   (the courier is made with the host's default, as a playground's origin is; GitHub has
   none); macOS and other unconfined Git: unchanged, G2 and G5 stay open there.
+- **Fresh review of the slice as redesigned, round 1** (head 87dc1c353, a reviewer who had
+  not seen the earlier rounds; request changes): the rules held ("The rule on the shell:
+  `command()` gives `--shell` only when the command is not in a sandbox; `run_once` refuses
+  a local transfer in a sandbox"; "No `GIT_CONFIG_*` reaches a command whose folder is a
+  sandbox's"), and five findings in own code, all reproduced by the reviewer but one: "A
+  fetch through a courier fails permanently after a branch on the remote is replaced by
+  one below it (or the reverse)"; "Through the courier's `shallow` link, a sandbox's agent
+  writes files into its playground's origin"; "A shallow clone cannot be fetched when the
+  data folder is reached through a link"; "A failed new clone into a sandbox is never
+  checked out afterwards" (not reproduced, the path read); the ADR's index line of the
+  first design. Five nits, all answered too (Decisions).
+- **Tests failing without their fix, after it** (`mutate3.py`, `mutations-g.log` and
+  `mutations-g2.log`, 50 cases, each failed its test): the 41 before, of which the cases
+  on setting refs are now four (a new branch not made, a moved one not set, a moved one
+  set whatever the clone has by now, the dropped ones in the same step as the new), and:
+  a fetch allowed to write in the folder it takes from, what a command only reads granted
+  for writing, the courier reaching the objects' folder only, a failed clone left, a clone
+  into a folder that holds something, a new clone with only the tags of its branches. One
+  case passed at first and showed a test that could not fail: the shallow clone "behind a
+  link" was under the tests' shared temporary folder, where the link's target is a data
+  folder too; the test now builds a server's adapter whose data folder is the link itself.
+- **The suites after it:** `2776 tests run: 2776 passed` (`suite-y3.log`).
+- **Gate.** `scripts/dev ci` at `099291a12`: exit 0; `4203 tests run: 4203 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Not tested, besides the list above:** a failed clone through the application (the
+  adapter's clone from an address where nothing listens is); a clone with more refs than
+  the runner reads in one answer (16 MiB).
