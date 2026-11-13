@@ -1384,6 +1384,7 @@ impl App {
         git.add_worktree(&repo, worktree, &branch, &base).await?;
         let profile = self.profile_of(sandbox);
         git.install_push_guard(
+            &repo,
             worktree,
             &[
                 profile.integration_branch.clone(),

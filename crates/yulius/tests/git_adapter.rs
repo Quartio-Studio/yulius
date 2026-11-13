@@ -70,7 +70,7 @@ async fn clones_commits_pushes_and_reuses_branches() -> TestResult {
     let wt = worktrees.join("t1");
     adapter.add_worktree(&repo, &wt, "feat/1-x", &base).await?;
     adapter
-        .install_push_guard(&wt, &["dev".into(), "main".into()])
+        .install_push_guard(&repo, &wt, &["dev".into(), "main".into()])
         .await?;
     adapter
         .set_identity(&wt, "Alice", "alice@example.com")

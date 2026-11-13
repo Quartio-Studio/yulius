@@ -1303,7 +1303,7 @@ impl App {
         ];
         self.deps
             .git
-            .install_push_guard(&worktree, &protected)
+            .install_push_guard(&repo, &worktree, &protected)
             .await?;
         self.set_task_identity(&worktree, task).await?;
         let update = TaskFieldUpdate {
@@ -1531,7 +1531,7 @@ impl App {
         }
         let worktree = self.ensure_worktree(&sandbox, task).await?;
         // The logs every task appends to merge by union in this repository (SPEC-083 MRG-001).
-        self.keep_union_merges(&worktree).await;
+        self.keep_union_merges(&sandbox.id, &worktree).await;
         // The spec path is given out once, so parallel tasks never pick the same number.
         if let Ok(Some(fresh)) = store.task(&task.id).await {
             self.allocate_spec_path(&fresh, &worktree).await;

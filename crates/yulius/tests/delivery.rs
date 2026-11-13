@@ -253,7 +253,7 @@ impl GitPort for RealGit {
             .await?
             .is_empty())
     }
-    async fn install_push_guard(&self, _: &Path, _: &[String]) -> AppResult<()> {
+    async fn install_push_guard(&self, _: &Path, _: &Path, _: &[String]) -> AppResult<()> {
         Ok(())
     }
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()> {
@@ -2722,7 +2722,7 @@ async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
     );
 
     // Kept by Yulius: the same update merges both entries and the merge stays armed.
-    f.h.app.keep_union_merges(&wt).await;
+    f.h.app.keep_union_merges(&sandbox, &wt).await;
     assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
     f.h.app.merge_armed(&sandbox).await;
     let moved = git(&wt, &["rev-parse", "HEAD"])?;

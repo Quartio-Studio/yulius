@@ -1078,9 +1078,9 @@ fn pre_push_guard_blocks_protected_branches_only() -> TestResult {
     let main_before = fx.git.rev_parse(&remote, "main")?;
     let task = fx.path("worktrees/task-x");
     fx.git.worktree_add(&repo, &task, "task/x", "main")?;
-    let hook = fx
-        .git
-        .install_pre_push_guard(&task, &["main".to_owned(), "dev".to_owned()])?;
+    let hook =
+        fx.git
+            .install_pre_push_guard(&repo, &task, &["main".to_owned(), "dev".to_owned()])?;
     assert!(hook.ends_with("yulius-hooks/pre-push"));
     fs::write(task.join("feature.txt"), "feature\n")?;
     let feature_sha = fx
@@ -1111,11 +1111,66 @@ fn pre_push_guard_blocks_protected_branches_only() -> TestResult {
     fx.git.push(&repo, "origin", "refs/heads/main")?;
     // Reinstalling rewrites the protected list.
     fx.git
-        .install_pre_push_guard(&task, &["release".to_owned()])?;
+        .install_pre_push_guard(&repo, &task, &["release".to_owned()])?;
     assert!(
         fx.agent_push(&task, "refs/heads/task/x:refs/heads/release")
             .is_err()
     );
+    Ok(())
+}
+
+/// ADR-0314: a new worktree's Git directory appears before its checkout ends, and every agent
+/// of the sandbox can write there. The guard's files are written through handles that follow
+/// no link: a link at a file's name, or at the name a temporary file used to have, is never
+/// written through, and a hooks folder that is a link out of the repository is refused.
+#[cfg(unix)]
+#[test]
+fn the_push_guard_follows_no_link_an_agent_planted() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let task = fx.path("worktrees/task-l");
+    fx.git.worktree_add(&repo, &task, "task/l", "main")?;
+    let hooks = repo
+        .join(".git/worktrees/task-l")
+        .join(yulius_git::HOOKS_DIR_NAME);
+    let victim = fx.path("host-victim.txt");
+    fs::write(&victim, "kept\n")?;
+    fs::create_dir_all(&hooks)?;
+    for name in ["pre-push", "yulius-hooks-lib.sh", "pre-commit"] {
+        symlink(&victim, hooks.join(format!("{name}.yulius-tmp")))?;
+    }
+    symlink(&victim, hooks.join("post-commit"))?;
+    let protected = ["main".to_owned()];
+
+    let hook = fx.git.install_pre_push_guard(&repo, &task, &protected)?;
+    assert_eq!(fs::read_to_string(&victim)?, "kept\n");
+    assert_eq!(hook, hooks.join("pre-push"));
+    for name in ["pre-push", "yulius-hooks-lib.sh", "post-commit"] {
+        assert!(
+            fs::symlink_metadata(hooks.join(name))?.is_file(),
+            "{name} is a file of its own"
+        );
+    }
+    fs::write(task.join("feature.txt"), "feature\n")?;
+    fx.git.commit_all(&task, "feat: l", &author())?;
+    assert!(
+        fx.agent_push(&task, "refs/heads/task/l:refs/heads/main")
+            .is_err(),
+        "the guard works"
+    );
+
+    // The hooks folder itself a link out of the repository: refused, nothing written there.
+    fs::remove_dir_all(&hooks)?;
+    let outside = fx.path("outside-hooks");
+    fs::create_dir_all(&outside)?;
+    symlink(&outside, &hooks)?;
+    assert!(
+        fx.git
+            .install_pre_push_guard(&repo, &task, &protected)
+            .is_err()
+    );
+    assert_eq!(fs::read_dir(&outside)?.count(), 0);
     Ok(())
 }
 
@@ -1145,7 +1200,8 @@ fn pre_push_guard_chains_existing_hooks_and_honors_hooks_path() -> TestResult {
     )?;
     let task = fx.path("worktrees/a");
     fx.git.worktree_add(&repo, &task, "task/a", "main")?;
-    fx.git.install_pre_push_guard(&task, &["main".to_owned()])?;
+    fx.git
+        .install_pre_push_guard(&repo, &task, &["main".to_owned()])?;
     assert!(default_hook.exists(), "existing hook must be preserved");
     fs::write(task.join("a2.txt"), "a\n")?;
     fx.git.commit_all(&task, "feat: a", &author())?;
@@ -1167,7 +1223,7 @@ fn pre_push_guard_chains_existing_hooks_and_honors_hooks_path() -> TestResult {
     let task_b = fx.path("worktrees/b");
     fx.git.worktree_add(&repo, &task_b, "task/b", "main")?;
     fx.git
-        .install_pre_push_guard(&task_b, &["main".to_owned()])?;
+        .install_pre_push_guard(&repo, &task_b, &["main".to_owned()])?;
     match fx.agent_push(&task_b, "refs/heads/task/b:refs/heads/feat/b") {
         Err(stderr) => {
             assert!(stderr.contains("repository hook says no"), "{stderr}");
@@ -1723,7 +1779,7 @@ fn merge_attributes_in_info_reach_every_worktree() -> TestResult {
     let info = repo.join(".git/info/attributes");
     fs::write(&info, "*.png binary\n")?;
     let lines = vec!["/changes.md merge=union".to_owned()];
-    assert!(fx.git.set_managed_attributes(&feature, &lines)?);
+    assert!(fx.git.set_managed_attributes(&repo, &lines)?);
     assert!(!fx.git.set_managed_attributes(&repo, &lines)?, "unchanged");
     let text = fs::read_to_string(&info)?;
     assert!(text.starts_with("*.png binary\n"), "{text}");
@@ -1745,6 +1801,69 @@ fn merge_attributes_in_info_reach_every_worktree() -> TestResult {
             .set_managed_attributes(&repo, &["a\nb".to_owned()])
             .is_err()
     );
+    Ok(())
+}
+
+/// ADR-0314: the clone's `.git` is the agents' to write. The attributes file is read and
+/// replaced through handles that follow no link: a link there is never read (a host file would
+/// be copied to where the agent reads it), a link at a temporary name is never written through,
+/// a FIFO does not hold the server and a huge file is not read.
+#[cfg(unix)]
+#[test]
+fn managed_attributes_follow_no_link_an_agent_planted() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let info = repo.join(".git/info");
+    let attributes = info.join("attributes");
+    let lines = vec!["/changes.md merge=union".to_owned()];
+    let host_file = fx.path("host-secret.txt");
+    fs::write(&host_file, "a line of a host file\n")?;
+    let victim = fx.path("host-victim.txt");
+    fs::write(&victim, "kept\n")?;
+
+    // A link at the name the old writer used for its temporary file.
+    fs::write(&attributes, "*.png binary\n")?;
+    symlink(&victim, info.join("attributes.yulius-tmp"))?;
+    assert!(fx.git.set_managed_attributes(&repo, &lines)?);
+    assert_eq!(fs::read_to_string(&victim)?, "kept\n");
+    let text = fs::read_to_string(&attributes)?;
+    assert!(
+        text.starts_with("*.png binary\n") && text.contains("merge=union"),
+        "{text}"
+    );
+
+    // The file itself a link to a host file: refused, nothing copied.
+    fs::remove_file(&attributes)?;
+    symlink(&host_file, &attributes)?;
+    assert!(matches!(
+        fx.git.set_managed_attributes(&repo, &[]),
+        Err(GitError::InvalidInput { .. })
+    ));
+    assert!(fs::symlink_metadata(&attributes)?.file_type().is_symlink());
+    assert_eq!(fs::read_to_string(&host_file)?, "a line of a host file\n");
+
+    // A FIFO nobody writes: refused at once.
+    fs::remove_file(&attributes)?;
+    let made = Command::new("mkfifo").arg(&attributes).status()?;
+    assert!(made.success());
+    assert!(fx.git.set_managed_attributes(&repo, &lines).is_err());
+
+    // More than the bound: refused unread.
+    fs::remove_file(&attributes)?;
+    fs::write(&attributes, vec![b'#'; 300 * 1024])?;
+    assert!(matches!(
+        fx.git.set_managed_attributes(&repo, &lines),
+        Err(GitError::InvalidInput { .. })
+    ));
+
+    // The folder a link out of the repository: refused, nothing written there.
+    fs::remove_dir_all(&info)?;
+    let outside = fx.path("outside-info");
+    fs::create_dir_all(&outside)?;
+    symlink(&outside, &info)?;
+    assert!(fx.git.set_managed_attributes(&repo, &lines).is_err());
+    assert_eq!(fs::read_dir(&outside)?.count(), 0);
     Ok(())
 }
 

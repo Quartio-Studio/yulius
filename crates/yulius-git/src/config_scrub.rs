@@ -28,12 +28,12 @@ pub(crate) fn scrub(
     repo: &Path,
     removed: &dyn Fn(&str) -> bool,
 ) -> Result<(), GitError> {
-    let git_dir = unix::open_git_dir(repo)?;
+    let git_dir = crate::handles::open_git_dir(repo)?;
     // Every file is checked before the first one is written, so a refusal changes nothing; a
     // missing one is not scrubbed (nor locked).
     let mut present = Vec::new();
     for name in FILES {
-        if unix::check_kind(&git_dir, name)? {
+        if crate::handles::is_regular_in(&git_dir, name, "repository configuration")? {
             present.push(name);
         }
     }
@@ -66,72 +66,22 @@ mod unix {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use nix::errno::Errno;
-    use nix::fcntl::{AtFlags, OFlag, open, openat, renameat};
-    use nix::sys::stat::{Mode, SFlag, fchmod, fstat, fstatat};
+    use nix::fcntl::{OFlag, openat, renameat};
+    use nix::sys::stat::{Mode, fchmod, fstat};
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
     use super::MAX_CONFIG_BYTES;
     use crate::Git;
     use crate::error::GitError;
+    use crate::handles::{io, regular};
     use crate::runner::Invocation;
 
-    const DIR_FLAGS: OFlag = OFlag::O_RDONLY
-        .union(OFlag::O_DIRECTORY)
-        .union(OFlag::O_NOFOLLOW)
-        .union(OFlag::O_CLOEXEC);
+    const WHAT: &str = "repository configuration";
 
     fn refused(reason: &str) -> GitError {
         GitError::InvalidInput {
-            what: "repository configuration",
+            what: WHAT,
             reason: reason.to_owned(),
-        }
-    }
-
-    fn io(context: &'static str, err: impl Into<std::io::Error>) -> GitError {
-        GitError::Io {
-            context,
-            source: err.into(),
-        }
-    }
-
-    /// `repo/.git`, each of the two opened without following a link. Yulius makes every clone
-    /// with a real `.git` directory; a pointer file or a link would send the scrub to
-    /// configuration elsewhere while Git still reads another.
-    pub(super) fn open_git_dir(repo: &Path) -> Result<OwnedFd, GitError> {
-        let repo = match open(repo, DIR_FLAGS, Mode::empty()) {
-            Ok(fd) => fd,
-            Err(Errno::ELOOP | Errno::ENOTDIR) => {
-                return Err(GitError::InvalidInput {
-                    what: "repository",
-                    reason: "it is not a directory".to_owned(),
-                });
-            }
-            Err(err) => return Err(io("opening the repository", err)),
-        };
-        match openat(&repo, ".git", DIR_FLAGS, Mode::empty()) {
-            Ok(fd) => Ok(fd),
-            Err(Errno::ELOOP | Errno::ENOTDIR | Errno::ENOENT) => Err(GitError::InvalidInput {
-                what: "repository",
-                reason: "its .git is not a directory".to_owned(),
-            }),
-            Err(err) => Err(io("opening the repository's .git", err)),
-        }
-    }
-
-    /// Whether `name` is in `git_dir`; refused unless it is missing or a regular file.
-    pub(super) fn check_kind(git_dir: &OwnedFd, name: &str) -> Result<bool, GitError> {
-        match fstatat(git_dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(stat) => regular(stat.st_mode).map(|()| true),
-            Err(Errno::ENOENT) => Ok(false),
-            Err(err) => Err(io("checking the repository configuration", err)),
-        }
-    }
-
-    fn regular(mode: nix::sys::stat::mode_t) -> Result<(), GitError> {
-        match SFlag::from_bits_truncate(mode) & SFlag::S_IFMT {
-            SFlag::S_IFREG => Ok(()),
-            SFlag::S_IFLNK => Err(refused("a configuration file is a link")),
-            _ => Err(refused("a configuration file is not a regular file")),
         }
     }
 
@@ -170,7 +120,7 @@ mod unix {
             Err(err) => return Err(io("opening the repository configuration", err)),
         };
         let stat = fstat(&file).map_err(|err| io("checking the repository configuration", err))?;
-        regular(stat.st_mode)?;
+        regular(stat.st_mode, WHAT)?;
         let mut original = Vec::new();
         std::fs::File::from(file)
             .take(MAX_CONFIG_BYTES + 1)

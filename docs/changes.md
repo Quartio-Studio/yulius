@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- An agent can no longer make the server start its program or write a host file through its
+  own folders (SPEC-483 slice 2, task #465, ADR-0314). Three places trusted what an agent can
+  write. A contained run was started as `bwrap` by name with the run's `PATH`, which begins in
+  the sandbox home: a program of that name put there was started instead of bubblewrap, as the
+  service user and before any containment; the process host now takes `bwrap` from its own
+  `PATH`. The merge attributes Yulius keeps in a clone's `.git/info/attributes` at every task
+  start, and the files of the pre-push guard in a new worktree's Git directory, were read and
+  written by path: a link planted there made the server copy a host file to where the agent
+  reads it, or overwrite one. Both now go through handles that follow no link, below the clone
+  the server names itself.
 - Redaction fingerprints no longer give an agent secret's value away (SPEC-483 slice 1, task
   #465, ADR-0313; the request: a deep security and quality audit). The Bash wrapper and the tool
   hook inside a sandbox redact from fingerprints of each value. A fingerprint held a rolling

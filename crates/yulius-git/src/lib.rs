@@ -28,6 +28,8 @@ mod commit;
 mod config_scrub;
 pub mod credential;
 mod error;
+#[cfg(unix)]
+mod handles;
 mod hooks;
 mod merges;
 mod redact;

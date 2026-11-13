@@ -1352,6 +1352,14 @@ new name with a link or `RENAME_NOREPLACE`, never a check then a rename; and the
 creates in a sandbox tree are 0755 whatever the umask
 ([SPEC-402](../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
 [decision 0257](decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
+The merge attributes the server keeps in a clone's `info/attributes` and the pre-push guard's
+files in a worktree's Git directory go the same way (`yulius_git::handles`, shared with the
+scrub): the clone is named by the caller, never asked of the worktree; Git only says which of the
+clone's Git directories is the worktree's, and the files are read (regular, bounded) and replaced
+(a random `O_EXCL` name, renamed in the handle) below the clone's own `.git`. A contained run is
+started with the `bwrap` of the process host's own `PATH`, never the run's, whose first entries
+are in the sandbox home
+([decision 0314](decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md)).
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new

@@ -353,7 +353,12 @@ impl GitPort for LocalGit {
             .is_empty())
     }
 
-    async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()> {
+    async fn install_push_guard(
+        &self,
+        _repo: &Path,
+        worktree: &Path,
+        protected: &[String],
+    ) -> AppResult<()> {
         self.record(format!(
             "guard {} {}",
             worktree.display(),
