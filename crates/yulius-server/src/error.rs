@@ -96,7 +96,8 @@ mod tests {
                 let source = std::fs::read_to_string(&path)?;
                 for (number, line) in source.lines().enumerate() {
                     let arm = line.trim_start();
-                    if arm.starts_with("AppError::") && arm.contains("=> StatusCode::") {
+                    // However the error's type is named there.
+                    if arm.contains("AppError::") && arm.contains("=> StatusCode::") {
                         own.push(format!("{}:{}: {arm}", path.display(), number + 1));
                     }
                 }
