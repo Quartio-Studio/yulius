@@ -1845,3 +1845,24 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   that really lacks `GIT_NO_LAZY_FETCH` (the doctor's test takes the variable away from
   this machine's Git with a wrapper); whether a fetch, rather than a push, can be made to
   fetch a missing object (it did not in the tries above; the variable covers both).
+- **Review of slice 11, round 2** (head 99083c33b, request changes): all fourteen findings
+  of round 1 answered; two new major ones, in the reviewer's words: "A push from a
+  sandbox's clone to a folder recurses into submodules, and the shell runs the submodule's
+  own `receivepack` command" (the mechanism from slice 10) and "`clone_through`'s second
+  step lets the shell run a filter raced into the new clone's configuration" (own code of
+  round 1). Both reproduced here before the fix: by hand under the launcher
+  (`target/audit/slice11/n1`: the push wrote the marker, and with the two pins it did not),
+  and by the new tests with their fix switched off (`mutations-e.log`, 8 runs: the push
+  into a submodule with neither key pinned; each pin missing, in the runner's test; a new
+  clone's files checked out by the transfer, three runs of the race, each won by the
+  filter; a new clone's files not checked out at all). Either pin alone switches both of
+  the clone's keys off, as Git reads the command line last; the attack needs both gone.
+- **A mistake of the first try, kept as a fact about the tests:** the stand-in for GitHub
+  allows the shell to every command, so a filter in a clone made through it runs at the
+  checkout whatever the code does; the raced clone is therefore tested from a playground's
+  origin with the adapter as the server builds it, and a clone through a courier takes the
+  same two steps (`copy_without_files`, `check_out_files`).
+- **Gate after round 2's answers.** `scripts/dev ci` at `3e200cfce`: exit 0; `4199 tests run: 4199
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
+- **Open after this slice:** G5 (the ledger), taken next.
