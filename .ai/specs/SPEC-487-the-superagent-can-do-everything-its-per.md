@@ -1,0 +1,177 @@
+---
+yulius-task: 1be0c20e-fe89-4ec0-a1ff-5c054ebc7ae7
+status: in-progress
+---
+
+# SPEC-487: the Superagent does what its person may do
+
+Status: in-progress
+Date: 2026-11-13
+Owner: Yulius task #469
+Scope authorization: the request of task #469 (by MrFishPL, 2026-11-13): "the Superagent should
+be able to do everything its person intended. That is what the Superagent is for. Today it often
+cannot: it hands the job back as steps to click, or does it through a slow workaround. Fix that
+in Yulius. Also decide, for each ability below, whether a normal task's agent should have it
+too." Amends SPEC-001 TSK-012 and TSK-016, SPEC-037 (MGT), SPEC-017 (RUL) and SPEC-085 STT-002;
+decision in
+[ADR-0328](../../docs/decisions/0328-the-superagent-does-what-its-person-may-do.md).
+
+## Goal
+
+Whatever a person may do in Yulius, their Superagent does for them when they ask: with their
+rights, checked at the call, and audited. It hands a job back only for a reason this document
+names. A task chained after another starts when that task has really finished.
+
+## Context
+
+- **The evidence.** A read of all 20 Superagent conversations on the production instance
+  (14 October to 13 November 2026, three people, about 1,500 messages) found 322 situations in
+  which the Superagent could not do what was meant: twelve walls, listed in the task's request
+  and under [Slices](#slices) below. The Superagent's tools (`COCKPIT_TOOLS`,
+  `crates/yulius-app/src/mcp.rs`) were 39: no CI, delivery, CD, restart, pause, subscription or
+  instance tool.
+- **What exists to build on.** A person's own agent on their computer already drives Yulius
+  through the remote MCP (SPEC-247, `crates/yulius-app/src/remote.rs`): `task_restart`,
+  `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`, `ci_run`,
+  `ci_rerun`, `ci_cancel`, `cd_status`, `cd_deploy` and others, each one the function the web
+  UI's route calls, with the person's `AuthContext` and an `Action` checked before it runs. The
+  Superagent in a sandbox acts for the same person (`ProjectCaller`, `App::manage_context`) and
+  is served none of them. Every function a person's route calls checks the person's rights
+  itself (`App::require`, `App::load_task`: a task is changed by its owner only).
+- **Chaining (wall 3), the cause.** A chained task starts when its predecessor is Done
+  (`App::task_is_done`, `crates/yulius-app/src/delivery.rs`): its turn ended, its plan is
+  complete, and its pull request is merged, or open with green checks. Since tasks merge their
+  own pull requests (ADR-0141) and hear of them without a `yulius wait` shell (SPEC-444), that
+  state is passed through on the way, not only reached at the end:
+  1. *Armed.* The agent calls `delivery_merge` while the checks run and ends its turn. When the
+     checks pass, the pull request is open and green and the agent is idle, for as long as the
+     merge queue takes. On 13 November task #465's pull request #1257 went green at about
+     19:56 UTC, armed, in the queue; this task (#469, "after #465") was started at 19:57:02 from
+     #465's unmerged branch.
+  2. *Merged, not told yet.* Yulius merges, and the pull request watch types the news into the
+     session within 20 s. Until then the agent is idle with a merged pull request and a
+     complete plan. Task #465 delivers one pull request per slice: after each merge it read
+     Done for that window, and #466, #467 and #468 ("after #465") started while it went on to
+     its next slice.
+  A start rule's `#N done` asks the same function, so a rule over several tasks started early
+  the same way. The task list showed such a task as "Done · PR #N" for the same time.
+- **Chaining, what is shown.** `tasks_list` and `task_get` answer `runs_after: N`, the first
+  task a rule names (`ChainRecord::after_number`, the rule's anchor), and never the rule. A
+  rule naming three tasks read "after #12". The rule is stored whole (`task_chains.rule`).
+- **"After all current tasks are done"** has no words: a rule takes at most 16 tasks
+  (`MAX_ATOMS`) and the caller has to list them.
+
+### Slices
+
+One pull request each, in this order (the request: "chaining first, then task control, then CI
+/ delivery, then subscriptions and instance, then the rest"). The Plan below holds the slice
+under way; a slice is added to it when the one before is merged.
+
+| Slice | Delivers | Closes |
+| --- | --- | --- |
+| 1 | A chained task starts when its predecessor really finished; the rule is shown as stored; "after all current tasks" | wall 3 |
+| 2 | The rule (ADR-0328) and the person's project tools served to the Superagent: restart, pause, resume, start now, a task's delivery, CI read / run again / cancel, CD status and dev deploy; `COCKPIT_INSTRUCTIONS` and the tool descriptions rewritten | walls 2 and 4 (part), 12 |
+| 3 | Task control that had no function: rename, edit of a prompt not started, order in the queue, close out, bulk stop / pause / message | wall 2 |
+| 4 | Tasks' questions: list open ones, why a task needs attention, answer or dismiss for the person, the end of a session (`session_read` tail) | wall 7 |
+| 5 | Merges: arm or re-arm a task's merge for the person, the merge queue of the sandbox, why a green pull request is not merging; CI order and hold | wall 4 |
+| 6 | Subscriptions and model: which one a task is on, move it, change model or effort | wall 5 |
+| 7 | The instance: version, health, update status, checks, Update now and Restart with the buttons' refusals; reconnection after a restart | wall 1 |
+| 8 | Requests to the person that last: cross-sandbox requests stored, amendable, still there later; a pending decision of the Superagent's own; another sandbox's task list | walls 6, 9 |
+| 9 | The Superagent's session lasts: standing instructions and checks survive a restart, a message typed during one is kept, a tool list that changes restarts nothing | wall 8 |
+| 10 | Secrets (a value entered masked beside the chat, never seen by the agent) and visibility (cost, load, a crash's exit and last screen, a checkout that is current) | walls 10, 11 |
+| 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
+
+### The ability table (target)
+
+Kept current in `docs/product.md` for what is delivered; here for all of it. "Person's rights":
+the function the web UI's route calls, with the person's rights checked at the call.
+
+| Ability | Superagent | Task's agent | Why |
+| --- | --- | --- | --- |
+| Create, chain, schedule, stop, archive, delete a task; automations | yes (had) | yes (had) | SPEC-037: a follow-up runs as its own task |
+| Read a start rule back as stored; "after all current tasks" | yes (slice 1) | yes (slice 1) | Both create tasks with `task_create` |
+| Restart, pause, resume, start now | yes (slice 2) | no | A person speaks to their tasks; tasks do not steer each other (ADR-0178) |
+| Rename, edit a prompt not started, reorder, close out, bulk actions | yes (slice 3) | no | As above |
+| Message a task | yes (had) | no | ADR-0178 |
+| List open questions, see why a task needs attention | yes (slice 4) | yes, read only (slice 4) | A task that sees another's question does not ask it again |
+| Answer or dismiss a task's question for the person | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
+| The end of a session (`session_read` tail) | yes (slice 4) | yes (slice 4) | Sessions are docs for both (SPEC-001 SES) |
+| CI: read runs and logs, run again | yes (slice 2) | yes (had) | A task needs its own checks |
+| CI: cancel, order, hold | yes (slices 2, 5) | no | They change other tasks' runs |
+| A task's delivery, the merge queue, why a pull request is not merging | yes (slices 2, 5) | its own (had) | A task delivers its own work |
+| Arm or re-arm a task's merge | yes, for the person (slice 5) | its own (had) | The reviewed head is the task's to name; the person may merge what they own |
+| Dev deploy, CD status | yes (slice 2) | yes, when its task asks (had) | SPEC-134 |
+| Production deploy, promotion to `main` | behind one confirmation in the panel (slice 8) | no | ADR-0110: a person decides; the Superagent prepares and asks |
+| A task's subscription: see, move; model and effort | yes (slice 6) | no | Tasks are subscription-agnostic (SPEC-001 ROT-007) |
+| Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
+| Instance: Update now, Restart | yes, a superadmin's (slice 7) | no | The buttons' rights and refusals |
+| Another sandbox: list and read tasks | yes (slice 8) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
+| Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting in slice 8) | no | ADR-0227 |
+| A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
+| Enter a secret's value | the person, masked, beside the chat (slice 10) | no | The value goes from the person to the vault |
+| Report a missing ability to the Yulius project | yes (slice 11) | yes (slice 11) | Both meet walls |
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| CHN-001 | A running task whose merge is armed or being decided is not Done, whatever its pull request's checks say: Yulius will merge it and tell its agent. A task chained after it, or waiting on a rule that names it `done`, keeps waiting, and the task list reads "Waiting for checks or merge", not Done and not a person's turn. | `merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge` |
+| CHN-002 | A running task whose pull request is merged is Done only once the pull request watch, when it saw that pull request open, has told its agent of the merge and the turn that news starts has ended. The same holds for an armed merge that ended without merging until the watch said how. A task the watch tells nothing (a playground's, one it never saw open) is Done as before. | `pr_watch::a_chained_task_waits_until_its_predecessor_heard_of_its_merge` |
+| CHN-003 | An achieved goal is Done as before, and so are a closed task and a task with no pull request news left: CHN-001 and CHN-002 remove no Done state that was final. | the tests of TSK-012 and TSK-014 unchanged (`intake::chained_tasks_start_on_done_and_wait_for_a_person_otherwise`, `task_done::a_chain_starts_when_its_predecessor_achieves_its_goal`) |
+| CHN-004 | `tasks_list`, `task_get`, `task_create` and `task_update` answer how a waiting task starts as it is stored: `start_rule` with the whole rule for a rule, `runs_after` only for a task chained after one task, and `start_blocked` with the reason when it needs a person. Their text shows the rule in full. | `manage_tools` tests |
+| CHN-005 | `task_create` and `task_update` take `after_all_tasks: true`: the task waits for every task of the project that has not ended at the call (its own task and tasks waiting on it left out) to be done, stored as the rule that names them, so it reads back like any rule. A rule names at most 64 tasks. With no such task it starts now. | `manage_tools` tests; `yulius-domain` rule tests |
+| CHN-006 | `task_create`, `task_update` and their descriptions say what `done` means (the task finished and nothing of its pull request is left to come), and name `#N merged` for work that needs the merge itself. | `mcp::tests` |
+| SAR-001 | The rule: every function a person's route calls is served to their Superagent as a tool, run with the person's rights at the call and audited with the Superagent as actor, unless the ability table names why not. Slices 2 to 11 deliver it wall by wall. | slices 2 to 11 |
+
+## Plan
+
+- [ ] A chained task waits while Yulius has pull request news for its predecessor (CHN-001 to CHN-003)
+- [ ] Tools read a start rule back as stored and take "after all current tasks" (CHN-004 to CHN-006)
+- [ ] Slice 1's documents: product, architecture, API, the decision and the changes log
+- [ ] Slice 1's independent review answered test-first
+
+## Acceptance criteria
+
+- AC-CHN-1: with a predecessor idle, its plan complete and its pull request green and armed,
+  the chained task stays `chained` through a chain pass and the predecessor's summary has
+  `yulius_wait: true`; after the merge it leaves `chained`.
+- AC-CHN-2: with a predecessor idle and its pull request merged but not told, the chained task
+  stays `chained` through a chain pass and the background tick's pass; after the watch typed
+  the merge and that turn ended, it starts.
+- AC-CHN-3: `task_get` of a task waiting on `#1 done and #2 done and #3 done` answers that
+  rule, in text and in the record, and no `runs_after`.
+- AC-CHN-4: `task_create` with `after_all_tasks: true` among three live tasks answers a
+  `start_rule` naming exactly those three; with none it answers a task that starts now.
+- Every gate of the repository passes on the pull request head.
+
+## Test plan
+
+- Integration, real repositories and the production Git adapter (`tests/merge_train.rs`): an
+  armed, green pull request and a task chained after it; the merge by the queue.
+- Integration, a live fake session (`tests/pr_watch.rs`): a merged pull request, the watch's
+  pass that types the news, the chain's start after it.
+- Integration over the MCP endpoint (`tests/manage_tools.rs`): the rule read back, `after_all_tasks`
+  with live, ended and waiting tasks, the 64-task bound.
+- Unit: the rule's bounds (`yulius-domain`), the tools' texts (`mcp_text`), the descriptions.
+- Not exercised by a test: the real Claude Code's Stop hook at the end of the turn the merge
+  news starts (the fake session of `tests/pr_watch.rs` runs no hooks; its turn's end is
+  recorded as the hook would).
+
+## Decisions
+
+- **"Done" stays one rule; what changes is what it waits for.** The chain, the start rules, the
+  supertask's wait and the task list ask one function. Requiring a met goal for Done was
+  rejected: a task whose goal evaluator never says "met" (seen: the open-issues runs) would
+  hold its chain for good while its pull request is merged and its agent idle. Requiring a
+  merge for "Run after" was rejected too: a prompt-mode task that opens a pull request for a
+  person to merge is done, and `#N merged` already says the other thing.
+- **The wait is the fact the list already has** (`yulius_wait`: "goes on by itself when Yulius
+  has news"). Since SPEC-444 a task hears of its pull request without a `yulius wait` shell,
+  so the fact now also holds when the news is due without one. No new state for the web UI.
+- **What the watch told is read from memory**, kept beside its file: the task list asks for
+  every idle task with a merged pull request.
+- **`after_all_tasks` is stored as the rule it means**, so it reads back, shows in the editor
+  and is evaluated like any rule. A task that ends other than done makes it need a person, as
+  for every chain: "all done" is not "all gone".
+- **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
+  `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
