@@ -982,8 +982,17 @@ async fn a_shallow_origin_makes_a_whole_shallow_clone() -> TestResult {
         git(&full, &["add", "-A"])?;
         git(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
     }
-    let adapter = crate::support::strict_git();
-    for (id, root) in [("s1", &real), ("s2", &link.0)] {
+    // The second adapter is a server's whose data folder is the link itself: what lies
+    // behind the link is no sandbox's folder by its path.
+    let behind_a_link = GitAdapter::new("git").confined(
+        PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        link.0.clone(),
+        0,
+    );
+    for (id, root, adapter) in [
+        ("s1", &real, crate::support::strict_git()),
+        ("s2", &link.0, behind_a_link),
+    ] {
         let origin = root.join(format!("playgrounds/{id}.git"));
         std::fs::create_dir_all(root.join("playgrounds"))?;
         git(
