@@ -669,6 +669,34 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     for (n, worktree) in (1..).zip(&worktrees) {
         f.arm(n, worktree).await?;
     }
+    // #3 delivers a part of its plan: one slice is still ahead (SPEC-484 PLN-003).
+    {
+        use yulius_app::model::StepRecord;
+        use yulius_app::ports::store::CoordinationStore;
+        use yulius_domain::ids::StepId;
+        let task = TaskId::parse("t3")?;
+        let steps = [("This slice", "done"), ("Later slice", "pending")]
+            .iter()
+            .zip(1..)
+            .map(|((title, status), ordinal)| {
+                Ok(StepRecord {
+                    id: StepId::parse(&format!("t3-step-{ordinal}"))?,
+                    task_id: task.clone(),
+                    ordinal,
+                    title: (*title).to_owned(),
+                    status: (*status).to_owned(),
+                    note: None,
+                    updated_by: None,
+                    updated_at: None,
+                    effort: 1,
+                })
+            })
+            .collect::<BoxResult<Vec<_>>>()?;
+        app.deps
+            .store
+            .replace_steps(&task, &steps, "test", Timestamp(2))
+            .await?;
+    }
     // The heads' own runs passed (recorded: no run ends to start a pass).
     for (n, worktree) in (1..).zip(&worktrees) {
         f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
@@ -749,6 +777,12 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
             "{state} {}",
             f.trains_file(&app)
         );
+        // A train's merge of a part is not the task's end either; a whole plan's is.
+        let goes_on = outcome
+            .contains("1 step(s) of your plan are still ahead (next: \"Later slice\")")
+            && outcome.contains("then go on with the next step");
+        let ends = outcome.contains("then end with your summary");
+        assert_eq!((goes_on, ends), (n == 3, n == 2), "#{n}: {outcome}");
     }
     // The integration branch's own CI reuses the result for its tree (the train's).
     app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)

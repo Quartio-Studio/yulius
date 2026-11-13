@@ -11,9 +11,9 @@
 //!   access; the only policy action is the profile's `auto_promote`, executed right after a
 //!   merge (or the last integration environment) done through Yulius. Agents only get the
 //!   read-only `delivery_status` tool (GIT-002, SEC-003);
-//! - a pull request needs a valid task spec (DSC-002); a merge needs the domain gates (spec,
-//!   open steps, checks per profile) and the head that was checked, which GitHub verifies
-//!   again (`expected_head`);
+//! - a pull request needs a valid task spec (DSC-002); a merge needs the domain gates (spec, a
+//!   finished step of the plan, checks per profile) and the head that was checked, which GitHub
+//!   verifies again (`expected_head`);
 //! - reads degrade: GitHub or Git failures become `notes` instead of failing the page.
 //!
 //! Environment command trust contract (DLV-003, SPEC-002 §8): an environment `command` is
@@ -471,17 +471,33 @@ pub(crate) fn plan_hold(steps: &[StepRecord], ask: DeliveryAsk) -> Option<String
     yulius_domain::steps::delivery_hold(&crate::discipline::step_states(steps, &[]), ask)
 }
 
-/// " N step(s) of your plan are still ahead (next: "…"): …", for the answers that tell an agent
-/// its finished part is on its way or merged (SPEC-484 PLN-003); empty when none is.
+/// " N step(s) of your plan are still ahead (next: "…"): …", for the messages that tell an agent
+/// its finished part is merged (SPEC-484 PLN-003); empty when none is.
 pub(crate) fn steps_ahead_note(steps: &[StepRecord]) -> String {
-    let states = crate::discipline::step_states(steps, &[]);
-    yulius_domain::steps::ahead(&states).map_or_else(String::new, |(open, next)| {
+    steps_ahead(steps, |open, next| {
         format!(
             " {open} step(s) of your plan are still ahead (next: \"{next}\"): they stay open, and \
              the work you commit for them on this branch is delivered next, by a \
              `delivery_merge` of its own."
         )
     })
+}
+
+/// [`steps_ahead_note`] for the answers that arm a merge: the work ahead waits for it, because a
+/// commit on the branch drops the armed merge of the reviewed head (`merge_armed_task`).
+pub(crate) fn steps_ahead_armed_note(steps: &[StepRecord]) -> String {
+    steps_ahead(steps, |open, next| {
+        format!(
+            " {open} step(s) of your plan are still ahead (next: \"{next}\"): they stay open. \
+             Start their work once `yulius wait` reports this merge: a commit on this branch \
+             before that drops the armed merge."
+        )
+    })
+}
+
+fn steps_ahead(steps: &[StepRecord], say: impl Fn(usize, &str) -> String) -> String {
+    let states = crate::discipline::step_states(steps, &[]);
+    yulius_domain::steps::ahead(&states).map_or_else(String::new, |(open, next)| say(open, next))
 }
 
 /// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
@@ -2633,9 +2649,19 @@ impl App {
             return;
         }
         let short = head.get(..9).unwrap_or(&head);
+        // With a pull request open (an earlier head delivered), what is missing is the push.
+        let open = matches!(
+            self.deps.store.delivery(&task.id).await,
+            Ok(Some(record)) if matches!(record.stage, DeliveryStage::PrOpen)
+        );
+        let missing = if open {
+            "not pushed to its open pull request"
+        } else {
+            "no push, no pull request"
+        };
         let text = format!(
-            "Yulius has not delivered {short} (no push, no pull request): {reason}. It delivers \
-             at the end of your turn once nothing blocks it."
+            "Yulius has not delivered {short} ({missing}): {reason}. It delivers at the end of \
+             your turn once nothing blocks it."
         );
         if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock() {
             *problem = Some(PushNote {
@@ -2847,8 +2873,9 @@ impl App {
         if self.dlv_sandbox_of(&task).await?.is_playground() {
             return Ok(AutoDelivery::Unchanged);
         }
-        // Cheap checks first: most turns end with steps still open, and they need no GitHub call
-        // (a merged task's head is judged before them; a covered head only once: SPEC-425).
+        // Cheap checks first: most turns end with steps still open and no pull request yet, and
+        // they need no GitHub call (a merged task's head is judged before them; a covered head
+        // only once: SPEC-425).
         let steps = store.steps(&task.id).await?;
         let hold = plan_hold(&steps, ask);
         if steps.is_empty() && !self.branch_changed(&task).await? {
@@ -2861,7 +2888,9 @@ impl App {
         // An open pull request may hold this very head: a part of the plan that `delivery_merge`
         // delivered with steps still ahead (SPEC-484 PLN-002). Whether the head is delivered is
         // GitHub's answer, read below; what the plan holds is said after it (`not_ready`), so a
-        // turn that ends on a delivered, armed head leaves no "not delivered" note.
+        // turn that ends on a delivered, armed head leaves no "not delivered" note, and a call
+        // for a head the pull request already has is not held by a step started since. The
+        // cost: with a pull request open and steps ahead, a turn's end reads GitHub once.
         let pull_open = record
             .as_ref()
             .is_some_and(|r| matches!(r.stage, DeliveryStage::PrOpen));
@@ -3370,8 +3399,9 @@ impl App {
     // ---------------------------------------------------------------- merge
 
     /// `POST /api/tasks/{tid}/delivery/merge`: merges the task pull request with the profile's
-    /// method at the head that was checked, after the domain gates (spec, a finished part of the
-    /// plan and no step in progress, checks per profile, current head). With `auto_promote`,
+    /// method at the head that was checked, after the domain gates (spec, a finished step of the
+    /// plan, checks per profile, current head; the pull request has its head already, so no
+    /// step started since holds it, SPEC-484 PLN-002). With `auto_promote`,
     /// promotes right after (policy). It acts as the caller on GitHub, so the superadmin without
     /// a GitHub identity is told to merge on GitHub (ACC-012).
     ///
@@ -3380,13 +3410,6 @@ impl App {
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
-        // A merge asked for now delivers the finished part of the plan, as the agent's call
-        // does: the work under way is finished first (SPEC-484 PLN-002). A merge armed earlier
-        // is not asked again: its agent may have started the next step meanwhile.
-        let steps = self.deps.store.steps(&task.id).await?;
-        if let Some(reason) = plan_hold(&steps, DeliveryAsk::Call) {
-            return Err(AppError::Conflict(format!("not merged: {reason}")));
-        }
         // A playground merges here, with no GitHub identity needed (SPEC-099), on green (SPEC-163).
         if self.dlv_sandbox_of(&task).await?.is_playground() {
             return self.playground_merge_now(&ctx.user, &task).await;

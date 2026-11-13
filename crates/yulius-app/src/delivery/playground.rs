@@ -49,6 +49,21 @@ fn conflict_refusal(branch: &str, integration: &str, files: &[String]) -> AppErr
     ))
 }
 
+/// Why a playground task's plan holds its squash, if it does: a playground squashes a task once,
+/// with its whole plan. It has no later delivery of the same task (a merged task's work is not
+/// delivered again here, unlike a pull request's follow-up, SPEC-425), so the finished part of a
+/// plan cannot go first as it does on GitHub (SPEC-484 PLN-001).
+fn playground_plan_hold(steps: &[crate::model::StepRecord]) -> Option<String> {
+    let states = crate::discipline::step_states(steps, &[]);
+    yulius_domain::steps::ahead(&states).map(|(open, next)| {
+        format!(
+            "{open} step(s) of the plan are still open (next: \"{next}\"): a playground squashes \
+             a task once, with its whole plan; finish them, or resolve them with `step_update` \
+             and a note"
+        )
+    })
+}
+
 impl App {
     /// [`App::playground_merge`] for a person, who never arms a merge: while Yulius CI tests it,
     /// it is a `Conflict` saying so, unless the profile requires no checks (SPEC-163 PCI-004, as
@@ -120,13 +135,8 @@ impl App {
             ))
         } else if observed.steps.is_empty() && observed.spec.required {
             Some("the task has no plan: record its steps with `steps_set`".to_owned())
-        } else if observed.steps_open > 0 && observed.steps_finished == 0 {
-            // Steps still ahead wait for a later squash of the task (SPEC-484 PLN-001).
-            Some(
-                "no step of the plan is finished: mark done what this delivery includes \
-                 (`step_update`)"
-                    .to_owned(),
-            )
+        } else if let Some(open) = playground_plan_hold(&observed.steps) {
+            Some(open)
         } else if observed.dirty {
             Some("the worktree has uncommitted changes: commit them".to_owned())
         } else {

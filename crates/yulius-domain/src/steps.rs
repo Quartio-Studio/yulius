@@ -510,6 +510,11 @@ pub fn ahead(steps: &[StepState]) -> Option<(usize, &str)> {
     Some((open, steps[next].title.as_str()))
 }
 
+/// Why a plan with steps and none of them finished is not delivered: there is no finished part
+/// (SPEC-484 PLN-001, PLN-002). One wording for the call's refusal and the merge rule's.
+pub const NOTHING_FINISHED: &str = "no step of the plan is finished: mark done what this delivery \
+                                    includes (`step_update`)";
+
 /// Who asks for a task's head to be delivered (pushed, its pull request opened or updated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryAsk {
@@ -526,7 +531,8 @@ pub enum DeliveryAsk {
 ///
 /// At a turn's end every step has to be finished. At the agent's call only a step in progress
 /// holds it (the work under way is not delivered half-done), and a plan with no finished step
-/// (there is no finished part).
+/// (there is no finished part). The caller asks only when there is a head to deliver: a head the
+/// open pull request already has is merged whatever step was started since.
 #[must_use]
 pub fn delivery_hold(steps: &[StepState], ask: DeliveryAsk) -> Option<String> {
     let (open, _) = ahead(steps)?;
@@ -539,11 +545,7 @@ pub fn delivery_hold(steps: &[StepState], ask: DeliveryAsk) -> Option<String> {
                  back to pending (`step_update`) when it belongs to a later one",
                 step.title
             )),
-            None if !finished => Some(
-                "no step of the plan is finished: mark done what this delivery includes \
-                 (`step_update`)"
-                    .to_owned(),
-            ),
+            None if !finished => Some(NOTHING_FINISHED.to_owned()),
             None => None,
         },
         DeliveryAsk::TurnEnd => {

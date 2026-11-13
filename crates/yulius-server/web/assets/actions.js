@@ -554,7 +554,8 @@ export function openDeliveryDialog(ctx, task) {
         h('div', { class: 'row' }, h('strong', null, 'Task spec'), d.spec_valid ? badge('valid', 'ok') : badge('needs work', 'danger')),
         d.spec_path ? h('div', { class: 'muted small' }, h('code', null, d.spec_path)) : h('div', { class: 'muted small' }, 'No spec registered for this task yet.'),
         d.spec_valid ? null : h('ul', { class: 'small list-plain' }, (d.spec_problems || []).map((p) => h('li', null, p))),
-        d.steps_open ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), `${d.steps_open} step${d.steps_open === 1 ? '' : 's'} still open in the plan.`) : null),
+        // Steps still ahead are the rest of the task, not a fault of this delivery (SPEC-484).
+        d.steps_open ? h('div', { class: 'muted small' }, `${d.steps_open} step${d.steps_open === 1 ? '' : 's'} of the plan still ahead.`) : null),
       h('div', { class: 'card card-pad stack-sm' },
         h('div', { class: 'row' }, h('strong', null, 'Next')),
         next.length || blocked.length

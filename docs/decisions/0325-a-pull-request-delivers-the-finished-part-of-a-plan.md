@@ -35,13 +35,16 @@ a later delivery.
    plan none of whose steps is finished (`NoStepFinished`). Steps still ahead stay open; their
    work goes out as a later pull request of the same task (ADR-0269).
 2. **Only an explicit merge delivers a part.** The agent's `delivery_merge` (it names a reviewed
-   head) and a person's merge go out with steps ahead; they are refused while a step is in
-   progress, which is the work under way. The delivery at the end of a turn still waits for
-   every step, so a turn that ends between two steps opens no pull request. A merge already
-   armed is not asked again about steps: its agent may have started the next slice while the
-   queue tests this one.
-3. **A merge is not the end of the task while steps are ahead.** Every message about a merge
-   names the steps ahead and the next one instead of "end with your summary". The task is not
+   head) and a person's merge go out with steps ahead. A call that has a head to deliver first
+   (a push, a pull request to open) is refused while a step is in progress, which is the work
+   under way; a head the pull request already has is merged whatever step was started since.
+   The delivery at the end of a turn still waits for every step, so a turn that ends between
+   two steps opens no pull request.
+3. **A merge is not the end of the task while steps are ahead, and their work waits for it.**
+   Every message about a merge names the steps ahead and the next one instead of "end with your
+   summary", and keeps what the delivery profile still asks for the merged part. The answers
+   that arm a merge say that the next step's work starts once the merge is reported: a commit
+   on the branch drops an armed merge of the reviewed head, as it always did. The task is not
    Done and the tasks chained after it wait, by the rules that already count open steps.
 4. **A plan holds every slice.** 1 to 60 steps (`steps::MAX_STEPS`), 3-12 recommended for one
    pull request (`steps::PER_PULL_REQUEST`, in the texts only). The "too fine" nudge is gone.
@@ -59,6 +62,14 @@ a later delivery.
 
 ## Alternatives
 
+- **Let the armed merge of the pushed head land while the branch is ahead of it.** The agent
+  could then commit the next slice while the queue tests this one. The armed merge and the
+  merge train both rest on "the reviewed head is the branch's head, with a clean worktree"; a
+  change of that is its own slice. Until then the answers say to wait.
+- **A playground delivers a part too.** A merged playground task delivers nothing again (there
+  is no follow-up squash as there is a follow-up pull request, ADR-0269), so a part squashed
+  first would leave the rest undeliverable. A playground keeps "one squash, the whole plan" and
+  says so in its refusal.
 - **Steps with sub-steps, or groups of steps, one group per pull request.** A long task would
   show slices with their parts. It needs a second level in the store, the API, every tool and
   text and the strip, and the merge rule would still have to learn which group a pull request
@@ -86,7 +97,10 @@ a later delivery.
   merge passes with the rest ahead, and the strip reads "Step 6/18" where it read "Step 6/6".
 - A step left pending by mistake no longer stops a merge. The answer names it, the task stays
   out of Done, and its agent is told to go on or to resolve it.
-- A person's merge through the API follows the same rule as the agent's.
+- A person's merge through the API merges the head the pull request has, with steps ahead and
+  whatever step is in progress; it is refused only while no step is finished.
+- A turn's end with a pull request open and steps ahead reads GitHub once, to tell a delivered
+  head from one that is not.
 - "Open steps: N" in `delivery_status` and the Git page is the work ahead, not a reason the
   merge is refused.
 - Tasks whose steps were finished before schema version 56 get their plan's first size at

@@ -724,11 +724,8 @@ pub enum DeliveryError {
     #[error("the task spec is missing or invalid; fix it (spec_check) first")]
     SpecInvalid,
     /// The plan has steps and none of them is finished: there is no finished part to deliver.
-    #[error(
-        "no step of the plan is finished ({0} open); mark done what this merge delivers \
-         (`step_update`) before merging"
-    )]
-    NoStepFinished(usize),
+    #[error("{}", crate::steps::NOTHING_FINISHED)]
+    NoStepFinished,
     /// Checks failed.
     #[error("checks failed on the pull request")]
     ChecksFailing,
@@ -849,7 +846,8 @@ fn action_name(action: &DeliveryAction) -> &'static str {
 /// Validates one transition and returns the resulting stage.
 ///
 /// Enforced: a pull request needs a valid spec; a merge needs a user, an open pull request
-/// with a current head, a valid spec, no open steps and — when the profile requires checks —
+/// with a current head, a valid spec, a finished step of the plan (steps still ahead do not hold
+/// it, SPEC-484) and — when the profile requires checks —
 /// checks that are neither pending nor failing; environments run in order, each run needs an
 /// explicit user confirmation, and manual environments need a person's confirmation;
 /// promotion needs the merged change with all integration environments done, a user (or
@@ -989,7 +987,7 @@ fn check_merge(
     }
     // Steps still ahead wait for a later pull request of the task (SPEC-484 PLN-001).
     if facts.steps_open > 0 && facts.steps_finished == 0 {
-        return Err(DeliveryError::NoStepFinished(facts.steps_open));
+        return Err(DeliveryError::NoStepFinished);
     }
     if profile.require_checks {
         match facts.checks {
@@ -1329,7 +1327,7 @@ mod tests {
                     steps_finished: 0,
                     ..open.clone()
                 },
-                DeliveryError::NoStepFinished(2),
+                DeliveryError::NoStepFinished,
             ),
         ];
         for (observed, error) in cases {
@@ -1353,9 +1351,9 @@ mod tests {
         );
         assert!(blocked_actions(&stage, &profile, &part).is_empty());
         assert_eq!(
-            DeliveryError::NoStepFinished(2).to_string(),
-            "no step of the plan is finished (2 open); mark done what this merge delivers \
-             (`step_update`) before merging"
+            DeliveryError::NoStepFinished.to_string(),
+            "no step of the plan is finished: mark done what this delivery includes \
+             (`step_update`)"
         );
         // No CI at all: nothing can fail, so the merge may proceed.
         let no_ci = DeliveryFacts {

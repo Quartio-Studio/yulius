@@ -580,7 +580,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, a finished step of the plan and none in progress, checks per profile; steps still ahead do not hold it and stay open for the task's next pull request, SPEC-484); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, a finished step of the plan, checks per profile; steps still ahead do not hold it and stay open for the task's next pull request, SPEC-484); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, every step resolved: a playground squashes a task once, with its whole plan; a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | admin | `{"confirm":"<slug>"}` → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write; admin for the command of an environment that follows production | `{"confirm":true}`, with `"slug":"<slug>"` typed for such a command (a production deploy, ADR-0110) → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
@@ -670,9 +670,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
   the task owner's authority and are audited as `task:<n>` too (DLV-008). `delivery_merge`
-  delivers the finished part of the task's plan: it is refused while a step is in progress or
-  none is finished, steps still ahead stay open (`steps_open` counts them), and its answer and
-  the message about the merge name them and the next one (SPEC-484). Work committed after
+  delivers the finished part of the task's plan: it is refused while no step is finished, and
+  while a step is in progress when the call has a new head to deliver (a head the pull request
+  already has is merged whatever step was started since). Steps still ahead stay open
+  (`steps_open` counts them); its answer and the message about the merge name them and the
+  next one, and while the merge is armed their work waits, because a commit on the branch
+  drops an armed merge (SPEC-484). Work committed after
   the task's pull request merged is delivered as a new pull request of the task; with nothing
   new, `delivery_merge` answers `merged: true` and that it is merged already, arming nothing,
   and what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a

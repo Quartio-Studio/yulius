@@ -635,48 +635,36 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
     assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
 
-    // A plan none of whose steps is finished has no finished part to squash (SPEC-484 PLN-001).
-    playground_task(
-        &h,
-        &made.body,
-        "t3",
-        &[("c.txt", "c\n")],
-        &["pending", "blocked"],
-    )
-    .await?;
-    let untouched = merge(&h, &owner, "t3").await?;
-    assert_eq!(
-        untouched.status,
-        StatusCode::CONFLICT,
-        "{:?}",
-        untouched.body
-    );
-    assert!(
-        text(&untouched).contains("no step of the plan is finished"),
-        "{:?}",
-        untouched.body
-    );
+    // A playground squashes a task once, with its whole plan (SPEC-484 PLN-001): steps still
+    // ahead hold it, whether or not a part is finished.
+    for (id, file, steps, open, next) in [
+        ("t3", "c.txt", &["pending", "blocked"][..], 2, "Step 0"),
+        (
+            "t4",
+            "d.txt",
+            &["done", "pending", "blocked"][..],
+            2,
+            "Step 1",
+        ),
+    ] {
+        playground_task(&h, &made.body, id, &[(file, "x\n")], steps).await?;
+        let held = merge(&h, &owner, id).await?;
+        assert_eq!(held.status, StatusCode::CONFLICT, "{id}: {:?}", held.body);
+        assert!(
+            text(&held).contains(&format!(
+                "not merged: {open} step(s) of the plan are still open (next: \"{next}\"): a \
+                 playground squashes a task once, with its whole plan"
+            )),
+            "{id}: {:?}",
+            held.body
+        );
+    }
 
     assert_eq!(
         git(&origin, &["rev-parse", "dev"])?,
         before,
         "nothing landed"
     );
-
-    // Steps still ahead do not hold the finished part: it lands, and they stay open.
-    playground_task(
-        &h,
-        &made.body,
-        "t4",
-        &[("d.txt", "d\n")],
-        &["done", "pending", "blocked"],
-    )
-    .await?;
-    let part = merge(&h, &owner, "t4").await?;
-    assert_eq!(part.status, StatusCode::OK, "{:?}", part.body);
-    assert_eq!(part.body["stage"], "merged_integration", "{:?}", part.body);
-    assert_eq!(part.body["steps_open"], 2, "{:?}", part.body);
-    assert_eq!(file_at(&origin, "dev", "d.txt")?, "d\n");
     Ok(())
 }
 
@@ -1685,12 +1673,12 @@ async fn set_steps(h: &Harness, id: &str, statuses: &[&str]) -> BoxResult<()> {
     Ok(())
 }
 
-/// SPEC-484 PLN-001, PLN-002 in a playground: the agent's merge delivers the finished part of
-/// its plan (refused while a step is in progress), and once armed it is not undone by the step
-/// the agent starts while its checks run; the answer and the outcome name the steps ahead. An
-/// armed squash of a plan a person reopened whole (nothing finished any more) is dropped.
+/// SPEC-484 PLN-001 in a playground: its agent's merge is the task's one squash, so it waits for
+/// the whole plan and says so (a merged playground task delivers nothing again, so a part
+/// squashed first would leave the rest undeliverable); with the plan finished it is armed and
+/// lands as before, and its messages promise no later delivery.
 #[tokio::test]
-async fn an_armed_squash_delivers_the_finished_part_of_the_plan() -> TestResult {
+async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
     let (h, owner) = ci_world().await?;
     let body = ci_playground(&h, &owner).await?;
     let origin = origin_of(&h, &body);
@@ -1700,75 +1688,38 @@ async fn an_armed_squash_delivers_the_finished_part_of_the_plan() -> TestResult 
         &body,
         "t1",
         &[("feature.txt", "one\n")],
-        &["done", "in_progress", "pending"],
+        &["done", "pending"],
     )
     .await?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
     support::seed_live_attempt(&h, "t1", "tok-t1").await?;
-    let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
 
-    // The work under way is finished first.
     let held = agent_merge(&h, "tok-t1", &head).await?;
     assert_eq!(held["isError"], true, "{held}");
     assert!(
-        held.to_string()
-            .contains("not merged: step \\\"Step 1\\\" is in progress"),
+        held.to_string().contains(
+            "not merged: 1 step(s) of the plan are still open (next: \\\"Step 1\\\"): a playground \
+             squashes a task once, with its whole plan"
+        ),
         "{held}"
     );
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
 
-    // With two steps ahead the finished part is armed, and the answer names them.
-    set_steps(&h, "t1", &["done", "pending", "pending"]).await?;
+    set_steps(&h, "t1", &["done", "done"]).await?;
     let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
     assert!(armed.contains("armed: true"), "{armed}");
-    assert!(
-        armed.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")"),
-        "{armed}"
-    );
-
-    // The agent starts the next step while the checks run: the squash lands all the same.
-    set_steps(&h, "t1", &["done", "in_progress", "pending"]).await?;
+    assert!(!armed.contains("still ahead"), "{armed}");
     ci_settle(&h, &owner, &body).await?;
     dev_moves(&h, &body, &dev).await?;
     assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
     let state = wait_state(&h, "tok-t1", &head).await?;
     assert_eq!(state["stage"], "merged_integration", "{state}");
-    let outcome = state["merge_outcome"].as_str().unwrap_or_default();
-    assert!(
-        outcome.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")")
-            && !outcome.contains("End with your summary"),
-        "{state}"
-    );
-
-    // Another task, armed with a finished step that a person then reopens: nothing is finished
-    // when its checks pass, so nothing lands.
-    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
-    let second = playground_task(
-        &h,
-        &body,
-        "t2",
-        &[("second.txt", "two\n")],
-        &["done", "pending"],
-    )
-    .await?;
-    let head = git(&second, &["rev-parse", "HEAD"])?.trim().to_owned();
-    support::seed_live_attempt(&h, "t2", "tok-t2").await?;
-    let armed = answer(&agent_merge(&h, "tok-t2", &head).await?);
-    assert!(armed.contains("armed: true"), "{armed}");
-    set_steps(&h, "t2", &["pending", "pending"]).await?;
-    ci_settle(&h, &owner, &body).await?;
-    h.app.merge_armed(&sid).await;
-    let state = wait_state(&h, "tok-t2", &head).await?;
-    assert_eq!(state["merge_armed"], false, "{state}");
     assert!(
         state["merge_outcome"]
             .as_str()
-            .is_some_and(|o| o.contains("no step of the plan is finished")),
+            .is_some_and(|o| o.ends_with("End with your summary.")),
         "{state}"
-    );
-    assert_eq!(
-        git(&origin, &["rev-parse", "dev"])?.trim(),
-        dev,
-        "nothing landed"
     );
     nothing_on_github(&h)?;
     Ok(())

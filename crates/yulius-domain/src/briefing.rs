@@ -768,10 +768,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          given only the diff range, the spec and skill `om-code-review`) marking findings own code \
          or pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
          split or `needs_you`.\n\
-         - With all steps done (spec valid if needed, all committed), Yulius pushes your \
-         branch and opens the pull request at your turn's end or when you call \
-         `delivery_merge` for the finished part (steps ahead stay open), and pushes later \
-         commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
+         - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
+         committed) at your turn's end once all steps are done, or when you call \
+         `delivery_merge` for the finished part (steps ahead stay open); later commits too. CI runs on our own machines (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
          turn: never hold a green one back. Fix failures on this branch, test-first. \
          {checks}\n\
@@ -815,9 +814,9 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          given only the diff range, the spec and skill `om-code-review`), which marks each finding \
          own code or pre-existing. Fix every own-code finding test-first before the merge, \
          never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
-         - Before delivery, run every project gate yourself. When the work or a finished \
-         part of it is ready (spec valid if needed, its steps done, all committed) and the review \
-         approved the exact head, call `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
+         - Before delivery, run every project gate yourself. When the work is ready (spec valid \
+         if needed, steps done, all committed) and the review approved the exact head, call \
+         `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
          project has CI; `ci_status`, `ci_rerun`), and `delivery_merge` squashes your branch onto \
          {integration} \
          here as one commit once that passed. While it runs the merge is armed: start `yulius \
@@ -1070,6 +1069,16 @@ fn task_steps(input: &BriefingInput<'_>) -> String {
         progress.total,
         progress.percent()
     );
+    // The nudges come before the list: a long plan's list is cut first when the briefing is
+    // tight, and what it is told about the plan must not go with it (SPEC-484 PLN-005).
+    let coarse_ok = input.task.spec_policy == SpecPolicy::NotRequired;
+    let nudges = steps::nudges(list, input.now, coarse_ok);
+    if !nudges.is_empty() {
+        out.push_str("Nudges:\n");
+        for nudge in nudges {
+            out.push_str(&format!("- {}\n", inline(&nudge.to_string(), 400)));
+        }
+    }
     for (index, step) in list.iter().take(MAX_STEPS_LISTED).enumerate() {
         let effort = if step.effort > 1 {
             format!(" (effort {})", step.effort)
@@ -1084,14 +1093,6 @@ fn task_steps(input: &BriefingInput<'_>) -> String {
         ));
     }
     out.push_str(&more_line(list.len(), MAX_STEPS_LISTED));
-    let coarse_ok = input.task.spec_policy == SpecPolicy::NotRequired;
-    let nudges = steps::nudges(list, input.now, coarse_ok);
-    if !nudges.is_empty() {
-        out.push_str("Nudges:\n");
-        for nudge in nudges {
-            out.push_str(&format!("- {}\n", inline(&nudge.to_string(), 400)));
-        }
-    }
     out.push('\n');
     out
 }
@@ -1756,7 +1757,8 @@ mod tests {
             "(3-12 per pull request, at most 60)",
             "done once nothing of it remains (a review: once approved)",
             "Add a step only for work found later",
-            "or when you call `delivery_merge` for the finished part (steps ahead stay open)",
+            "at your turn's end once all steps are done, or when you call `delivery_merge` for \
+             the finished part (steps ahead stay open)",
             "skill `git-hygiene`",
             "No `git stash`",
             "Yulius pushes plainly",
@@ -2174,6 +2176,42 @@ mod tests {
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.contains("Steps (9/10 done, 90 %; current: 10. Slice 9 of the parser):"));
         assert!(!text.contains("Nudges:"));
+        // SPEC-484 PLN-005: what the agent is told about its plan comes before the list, which
+        // is the part a tight briefing cuts: a plan of 60 finished steps still says that it
+        // reads complete, though its list does not fit.
+        input.task.steps = vec![
+            step("Write spec", StepStatus::Done, 1),
+            step("Implement", StepStatus::Pending, 1),
+        ];
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        let (nudges, list) = (
+            text.find("Nudges:\n- The plan has 2 step(s)")
+                .ok_or("nudges")?,
+            text.find("1. [done] Write spec").ok_or("list")?,
+        );
+        assert!(nudges < list, "{text}");
+        input.task.steps = (1..=steps::MAX_STEPS)
+            .map(|n| {
+                step(
+                    &format!("Slice {n}: the findings of area {n} fixed and reviewed"),
+                    StepStatus::Done,
+                    1,
+                )
+            })
+            .collect();
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(
+            text.contains("Steps (60/60 done, 100 %; no open step):"),
+            "{text}"
+        );
+        assert!(
+            text.contains("- Every step is finished (60 of 60), so the task reads 100 %."),
+            "{text}"
+        );
+        assert!(
+            !text.contains("60. [done] Slice 60"),
+            "the list of this input is cut, which is what the order is for"
+        );
         Ok(())
     }
 

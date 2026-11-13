@@ -10,10 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "Step 6/6" with a full bar while its spec named 15 slices: a merge was refused while any step
   was open, so a task that delivers one pull request per slice kept every later slice out of
   its plan and added each one after the merge before it. Now a pull request delivers the
-  finished part of the plan: `delivery_merge` (and a person's merge) is refused only while a
-  step is in progress or none is finished, the steps still ahead stay open, and every message
-  about a merge names them instead of ending the task. The end of a turn still opens a pull
-  request only when every step is finished. A plan has up to 60 steps (it was 30) and is no
+  finished part of the plan: a merge is refused only while no step is finished (and
+  `delivery_merge` while a step is in progress, when it has a new head to deliver), the steps
+  still ahead stay open, and every message about a merge names them instead of ending the
+  task; their work starts after the merge, since a commit on the branch still drops an armed
+  merge. The end of a turn still opens a pull request only when every step is finished, and a
+  playground still squashes a task once, with its whole plan. A plan has up to 60 steps (it was 30) and is no
   longer told that more than 12 is "too fine"; the briefing, the step tools, the
   `delivery-pipeline` and `om-spec-writing` skills, the Feature workflow and the templates ask
   for all the known work as steps from the start, a step added later only for work found

@@ -934,11 +934,10 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                // A playground has no stage after its squash.
-                let next = self.after_merge_of(task, "").await;
+                // A playground squashes a task once, with its whole plan: nothing is ahead.
                 Verdict::Decided(format!(
                     "Yulius squashed your branch into `{integration}` at {}: its checks passed on \
-                     it merged into `{integration}`. {next}",
+                     it merged into `{integration}`. End with your summary.",
                     short(&armed.head)
                 ))
             }
@@ -1352,34 +1351,18 @@ pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still as
                                        (`delivery_status`; deploy and verify an integration \
                                        environment with `delivery_deploy`)";
 
-/// What an agent does after a merge of its work: what the delivery profile still asks for the
-/// merged part (`asks`, a clause; empty in a playground, which has no later stage), and then the
-/// end of the task, or, with steps of its plan still ahead (`ahead`,
-/// [`crate::delivery::steps_ahead_note`]), the work that goes on: a merge of one part of the
-/// plan is not the task's end (SPEC-484 PLN-003).
+/// What an agent does after a merge of its pull request: what the delivery profile still asks
+/// for the merged part (`asks`, a clause), and then the end of the task, or, with steps of its
+/// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on: a
+/// merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
 pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
     let ahead = ahead.trim();
-    let then = |what: &str| {
-        if asks.is_empty() {
-            let mut chars = what.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars).collect()
-            })
-        } else {
-            format!("{asks}, then {what}")
-        }
-    };
-    let promote = if asks.is_empty() {
-        ""
-    } else {
-        " Do not promote unless the task asks for it."
-    };
     if ahead.is_empty() {
-        format!("{}.{promote}", then("end with your summary"))
+        format!("{asks}, then end with your summary. Do not promote unless the task asks for it.")
     } else {
         format!(
-            "{}: the finished part of your plan is delivered. {ahead}{promote}",
-            then("go on with the next step")
+            "{asks}, then go on with the next step: the finished part of your plan is delivered. \
+             {ahead} Do not promote unless the task asks for it."
         )
     }
 }
@@ -1582,22 +1565,5 @@ mod tests {
              deploy and verify an integration environment with `delivery_deploy`), then end with \
              your summary. Do not promote unless the task asks for it."
         );
-        // A playground has no later stage and no promotion.
-        assert_eq!(after_merge("", ""), "End with your summary.");
-        assert!(
-            after_merge(ahead, "").starts_with(
-                "Go on with the next step: the finished part of your plan is delivered. 2 step(s)"
-            ) && !after_merge(ahead, "").contains("promote")
-        );
-        // What the merge counts as is said without a next step, steps ahead or not.
-        let fact = merged_text(
-            7,
-            "dev",
-            "abcdef0123",
-            GateResult::Run(Some(RunState::Passed)),
-            false,
-            ahead,
-        );
-        assert!(!fact.contains("ahead"), "{fact}");
     }
 }

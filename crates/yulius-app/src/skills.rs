@@ -935,9 +935,7 @@ mod tests {
             );
             assert!(text.contains(&per), "{place} does not say {per}");
             assert!(
-                text.contains(&format!("pull request, {most}"))
-                    || text.contains(&most)
-                    || text.contains(&format!("1-{MAX_STEPS}")),
+                text.contains(&most) || text.contains(&format!("1-{MAX_STEPS}")),
                 "{place} does not say {most}"
             );
             assert!(text.contains("found later"), "{place}: a step added later");
@@ -955,7 +953,12 @@ mod tests {
         let merge = tool("delivery_merge")?;
         assert!(
             merge.contains("delivers the finished part of your plan")
-                && merge.contains("a step of the plan is finished and none is in progress")
+                && merge.contains(
+                    "a step of the plan is finished (and none is in progress when the call has a \
+                     new head to deliver)"
+                )
+                && merge.contains("a playground squashes a task once, when every step is finished")
+                && merge.contains("a commit on the branch drops an armed merge")
                 && !merge.contains("every step is done"),
             "{merge}"
         );
