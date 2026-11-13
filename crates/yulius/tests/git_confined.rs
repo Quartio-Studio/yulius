@@ -530,6 +530,12 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
             "{answer}"
         );
     }
+    // The head of a branch is listed without the clone's objects: it is tried all the same.
+    let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;
+    assert!(
+        format!("{listed:?}").contains("ls-remote"),
+        "the listing was tried: {listed:?}"
+    );
     // A path inside the sandbox is a path, whatever its characters: the transfer is tried.
     let odd = w.sandbox.join("a\nb");
     std::fs::create_dir_all(&odd)?;
@@ -542,12 +548,6 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
             "{answer}"
         );
     }
-    // The head of a branch is listed without the clone's objects.
-    let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;
-    assert!(
-        format!("{listed:?}").contains("ls-remote"),
-        "the listing was tried: {listed:?}"
-    );
     std::fs::remove_file(&objects)?;
     std::fs::rename(odd.join("objects"), &objects)?;
 
