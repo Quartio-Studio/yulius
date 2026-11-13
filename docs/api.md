@@ -792,8 +792,11 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 
 - **Runs.** Every open pull request into the integration branch (same repository, at most 30) and
   every new integration and production head is tested once per commit. The integration branch's
-  configuration applies; while it has none, a pull request that adds CI is tested with its own
-  (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
+  configuration applies; a pull request that changed the jobs since it branched off is tested
+  with its own, which keep the trusted security job, and while the integration branch has
+  none, a pull request that adds CI is tested with its own (`source: pull_request`). A merge
+  train, a playground task's merge and a run again of any of them are given their jobs by the
+  same rule. A newer head cancels the active run of the same reference ("superseded
   by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
   checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
