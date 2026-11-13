@@ -1218,6 +1218,41 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
+/// A run of Yulius CI at `sha` of branch `dev`, ended in `state`, queued at `at` (the newest
+/// run of a commit is its verdict).
+async fn yulius_ci_run(
+    store: &impl yulius_app::ports::store_ext::CiStore,
+    id: &str,
+    sha: &str,
+    state: yulius_domain::ci::RunState,
+    at: i64,
+) -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_domain::ci::{CiRef, GateSource};
+    store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: id.to_owned(),
+                sandbox_id: SandboxId::parse("s1")?,
+                reference: CiRef::Branch("dev".to_owned()),
+                sha: sha.to_owned(),
+                source: GateSource::Profile,
+                state,
+                reason: None,
+                requested_by: "yulius".to_owned(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: Timestamp(at),
+                started_at: Some(Timestamp(at)),
+                ended_at: Some(Timestamp(at + 1)),
+            },
+            &[],
+        )
+        .await?;
+    Ok(())
+}
+
 /// AC-DLV-1: standard profile — merging waits for green checks and nothing waits for a person
 /// after it; promotion opens a promotion PR dev → main and merges it on a later request.
 #[tokio::test]
@@ -1383,6 +1418,42 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         unknown.body
     );
     f.h.github.set_checks(&promotion_head, ChecksState::Success);
+    // SPEC-483 D5: a promotion asks what every merge asks. With a run of Yulius CI at that
+    // head, the run alone decides, whatever GitHub shows from elsewhere: failed, the promotion
+    // is refused; run again and passed, it goes.
+    use yulius_domain::ci::RunState;
+    yulius_ci_run(
+        &f.h.store,
+        "run-dev-1",
+        &promotion_head,
+        RunState::Failed,
+        10,
+    )
+    .await?;
+    let failing = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(failing.status, StatusCode::CONFLICT, "{}", failing.body);
+    assert!(error_message(&failing).contains("fail"), "{}", failing.body);
+    assert!(
+        !f.h.github
+            .writes()
+            .contains(&"merge_pull #2 merge".to_owned()),
+        "nothing merged past a failed run"
+    );
+    yulius_ci_run(
+        &f.h.store,
+        "run-dev-2",
+        &promotion_head,
+        RunState::Passed,
+        20,
+    )
+    .await?;
     let promoted = f
         .req(
             Method::POST,
@@ -1590,6 +1661,23 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
 
     // Fast-forward main to the integration head, then confirm the rollout step.
     let quartio = f.origin_sha("quartio")?;
+    // SPEC-483 D5: what goes to production is the integration head, and its checks decide
+    // for a fast-forward as for a promotion pull request: a failed run of Yulius CI there
+    // refuses it, the run passed again lets it go.
+    use yulius_domain::ci::RunState;
+    yulius_ci_run(&f.h.store, "run-q-1", &quartio, RunState::Failed, 10).await?;
+    let failing = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(failing.status, StatusCode::CONFLICT, "{}", failing.body);
+    assert!(error_message(&failing).contains("fail"), "{}", failing.body);
+    assert_ne!(f.origin_sha("main")?, quartio, "main did not move");
+    yulius_ci_run(&f.h.store, "run-q-2", &quartio, RunState::Passed, 20).await?;
     let promoted = f
         .req(
             Method::POST,

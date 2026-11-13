@@ -8,12 +8,12 @@
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
-use yulius_domain::ci::{GateResult, gate_checks};
+use yulius_domain::ci::GateResult;
 use yulius_domain::delivery::ChecksState;
 
 use crate::auth::AuthContext;
 use crate::context::App;
-use crate::delivery::{delivery_profile, domain_checks};
+use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::github::NewPull;
@@ -565,51 +565,31 @@ impl App {
         // What the integration branch and the pull request say now, not a cached view.
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
-        let mut gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
         // As the scheduler decides (`ci_sync_sandbox`): a pull request that brings Yulius CI is
-        // tested with it before it merges; one whose configuration Yulius CI cannot read, or any
-        // while the integration branch's is unusable (then nothing is tested), never merges here.
-        if gate == GateResult::NotConfigured && self.config.ci.enabled {
-            let view = self.ci_gate(sandbox).await;
-            if let Some(problem) = &view.problem {
+        // tested with it before it merges (`dlv_checks_at` says pending until then); one whose
+        // configuration Yulius CI cannot read, or any while the integration branch's is unusable
+        // (then nothing is tested), never merges here.
+        if self.ci_gate_result(sandbox, &pull.head_sha).await == GateResult::NotConfigured
+            && self.config.ci.enabled
+        {
+            if let Some(problem) = self.ci_gate(sandbox).await.problem {
                 return Err(AppError::Conflict(format!(
                     "Yulius CI tests nothing while the integration branch's yulius.toml is unusable ({problem}); merge this fix on GitHub, or have a task fix it"
                 )));
             }
-            match self
+            if let Err(why) = self
                 .ci_jobs_at(&self.sandbox_repo(&sandbox.id), &pull.head_sha)
                 .await
             {
-                // Whether Yulius CI will test this head is the scheduler's own answer.
-                Ok(_) => {
-                    if self
-                        .ci_gate_for_head(
-                            sandbox,
-                            &view,
-                            (&pull.head_sha, crate::ci::Head::Proposed),
-                        )
-                        .await
-                        .is_some()
-                    {
-                        gate = GateResult::Run(None);
-                    }
-                }
-                Err(why) => {
-                    return Err(AppError::Conflict(format!(
-                        "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"
-                    )));
-                }
+                return Err(AppError::Conflict(format!(
+                    "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"
+                )));
             }
         }
-        let state = match gate {
-            GateResult::NotConfigured => domain_checks(
-                github
-                    .checks(&token, owner, name, &pull.head_sha)
-                    .await?
-                    .state,
-            ),
-            gate => gate_checks(ChecksState::None, gate),
-        };
+        let state = self
+            .dlv_checks_at(sandbox, &token, &pull.head_sha)
+            .await?
+            .state;
         if !matches!(state, ChecksState::Success | ChecksState::None) {
             return Err(AppError::Conflict(format!(
                 "the checks at {} are {}: merge once they passed (ci_runs, ci_run)",
