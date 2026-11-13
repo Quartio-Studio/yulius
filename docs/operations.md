@@ -891,6 +891,41 @@ SPEC-461), with no root step and no sign-in again:
   release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
   again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
 
+### Language servers and Claude Code plugins
+
+Yulius switches the language servers of Claude Code plugins (rust-analyzer, pyright, gopls and
+the like) off in every session it starts, and Claude Code does not ask in a session whether to
+install one
+([ADR-0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md),
+SPEC-485). Before this, one Enter on Claude Code's "LSP plugin recommendation" dialog installed
+such a plugin into the sandbox's home for every session; each session then started its own
+server at the first edited file (gigabytes each, and checks in the worktree's build directory),
+or showed `Language server "plugin:…" couldn't start. The Errors tab in /plugin may have the
+reason.` in the terminal.
+
+- Nothing to set up and nothing to clean: a plugin installed in a sandbox's home
+  (`<data>/sandboxes/<id>/home/.claude/plugins`) may stay. Every launch switches the plugins
+  that bring a language server off in the run's own settings, whatever the home's
+  `settings.json`, the repository's `.claude/settings.json` or a `/plugin` in a terminal says.
+  Other plugins (skills, commands) are left as they are; a plugin that brings a language server
+  and other things is switched off whole (Claude Code has no finer switch).
+- Sessions get it at their next launch; a session running across the update keeps what it
+  started with until it is started again.
+- To see what a session got: `enabledPlugins` in the run's `claude-settings.json`
+  (`<data>/runs/<attempt>/`), and the server's log line of the launch, "switching off the
+  plugins that bring a language server for this run" with their ids. `claude plugin list` run in a sandbox shows the home's own state,
+  which a run's settings outrank; `claude --settings <that file> plugin list` shows the run's.
+- The notice in a session that was started after the update means a plugin brings a language
+  server where Yulius does not look. The launch's warning in the server's log, "could not read
+  everything about this session's plugins", names what it left unread (a link, a file that is
+  not JSON, a bound, a marketplace whose folder it could not open). Not read by decision: a
+  marketplace or an installed copy outside the sandbox's folders (for a contained Superagent
+  also one in the person's own home, which its Claude Code names by the path it sees there),
+  and a plugin installed or switched on while the session ran (off from the next launch).
+  Anything else: report it. The opt-in check `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main
+  live_claude::a_run -- --ignored` asks the installed Claude Code in eight layouts (no account
+  needed).
+
 ### Messages Yulius types into a session
 
 Yulius types into a running task's session: a person's message sent through their Superagent
