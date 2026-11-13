@@ -4,6 +4,26 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-13
+
+- Redaction fingerprints no longer give an agent secret's value away (SPEC-483 slice 1, task
+  #465, ADR-0313; the request: a deep security and quality audit). The Bash wrapper and the tool
+  hook inside a sandbox redact from fingerprints of each value. A fingerprint held a rolling
+  hash of the value, and the server chose a new base for it on every request: a run that asked
+  as often as a value has characters could compute the value, for every agent secret that
+  reaches it, production ones and the instance Vidoc key included. A sandbox's fingerprints are
+  now the same on every request, and a fingerprint says the value's length, its salted digest
+  and a tag of 3 to 16 bits of a hash of its first 8 bytes. A run's fingerprints no longer
+  include two-factor seeds, and a playground that a guest joined keeps only those of its MCP
+  servers' own values. Sessions that were running across the update keep working: their
+  wrapper reads the old format, so Yulius keeps their fingerprint file in it, without the hash
+  that told too much. Redacting 1 MB of output takes 126 ms with 10 secrets (460 ms before) and
+  205 ms with 40 (781 ms). **After the update, once the sessions that were running across it
+  have ended, rotate the agent secrets that untrusted code could have reached**, and make new
+  values 20 random letters and digits or 32 hexadecimal digits, or longer: a shorter one can be
+  guessed against its fingerprints (12 letters and digits within minutes on one graphics card,
+  as the ADR tables).
+
 ## 2026-11-12
 
 - A task of a Fable model goes on with Opus 5.5 while no subscription can run Fable (SPEC-482,

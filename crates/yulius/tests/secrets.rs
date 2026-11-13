@@ -1314,6 +1314,23 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
         shown.body["notes"],
         format!("User name: docs-admin\nTwo-factor seed: {SEED}\n\nDocs admin login")
     );
+    // ADR-0313: a run's fingerprints hold the value and not the seed, which never enters a
+    // sandbox (Yulius types the code); Yulius' own redaction of the project covers both.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let set =
+        w.h.app
+            .scrub_fingerprints_for(&s1, yulius_app::vault::Holder::Nobody)
+            .await?;
+    let matcher = yulius_harness::scrub_client::matcher(&set).ok_or("matcher")?;
+    let text = format!("pass docs-pass-7731-xyz seed {SEED}");
+    assert_eq!(
+        redact_text(&matcher, &text).0,
+        format!("pass [secret:DOCS_LOGIN] seed {SEED}")
+    );
+    assert_eq!(
+        w.h.app.redact_for_sandbox(&s1, &text).await,
+        "pass [secret:DOCS_LOGIN] seed [secret:DOCS_LOGIN]"
+    );
     Ok(())
 }
 
@@ -3500,5 +3517,92 @@ async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult
         "{headers:?}"
     );
     assert!(used.is_empty(), "{used:?}");
+    Ok(())
+}
+
+/// ADR-0313: asking for the fingerprints again tells a run nothing more. The set is the same on
+/// every request (a set that changed its hash base each time gave a value away to as many
+/// requests as it has bytes), and all it says about a value besides its length and salted digest
+/// is a tag of a few bits.
+#[tokio::test]
+async fn repeated_fingerprint_requests_answer_the_same_set() -> TestResult {
+    use yulius_domain::vault::redact::tag_bits;
+    let w = world().await?;
+    let created = add_agent_secret(&w, &w.writer, "s1", json!({"name": "STRIPE_KEY", "description": "Stripe test key", "hosts": ["api.stripe.test"], "value": STRIPE})).await?;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let mut answers = Vec::new();
+    for _ in 0..3 {
+        let got = call(
+            &w.h.internal,
+            Method::POST,
+            "/internal/scrub/fingerprints",
+            Some(json!({})),
+            &Creds {
+                bearer: Some(TOKEN_S1.into()),
+                ..Creds::default()
+            },
+        )
+        .await?;
+        assert_eq!(got.status, StatusCode::OK);
+        answers.push(got.body);
+    }
+    assert_eq!(answers[0], answers[1]);
+    assert_eq!(answers[1], answers[2]);
+    let set = &answers[0];
+    let mut fields: Vec<&str> = set
+        .as_object()
+        .ok_or("set")?
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["names", "needles", "salt", "version"]);
+    let needles = set["needles"].as_array().ok_or("needles")?;
+    assert_eq!(needles[0]["len"], STRIPE.len(), "the value comes first");
+    for needle in needles {
+        let mut fields: Vec<&str> = needle
+            .as_object()
+            .ok_or("needle")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["digest", "len", "secret", "tag"]);
+        let len = usize::try_from(needle["len"].as_u64().ok_or("len")?)?;
+        let tag = needle["tag"].as_u64().ok_or("tag")?;
+        assert!(tag < 1 << tag_bits(len), "{needle}");
+    }
+    assert_eq!(tag_bits(STRIPE.len()), 4, "a value of 28 bytes says 4 bits");
+    // Another sandbox salts its digests differently.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let s2 = yulius_domain::ids::SandboxId::parse("s2")?;
+    let nobody = yulius_app::vault::Holder::Nobody;
+    let first = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    let other = w.h.app.scrub_fingerprints_for(&s2, nobody).await?;
+    assert_ne!(first.salt, other.salt);
+    // The salt is kept with the data directory: a server started again answers the same set.
+    let data_dir = w.h.app.config.data_dir.clone();
+    let again = support::harness_with(support::HarnessOptions {
+        configure: Some(Box::new(move |c| c.data_dir = data_dir)),
+        ..support::HarnessOptions::default()
+    })?;
+    assert_eq!(
+        again.app.scrub_fingerprints_for(&s1, nobody).await?.salt,
+        first.salt
+    );
+    // A changed value changes its fingerprints, and nothing else does.
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let changed = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": concat!("sk_test_", "51NzQ9otherValue9c4b")})),
+        &w.writer,
+    )
+    .await?;
+    assert!(changed.status.is_success(), "{}", changed.body);
+    let after = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    assert_eq!(after.salt, first.salt);
+    assert_ne!(after.needles[0].digest, first.needles[0].digest);
     Ok(())
 }

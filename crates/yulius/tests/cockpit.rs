@@ -2348,6 +2348,72 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     Ok(())
 }
 
+/// ADR-0313: a Superagent that was running across the update keeps its old wrapper, which reads
+/// only the fingerprint file format from before version 2. A starting server rewrites its file
+/// in that format without what told too much, and the old wrapper's request (it cannot read the
+/// answer) brings the file up to date, so a secret added since is redacted there too.
+#[tokio::test]
+async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join("shells")
+            .join(&id)
+            .join(yulius_app::vault::FINGERPRINTS_FILE);
+    let launched: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(launched["version"], 2);
+    assert_eq!(launched["names"], json!(["APIFY_KEY"]));
+    // The file as an older Yulius wrote it.
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "version": 1, "base": 912_367, "salt": "00", "names": ["APIFY_KEY"],
+            "needles": [{"secret": 0, "len": SECRET_VALUE.len(), "rolling": 77, "digest": "00"}],
+        }))?,
+    )?;
+
+    f.h.app.refresh_fingerprint_files().await;
+
+    let rewritten = std::fs::read(&file)?;
+    let legacy: Value = serde_json::from_slice(&rewritten)?;
+    assert_eq!(
+        (&legacy["version"], &legacy["base"]),
+        (&json!(1), &json!(0))
+    );
+    assert_eq!(
+        support::old_wrapper_redacts(&rewritten, &format!("key {SECRET_VALUE}")).as_deref(),
+        Some("key [secret:APIFY_KEY]")
+    );
+
+    let resp = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "LATER_KEY", "hosts": ["api.later.test"], "value": "later-synthetic-5Hq2Wm8Zc1"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
+    let answered = scrub(&f, &workspace, "fingerprints", json!({})).await?;
+    assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
+    assert_eq!(answered.body["version"], 2);
+    assert_eq!(
+        support::old_wrapper_redacts(&std::fs::read(&file)?, "later-synthetic-5Hq2Wm8Zc1 x")
+            .as_deref(),
+        Some("[secret:LATER_KEY] x")
+    );
+    Ok(())
+}
+
 /// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
 /// workspace token, which its environment already holds: answered while the person may work in
 /// the sandbox, refused once they cannot, and a redaction is audited with their login.

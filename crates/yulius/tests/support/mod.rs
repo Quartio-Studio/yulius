@@ -1964,3 +1964,52 @@ pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
         .map_err(|_| "the server never reached the pause point")?;
     Ok(())
 }
+
+/// What the Bash wrapper of a Yulius from before fingerprint version 2 makes of `text` with the
+/// fingerprint file `file` (ADR-0313): that wrapper's own search, a rolling hash of every window
+/// of a needle's length modulo 2^61 - 1 at the file's `base`, confirmed by the salted SHA-256.
+/// `None` when that wrapper could not read the file (it takes version 1 only, with every field).
+pub fn old_wrapper_redacts(file: &[u8], text: &str) -> Option<String> {
+    use sha2::Digest as _;
+    const MODULUS: u128 = (1 << 61) - 1;
+    let set: serde_json::Value = serde_json::from_slice(file).ok()?;
+    if set["version"] != 1 {
+        return None;
+    }
+    let base = u128::from(set["base"].as_u64()?);
+    let salt = hex::decode(set["salt"].as_str()?).ok()?;
+    let rolling = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .fold(0u128, |h, b| (h * base + u128::from(*b) + 1) % MODULUS)
+    };
+    let data = text.as_bytes();
+    let mut found: Vec<(usize, usize, String)> = Vec::new();
+    for needle in set["needles"].as_array()? {
+        let len = usize::try_from(needle["len"].as_u64()?).ok()?;
+        let name = set["names"][usize::try_from(needle["secret"].as_u64()?).ok()?].as_str()?;
+        for (start, window) in data.windows(len).enumerate() {
+            if rolling(window) != u128::from(needle["rolling"].as_u64()?) {
+                continue;
+            }
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(&salt);
+            hasher.update(window);
+            if hex::encode(hasher.finalize()) == needle["digest"].as_str()? {
+                found.push((start, start + len, name.to_owned()));
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (start, end, name) in found {
+        if start >= at {
+            out.extend_from_slice(&data[at..start]);
+            out.extend_from_slice(format!("[secret:{name}]").as_bytes());
+            at = end;
+        }
+    }
+    out.extend_from_slice(&data[at..]);
+    String::from_utf8(out).ok()
+}

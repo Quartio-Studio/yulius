@@ -417,7 +417,7 @@ fn shell_dir_root(data_dir: &Path) -> PathBuf {
     data_dir.join("shells")
 }
 
-fn hex_decode(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn hex_decode(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;
     }

@@ -1209,7 +1209,7 @@ encoded text, percent-encoding and JSON escaping (needles of ≥ 8 bytes). Match
 | Transcripts Yulius serves | `App::redact_for_sandbox` (the sessions view, #137, applies it). |
 
 The in-sandbox parts run as the agent's own user, so they never hold a value: they work from
-**fingerprints** — the rolling hash and a salted SHA-256 of each needle — fetched with the task
+**fingerprints** — a tag of a few bits and a salted SHA-256 of each needle (ADR-0313; a rolling hash until then) — fetched with the task
 token (`POST /internal/scrub/fingerprints`) or, while Yulius restarts, read from the run's
 `scrub.json`. With neither, a Yulius run fails closed: the command does not run and a tool result
 is withheld. Redactions are reported for the audit trail (`vault.agent.redacted`).

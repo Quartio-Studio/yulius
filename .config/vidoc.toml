@@ -897,18 +897,21 @@ reason = "only the attempt's own server-recorded account is updated, values are 
 # evidence is in SPEC-400 and in each issue's closing comment.
 
 # #841: the in-sandbox redactors must test output against a needle without the server, so any
-# matcher they get is an equality test for a guess (offline while a run holds the set; the rolling
-# hash alone already is), and redaction gives the same test online: a printed guess comes back as
-# [secret:NAME] over exactly its bytes. SPEC-002 ADR-20 and ADR-0014 accept
-# "redaction is an oracle for weak values" with the 8-character minimum (MIN_AGENT_VALUE_CHARS);
-# ADR-0144 and ADR-0186 name the salted fingerprints. A server-held key would move the same test
-# online and send the run's output to Yulius.
+# matcher they get is an equality test for a guess (offline while a run holds the set), and
+# redaction gives the same test online: a printed guess comes back as [secret:NAME] over exactly
+# its bytes. SPEC-002 ADR-20 and ADR-0014 accept "redaction is an oracle for weak values" with the
+# 8-character minimum (MIN_AGENT_VALUE_CHARS); ADR-0144 and ADR-0186 name the salted fingerprints.
+# A server-held key would move the same test online and send the run's output to Yulius. What was
+# more than an oracle is fixed (ADR-0313, task #465): the rolling hash with a new base per request
+# gave a value away; a fingerprint now says a tag of a few bits and the set is fixed per sandbox.
+# A session launched before that keeps a file in the old format with base 0 (the last byte of a
+# needle), written by `legacy_fingerprints_for` with the same `salted_digest`; it goes with #1239.
 [[ignore]]
 path = "crates/yulius-app/src/vault/runtime.rs"
 title = "Salted secret digests and lengths exposed to the sandbox form a guessing oracle"
 reason = "the redaction oracle accepted in SPEC-002 ADR-20/ADR-0014 (8-character minimum): sandbox-side redactors need a local matcher, and redaction itself confirms a printed guess and its length (SPEC-400, #841)"
 function = "scrub_fingerprints_for"
-line = 365
+line = 369
 
 # #840: the host comes from hyper's parsed Uri (connect_target, uri().host()), whose URI_CHARS
 # refuse |, space and every control byte, so no field or line can be added; the caller's part is
