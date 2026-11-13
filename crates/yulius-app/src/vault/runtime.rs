@@ -987,8 +987,7 @@ impl App {
                 super::PERSONAL_SECRET_BROWSER
             )));
         }
-        // A page is in the agent's hands, unlike a request the proxy completes: not even the
-        // hosts a production secret kept from before it became exclusive (SPEC-405 VEV-001).
+        // A production secret is no agent's, by any way (ADR-0324).
         if record.cd_prod {
             return Err(AppError::Forbidden(format!(
                 "{}: {}",

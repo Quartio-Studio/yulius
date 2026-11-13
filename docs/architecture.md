@@ -2140,9 +2140,11 @@ request waits on the secret (`requested_hosts`) until a person who manages it al
 agent misled by injected content cannot send that secret to another server; and production gets
 it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
 copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
-answering at once cannot end with both (SPEC-134 M-B, SPEC-262). Hosts a production secret kept
-from before that are used by the egress proxy only: `browser_fill_secret` never types a production
-secret into a page the agent drives (SPEC-405).
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262). No way gives a production
+secret to a run: the egress proxy sends it for no client (`EgressClient::may_use`),
+`browser_fill_secret` never types it into a page the agent drives (SPEC-405), and no row has
+hosts for one (migration 0055 removed those kept from before; the store refuses to insert the
+pair; [decision 0324](decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox

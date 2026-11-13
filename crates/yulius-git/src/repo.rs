@@ -59,7 +59,7 @@ impl Git {
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
                 .arg(dest)
                 .touching(dest)
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -79,8 +79,10 @@ impl Git {
         let named = !Path::new(remote).is_absolute();
         let tracking = format!("+refs/heads/*:refs/remotes/{remote}/*");
         let fetch = match self.remote_route(repo, remote, true)? {
-            Route::Folder(origin) if named => fetch.arg(&origin).arg(tracking).local(&origin),
-            Route::Folder(origin) => fetch.arg(&origin).local(&origin),
+            Route::Folder(origin) if named => {
+                fetch.arg(&origin).arg(tracking).local_reading(&origin)
+            }
+            Route::Folder(origin) => fetch.arg(&origin).local_reading(&origin),
             Route::Courier(courier, url) if named => {
                 return self.fetch_through(&courier, repo, (remote, Tags::Reached), &url);
             }
@@ -118,7 +120,7 @@ impl Git {
                 ])
                 .arg(source)
                 .arg("+refs/heads/*:refs/remotes/origin/*")
-                .local(source)
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -150,7 +152,7 @@ impl Git {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ])
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout)
                 .watch_size(&[repo], limit),
         )?;
@@ -206,7 +208,7 @@ impl Git {
                 ])
                 .arg(source)
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
-                .local(source)
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -252,7 +254,7 @@ impl Git {
         let listed = self.run_ok(
             Invocation::new(self, "ls-remote", Some(repo))
                 .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
-                .local_if_path(url)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         let mut refs: Vec<(String, String)> = listed

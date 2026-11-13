@@ -16,6 +16,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   are kept, only the others run again), and a prompt typed at a paused workflow is told not to
   start it again. A workflow counts as background work, and its agents' tokens count in the
   run's metrics.
+- A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
+  A secret allowed for production deploys that still had hosts from before such secrets
+  became exclusive was sent to those hosts for an agent's run by the egress proxy, while a
+  Superagent, a CI job, the browser, `.env` files and the secrets list all said agents never
+  get it. The proxy now refuses it for everyone; migration 0055 removes the hosts such rows
+  kept (one audit line per secret, `vault.agent.hosts_cleared`), the store takes no new row
+  with both, and the Edit dialog no longer offers "Remove these hosts". Also: a fetch, a
+  listing and a clone that only take from a folder of the machine (a CD mirror from a clone,
+  a new origin from an upload) reach that folder read-only.
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no

@@ -2036,9 +2036,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         if created.body["name"] == "PROD_KEY" {
-            // Bound to a host, as a production secret could be before SPEC-134 M-B.
+            // Made a production secret: its host goes with that (ADR-0324).
             let id = created.body["id"].as_str().ok_or("id")?;
-            crate::support::legacy_production_secret(&w.h.store, id).await?;
+            crate::support::production_secret(&w.h.store, id).await?;
         }
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
@@ -2056,7 +2056,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         !app.egress_intercepts(&ci, "eu.hdr.test", 443).await,
         "a host bound only to a secret the job was not granted is a plain tunnel"
     );
-    // A production-deploy secret is never a CI job's, even when its name is granted.
+    // A production-deploy secret is never a CI job's, even when its name is granted. It has no
+    // host either (ADR-0324), so nothing here is intercepted for it whatever the proxy's rule
+    // is: the rule itself is held by `ports::egress::tests`.
     assert!(!app.egress_intercepts(&ci, "prod.test", 443).await);
     let named = app
         .egress_apply(

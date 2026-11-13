@@ -240,7 +240,7 @@ impl Git {
             Route::Folder(origin) => self
                 .run_ok(
                     list.arg(&origin)
-                        .local(&origin)
+                        .local_reading(&origin)
                         .arg(&wanted)
                         .timeout(timeout),
                 )?
