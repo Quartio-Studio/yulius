@@ -55,7 +55,7 @@ use yulius_domain::delivery::{
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::spec_format::{self, MAX_CONFIG_BYTES, MAX_PATH_BYTES, SpecReport};
-use yulius_domain::steps::StepStatus;
+use yulius_domain::steps::{DeliveryAsk, StepStatus};
 use yulius_domain::task::PullSignal;
 use yulius_domain::time::Timestamp;
 
@@ -442,22 +442,45 @@ pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
 }
 
 /// Why a head with commits to deliver is not ready to go out, if it is not: a task that needs a
-/// spec needs its plan too; research, docs and chores may have none.
-fn not_ready(spec: &SpecCheck, no_steps: bool, steps_open: usize, dirty: bool) -> Option<String> {
+/// spec needs its plan too; research, docs and chores may have none. What of the plan has to be
+/// finished depends on who asks (SPEC-484 PLN-002).
+fn not_ready(
+    spec: &SpecCheck,
+    steps: &[StepRecord],
+    ask: DeliveryAsk,
+    dirty: bool,
+) -> Option<String> {
     if !spec.valid {
         Some(format!(
             "the spec is not valid ({}); fix it and commit",
             spec.problems.join(" ")
         ))
-    } else if no_steps && spec.required {
+    } else if steps.is_empty() && spec.required {
         Some("the task has no plan: record its steps with `step_update`".to_owned())
-    } else if steps_open > 0 {
-        Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
+    } else if let Some(hold) = plan_hold(steps, ask) {
+        Some(hold)
     } else if dirty {
         Some("the worktree has uncommitted changes: commit them".to_owned())
     } else {
         None
     }
+}
+
+/// Why the task's plan holds a delivery asked for by `ask`, if it does.
+pub(crate) fn plan_hold(steps: &[StepRecord], ask: DeliveryAsk) -> Option<String> {
+    yulius_domain::steps::delivery_hold(&crate::discipline::step_states(steps, &[]), ask)
+}
+
+/// " N step(s) of your plan are still ahead (next: "…"): …", for the answers that tell an agent
+/// its finished part is on its way or merged (SPEC-484 PLN-003); empty when none is.
+pub(crate) fn steps_ahead_note(steps: &[StepRecord]) -> String {
+    let states = crate::discipline::step_states(steps, &[]);
+    yulius_domain::steps::ahead(&states).map_or_else(String::new, |(open, next)| {
+        format!(
+            " {open} step(s) of your plan are still ahead (next: \"{next}\"): they stay open, and \
+             Yulius opens a new pull request for the work you commit for them on this branch."
+        )
+    })
 }
 
 /// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
@@ -655,6 +678,7 @@ fn merged_facts(production_diverged: bool) -> DeliveryFacts {
     DeliveryFacts {
         spec_valid: true,
         steps_open: 0,
+        steps_finished: 0,
         checks: ChecksState::None,
         pr_state: PrState::Merged,
         head_current: true,
@@ -1062,6 +1086,7 @@ struct Observed {
     spec: SpecCheck,
     steps: Vec<StepRecord>,
     steps_open: usize,
+    steps_finished: usize,
     pr: Option<GhPull>,
     checks: ChecksState,
     /// Check sources the App may not read for the pull request head.
@@ -1090,6 +1115,7 @@ impl Observed {
         DeliveryFacts {
             spec_valid: self.spec.valid,
             steps_open: self.steps_open,
+            steps_finished: self.steps_finished,
             checks: self.checks,
             pr_state: self.pr_state(),
             head_current: matches!(
@@ -1516,6 +1542,7 @@ impl App {
             .iter()
             .filter(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
             .count();
+        let steps_finished = steps.len() - steps_open;
         let mut notes = Vec::new();
         let pre_merge = matches!(record.stage, DeliveryStage::None | DeliveryStage::PrOpen);
         let mut worktree_head = None;
@@ -1597,6 +1624,7 @@ impl App {
             spec,
             steps,
             steps_open,
+            steps_finished,
             pr,
             checks,
             checks_unreadable,
@@ -1767,6 +1795,7 @@ impl App {
                 &pull.head_sha,
                 self.ci_gate_result(&sandbox, &pull.head_sha).await,
                 false,
+                "",
             ));
         }
         // Checks are read only for an open pull request, so this is empty otherwise.
@@ -2559,7 +2588,7 @@ impl App {
     /// human (GIT-002). The outcome is said in the task's terminal; failures are logged and not
     /// retried for the same head.
     pub async fn auto_open_pr(&self, task_id: &TaskId) {
-        match self.try_auto_open_pr(task_id).await {
+        match self.try_auto_open_pr(task_id, DeliveryAsk::TurnEnd).await {
             Ok(AutoDelivery::Delivered(done)) => self.runtime(task_id).hub.notice(done),
             Ok(AutoDelivery::Unchanged | AutoDelivery::Blocked(_)) => {}
             Err(AutoDeliveryError { error: err, .. }) => {
@@ -2797,12 +2826,15 @@ impl App {
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
     /// to the open one (#68), or opened a new one for work committed after its merge (SPEC-425).
     /// [`AutoDelivery::Blocked`] says why a head with commits to deliver is not ready (an invalid
-    /// spec, an open step, uncommitted work) or why Yulius cannot judge what a merged task's head
-    /// adds; [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no
-    /// commits ahead of the integration branch, a merged task with nothing new, nothing new).
+    /// spec, what the plan still holds for this `ask`, uncommitted work) or why Yulius cannot
+    /// judge what a merged task's head adds; [`AutoDelivery::Unchanged`] covers everything else
+    /// (no branch or worktree, no commits ahead of the integration branch, a merged task with
+    /// nothing new, nothing new). At a turn's end every step has to be finished; the agent's
+    /// `delivery_merge` delivers the finished part of the plan (SPEC-484 PLN-002).
     pub(crate) async fn try_auto_open_pr(
         &self,
         task_id: &TaskId,
+        ask: DeliveryAsk,
     ) -> Result<AutoDelivery, AutoDeliveryError> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
@@ -2817,9 +2849,7 @@ impl App {
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call
         // (a merged task's head is judged before them; a covered head only once: SPEC-425).
         let steps = store.steps(&task.id).await?;
-        let open_step = steps
-            .iter()
-            .find(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved));
+        let hold = plan_hold(&steps, ask);
         if steps.is_empty() && !self.branch_changed(&task).await? {
             return Ok(AutoDelivery::Unchanged);
         }
@@ -2849,11 +2879,7 @@ impl App {
             },
             None => None,
         };
-        if let Some(step) = open_step {
-            let reason = format!(
-                "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
-                step.title, step.status
-            );
+        if let Some(reason) = hold {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
@@ -2871,7 +2897,7 @@ impl App {
                 .has_changes(Path::new(&worktree))
                 .await
                 .unwrap_or(false);
-            if let Some(reason) = not_ready(&spec, steps.is_empty(), 0, dirty) {
+            if let Some(reason) = not_ready(&spec, &steps, ask, dirty) {
                 self.note_undelivered(&task, &worktree, &reason).await;
                 return Ok(AutoDelivery::Blocked(reason));
             }
@@ -2922,12 +2948,7 @@ impl App {
             return Ok(AutoDelivery::Unchanged);
         }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
-        if let Some(reason) = not_ready(
-            &observed.spec,
-            observed.steps.is_empty(),
-            observed.steps_open,
-            observed.dirty,
-        ) {
+        if let Some(reason) = not_ready(&observed.spec, &observed.steps, ask, observed.dirty) {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
@@ -3342,16 +3363,23 @@ impl App {
     // ---------------------------------------------------------------- merge
 
     /// `POST /api/tasks/{tid}/delivery/merge`: merges the task pull request with the profile's
-    /// method at the head that was checked, after the domain gates (spec, open steps, checks
-    /// per profile, current head). With `auto_promote`, promotes right after (policy). It acts
-    /// as the caller on GitHub, so the superadmin without a GitHub identity is told to merge on
-    /// GitHub (ACC-012).
+    /// method at the head that was checked, after the domain gates (spec, a finished part of the
+    /// plan and no step in progress, checks per profile, current head). With `auto_promote`,
+    /// promotes right after (policy). It acts as the caller on GitHub, so the superadmin without
+    /// a GitHub identity is told to merge on GitHub (ACC-012).
     ///
     /// # Errors
     /// `Conflict` refusals (including stale heads), `Forbidden` without a GitHub identity,
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
+        // A merge asked for now delivers the finished part of the plan, as the agent's call
+        // does: the work under way is finished first (SPEC-484 PLN-002). A merge armed earlier
+        // is not asked again: its agent may have started the next step meanwhile.
+        let steps = self.deps.store.steps(&task.id).await?;
+        if let Some(reason) = plan_hold(&steps, DeliveryAsk::Call) {
+            return Err(AppError::Conflict(format!("not merged: {reason}")));
+        }
         // A playground merges here, with no GitHub identity needed (SPEC-099), on green (SPEC-163).
         if self.dlv_sandbox_of(&task).await?.is_playground() {
             return self.playground_merge_now(&ctx.user, &task).await;

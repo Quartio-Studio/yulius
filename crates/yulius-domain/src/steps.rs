@@ -496,6 +496,69 @@ pub fn untouched(steps: &[StepState]) -> bool {
             .all(|s| matches!(s.status, StepStatus::Pending | StepStatus::Blocked))
 }
 
+/// The work still ahead: how many steps are neither done nor skipped, and the next of them (the
+/// first in progress, else the first pending, else the first blocked). `None` when nothing is.
+#[must_use]
+pub fn ahead(steps: &[StepState]) -> Option<(usize, &str)> {
+    let open = steps.iter().filter(|s| !s.status.is_resolved()).count();
+    let next = current(steps).or_else(|| steps.iter().position(|s| !s.status.is_resolved()))?;
+    Some((open, steps[next].title.as_str()))
+}
+
+/// Who asks for a task's head to be delivered (pushed, its pull request opened or updated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryAsk {
+    /// Yulius, by itself, when a turn ends: the whole plan is the unit, so a turn that ends
+    /// between two steps opens no pull request for half the work.
+    TurnEnd,
+    /// The agent's `delivery_merge`, which names a reviewed head: the finished part of the plan
+    /// goes out, and the steps still ahead wait for a later pull request (SPEC-484 PLN-002).
+    Call,
+}
+
+/// Why the plan holds a delivery, if it does (SPEC-484 PLN-002). A plan without steps holds
+/// none here (whether a task needs a plan is the caller's rule).
+///
+/// At a turn's end every step has to be finished. At the agent's call only a step in progress
+/// holds it (the work under way is not delivered half-done), and a plan with no finished step
+/// (there is no finished part).
+#[must_use]
+pub fn delivery_hold(steps: &[StepState], ask: DeliveryAsk) -> Option<String> {
+    let (open, _) = ahead(steps)?;
+    let finished = steps.iter().any(|s| s.status.is_resolved());
+    let working = steps.iter().find(|s| s.status == StepStatus::InProgress);
+    match ask {
+        DeliveryAsk::Call => match working {
+            Some(step) => Some(format!(
+                "step \"{}\" is in progress: finish it if this pull request delivers it, or set \
+                 it back to pending (`step_update`) when it belongs to a later one",
+                step.title
+            )),
+            None if !finished => Some(
+                "no step of the plan is finished: mark done what this pull request delivers \
+                 (`step_update`)"
+                    .to_owned(),
+            ),
+            None => None,
+        },
+        DeliveryAsk::TurnEnd => {
+            let first = steps.iter().find(|s| !s.status.is_resolved())?;
+            if finished && working.is_none() && first.status == StepStatus::Pending {
+                return Some(format!(
+                    "{open} step(s) are still ahead (next: \"{}\"): Yulius delivers by itself \
+                     once every step is finished; to deliver the finished part now, call \
+                     `delivery_merge` with its reviewed head",
+                    first.title
+                ));
+            }
+            Some(format!(
+                "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
+                first.title, first.status
+            ))
+        }
+    }
+}
+
 /// Words that name a phase of work rather than a slice of it.
 const PHASE_WORDS: [&str; 44] = [
     "a",
@@ -1098,6 +1161,92 @@ mod tests {
         ];
         let p = progress(&all_open);
         assert_eq!((p.percent(), p.active_percent()), (33, 67));
+    }
+
+    #[test]
+    fn a_call_delivers_the_finished_part_and_a_turn_end_the_whole_plan() {
+        use DeliveryAsk::{Call, TurnEnd};
+        // SPEC-484 PLN-002, the way task #465 ran: one slice finished, two ahead.
+        let slices = [
+            state("Slice 1", StepStatus::Done),
+            state("Slice 2", StepStatus::Pending),
+            state("Slice 3", StepStatus::Blocked),
+        ];
+        assert_eq!(ahead(&slices), Some((2, "Slice 2")));
+        assert_eq!(delivery_hold(&slices, Call), None);
+        assert_eq!(
+            delivery_hold(&slices, TurnEnd).as_deref(),
+            Some(
+                "2 step(s) are still ahead (next: \"Slice 2\"): Yulius delivers by itself once \
+                 every step is finished; to deliver the finished part now, call `delivery_merge` \
+                 with its reviewed head"
+            )
+        );
+        // The work under way is not delivered half-done, by either.
+        let working = [
+            state("Slice 1", StepStatus::Done),
+            state("Slice 2", StepStatus::Pending),
+            state("Review answered", StepStatus::InProgress),
+        ];
+        assert_eq!(ahead(&working), Some((2, "Review answered")));
+        assert_eq!(
+            delivery_hold(&working, Call).as_deref(),
+            Some(
+                "step \"Review answered\" is in progress: finish it if this pull request \
+                 delivers it, or set it back to pending (`step_update`) when it belongs to a \
+                 later one"
+            )
+        );
+        assert_eq!(
+            delivery_hold(&working, TurnEnd).as_deref(),
+            Some(
+                "step \"Slice 2\" is pending: finish it, or resolve it with `step_update` and a \
+                 note"
+            )
+        );
+        // No finished part: nothing to deliver.
+        let untouched = [
+            state("Slice 1", StepStatus::Pending),
+            state("Slice 2", StepStatus::Blocked),
+        ];
+        assert_eq!(
+            delivery_hold(&untouched, Call).as_deref(),
+            Some(
+                "no step of the plan is finished: mark done what this pull request delivers \
+                 (`step_update`)"
+            )
+        );
+        assert_eq!(
+            delivery_hold(&untouched, TurnEnd).as_deref(),
+            Some(
+                "step \"Slice 1\" is pending: finish it, or resolve it with `step_update` and a \
+                 note"
+            )
+        );
+        // A blocked step ahead of finished ones holds a turn's end as before, and no call.
+        let blocked = [
+            state("Slice 1", StepStatus::Skipped),
+            state("Slice 2", StepStatus::Blocked),
+        ];
+        assert_eq!(ahead(&blocked), Some((1, "Slice 2")));
+        assert_eq!(delivery_hold(&blocked, Call), None);
+        assert_eq!(
+            delivery_hold(&blocked, TurnEnd).as_deref(),
+            Some(
+                "step \"Slice 2\" is blocked: finish it, or resolve it with `step_update` and a \
+                 note"
+            )
+        );
+        // A finished plan, and no plan, hold nothing.
+        let finished = [
+            state("A", StepStatus::Done),
+            state("B", StepStatus::Skipped),
+        ];
+        for ask in [Call, TurnEnd] {
+            assert_eq!(delivery_hold(&finished, ask), None);
+            assert_eq!(delivery_hold(&[], ask), None);
+        }
+        assert_eq!(ahead(&finished), None);
     }
 
     #[test]

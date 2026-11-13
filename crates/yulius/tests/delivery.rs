@@ -4258,7 +4258,10 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
     let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
     assert_eq!(blocked["isError"], true, "{blocked}");
     let why = blocked["content"][0]["text"].as_str().unwrap_or_default();
-    assert!(why.contains("is in_progress"), "{why}");
+    assert!(
+        why.contains("step \"Step 1\" is in progress: finish it if this pull request delivers it"),
+        "{why}"
+    );
     assert_eq!(pulls_opened(), 0, "nothing opened");
     assert_eq!(
         wait_state(&f, &agent, &head).await?["merge_armed"],
@@ -4310,6 +4313,161 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
         follow_up,
         "not forced"
     );
+    Ok(())
+}
+
+/// SPEC-484 PLN-001 to PLN-003, the way task #465 ran on 2026-11-13 (one pull request per slice;
+/// it read "Step 6/6" with nine slices ahead, because a merge was refused while a later slice
+/// was a step): a task keeps every slice as a step from the start. The end of a turn delivers
+/// nothing while slices are ahead and says how to deliver the finished part; `delivery_merge`
+/// delivers and merges it, refused only while a step is in progress; the answer names what is
+/// ahead; the next slice goes out as a new pull request, and its armed merge is not undone by
+/// the step the agent starts meanwhile.
+#[tokio::test]
+async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    git(&wt, &["config", "user.name", "Bob"])?;
+    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
+    commit_file(&wt, "feature.txt", FEATURE, "Slice 1")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let slice1 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&slice1, ChecksState::Success);
+    let said = |result: &Value| {
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let progress = async || -> BoxResult<(u64, u64)> {
+        let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+        assert_eq!(task.status, StatusCode::OK, "{}", task.body);
+        Ok((
+            task.body["steps"]["done"].as_u64().ok_or("done")?,
+            task.body["steps"]["total"].as_u64().ok_or("total")?,
+        ))
+    };
+
+    // Three slices, the first finished. A turn's end delivers the whole plan only.
+    set_steps(&f, "t1", &["done", "pending", "pending"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 0, "{:?}", f.h.github.writes());
+    let waiting = wait_state(&f, &agent, &slice1).await?;
+    let note = waiting["push_problem"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("2 step(s) are still ahead (next: \"Step 1\")")
+            && note.contains("call `delivery_merge` with its reviewed head"),
+        "{waiting}"
+    );
+
+    // The work under way is finished first.
+    set_steps(&f, "t1", &["done", "in_progress", "pending"]).await?;
+    let merge = json!({"reviewed_head": slice1, "review_summary": "approve"});
+    let held = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert_eq!(held["isError"], true, "{held}");
+    assert!(
+        said(&held).contains(
+            "step \"Step 1\" is in progress: finish it if this pull request delivers it, or set \
+             it back to pending"
+        ),
+        "{held}"
+    );
+    assert_eq!(pulls_opened(&f), 0, "nothing opened");
+
+    // The finished part goes out and merges with two slices ahead, and the answer says so.
+    set_steps(&f, "t1", &["done", "pending", "pending"]).await?;
+    let merged = agent_tool(&f, &agent, "delivery_merge", merge).await?;
+    assert_eq!(merged["isError"], false, "{merged}");
+    let answer = said(&merged);
+    assert!(
+        answer.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")"),
+        "{answer}"
+    );
+    assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    assert_eq!(progress().await?, (1, 3), "the plan is the whole task");
+
+    // The second slice, on the branch brought up to date: committed and finished, with the
+    // third ahead.
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    commit_file(&wt, "slice2.txt", "second", "Slice 2")?;
+    let slice2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&slice2, ChecksState::Pending);
+    set_steps(&f, "t1", &["done", "done", "pending"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1, "a turn's end still waits for the plan");
+    let armed = arm_merge(&f, &agent, &slice2).await?;
+    assert_eq!(armed["armed"], true, "{armed}");
+    assert!(
+        armed["next"].as_str().is_some_and(
+            |next| next.contains("1 step(s) of your plan are still ahead (next: \"Step 2\")")
+        ),
+        "{armed}"
+    );
+    assert_eq!(pulls_opened(&f), 2, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, slice2, "pushed");
+    assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);
+
+    // The agent starts the third slice while the queue tests the second: the armed merge lands.
+    set_steps(&f, "t1", &["done", "done", "in_progress"]).await?;
+    f.h.github.set_checks(&slice2, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let outcome = wait_state(&f, &agent, &slice2).await?;
+    assert_eq!(
+        f.delivery("t1").await?["stage"],
+        "merged_integration",
+        "{outcome}"
+    );
+    assert!(
+        f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with("merge_pull #2")),
+        "{:?}",
+        f.h.github.writes()
+    );
+    let text = outcome["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("1 step(s) of your plan are still ahead (next: \"Step 2\")")
+            && !text.contains("end with your summary"),
+        "{outcome}"
+    );
+    assert_eq!(progress().await?, (2, 3));
+    Ok(())
+}
+
+/// SPEC-484 PLN-002: a plan none of whose steps is finished has no finished part to deliver.
+#[tokio::test]
+async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    set_steps(&f, "t1", &["pending", "blocked"]).await?;
+    let refused = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let why = refused["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("no step of the plan is finished: mark done what this pull request delivers"),
+        "{why}"
+    );
+    assert_eq!(pulls_opened(&f), 0, "{:?}", f.h.github.writes());
     Ok(())
 }
 
@@ -4513,7 +4671,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = merge_call(fix.clone()).await?;
     assert_eq!(blocked["isError"], true, "{blocked}");
-    assert!(merge_text(&blocked).contains("is in_progress"), "{blocked}");
+    assert!(merge_text(&blocked).contains("is in progress"), "{blocked}");
     assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
     set_steps(&f, "t1", &["done", "done"]).await?;
 
@@ -5117,7 +5275,7 @@ async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult 
 
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
-    assert!(refusal(&blocked).contains("is in_progress"), "{blocked}");
+    assert!(refusal(&blocked).contains("is in progress"), "{blocked}");
 
     // Resolved without a new commit; the next call fails reading the branch.
     set_steps(&f, "t1", &["done", "done"]).await?;
@@ -5125,7 +5283,7 @@ async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult 
     let failed = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
     let why = refusal(&failed);
     assert!(
-        why.contains("the object store is busy") && !why.contains("in_progress"),
+        why.contains("the object store is busy") && !why.contains("in progress"),
         "{why}"
     );
     f.git.fail_ahead_behind(None);
