@@ -326,9 +326,11 @@ the session's process has no language server among its children and the sandbox 
 `rust-analyzer` process; `claude plugin list` there: `rust-analyzer-lsp@claude-plugins-official
 … Status: ✘ disabled`.
 
-**Gates.** `scripts/dev ci` at 49d9ebfac (after it only this section and the spec's status
-changed): exit 0; `4217 tests run: 4217 passed, 17 skipped` (`gate2.log`; at e877462e9, before
-the review: 4213 passed, `gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
+**Gates.** `scripts/dev ci` at 2fd99c346, with dev merged (#1253): exit 0; `4220 tests run:
+4220 passed, 17 skipped` (`gate3.log`). After it only the decision index changed (dev's file
+plus the line of 0327; `scripts/dev check` exit 0) and this paragraph. Before the merge, at
+49d9ebfac: 4217 passed (`gate2.log`); before the review, at e877462e9: 4213 passed
+(`gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
 turned off in Yulius, for this project or the whole instance; nothing was scanned." (disabled,
 not passed). The end-to-end suite was not run: no web UI change.
 
