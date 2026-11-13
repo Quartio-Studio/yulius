@@ -228,20 +228,25 @@ no code path reaches; documents, texts shown to agents and people, and code that
   administrator with the project's slug in `slug`; a manual checkpoint is confirmed as before.
 
 - **VLR-001** For an agent secret with `auto_allow` off, binding a host it is not bound to
-  (`PATCH`, the answer to a host request), allowing `.env` copies and switching `auto_allow` on
-  need a browser session whose two-factor unlock is fresh: otherwise 403 `reauth_required`
+  (`PATCH`, the answer to a host request), allowing `.env` copies, allowing it for production
+  deploys and switching `auto_allow` on need a browser session whose two-factor unlock is
+  fresh: otherwise 403 `reauth_required`
   with the status (a session) or 403 `forbidden` naming the Secrets page (an API token), and
   nothing changes. A description, a name, a value, fewer or the same hosts, a dismissal and a
-  revocation need neither. A secret with `auto_allow` on is unchanged.
+  revocation need neither. A secret with `auto_allow` on is unchanged; an answer given without
+  the unlock because it was on holds only while it still is.
 - **VLR-002** The Secrets page asks for the code on those answers and repeats the request;
   closing the dialog leaves the request waiting and an edit form open. The mock refuses as the
   server does.
 - **VLR-003** While a sandbox's agent secrets cannot be read, its terminals show one notice and
-  no output, and ask again at the next chunk; once they can, output flows redacted.
+  no output, and ask again after a second or when a secret changes (not at every chunk); once
+  they can, output flows redacted.
 - **VLR-004** The proxy reads the values to redact before it sends a request and answers 503,
   sending nothing, when it cannot.
-- **VLR-005** An edit of a secret whose sealed value changed since it was read is refused (409)
-  and changes nothing.
+- **VLR-005** An edit of a secret, an agent's or the team's, whose sealed value changed since
+  it was read is refused (409) and changes nothing.
+- **VLR-006** An imported session's transcript and side files are copied up to 1 GiB together,
+  counted as they are read; past it the import is refused and the file in hand leaves no copy.
 
 ## Plan
 
@@ -252,7 +257,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles (merged, #1241)
 - [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
-- [ ] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation, reviewed
+- [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation, reviewed
 
 ## Acceptance criteria
 
@@ -333,16 +338,28 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-25** The remote MCP's `secret_update` (a new host) and `secret_hosts_answer` (allow) are
   refused for such a secret with "allowed use by use" and "Secrets page"; its description and a
   dismissal pass.
-- **AC-26** On the Secrets page, Allow of a host request, Allow of `.env` copies and Save of an
-  edit that lets agents set a secret up open the two-factor dialog first and complete after
-  the code; nothing is bound before it.
+- **AC-26** On the Secrets page, Allow of a host request, Allow of `.env` copies, the
+  production allowance and Save of an edit that lets agents set a secret up open the
+  two-factor dialog first and complete after the code; nothing changes before it. Closing the
+  dialog leaves a host request waiting with its Allow, and an edit form open as it was filled.
 - **AC-27** A terminal whose secrets fail to load shows the notice once and nothing of two
-  chunks holding a value; after a load it shows them redacted; without agent secrets output
-  passes.
+  chunks holding a value, asks again only after a second or for another generation; after a
+  load it shows them redacted; without agent secrets output passes. A Superagent's real
+  terminal with a secret that no longer opens shows the notice and none of a command's output
+  that ran; once that secret is deleted the next output shows.
 - **AC-28** A request through the proxy of a run whose secrets cannot be read answers 503
   ("nothing was sent") to a bound host and to a plain one, and the upstream sees nothing.
 - **AC-29** An update of a row whose ciphertext changed since it was read changes nothing and
-  reports no row.
+  reports no row; an overtaken team edit is a conflict that says reload.
+- **AC-30** Allowing a secret for production deploys answers 403 `forbidden` to a token and 403
+  `reauth_required` to a session without the unlock (the secret stays `not_allowed`), 200 with
+  it; revoking needs neither.
+- **AC-31** A host answer or `.env` allowance that names another `auto_allow` than the row has
+  changes nothing.
+- **AC-32** A file that states 0 bytes and holds 6 is refused with 5 left (no copy remains) and
+  takes 6 from a budget of 10.
+- **AC-33** The app's proxy policy has nothing to redact with for a sandbox one of whose secrets
+  no longer opens, and still has for another sandbox.
 
 ## Test plan
 
@@ -403,7 +420,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   then revokes it" and "a new agent secret lets agents set it up unless turned off" (AC-26),
   `yulius-app` `vault::terminal::tests::output_is_withheld_while_agent_secrets_cannot_be_read`
   (AC-27), `yulius-egress` `proxy::a_request_whose_answer_cannot_be_checked_for_secrets_is_not_sent`
-  (AC-28), `yulius-store` `an_edit_read_before_a_rotation_does_not_undo_it` (AC-29).
+  (AC-28), `yulius-store` `an_edit_read_before_a_rotation_does_not_undo_it` and `yulius-app`
+  `vault::team::tests::an_edit_overtaken_by_another_is_told_to_reload` (AC-29),
+  `cockpit::a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened` (AC-27),
+  `cd::production_gets_a_secret_agents_set_up` and `cd::production_secrets_need_their_own_allowance`
+  (AC-30), `yulius-store` `env_copies_change_only_from_what_was_seen` and its host-request test
+  (AC-31), `yulius-app` `session_docs::tests::side_files_are_copied_without_following_a_link`
+  (AC-32), `secrets::the_proxy_gets_nothing_to_redact_with_while_a_secret_cannot_be_opened`
+  (AC-33).
 
 ## Decisions
 
@@ -661,3 +685,49 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   navigation back from github.com): the routes are tested through the router with the cookie
   header set as a browser would.
 
+### Slice 5 (2026-11-13)
+
+- **Tests failing without their fix** (`target/audit/slice5/mutate.py`: one fix switched off,
+  its tests run, the file restored). The unlock (`fresh_to_widen` answering "not needed"):
+  `secrets::a_use_by_use_secret_goes_somewhere_new_only_after_two_factor`,
+  `secrets::agents_request_hosts_and_people_allow_them`,
+  `secrets::agents_bind_the_hosts_of_a_secret_they_set_up` and
+  `remote_mcp::secrets_are_managed_by_name_and_binding_only` failed. The proxy using an empty
+  set instead of refusing: `a_request_whose_answer_cannot_be_checked_for_secrets_is_not_sent`
+  failed. The terminal not withholding: `output_is_withheld_while_agent_secrets_cannot_be_read`
+  failed. `vault_update` without the value in its compare:
+  `an_edit_read_before_a_rotation_does_not_undo_it` failed.
+- **Slice 4's tests, as its reviewer asked** (the same way): the callback not asking for the
+  cookie: `a_github_sign_in_completes_only_in_the_browser_that_started_it` failed; no limit on
+  starts: `github_sign_in_starts_are_limited_per_client` failed; the production-stage command
+  without `may_deploy`: `delivery::a_production_environment_run_starts_in_production_containment`
+  failed.
+- **Web UI.** `cd e2e && npx e2e run` at `7f3379e06`: `Test Files 84 passed | 1 skipped (85)`,
+  `Tests 1018 passed | 1 skipped (1019)`, exit 0. (At `78c891dac` one test failed in the whole
+  suite and passed alone: `cd.e2e.ts` "a needs_you decision reads Decide, and an action alone
+  only To do", the known flake under load of issue #1175, in a page this slice does not touch.)
+- **Review of slice 5, round 1** (head 78c891dac): request changes, one major and seven minor
+  findings and two nits, all in this slice's code, all answered in it. Major: the copy budget
+  took a file's stated size, so a file growing while it was copied was not counted (now what
+  is read counts; the test with a file stating 0 failed before). Minor: a secret that never
+  opens made every chunk of output read and open all secrets and log (a retry after a second,
+  one log line; ADR-0317 no longer says it recovers by itself); allowing production deploys
+  was not asked for the code (it is); an answer given without the code because `auto_allow`
+  was on could land after it was switched off (the two store writes compare it); an overtaken
+  team edit answered 404 (409); the app's own failing paths were untested (a Superagent's real
+  terminal and the app's proxy policy with a secret whose key is gone); closing the code
+  dialog was untested (e2e, with "nothing before the code" for `.env`, production and the
+  switch). Nits: a doc comment on the wrong helper; the mock compared hosts as typed.
+- **Gate.** `scripts/dev ci` at `7f3379e06` (the review's answers; `78c891dac` before them:
+  4134 passed): exit 0; `4137 tests run: 4137 passed, 16 skipped`; doctor, repository check,
+  lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 4** (head f07fde13c): approve, no blocker or major. Its two minor findings
+  are fixed here (one byte budget for an imported session's transcript and side files; the
+  `busy` text), and of its five nits: tests for the cleared cookie and the plain-HTTP cookie
+  name, two consequences added to ADR-0316, the fail-before-fix runs above; `form_train` is
+  left as it is (Decisions).
+- **Not tested here.** The proxy process end to end with the app's policy failing (the proxy is
+  tested with a policy that has nothing to redact with, the app's policy on its own); a task
+  agent's terminal (the Superagent's goes through the same `scrub_output`). The two-factor
+  dialog over the open edit form is tested in the mock (e2e), not against a real server.
