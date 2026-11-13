@@ -2080,3 +2080,25 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested, besides the list above:** a failed clone through the application (the
   adapter's clone from an address where nothing listens is); a clone with more refs than
   the runner reads in one answer (16 MiB).
+
+### Slice 12 (2026-11-13)
+
+- **Slice 11's delivery.** Pull request #1252 merged into `dev` at 67ab28d09, whose own
+  Yulius CI run passed; the fresh reviewer approved that head in its second round ("every
+  round-1 finding (R1–R5, N1–N5) is answered"; two nits, answered here: the folders a
+  transfer only reads, and the index line of ADR-0323).
+- **Tests failing without their fix** (`target/audit/slice12/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): an agent run given a production secret; the old hosts
+  kept; their removal not written to the audit log; every secret's hosts removed; a
+  production secret with hosts inserted; what a transfer only reads granted for writing.
+- **The suites:** `2884 tests run: 2884 passed` for the four crates touched
+  (`target/audit/slice12-suite1.log`); the secrets page's e2e file, `30 passed`
+  (`target/audit/slice12-e2e.log`), with the part about a production secret's old hosts
+  removed from it.
+- **Gate.** `scripts/dev ci` at `a05564671`: exit 0; `4205 tests run: 4205 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** Whether any instance holds a production secret with hosts (the migration
+  changes nothing where none does; the audit line shows it where one did); the whole e2e
+  suite (one page's file changed, and its file was run).
