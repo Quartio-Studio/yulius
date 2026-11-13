@@ -25,6 +25,8 @@ pub struct Unfinished {
     /// A usage limit was met while they were unfinished and nothing showed it over since: the
     /// reset it named, if it named one.
     limit: Option<Option<Timestamp>>,
+    /// A prompt reached the thread after that limit: work on it shows the limit over.
+    prompted: bool,
 }
 
 impl Unfinished {
@@ -35,7 +37,8 @@ impl Unfinished {
     ///   ended with no notification (stopped in the terminal, which leaves no record) is over
     ///   once that is less than the runs known, the oldest first.
     /// - A limit met while runs are unfinished pauses them, until a launch, their end or the
-    ///   thread's own work (the model answers again).
+    ///   thread's work on a prompt that came after the limit (the model answers again; an
+    ///   answer that was under way when an agent was refused shows nothing).
     pub fn observe(&mut self, observation: &Observation) {
         match observation {
             Observation::WorkflowLaunched { task, run } => {
@@ -57,15 +60,23 @@ impl Unfinished {
             Observation::LimitReached { resets_at, .. }
             | Observation::WorkflowLimitReached { resets_at, .. } => {
                 self.limit = Some(*resets_at);
+                self.prompted = false;
             }
-            Observation::AccessLost { .. } => self.limit = Some(None),
-            Observation::AgentWork { at: Some(_) } | Observation::TurnComplete { at: Some(_) } => {
+            Observation::AccessLost { .. } => {
+                self.limit = Some(None);
+                self.prompted = false;
+            }
+            Observation::UserTurn { .. } => self.prompted = self.limit.is_some(),
+            Observation::AgentWork { at: Some(_) } | Observation::TurnComplete { at: Some(_) }
+                if self.prompted =>
+            {
                 self.limit = None;
             }
             _ => {}
         }
-        if self.runs.is_empty() {
+        if self.runs.is_empty() || self.limit.is_none() {
             self.limit = None;
+            self.prompted = false;
         }
     }
 
@@ -94,6 +105,7 @@ impl Unfinished {
     /// ends the old launches), so a launch that fails still knows them.
     pub fn relaunched(&mut self) {
         self.limit = None;
+        self.prompted = false;
     }
 }
 
@@ -132,11 +144,10 @@ pub fn resume_prompt(after: Option<&str>, runs: &[String]) -> String {
 pub fn paused_context(runs: &[String]) -> String {
     format!(
         "Note from Yulius: this session's dynamic workflow ({}) is paused at a usage limit. \
-         Claude Code continues it by itself when the limit resets, and Yulius moves the session \
-         to another subscription when one can run it. Do not start that workflow again from the \
-         beginning: the results of its finished agents are kept. To continue it yourself, stop \
-         the paused run and call the Workflow tool with its scriptPath and its run id \
-         (resumeFromRunId).",
+         Claude Code continues it by itself when the limit resets. Do not start that workflow \
+         again from the beginning: the results of its finished agents are kept. To continue it \
+         yourself, stop the paused run and call the Workflow tool with its scriptPath and its \
+         run id (resumeFromRunId).",
         named(runs)
     )
 }
@@ -291,18 +302,37 @@ mod tests {
             fold(&[launched("w1", "wf_a"), limit(None), ended("w1")]).paused(NOW),
             None
         );
-        // The thread's model answers again: the limit is over. A sub-agent's answer (no time)
-        // says nothing.
+        // The thread's model answers a prompt that came after the limit: the limit is over.
+        // The answer that was under way when the agents were refused, a prompt nothing
+        // answered, and a sub-agent's answer (no time) say nothing.
         let work = Observation::AgentWork {
             at: Some(Timestamp(5)),
         };
+        let prompt = Observation::UserTurn {
+            at: Some(Timestamp(4)),
+            wake: false,
+        };
         assert_eq!(
-            fold(&[launched("w1", "wf_a"), limit(None), work]).paused(NOW),
+            fold(&[
+                launched("w1", "wf_a"),
+                agents_limit(None),
+                prompt.clone(),
+                work.clone()
+            ])
+            .paused(NOW),
             None
+        );
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), agents_limit(None), work]).paused(NOW),
+            run
+        );
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), agents_limit(None), prompt.clone()]).paused(NOW),
+            run
         );
         let side = Observation::TurnComplete { at: None };
         assert_eq!(
-            fold(&[launched("w1", "wf_a"), limit(None), side]).paused(NOW),
+            fold(&[launched("w1", "wf_a"), limit(None), prompt, side]).paused(NOW),
             run
         );
         // The reset it named: paused before it, not from it on.

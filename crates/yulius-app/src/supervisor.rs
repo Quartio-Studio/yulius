@@ -4680,6 +4680,21 @@ impl App {
                     continue;
                 }
             };
+            // A workflow agent's limit of another model than the session runs is not the
+            // session's (SPEC-486 WFL-002): it goes into the subscription's reading when it is
+            // read live, and never into what is known of the session.
+            let family = self.run_family_of(&attempt).await;
+            let (other_models, observations): (Vec<_>, Vec<_>) = observations
+                .into_iter()
+                .partition(|observation| binds_another_model(observation, family));
+            for limit in other_models {
+                if let (false, Some(account), Some(limit)) =
+                    (catching_up, &attempt.account_id, reported_limit(&limit))
+                {
+                    tracing::info!(task = %task_id, ?limit, "a workflow agent's model is at its limit");
+                    self.record_limit(account, limit, family).await;
+                }
+            }
             for observation in &observations {
                 facts.fold(observation);
             }
@@ -4811,27 +4826,16 @@ impl App {
                 scope,
                 at,
             } => {
+                // One that binds the model the session runs (the watcher keeps the others to
+                // the subscription's reading): the session cannot go on here either, whatever
+                // its own thread is doing (its next request would be refused).
+                tracing::info!(task = %task_id, %message, ?scope, "usage limit reached by a workflow's agent");
                 let limit = ReportedLimit {
                     scope,
                     window_minutes,
                     resets_at,
                 };
-                let family = self.run_family_of(attempt).await;
-                // A limit of another model than the session runs is that agent's alone
-                // (SPEC-486 WFL-002): the subscription's reading keeps it, and the session
-                // stays where its own model still runs.
-                if matches!(scope, yulius_domain::usage::LimitScope::Model(Some(other)) if other != family)
-                {
-                    tracing::info!(task = %task_id, %message, ?scope, "a workflow agent's model is at its limit");
-                    if let Some(account) = &attempt.account_id {
-                        self.record_limit(account, limit, family).await;
-                    }
-                } else {
-                    // The session cannot go on here either: it is at that limit, whatever its
-                    // own thread is doing (its next request would be refused).
-                    tracing::info!(task = %task_id, %message, ?scope, "usage limit reached by a workflow's agent");
-                    self.limit_met(task_id, attempt, limit, at).await;
-                }
+                self.limit_met(task_id, attempt, limit, at).await;
             }
             Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
@@ -5129,6 +5133,35 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Whether `observation` is a workflow agent's limit of another model family than `family`, the
+/// one the session's run was launched with (SPEC-486 WFL-002): that agent's alone.
+fn binds_another_model(observation: &Observation, family: ModelFamily) -> bool {
+    matches!(
+        observation,
+        Observation::WorkflowLimitReached {
+            scope: yulius_domain::usage::LimitScope::Model(Some(other)),
+            ..
+        } if *other != family
+    )
+}
+
+/// The limit a workflow agent's limit observation reports.
+fn reported_limit(observation: &Observation) -> Option<ReportedLimit> {
+    match observation {
+        Observation::WorkflowLimitReached {
+            resets_at,
+            window_minutes,
+            scope,
+            ..
+        } => Some(ReportedLimit {
+            scope: *scope,
+            window_minutes: *window_minutes,
+            resets_at: *resets_at,
+        }),
+        _ => None,
     }
 }
 

@@ -34,6 +34,9 @@ const TASK_FILE: &str = "fake-task";
 /// How long an agent of a run takes.
 const AGENT_TIME: std::time::Duration = std::time::Duration::from_millis(30);
 
+/// The model the run's agents are answered by: a task's default one, which its session runs.
+const AGENT_MODEL: &str = "claude-fable-5-2";
+
 /// The workflow's name (`meta.name` of its script).
 const NAME: &str = "fake-wave";
 
@@ -145,7 +148,7 @@ fn agent_finishes(layout: &Layout, session: &str, run: &str, label: &str) -> io:
     let answer = format!("{label} done");
     let message = json!({
         "id": format!("msg_fake_{agent}"), "type": "message", "role": "assistant",
-        "model": "fake-model", "content": [{"type": "text", "text": answer}],
+        "model": AGENT_MODEL, "content": [{"type": "text", "text": answer}],
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 7, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0, "output_tokens": 3},

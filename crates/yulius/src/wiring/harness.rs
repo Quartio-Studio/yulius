@@ -1,5 +1,6 @@
 //! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 structures).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -398,6 +399,8 @@ struct WorkflowLimits {
     /// The thread's own limit stands, or a workflow agent's was reported: nothing more to say
     /// until a prompt reaches the thread.
     said: bool,
+    /// The models the workflows' agents run.
+    agents: WorkflowAgents,
 }
 
 /// A workflow agent's limit and what decides whether it is news.
@@ -411,21 +414,24 @@ struct HeldLimit {
 impl WorkflowLimits {
     /// A line of the workflow agent's transcript `agent` said `observed`.
     fn side(&mut self, agent: &Path, observed: Observed) {
-        let Observed::LimitReached {
-            resets_at,
-            message,
-            window_minutes,
-            scope,
-            at,
-        } = observed
-        else {
-            return;
+        let (resets_at, message, window_minutes, scope, at) = match observed {
+            Observed::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => (resets_at, message, window_minutes, scope, at),
+            Observed::AssistantMessage {
+                model: Some(model), ..
+            } => return self.agents.answered(agent, &model),
+            _ => return,
         };
         if self.held.as_ref().is_some_and(|held| held.at > at) {
             return;
         }
         // A limit of "the model that runs" is that agent's model's (WFL-002).
-        let Some(scope) = agent_scope(agent, scope) else {
+        let Some(scope) = self.agents.scope(agent, scope) else {
             return;
         };
         self.held = Some(HeldLimit {
@@ -479,28 +485,104 @@ impl WorkflowLimits {
 /// Longest `agent-<id>.meta.json` read.
 const AGENT_META_BYTES: u64 = 64 * 1024;
 
-/// What a limit of scope `scope`, met by the workflow agent whose transcript is `agent`, binds
-/// (SPEC-486 WFL-002). A limit of "the model that runs" (`LimitScope::Model(None)`) is of that
-/// agent's model, which its `agent-<id>.meta.json` names when the workflow's script gave it one
-/// (`model`, an id or an alias) and leaves out when the agent runs the session's. `None` when
-/// that cannot be told (the file cannot be read, or names a model of no known family): such a
-/// limit is not reported.
-fn agent_scope(agent: &Path, scope: LimitScope) -> Option<LimitScope> {
-    if scope != LimitScope::Model(None) {
-        return Some(scope);
-    }
-    let meta = agent.with_extension("meta.json");
-    let file = tail::open_regular(&meta).ok()?;
+/// What an agent's `agent-<id>.meta.json` says of the model it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentMeta {
+    /// The model the workflow's script gave the agent (`model`, an id or an alias).
+    model: Option<String>,
+    /// The agent is of the workflow's default type (`agentType: "workflow-subagent"`), which
+    /// has no model of its own; another agent type may name one in its definition, which the
+    /// meta file does not repeat.
+    default_type: bool,
+}
+
+/// The meta file beside the workflow agent's transcript `agent`; `None` when it cannot be read
+/// as one (the folder is the agent's to write: a link is not followed).
+fn read_agent_meta(agent: &Path) -> Option<AgentMeta> {
+    let file = tail::open_regular(&agent.with_extension("meta.json")).ok()?;
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::Read::take(file, AGENT_META_BYTES), &mut text)
         .ok()?;
     let meta: serde_json::Value = serde_json::from_str(&text).ok()?;
-    match meta.get("model") {
-        None | Some(serde_json::Value::Null) => Some(LimitScope::Model(None)),
-        Some(model) => match ModelFamily::of(model.as_str()) {
-            ModelFamily::Any => None,
-            family => Some(LimitScope::Model(Some(family))),
-        },
+    let model = match meta.get("model") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(model) => Some(model.as_str()?.to_owned()),
+    };
+    Some(AgentMeta {
+        model,
+        default_type: meta.get("agentType").and_then(serde_json::Value::as_str)
+            == Some("workflow-subagent"),
+    })
+}
+
+/// The models a session's workflow agents run, as far as their files say (SPEC-486 WFL-002).
+/// A limit of "the model that runs" (`LimitScope::Model(None)`, a model's usage credits) met by
+/// a workflow's agent is of that agent's model, which is not always the session's: the script
+/// may give an agent a model, an agent type may have one, and the environment may give every
+/// workflow agent one (`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`). Claude Code 2.1.323 writes the
+/// first to the agent's meta file and none of the others anywhere but in the records the model
+/// answered. Bounded by the workflow agents' files followed.
+#[derive(Debug, Default)]
+struct WorkflowAgents {
+    /// Each agent's meta file, read once.
+    metas: BTreeMap<PathBuf, Option<AgentMeta>>,
+    /// The model each agent's own answered records name.
+    answered: BTreeMap<PathBuf, String>,
+    /// For each run's folder, the model an agent of the default type with no model of its own
+    /// was answered by: what such an agent of that run runs.
+    defaults: BTreeMap<PathBuf, String>,
+}
+
+impl WorkflowAgents {
+    fn meta(&mut self, agent: &Path) -> Option<AgentMeta> {
+        self.metas
+            .entry(agent.to_path_buf())
+            .or_insert_with(|| read_agent_meta(agent))
+            .clone()
+    }
+
+    /// A record of `agent`'s transcript says `model` answered it.
+    fn answered(&mut self, agent: &Path, model: &str) {
+        if self.answered.get(agent).map(String::as_str) == Some(model) {
+            return;
+        }
+        self.answered.insert(agent.to_path_buf(), model.to_owned());
+        let plain = self
+            .meta(agent)
+            .is_some_and(|meta| meta.default_type && meta.model.is_none());
+        if let (true, Some(run)) = (plain, agent.parent()) {
+            self.defaults.insert(run.to_path_buf(), model.to_owned());
+        }
+    }
+
+    /// What a limit of scope `scope`, met by the workflow agent whose transcript is `agent`,
+    /// binds. A limit of the subscription or of a named family is what it says. A limit of
+    /// "the model that runs" is of the family of the agent's model: the one its script gave
+    /// it, else the one that answered it before, else, for an agent of the default type, the
+    /// one that answered such agents of its run. With none of these such an agent runs the
+    /// session's model (`Model(None)`). `None` when the model cannot be told (no meta file, an
+    /// agent type of its own that was never answered) or is of no family with a limit of its
+    /// own: such a limit is not reported.
+    fn scope(&mut self, agent: &Path, scope: LimitScope) -> Option<LimitScope> {
+        if scope != LimitScope::Model(None) {
+            return Some(scope);
+        }
+        let meta = self.meta(agent)?;
+        let known = meta
+            .model
+            .as_ref()
+            .or_else(|| self.answered.get(agent))
+            .or_else(|| {
+                let run = agent.parent().filter(|_| meta.default_type)?;
+                self.defaults.get(run)
+            });
+        match known {
+            Some(model) => match ModelFamily::of(Some(model)) {
+                ModelFamily::Any => None,
+                family => Some(LimitScope::Model(Some(family))),
+            },
+            None => meta.default_type.then_some(LimitScope::Model(None)),
+        }
     }
 }
 
@@ -890,97 +972,123 @@ mod tests {
         assert_eq!(limits.report(true, now), None);
     }
 
-    /// SPEC-486 WFL-002: a limit of "the model that runs", met by a workflow's agent, is of
-    /// that agent's model. Its `agent-<id>.meta.json` names the model the script gave it (an
-    /// id or an alias, as Claude Code 2.1.323 writes it) and nothing when it runs the
-    /// session's. A limit of the subscription, or one that names its family, is what it says.
+    /// SPEC-486 WFL-002: a limit of "the model that runs", met by a workflow's agent, is of that
+    /// agent's model, told from what its files say. The meta files are shaped as Claude Code
+    /// 2.1.323 writes them (probe runs): `model` only when the script gave the agent one; an
+    /// agent type with a model of its own, and a session whose environment gives every workflow
+    /// agent a model, leave no trace there, only in the records the model answered.
     #[test]
     fn a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let unnamed = LimitScope::Model(None);
-        let with_meta = |name: &str, meta: Option<&str>| -> std::io::Result<PathBuf> {
-            let agent = dir.path().join(format!("agent-{name}.jsonl"));
+        let family = |family| Some(LimitScope::Model(Some(family)));
+        // An agent's transcript path in run folder `run`, with its meta file when `meta` is one.
+        let agent = |run: &str, name: &str, meta: Option<&str>| -> std::io::Result<PathBuf> {
+            let folder = dir.path().join(run);
+            std::fs::create_dir_all(&folder)?;
             if let Some(meta) = meta {
-                std::fs::write(dir.path().join(format!("agent-{name}.meta.json")), meta)?;
+                std::fs::write(folder.join(format!("agent-{name}.meta.json")), meta)?;
             }
-            Ok(agent)
+            Ok(folder.join(format!("agent-{name}.jsonl")))
         };
-        // The session's model: no `model` in the file.
-        let inherits = with_meta(
-            "a",
-            Some(
-                r#"{"agentType":"workflow-subagent","description":"alpha","pickedEffortModel":"claude-sonnet-4-5"}"#,
-            ),
-        )?;
-        assert_eq!(agent_scope(&inherits, unnamed), Some(unnamed));
-        // A model of its own, as an id and as an alias.
-        let opus = with_meta(
+        const PLAIN: &str = r#"{"agentType":"workflow-subagent","isBuiltIn":true,"description":"alpha","workflowPhase":"Wave","spawnDepth":1,"pickedEffortModel":"claude-sonnet-4-5"}"#;
+        const PINNED: &str = r#"{"agentType":"pinned","isBuiltIn":false,"description":"beta","workflowPhase":"Wave","spawnDepth":1,"pickedEffortModel":"claude-sonnet-4-5"}"#;
+
+        // The default type, nothing else known: the session's model.
+        let mut agents = WorkflowAgents::default();
+        let plain = agent("wf_1", "a", Some(PLAIN))?;
+        assert_eq!(agents.scope(&plain, unnamed), Some(unnamed));
+        // A model the script gave it, as an id and as an alias (`pickedEffortModel` is the
+        // session's either way).
+        let opus = agent(
+            "wf_1",
             "b",
             Some(
                 r#"{"agentType":"workflow-subagent","model":"claude-opus-4-5","pickedEffortModel":"claude-sonnet-4-5"}"#,
             ),
         )?;
-        assert_eq!(
-            agent_scope(&opus, unnamed),
-            Some(LimitScope::Model(Some(ModelFamily::Opus)))
-        );
-        let alias = with_meta("c", Some(r#"{"model":"sonnet"}"#))?;
-        assert_eq!(
-            agent_scope(&alias, unnamed),
-            Some(LimitScope::Model(Some(ModelFamily::Sonnet)))
-        );
-        // Whose model cannot be told: a model of no known family, no file, a file that is not
-        // one, a link.
-        for (name, meta) in [
-            ("d", Some(r#"{"model":"haiku"}"#)),
-            ("e", None),
-            ("f", Some("[")),
-        ] {
+        assert_eq!(agents.scope(&opus, unnamed), family(ModelFamily::Opus));
+        let alias = agent(
+            "wf_1",
+            "c",
+            Some(r#"{"agentType":"pinned","model":"sonnet"}"#),
+        )?;
+        assert_eq!(agents.scope(&alias, unnamed), family(ModelFamily::Sonnet));
+        // An agent type of its own: its definition may name a model, which the meta file does
+        // not repeat. Never answered: cannot be told. Answered before: that model's family.
+        let pinned = agent("wf_1", "d", Some(PINNED))?;
+        assert_eq!(agents.scope(&pinned, unnamed), None);
+        agents.answered(&pinned, "claude-opus-5-5");
+        assert_eq!(agents.scope(&pinned, unnamed), family(ModelFamily::Opus));
+        // Its answers say nothing of the default type's agents.
+        assert_eq!(agents.scope(&plain, unnamed), Some(unnamed));
+        // The default type's agents of a run answered by another model than the session's (the
+        // environment gives workflow agents one): a later agent of that run, refused at its
+        // first request, runs that model. Another run's agents are not told by it.
+        let mut agents = WorkflowAgents::default();
+        let first = agent("wf_2", "a", Some(PLAIN))?;
+        let later = agent("wf_2", "b", Some(PLAIN))?;
+        agents.answered(&first, "claude-opus-5-5");
+        assert_eq!(agents.scope(&later, unnamed), family(ModelFamily::Opus));
+        assert_eq!(agents.scope(&first, unnamed), family(ModelFamily::Opus));
+        let elsewhere = agent("wf_3", "a", Some(PLAIN))?;
+        assert_eq!(agents.scope(&elsewhere, unnamed), Some(unnamed));
+        // A model of no family with a limit of its own: nothing to report.
+        agents.answered(&elsewhere, "claude-haiku-5-5");
+        assert_eq!(agents.scope(&elsewhere, unnamed), None);
+        let haiku = agent(
+            "wf_4",
+            "a",
+            Some(r#"{"agentType":"workflow-subagent","model":"haiku"}"#),
+        )?;
+        assert_eq!(agents.scope(&haiku, unnamed), None);
+        // No meta file, one that is not one, a model that is no text, a link: cannot be told.
+        let mut agents = WorkflowAgents::default();
+        for (name, meta) in [("e", None), ("f", Some("[")), ("g", Some(r#"{"model":7}"#))] {
             assert_eq!(
-                agent_scope(&with_meta(name, meta)?, unnamed),
+                agents.scope(&agent("wf_5", name, meta)?, unnamed),
                 None,
                 "{name}"
             );
         }
         #[cfg(unix)]
         {
-            let linked = with_meta("g", None)?;
+            let linked = agent("wf_5", "h", None)?;
             std::os::unix::fs::symlink(
-                dir.path().join("agent-b.meta.json"),
-                dir.path().join("agent-g.meta.json"),
+                dir.path().join("wf_1").join("agent-a.meta.json"),
+                dir.path().join("wf_5").join("agent-h.meta.json"),
             )?;
-            assert_eq!(agent_scope(&linked, unnamed), None, "a link is not read");
+            assert_eq!(agents.scope(&linked, unnamed), None, "a link is not read");
         }
-        // What the record itself says is kept, file or not.
+        // What the record itself says is kept, whatever the files say.
         let named = LimitScope::Model(Some(ModelFamily::Fable));
         for scope in [LimitScope::Account, named] {
-            assert_eq!(agent_scope(&with_meta("e", None)?, scope), Some(scope));
-            assert_eq!(agent_scope(&opus, scope), Some(scope));
+            assert_eq!(agents.scope(&agent("wf_5", "e", None)?, scope), Some(scope));
+            assert_eq!(agents.scope(&opus, scope), Some(scope));
         }
-        // Through the watch's rules: one whose model cannot be told is not held.
+        // Through the watch's rules: an agent's answers are heard from its lines, and a limit
+        // whose model cannot be told is not held.
+        let credits = |ms: i64| Observed::LimitReached {
+            resets_at: None,
+            message: "out of usage credits".into(),
+            window_minutes: None,
+            scope: unnamed,
+            at: Some(Timestamp(ms)),
+        };
         let mut limits = WorkflowLimits::default();
-        limits.side(
-            &with_meta("e", None)?,
-            Observed::LimitReached {
-                resets_at: None,
-                message: "out of usage credits".into(),
-                window_minutes: None,
-                scope: unnamed,
-                at: Some(Timestamp(10)),
-            },
-        );
+        let pinned = agent("wf_6", "d", Some(PINNED))?;
+        limits.side(&pinned, credits(10));
         assert_eq!(limits.report(true, Timestamp(100)), None);
         limits.side(
-            &opus,
-            Observed::LimitReached {
-                resets_at: None,
-                message: "out of usage credits".into(),
-                window_minutes: None,
-                scope: unnamed,
-                at: Some(Timestamp(10)),
+            &pinned,
+            Observed::AssistantMessage {
+                message_id: "m1".into(),
+                model: Some("claude-opus-5-5".into()),
+                usage: yulius_domain::usage::TokenUsage::UNKNOWN,
             },
         );
+        limits.side(&pinned, credits(20));
         assert!(matches!(
             limits.report(true, Timestamp(100)),
             Some(Observation::WorkflowLimitReached {
