@@ -1103,6 +1103,9 @@ impl App {
                 .store
                 .set_activity(task_id, Some(next), self.now())
                 .await;
+            if next == Activity::Working {
+                self.pr_news_turn_began(task_id);
+            }
             self.publish_task(task_id).await;
         }
         self.probe_idle_shells(task_id).await;

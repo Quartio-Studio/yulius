@@ -367,6 +367,63 @@ fn short(sha: &str) -> &str {
 /// task reads no file.
 pub(crate) type ToldCache = std::sync::Mutex<Option<BTreeMap<String, Told>>>;
 
+/// How long (ms) news the watch typed counts as due while the turn it starts has not begun: a
+/// paste Claude Code swallowed must not hold a chain for ever (SPEC-487 CHN-002).
+pub const NEWS_TURN_WAIT_MS: i64 = 2 * 60 * 1000;
+
+/// Whether the watch still has to tell of pull request `pr`'s merge: it tells a merge only to a
+/// task it saw with that pull request open, once (PRN-005, PRN-007).
+fn merge_untold(told: &Told, pr: u64) -> bool {
+    told.pr == pr && !told.keys.contains_key("merged")
+}
+
+/// The key under which the watch tells how an armed merge of `head` ended (`text`).
+fn outcome_key(head: &str, text: &str) -> String {
+    format!("{}:{}", short(head), fingerprint(text))
+}
+
+/// What [`App::pr_news_due`] reads about one running task.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NewsFacts {
+    /// A merge is armed or being decided.
+    pub armed: bool,
+    /// The watch types nothing into it now: a person paused it, or an update holds the runs.
+    pub held: bool,
+    /// News was typed and its turn has not begun, for less than [`NEWS_TURN_WAIT_MS`].
+    pub typed: bool,
+    /// Its pull request and whether it is merged, when it has one.
+    pub pull: Option<(u64, bool)>,
+    /// How its last armed merge ended (its head and the line for the agent), when it has one.
+    pub outcome: Option<(String, String)>,
+    /// Its sandbox is a playground: the watch tells its tasks nothing.
+    pub playground: bool,
+}
+
+/// Whether Yulius still has news of a running task's pull request for its agent (SPEC-487
+/// CHN-001, CHN-002): a merge armed or being decided, whatever else holds (Yulius merges a
+/// paused task's pull request too); otherwise, for a task the watch types into: news typed
+/// whose turn has not begun, a merge the watch saw open and has not told, or an armed merge
+/// that ended without merging and was not explained yet.
+pub(crate) fn news_due(facts: &NewsFacts, told: &Told) -> bool {
+    if facts.armed {
+        return true;
+    }
+    if facts.held || facts.playground {
+        return false;
+    }
+    if facts.typed {
+        return true;
+    }
+    match (facts.pull, &facts.outcome) {
+        (Some((pr, true)), _) => merge_untold(told, pr),
+        (Some((_, false)), Some((head, text))) => {
+            told.keys.get("outcome") != Some(&outcome_key(head, text))
+        }
+        _ => false,
+    }
+}
+
+/// What [`PR_NOTICES_FILE`] holds: what the watch told each task.
 fn read_notices(path: &std::path::Path) -> BTreeMap<String, Told> {
     std::fs::read(path)
         .ok()
@@ -404,7 +461,7 @@ impl App {
     /// was not told yet; returns the tasks and what was typed.
     pub async fn watch_prs(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
         let path = self.config.data_dir.join(PR_NOTICES_FILE);
-        let saved = self.pr_notices();
+        let saved = self.with_pr_notices(Clone::clone);
         let attempts = match self.deps.store.live_attempts().await {
             Ok(attempts) => attempts,
             Err(err) => {
@@ -463,6 +520,11 @@ impl App {
                     {
                         Ok(()) => {
                             tracing::info!(task = %task.id, pr = facts.pr, "told the task about its pull request");
+                            // Until the turn this starts has begun, the task goes on by itself
+                            // (SPEC-487 CHN-002).
+                            runtime
+                                .pr_news_typed_ms
+                                .store(self.now().0, Ordering::SeqCst);
                             typed.push((task.id.clone(), text));
                             next
                         }
@@ -520,61 +582,75 @@ impl App {
         typed
     }
 
-    /// What the watch told each task: as saved, read from the file once per server.
-    fn pr_notices(&self) -> BTreeMap<String, Told> {
+    /// What the watch told each task, as saved: read from the file once per server (at its
+    /// first pass or the first question about a task), then kept with every save.
+    fn with_pr_notices<T>(&self, read: impl FnOnce(&BTreeMap<String, Told>) -> T) -> T {
         let mut cache = self
             .pr_told
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache
-            .get_or_insert_with(|| {
-                let _guard = NOTICES_FILE_LOCK
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                read_notices(&self.config.data_dir.join(PR_NOTICES_FILE))
-            })
-            .clone()
+        read(cache.get_or_insert_with(|| {
+            let _guard = NOTICES_FILE_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            read_notices(&self.config.data_dir.join(PR_NOTICES_FILE))
+        }))
     }
 
-    /// Whether Yulius still has news of `task`'s pull request for its agent (SPEC-487 CHN-001,
-    /// CHN-002): a merge is armed or being decided (Yulius merges and says so), an armed merge
-    /// ended without merging and the watch has not said how, or the pull request is merged and
-    /// the watch, which saw it open, has not said so. Its agent goes on by itself once told, so
-    /// the task is neither Done nor a person's turn until then.
+    /// The turn of what the watch typed into `task`'s session has begun: the task reads
+    /// Working (SPEC-487 CHN-002).
+    pub(crate) fn pr_news_turn_began(&self, task: &TaskId) {
+        if let Some(runtime) = self.existing_runtime(task) {
+            runtime.pr_news_typed_ms.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether Yulius still has news of `task`'s pull request for its agent ([`news_due`];
+    /// SPEC-487 CHN-001, CHN-002). Its agent goes on by itself once told, so the task is
+    /// neither Done nor a person's turn until then.
     pub(crate) async fn pr_news_due(&self, task: &TaskRecord) -> bool {
         if task.status != TaskStatus::Running {
             return false;
         }
-        let (armed, outcome) = self.armed_view(&task.id);
-        if armed {
+        if self.merge_is_armed(&task.id) {
             return true;
         }
-        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
-            return false;
+        let store = &self.deps.store;
+        // As the watch decides whom it types to.
+        let held =
+            self.update_holds_starts() || !matches!(store.open_pause(&task.id).await, Ok(None));
+        let typed_ms = self
+            .existing_runtime(&task.id)
+            .map_or(0, |runtime| runtime.pr_news_typed_ms.load(Ordering::SeqCst));
+        let typed = typed_ms > 0 && self.now().0.saturating_sub(typed_ms) < NEWS_TURN_WAIT_MS;
+        let record = store.delivery(&task.id).await.ok().flatten();
+        let pull = record.as_ref().and_then(|record| {
+            let merged = past_merge(&record.stage);
+            (merged || record.stage == DeliveryStage::PrOpen)
+                .then_some(record.pr_number)
+                .flatten()
+                .map(|pr| (pr, merged))
+        });
+        let outcome = self.armed_view(&task.id).1;
+        // Asked only where it decides: an armed merge that ended on an open pull request.
+        let playground = matches!(pull, Some((_, false)))
+            && outcome.is_some()
+            && matches!(
+                store.sandbox(&task.sandbox_id).await,
+                Ok(Some(sandbox)) if sandbox.is_playground()
+            );
+        let facts = NewsFacts {
+            armed: false,
+            held,
+            typed,
+            pull,
+            outcome,
+            playground,
         };
-        let Some(pr) = record.pr_number else {
-            return false;
-        };
-        let told = self
-            .pr_notices()
-            .remove(task.id.as_str())
-            .unwrap_or_default();
-        if past_merge(&record.stage) {
-            // The watch tells a merge only to a task it saw with the pull request open.
-            return told.pr == pr && !told.keys.contains_key("merged");
-        }
-        let Some((head, text)) = outcome.filter(|_| record.stage == DeliveryStage::PrOpen) else {
-            return false;
-        };
-        let key = format!("{}:{}", short(&head), fingerprint(&text));
-        if told.keys.get("outcome") == Some(&key) {
-            return false;
-        }
-        // A playground's tasks are told nothing by the watch.
-        !matches!(
-            self.deps.store.sandbox(&task.sandbox_id).await,
-            Ok(Some(sandbox)) if sandbox.is_playground()
-        )
+        self.with_pr_notices(|told| match told.get(task.id.as_str()) {
+            Some(told) => news_due(&facts, told),
+            None => news_due(&facts, &Told::default()),
+        })
     }
 
     /// Writes what each task was told (whole, then renamed into place); failures are logged.
@@ -623,7 +699,7 @@ impl App {
             needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
-            if told.pr != pr || told.keys.contains_key("merged") {
+            if !merge_untold(told, pr) {
                 return None;
             }
             let text = self.merged_text_once(task, &sandbox, pr).await?;
@@ -719,7 +795,7 @@ impl App {
             });
         }
         if !armed && let Some((head, text)) = outcome {
-            let key = format!("{}:{}", short(&head), fingerprint(&text));
+            let key = outcome_key(&head, &text);
             if !told_key("outcome", &key) {
                 events.push(Event {
                     kind: "outcome",
@@ -1216,6 +1292,100 @@ mod tests {
     }
 
     /// PRN-005: the merge is said once, then nothing more.
+    /// SPEC-487 CHN-001, CHN-002: when Yulius still has news for a running task's agent.
+    #[test]
+    fn news_is_due_until_the_agent_heard_it() {
+        let told_open = Told {
+            pr: 7,
+            ..Told::default()
+        };
+        let mut told_merged = told_open.clone();
+        told_merged.keys.insert("merged".into(), "7".into());
+        let merged = NewsFacts {
+            pull: Some((7, true)),
+            ..NewsFacts::default()
+        };
+        // Merged: due to a task the watch saw with it open, until it said so.
+        assert!(news_due(&merged, &told_open));
+        assert!(!news_due(&merged, &told_merged));
+        assert!(!news_due(&merged, &Told::default()), "never seen open");
+        let other = Told {
+            pr: 6,
+            ..Told::default()
+        };
+        assert!(!news_due(&merged, &other), "it saw another pull request");
+        // Typed, its turn not begun: still due, whatever was told.
+        let typed = NewsFacts {
+            typed: true,
+            ..merged.clone()
+        };
+        assert!(news_due(&typed, &told_merged));
+        // An armed merge that ended on an open pull request: due until the watch said how.
+        let dropped = NewsFacts {
+            pull: Some((7, false)),
+            outcome: Some(("abcdef1234".into(), "The merge was dropped: red.".into())),
+            ..NewsFacts::default()
+        };
+        assert!(news_due(&dropped, &told_open));
+        assert!(
+            news_due(&dropped, &Told::default()),
+            "the watch sees it next"
+        );
+        let mut told_outcome = told_open.clone();
+        told_outcome.keys.insert(
+            "outcome".into(),
+            outcome_key("abcdef1234", "The merge was dropped: red."),
+        );
+        assert!(!news_due(&dropped, &told_outcome));
+        let again = NewsFacts {
+            outcome: Some((
+                "abcdef1234".into(),
+                "The merge was dropped: a conflict.".into(),
+            )),
+            ..dropped.clone()
+        };
+        assert!(news_due(&again, &told_outcome), "another end is other news");
+        // An open pull request with nothing armed and nothing ended: no news.
+        let open = NewsFacts {
+            pull: Some((7, false)),
+            ..NewsFacts::default()
+        };
+        assert!(!news_due(&open, &told_open));
+        assert!(
+            !news_due(&NewsFacts::default(), &Told::default()),
+            "no pull request"
+        );
+        // The watch types nothing into a paused or held task, nor into a playground's.
+        for quiet in [
+            NewsFacts {
+                held: true,
+                ..merged.clone()
+            },
+            NewsFacts {
+                held: true,
+                ..typed.clone()
+            },
+            NewsFacts {
+                held: true,
+                ..dropped.clone()
+            },
+            NewsFacts {
+                playground: true,
+                ..dropped.clone()
+            },
+        ] {
+            assert!(!news_due(&quiet, &told_open), "{quiet:?}");
+        }
+        // An armed merge is Yulius's to make, paused task or not.
+        let armed = NewsFacts {
+            armed: true,
+            held: true,
+            playground: true,
+            ..NewsFacts::default()
+        };
+        assert!(news_due(&armed, &Told::default()));
+    }
+
     #[test]
     fn merged_ends_the_watch() {
         let bounds = WatchBounds::default();

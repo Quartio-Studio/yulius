@@ -312,6 +312,9 @@ pub struct TaskRuntime {
     pub(crate) mcp_reconnects: Mutex<crate::mcp_watch::Reconnects>,
     /// Why its pull request is stalled, while it is (SPEC-444 PRN-009): the task list shows it.
     pub(crate) pr_stalled: Mutex<Option<String>>,
+    /// When the pull request watch last typed news into the session whose turn has not begun
+    /// yet (ms, 0 = none): until then the task goes on by itself (SPEC-487 CHN-002).
+    pub(crate) pr_news_typed_ms: AtomicI64,
     /// The last head and integration commit pair whose conflict was checked, and whether they
     /// conflict (PRN-004).
     pub(crate) pr_conflict: Mutex<Option<(String, bool)>>,
@@ -568,6 +571,7 @@ impl TaskRuntime {
             mcp_pinged_ms: AtomicI64::new(0),
             mcp_reconnects: Mutex::new(crate::mcp_watch::Reconnects::default()),
             pr_stalled: Mutex::new(None),
+            pr_news_typed_ms: AtomicI64::new(0),
             pr_conflict: Mutex::new(None),
             pr_merged_note: Mutex::new(None),
             background_shells: AtomicI64::new(-1),
@@ -4916,6 +4920,8 @@ impl App {
                     .store
                     .set_activity(task_id, Some(Activity::Working), self.now())
                     .await;
+                // The turn of what the pull request watch typed has begun (SPEC-487 CHN-002).
+                runtime.pr_news_typed_ms.store(0, Ordering::SeqCst);
                 self.publish_task(task_id).await;
                 self.keep_working_stretch(task_id, stretch).await;
                 // Only now, with the task reading Working: the turn of what Claude Code handed
