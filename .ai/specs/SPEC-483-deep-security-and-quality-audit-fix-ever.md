@@ -227,3 +227,54 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 11 |
 | QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 12 |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 5 |
+
+## Evidence
+
+### Slice 1 (2026-11-13)
+
+- **The defect, on `dev` d044172cb.** A temporary test asked `/internal/scrub/fingerprints` 28
+  times with a run's token, built the 28 equations from `base` and the first needle's `rolling`
+  and solved them modulo 2^61 − 1: `recovered from 28 requests: sk_test_51NzQ9vaultValue8f3a`,
+  the test's 28-character value.
+- **The fix.** `secrets::repeated_fingerprint_requests_answer_the_same_set` (which replaced that
+  test) passes: equal answers, no `base`, no `rolling`.
+- **The old wrapper, for real.** In a checkout of `dev` d044172cb, a temporary test of
+  `yulius-harness` gave the wrapper there the answer and the fingerprint file this server made
+  (dumped from `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs`):
+  the answer alone: `Unavailable { server: Unusable, file: None }`; with its file: `loaded:
+  version 1 base 0 names ["MY_TOKEN", "SECOND"]`, a text with the raw and the hexadecimal form
+  of one value and a second value came back as `A=[secret:MY_TOKEN] B=[secret:SECOND]
+  hex=[secret:MY_TOKEN]`, and `run_scrub_exec` of `echo run=<value>` printed
+  `run=[secret:MY_TOKEN]` with exit 0.
+- **Speed** (release build, 1 MB of text, a probe test in `yulius-harness`, secrets of 24 to 43
+  characters and every tenth of 3000):
+
+  | Secrets | Needles | `dev` | This change |
+  | --- | --- | --- | --- |
+  | 10 | 60 | 460 ms | 126 ms |
+  | 40 | 240 | 781 ms | 205 ms |
+  | 200 | 1200 | 819 ms | 314 ms |
+
+- **Gate.** `scripts/dev ci` at 6535968fe: exit 0; `4112 tests run: 4112 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (head 4b5e66fdb): request changes, one blocker and four major findings,
+  all in this change's code, all taken:
+  - the rustdoc link to a private function failed the gate: backticks;
+  - "a store error answered an empty set": the guest question is asked with `?`
+    (`matcher_for`), tested with the guests' table dropped;
+  - "the empty set drops redaction of values its runs still hold": a guest playground keeps
+    its MCP servers' values, tested through the wrapper's matcher; `.env` leftovers are stated
+    in the ADR;
+  - "a holder of the set learns more than the ADR says": tags went from 4 to 3 bits with the
+    hexadecimal cases and base64 alphabets folded, two-factor seeds left a run's set, and the
+    ADR tables the search that is left by value shape (16 letters and digits: 2^62);
+  - "live contained sessions stop working after the update": a session from before version 2
+    keeps a file in the old format with `base` 0, proved with the wrapper of `dev`;
+  - minor: the Superagent branch and a failing rewrite are tested, the assertions that could
+    not fail are gone, the launch file equals the endpoint's answer and the salt survives a
+    restart (tests), files are rewritten at a guest's join, SPEC-002 no longer says "the
+    rolling hash", the matcher's corners are tested, this section exists, a failed rewrite
+    empties an old file; nits: `checked_add`, the salt without a silent zero, a window hashed
+    once per length.
