@@ -96,10 +96,10 @@ still never typed behind text that is there (SPEC-480).
   possible draft of its own. This also holds for a draft known from its mark alone (after a
   restart of the server): the screen is what the session shows now.
 - EBX-005 (a flag of a held message does not stop the pull-request watch). A task flagged only
-  because a message waits for a possible draft still gets the watch's tries, so a box that
-  became empty (a person cleared it, or the flag is older than this change) releases the news
-  and ends the flag without a prompt. Every other reason a person must act stops the watch as
-  before.
+  because a message waits for a possible draft, whose screen shows the prompt box empty, still
+  gets the watch's tries, so a box that became empty (a person cleared it, or the flag is older
+  than this change) releases the news and ends the flag without a prompt. Every other reason a
+  person must act, and this flag over any other screen, stops the watch as before.
 - EBX-006 (nothing is loosened). With text in the box that the screen shows, a message is
   refused, its sender told, and a message of Yulius's own flags the task after ten minutes,
   exactly as SPEC-480 requires.
@@ -110,10 +110,10 @@ still never typed behind text that is there (SPEC-480).
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] The screen's prompt box is read: shown empty only as the real Claude Code draws it
-- [ ] A message is typed when the box is seen empty, and its hold, mark and flag end
-- [ ] The pull-request watch still tries a task flagged only for a held message
+- [x] Write the fix spec and the regression test that fails
+- [x] The screen's prompt box is read: shown empty only as the real Claude Code draws it
+- [x] A message is typed when the box is seen empty, and its hold, mark and flag end
+- [x] The pull-request watch still tries a task flagged only for a held message
 - [ ] The documents and the decision say when a message waits
 - [ ] The independent review's findings are answered
 - [ ] The full gate passes on the final code and the spec carries the evidence
@@ -142,9 +142,12 @@ still never typed behind text that is there (SPEC-480).
   view, the same box on the main screen, a box without its lower rule, a cursor elsewhere.
 - AC5 (EBX-002). A hub rebuilt from a snapshot of a screen with an empty box, and of one with
   a suggestion, still reads it as shown empty; one with a draft does not.
-- AC6 (EBX-005). `pr_watch`: a task flagged for a held message is tried (the pure rule gets
-  `person_must_act: false`); one flagged for another reason, or with an open `needs_you`, is
-  not.
+- AC6 (EBX-005). With real processes: text left in the box holds a pull request's news of a
+  red run; eleven minutes later the task is flagged and a second pass leaves it so. The person
+  clears the text and sends nothing: past the minute the watch types the news, the agent reads
+  it alone and the flag is gone. A task flagged without that reason is not typed into, its box
+  empty or not. Fails without EBX-005: the news is never typed. Pure rule
+  (`held_message_flag_outlived`): only that flag over a box shown empty outlived its reason.
 - AC7 (EBX-007). The documents name the rule; the gate's document checks pass.
 
 ## Test plan
@@ -159,7 +162,13 @@ still never typed behind text that is there (SPEC-480).
 - `crates/yulius-app/src/prompt_box.rs`: unit tests of AC4, each screen written as the bytes
   that draw what the probe rendered (attributes included).
 - `crates/yulius-app/src/hub.rs`: AC5.
-- `crates/yulius-app/src/pr_watch.rs` and `task_message.rs`: AC6.
+- `crates/yulius/tests/task_message.rs`:
+  `a_flag_of_a_held_message_does_not_stop_the_pull_request_watch` (AC6), with the pull
+  request, its head and its red run as `pr_watch.rs` sets them up; the pure rule in
+  `crates/yulius-app/src/task_message.rs`
+  (`only_a_held_message_flag_over_an_empty_box_outlived_its_reason`).
+- `crates/yulius-domain/src/intake.rs`: `an_empty_box_ends_a_possible_draft_after_the_minute`
+  (EBX-003, EBX-004).
 - SPEC-480's tests stay green unchanged: their fake agent draws no box, so nothing is proven
   empty there.
 - Mutation checks by hand (Evidence): each clause of EBX-002 removed makes a unit test fail;

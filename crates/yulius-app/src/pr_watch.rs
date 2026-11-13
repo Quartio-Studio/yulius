@@ -557,10 +557,13 @@ impl App {
         }
         let now_ms = self.now().0;
         // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
-        // notice included (review M1, round 2).
+        // notice included (review M1, round 2). A flag that only says a message waits for a
+        // possible draft, over a prompt box the screen shows empty, is not such a reason: the
+        // try is what ends it (SPEC-488 EBX-005).
         let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
-        let person_must_act =
-            needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
+        let flagged = task.activity == Some(yulius_domain::task::Activity::NeedsAttention)
+            && !self.held_message_flag_outlived(&task.id).await;
+        let person_must_act = needs_you || flagged;
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if told.pr != pr || told.keys.contains_key("merged") {

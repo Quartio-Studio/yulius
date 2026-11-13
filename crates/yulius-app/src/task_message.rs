@@ -132,6 +132,17 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
     Yulius types its message.";
 
+/// Whether a flag with `reason` outlived it, as far as the screen says (SPEC-488 EBX-005): it
+/// only says that a message of Yulius's own waits for a person's possible draft
+/// (`App::tell_of_held_message`), and the session's screen shows the prompt box empty. Such a
+/// flag asks nothing of a person that a watch's next try could not settle, so it does not stop
+/// the try; `App::type_into_session` then judges the hold itself. A flag with any other reason,
+/// and this one over any other screen (a dialog, text in the box), is a person's to answer.
+fn held_message_flag_outlived(reason: Option<&AttentionRecord>, box_shown_empty: bool) -> bool {
+    box_shown_empty
+        && reason == Some(&AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION))
+}
+
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
 /// dropped half-way.
 struct Typing<'a>(&'a AtomicBool);
@@ -447,6 +458,22 @@ impl App {
         }
     }
 
+    /// Whether the task's flag outlived its reason ([`held_message_flag_outlived`], SPEC-488
+    /// EBX-005), read from the store and the session's screen.
+    pub(crate) async fn held_message_flag_outlived(&self, task_id: &TaskId) -> bool {
+        let reason = match self.deps.store.task_attention(task_id).await {
+            Ok(flag) => flag.map(|(reason, _)| reason),
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "reading a flag's reason failed");
+                return false;
+            }
+        };
+        let box_shown_empty = self
+            .existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.hub.prompt_box_shown_empty());
+        held_message_flag_outlived(reason.as_ref(), box_shown_empty)
+    }
+
     /// Ends the flag that says a message of Yulius's own waits for a person's draft
     /// ([`Self::tell_of_held_message`]) once no draft holds the prompt box (SPEC-480 DRF-007).
     /// A prompt that starts a turn sets the task Working, which ends every flag; one that starts
@@ -506,8 +533,26 @@ fn not_now_advice(status: TaskStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_message, message_paste};
+    use super::{
+        DRAFT_HOLDS_ACTION, DRAFT_HOLDS_PROBLEM, clean_message, held_message_flag_outlived,
+        message_paste,
+    };
+    use crate::attention::AttentionRecord;
     use crate::coordination::Channel;
+
+    /// SPEC-488 EBX-005: only a flag that says a message of Yulius's own waits for a possible
+    /// draft, over a prompt box the screen shows empty, outlived its reason. Another reason,
+    /// no reason, or the same flag over another screen stays a person's to answer.
+    #[test]
+    fn only_a_held_message_flag_over_an_empty_box_outlived_its_reason() {
+        let held = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
+        let other = AttentionRecord::yulius("Claude Code asks a question.", "Answer it.");
+        assert!(held_message_flag_outlived(Some(&held), true));
+        assert!(!held_message_flag_outlived(Some(&held), false));
+        assert!(!held_message_flag_outlived(Some(&other), true));
+        assert!(!held_message_flag_outlived(None, true));
+        assert!(!held_message_flag_outlived(None, false));
+    }
 
     #[test]
     fn escape_sequences_and_control_characters_never_reach_the_session() {
