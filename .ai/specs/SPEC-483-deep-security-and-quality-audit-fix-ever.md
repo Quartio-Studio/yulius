@@ -44,7 +44,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
      DevTools and `file:` pages on the host (E1): merged, pull request #1245;
   7. the sandbox browser's secret typing (E3): merged, pull request #1247;
   8. what a secret's keys can still reach: a focused frame of another site, a navigation
-     under way (E8, E9);
+     under way, and its user name and one-time code typed without the rule (E8, E9, E10);
   9. the sandbox browser's network (E2, W1b, C4);
   10. the host's own Git in a clone its agents write (G1);
   11. production secrets decided once (V6);
@@ -198,6 +198,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   when the new document is there (measured with servers answering after 1.5 and 4 s, to
   another site and to the same one), so slice 7's rule refuses the new page there; nothing in
   the protocol promises that, and `Page.frameStartedNavigating` names the address at once.
+- **E10 (high; found by the review of this slice, on `dev` before it).**
+  `tool_browser_fill_secret` types the fields `username` and `totp` with `browser.tool_type`:
+  only the cached address of `browser.tabs()` is checked (E3's pattern), and none of this
+  slice's checks apply. A one-time code is a credential while it lasts.
 
 ## Requirements
 
@@ -335,15 +339,28 @@ no code path reaches; documents, texts shown to agents and people, and code that
   it, the tool fails naming where the tab went, whatever else the typing ran into, and the
   secret's activity records it; a page
   that cannot be identified afterwards keeps SPEC-450's rule (every screenshot refused).
-- **FSR-004** After focusing the field, with the lock held, the page is read; when its focused
-  element is a frame, every frame of another origin the page holds (in its tree and as
-  targets of their own) must be at an address the rule allows. Otherwise, and when the page
-  or its frames cannot be read, nothing is typed and the error names the frame's site.
+- **FSR-004** After focusing the field, with the lock held, the page is read. Unless its
+  focus is in a text field (`input`, `textarea`, editable content) of a document the probe
+  read, every frame of another origin the page holds (in its tree and as targets of their
+  own) must be at an address the rule allows; the focus on a fenced frame is refused whatever
+  the frames are. Otherwise, and when the page or its frames cannot be read, nothing is typed
+  and the error names the frame's site.
 - **FSR-005** The browser keeps the address of a navigation to another document Chrome
-  announced for a tab's frame until the frame arrived or stopped loading, the tab's session
-  ended or 30 s passed. A fill on a tab whose page is on its way to an address the rule
-  refuses types nothing and names that site. A same-document navigation is not kept.
-- **FSR-006** Both refusals reach the application as a page the secret is not for (403).
+  announced for a frame (`Page.frameStartedNavigating`; `Page.frameRequestedNavigation` for
+  this tab) until the frame arrived, stopped loading or was detached, the tab's session ended
+  or 30 s passed; at most 256 frames and 2048 bytes of an address. A same-document navigation
+  is not kept. Past the bound, and when events were skipped, nothing is known for 30 s.
+- **FSR-006** The refusals reach the application as a page the secret is not for (403), the
+  reports as a secret gone astray (with its activity entry).
+- **FSR-007** Before the keys, after the focus: the document is read again, and one that is
+  not the document the rule was asked of gets nothing typed (named when the rule refuses it).
+  Then, last, a page with a frame (the main one or one in its tree) on its way to an address
+  the rule refuses gets nothing typed and that site is named; when where they are going is
+  not known, nothing is typed either.
+- **FSR-008** After the keys, a focus in a document the page cannot read, on a page holding a
+  frame the rule refuses (or on a fenced frame), fails the tool naming that site.
+- **FSR-009** A secret's user name and one-time code are typed under FSR-001..008, and are
+  not remembered as typed secrets (finding E10).
 
 ## Plan
 
@@ -493,18 +510,34 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   names the site, not the value, and a `vault.agent.fill` activity entry names both sites.
 - **AC-41** A `browser_navigate`, a reload and a step back asked for while a secret is typed
   each return only after the typing ended.
-- **AC-42** With the focus in a frame, a fill on a page holding a frame of a site the rule
-  refuses (in the frame tree, or as a target of its own) types nothing and answers
-  `SecretFrameRefused` with that site; so does one whose frames cannot be listed (an error);
-  with the focus in the page itself, or with every such frame allowed, it types. Through the
-  MCP tool the answer names the frame's site, not the value.
+- **AC-42** A fill whose focus is not in a text field of the page (a frame, an element that
+  takes no text, nothing, an unknown or missing answer), on a page holding a frame of a site
+  the rule refuses (in the frame tree, or as a target of its own), types nothing and answers
+  `SecretFrameRefused` with that site; so does one whose frames cannot be listed or told (an
+  error), one whose page cannot be read, and one with the focus on a fenced frame; with the
+  focus in a field of the page, or with every such frame allowed, it types. Through the MCP
+  tool the answer names the frame's site, not the value.
 - **AC-43** A fill on a tab Chrome announced a navigation to another site for types nothing
-  and answers `SecretPageLeaving` with that site, also for a step in the tab's history; after
-  Chrome said the frame stopped loading, for a navigation within the secret's sites and for a
-  same-document navigation it types. Through the MCP tool the answer names the site.
+  and answers `SecretPageLeaving` with that site: for a link, a step in the tab's history, a
+  requested navigation of this tab, a frame of the page, an announcement that comes while the
+  page is looked at, and an address without a host (named "an unknown site"). After Chrome
+  said the frame arrived, stopped loading or was detached, for a navigation within the
+  secret's sites, a same-document navigation, a navigation requested for another tab and a
+  frame of another page, it types. Through the MCP tool the answer names the site.
 - **AC-44** On a real Chrome (opt-in): a secret is not typed into a field of another site's
-  frame and is typed when that site is allowed; a fill right after a click on a link to
-  another site types nothing.
+  frame, object or frame inside a closed shadow root, and is typed when that site is allowed
+  or the focus is in the page's own field beside the frame; a fill right after a click on a
+  link to another site types nothing.
+- **AC-45** A document that changed between the look at the page and the keys gets nothing
+  typed (`SecretPageRefused` with the new site, or "try again" within the secret's sites). A
+  frame of a refused site that has the focus after the keys answers `SecretFrameAstray` with
+  its site; through the MCP tool a `vault.agent.fill` activity entry names it.
+- **AC-46** The record of announced navigations: an entry counts for 30 s, a settled frame's
+  and an ended session's are gone, past 256 frames (none older than 30 s) and after lost
+  events nothing is known for 30 s, an address is kept by its first 2048 bytes.
+- **AC-47** Through the MCP tool, the field `username` is typed neither with the focus in
+  another site's frame, nor into a tab on its way to another site, nor into a tab that moved
+  on unheard; it is typed on the bound page, and a frame that took the focus is reported.
 
 ## Test plan
 
@@ -595,8 +628,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   review).
 - Slice 8: `yulius-browser` `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for`
   (AC-42), `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` (AC-43),
+  `instance::a_secret_is_not_typed_into_a_page_that_changed_since_the_look` (AC-45), the unit
+  tests `instance::tests::an_announced_navigation_stands_until_it_settled_or_is_old` and
+  `instance::tests::announcements_are_bounded_and_losing_them_is_not_knowing` (AC-46),
   `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
-  (both through the MCP tool); opt-in, on a real Chrome:
+  (AC-42, AC-43, AC-45 and AC-47 through the MCP tool); opt-in, on a real Chrome:
   `real_chromium::a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium` and
   `real_chromium::a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` (AC-44).
 
@@ -641,11 +677,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [ADR-0319](../../docs/decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md):
   the page rule is applied in the browser with the input lock held; Yulius's navigations wait
   for the lock; a page's own move is reported.
-- [ADR-0320](../../docs/decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md): with the
-  focus in a frame, every frame of another site the page holds must be one the secret is for;
-  a tab on its way to a page the secret is not for gets nothing typed. The second is asked
-  although Chrome 157 holds its answers during a navigation (measured), because nothing
-  promises that.
+- [ADR-0320](../../docs/decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md): unless
+  the focus is in a text field of the page, every frame of another site the page holds must
+  be one the secret is for; a page with a frame on its way to a page the secret is not for
+  gets nothing typed. The second is asked although Chrome 157 holds its answers during a
+  navigation (measured), because nothing promises that. The secret's user name and one-time
+  code follow the same rules (E10 is fixed in this slice: it is the same typing path and the
+  same rule, and leaving it open would leave the slice's claim false for two of three fields).
+- From the review of slice 8, round 1, not changed and why: the wiring of two lines has no
+  test of its own (the record's `session_ended` on a detached session, and `lose` on skipped
+  events): a detached session's id is never asked again, so the first only frees memory, and
+  a lag of the event channel cannot be made from a test without a hook in the product code;
+  both functions are unit-tested. Frames nested inside an out-of-process frame, in that
+  frame's process, are not asked (ADR-0320 says why that is the allowed site's own page).
 - Slice 8's first gate failed in slice 5's own test
   `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task`: the task was
   flagged before "Yulius is typing the first message" was cleared, so a message sent on seeing
@@ -689,9 +733,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 9 |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
-| E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | slice 8 |
-| E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | slice 8 |
-| E10 | browser | `browser_fill_secret` types the user name and the TOTP code through `tool_type`, with none of the page, frame or navigation checks: a live code can go to another site's frame or a tab that moved on (found by the review of slice 8; on `dev` before it) | high | slice 8 |
+| E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | fixed (slice 8) |
+| E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | fixed (slice 8) |
+| E10 | browser | `browser_fill_secret` types the user name and the TOTP code through `tool_type`, with none of the page, frame or navigation checks: a live code can go to another site's frame or a tab that moved on (found by the review of slice 8; on `dev` before it) | high | fixed (slice 8) |
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
