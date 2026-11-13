@@ -505,6 +505,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `yulius-browser` `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`
   (AC-37, opt-in: `YULIUS_TEST_CHROMIUM`), `policy::tests`, `browser::chromes_own_pages_are_no_tabs`,
   `browser::a_page_cannot_hide_a_window_behind_the_probes_address`,
+  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays`,
   `host_setup::tests::a_helper_from_before_the_browser_policy_gets_its_drop_in_anew` (AC-38),
   `doctor::tests::the_browser_policy_line_warns_until_host_setup_wrote_it`, e2e
   `browser.e2e.ts` "a sandbox browser without the host policy says once that clicks and keys
@@ -871,7 +872,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   allowed" for every target, so it is left out. The existing real smoke test
   (`drives_a_real_chromium_when_configured`: load, snapshot, type, click, screenshots, PDF
   frames) passed with the policy installed.
-- **Tests failing without their fix** (`target/audit/slice6/mutate.py`, eight cases): the mouse
+- **Tests failing without their fix** (`target/audit/slice6/mutate.py`, ten cases; held tabs
+  dropped and a tab at Chrome's own page dropped fail
+  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays`): the mouse
   gate off, the key gate off, typed text ungated, the probe's tab listed:
   `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` failed; Chrome's own
   pages listed: `browser::chromes_own_pages_are_no_tabs` failed; a look-alike hidden by its
@@ -895,9 +898,21 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   Nits: a yes stood for the browser's life (asked again after 5 minutes); the probe could
   hold a viewer's connection (3 seconds at most); another policy file can override a setting
   (ADR-0318 says so).
-- **Gate.** `scripts/dev ci` at `84a173793` (`53cb2786d` before the review: 4145 passed): exit
-  0; `4147 tests run: 4147 passed, 16 skipped`; doctor, repository check, lint, the macOS
-  compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Review of slice 6, round 2** (head 0a566a925): request changes, two minor findings and
+  three nits; round 1's answers verified. Minor: the probe's tab could still be listed when
+  Chrome announces it under another address first, or a resync runs meanwhile (every new
+  page no page opened now waits for the id, and the probe's is taken off the list when the
+  id is known); the replay of what waited and "a tab at Chrome's own page stays" were
+  untested (test with a tab made beside the probe and a tab sent to `chrome://settings/`;
+  two more mutations). Nits: the wait for the id survives a dropped probe now (a drop guard)
+  and the tab's creation is timed; a replayed announcement no longer overwrites a newer one;
+  `ws:` and `wss:` are in the policy's allowed addresses (whether the blocklist reaches
+  WebSocket handshakes was not measured).
+- **Gate.** `scripts/dev ci` at `d42465f95` (round 2's answers; `84a173793` after round 1:
+  4147 passed; `53cb2786d` before the reviews: 4145 passed): exit 0; `4148 tests run: 4148
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed. Both real-browser tests passed again with the final policy
+  file.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Review of slice 5, round 4** (head cf2f03a6e): approve, two nits; one is fixed here (the
   flag on a refused message), one is left with its reason (Decisions).
