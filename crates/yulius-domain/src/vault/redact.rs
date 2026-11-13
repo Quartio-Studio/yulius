@@ -383,6 +383,12 @@ impl<V: Fn(&[u8]) -> [u8; 32]> HashedMatcher<V> {
         }
         let mut groups: Vec<_> = by_bits.into_iter().collect();
         groups.sort_by_key(|g| g.0);
+        // By length, so a window is hashed once for the needles of one length.
+        for (_, by_tag) in &mut groups {
+            for bucket in by_tag.values_mut() {
+                bucket.sort_by_key(|&i| fingerprints[i].len);
+            }
+        }
         Self {
             groups,
             fingerprints,
@@ -402,15 +408,22 @@ impl<V: Fn(&[u8]) -> [u8; 32]> Matcher for HashedMatcher<V> {
                 let Some(hits) = by_tag.get(&(hash >> (HASH_BITS - bits))) else {
                     continue;
                 };
+                let mut hashed: Option<(usize, [u8; 32])> = None;
                 for &f in hits {
                     let fp = &self.fingerprints[f];
-                    let Some(end) = start.checked_add(fp.len) else {
+                    let Some(candidate) = start
+                        .checked_add(fp.len)
+                        .and_then(|end| data.get(start..end))
+                    else {
                         continue;
                     };
-                    if data
-                        .get(start..end)
-                        .is_some_and(|candidate| (self.verify)(candidate) == fp.digest)
-                    {
+                    let digest = match hashed {
+                        Some((len, digest)) if len == fp.len => digest,
+                        _ => (self.verify)(candidate),
+                    };
+                    hashed = Some((fp.len, digest));
+                    if digest == fp.digest {
+                        let end = start + fp.len;
                         candidates.push(Match {
                             start,
                             end,

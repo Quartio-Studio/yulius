@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{
-    FINGERPRINT_VERSION, Fingerprint, FingerprintSet, LEGACY_FINGERPRINT_VERSION, LegacyFingerprint,
-    LegacyFingerprintSet, RedactionReport,
+    FINGERPRINT_VERSION, Fingerprint, FingerprintSet, LEGACY_FINGERPRINT_VERSION,
+    LegacyFingerprint, LegacyFingerprintSet, RedactionReport,
 };
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;

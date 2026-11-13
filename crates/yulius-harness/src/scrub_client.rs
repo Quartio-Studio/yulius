@@ -636,7 +636,7 @@ mod tests {
             // The whole request (its body is `{}`), so the answer never cuts the client's write.
             let mut request = Vec::new();
             let mut buffer = [0u8; 4096];
-            while !request.ends_with(b"{}") {
+            while !request.ends_with(b"}") {
                 match stream.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => request.extend_from_slice(&buffer[..n]),
@@ -790,6 +790,29 @@ mod tests {
         Ok(())
     }
 
+    /// ADR-0313: this wrapper reads version 2 only. The file of a session an older Yulius
+    /// launched is in the format before it: while Yulius cannot be reached nothing runs.
+    #[test]
+    fn a_fingerprint_file_in_the_format_before_version_2_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let old = dir.path().join("scrub.json");
+        std::fs::write(
+            &old,
+            br#"{"version":1,"base":0,"salt":"00","names":["KEY"],
+                "needles":[{"secret":0,"len":8,"rolling":57,"digest":"00"}]}"#,
+        )?;
+        let old = old.to_string_lossy().into_owned();
+        assert_eq!(
+            unavailable(load_fingerprints(&run_env(nobody()?, Some(old.clone()))))?,
+            Unavailable {
+                server: ServerAnswer::Unreachable,
+                file: FileState::Invalid(old),
+            }
+        );
+        Ok(())
+    }
+
     /// LAP-001: an unreachable Yulius may be restarting, or this sandbox's connections to it may
     /// be used up by leftover processes; the message says both and what is wrong with the file.
     #[test]
@@ -858,7 +881,7 @@ mod tests {
             // The whole request first, so the close is an end of stream, not a reset.
             let mut request = Vec::new();
             let mut buffer = [0u8; 4096];
-            while !request.ends_with(b"{}") {
+            while !request.ends_with(b"}") {
                 match stream.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => request.extend_from_slice(&buffer[..n]),

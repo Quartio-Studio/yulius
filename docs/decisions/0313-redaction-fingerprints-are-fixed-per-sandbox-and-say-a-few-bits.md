@@ -4,9 +4,9 @@
 
 Accepted. Specified in [SPEC-483](../../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md)
 (slice 1); task #465. Amends SPEC-002 ADR-20 (VLT-007) and
-[ADR-0014](0014-secrets-vault.md) ("redaction is an oracle for weak
-values"), extends [ADR-0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)
-and SPEC-410 GST-004.
+[ADR-0014](0014-secrets-vault.md) ("redaction is an oracle for weak values"), extends
+[ADR-0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md) and SPEC-410
+GST-004.
 
 ## Context
 
@@ -28,6 +28,8 @@ printing it (ADR-0014, the 8-character minimum). The audit of task #465 found mo
   encoding: enough to find a short value without guessing it.
 - A playground that a guest joined gives none of its runs an agent secret (GST-004), but its
   runs still got the fingerprints: names, lengths and something to test guesses against.
+- A run's set also held the two-factor seed of a secret, which never enters a sandbox: Yulius
+  types the code, not the seed.
 
 ## Decision
 
@@ -35,17 +37,48 @@ printing it (ADR-0014, the 8-character minimum). The audit of task #465 found mo
   sandbox id, and nothing else in a fingerprint is random, so every request and every launch
   gets the same set until a secret changes. Asking again tells nothing more.
 - **A fingerprint says a tag instead of a rolling hash.** The tag is the top `tag_bits(len)`
-  bits of a 16-bit hash of the needle's first 8 bytes (`redact::needle_tag`): 4 bits for a
-  needle of 8 to 15 bytes, one more each time the length doubles, at most 16. The redactor
-  hashes each 8-byte window of the output once, looks the tags up and confirms a candidate with
-  the salted SHA-256 as before. The set has no `base` any more; its `version` is 2.
-- **What a holder of the set learns about a value** is its length, the salted digest (the
-  accepted guessing oracle) and, for each encoding, those few bits about its first 8 bytes. The
-  bytes after the eighth are in no tag.
-- **A playground a guest joined gets an empty set**, as its runs get no agent secret.
-- **A starting server rewrites the fingerprint file of every live run and adopted Superagent**
-  (`App::refresh_fingerprint_files`), in place. A session that ran across the update held a
-  version 1 file, which told too much and which the wrapper no longer reads.
+  bits of a 16-bit hash of the needle's first 8 bytes (`redact::needle_tag`): 3 bits for a
+  needle of 8 to 15 bytes, one more each time the length doubles, at most 16. The hash ignores
+  the case of letters and reads `-` and `_` as `+` and `/`, so the two hexadecimal forms of a
+  value share a tag, and so do its base64 and base64url forms. The redactor hashes each 8-byte
+  window of the output once, looks the tags up and confirms a candidate with the salted SHA-256
+  as before, once per needle length. The set has no `base` any more; its `version` is 2.
+- **A run's set covers what can be in its sandbox.** No two-factor seed. In a playground a
+  guest joined, no agent secret and no instance Vidoc key, only the values its MCP servers
+  hold themselves, which still reach its runs; the sessions running at the join get their
+  files rewritten then. A store that cannot say whether a guest joined gives no set (the
+  wrapper then runs nothing), never an empty one.
+- **Sessions from before version 2 keep redacting from their file.** A contained session
+  binds the `yulius` binary it started with, an update freezes and thaws sessions instead of
+  restarting them, and that wrapper reads only the old format. It cannot read the endpoint's
+  answer and falls back on its `scrub.json`. A file in the old format therefore stays in the
+  old format, written by this server with `base` 0: the old rolling hash at base 0 is a
+  needle's last byte plus one, which is all it then says. A starting server rewrites every
+  live run's and Superagent's file in place (`App::refresh_fingerprint_files`), and a request
+  from a wrapper that does not name version 2 brings the asking session's file up to date
+  before it is answered. The endpoint itself answers version 2 only. When such a file cannot
+  be rewritten it is emptied.
+
+## What a holder of a set can compute
+
+The digests were always a test for a guess, and for a value inside base64 text the needle is a
+digest of a part of the value (whole 3-byte groups at each alignment), so a guess of that part
+can be tested alone. The tags add, per encoding, their bits about the first 8 bytes. The search
+that is left for a random value, in SHA-256 computations:
+
+| Value | Bits in it | Tag bits | Digests alone | With the tags |
+| --- | --- | --- | --- | --- |
+| 12 letters and digits | 71 | 17 | 2^54 | 2^43 |
+| 16 letters and digits | 95 | 21 | 2^71 | 2^62 |
+| 20 letters and digits | 119 | 21 | 2^107 | 2^86 |
+| 32 letters and digits | 191 | 26 | 2^179 | 2^153 |
+| 16 hexadecimal digits | 64 | 21 | 2^48 | 2^35 |
+| 32 hexadecimal digits | 128 | 26 | 2^120 | 2^94 |
+
+One graphics card computes about 2^34 SHA-256 a second: 2^43 is minutes, 2^62 is years of one
+card. A value of 20 random characters or more is out of reach; one of 12 is not, with or without
+the tags. Each line of a key block and each MCP server's value is a needle set of its own, with
+its own tags about its own first 8 bytes; a line of a key has far more bits than those.
 
 ## Alternatives
 
@@ -55,23 +88,40 @@ printing it (ADR-0014, the 8-character minimum). The audit of task #465 found mo
 - **Publish only some bits of the rolling hash of the whole needle.** The equation is over
   every byte, so the bits of all encodings add up over the whole value (a meet in the middle
   uses them), and the redactor still rolls one hash per needle length for every byte of output.
-- **More tag bits.** Fewer digests to compute, more said about a value. With 4 bits for the
-  shortest needles a 16-character random value keeps about 63 bits unknown to a holder of the
-  set; with 8 it would keep about 47.
+- **More tag bits.** Fewer digests to compute, more said about a value: with 4 bits for the
+  shortest needles and a tag per hexadecimal case, 16 letters and digits were left with 2^51.
+- **Fewer tag bits.** With 2 bits the same value keeps 2^67, and redaction costs about twice
+  the digests. Three bits stay faster than the old matcher at every size measured.
 - **Redact on the server.** No fingerprints at all, but every command's output would go through
   Yulius, and commands could not run while it restarts.
 - **Leave production secrets out of a run's set.** A value that was copied into `.env` before
   it became a production secret is still in the sandbox and must be redacted there.
+- **Keep the agent secrets in a guest playground's set**, for values copied into `.env` before
+  the guest joined. The guest reads those files anyway; for every other secret the set would
+  give the guest its name, its length and a test for guesses.
+- **Restart the sessions that ran across the update.** A restart ends what a session left
+  running (a build, a gate), in every live task at once.
+- **Answer the old format from the endpoint.** Any run could then ask for it; a file is
+  written in it only for a session whose file already was.
 
 ## Consequences
 
 - The value of an agent secret cannot be computed from its fingerprints. Weak values stay
-  guessable against the digest, as accepted before; the tags make that search shorter by at
-  most their bits (about 30 for a 16-character value, never more than the first 8 bytes hold).
-- Redaction costs less for the usual project and more for the largest: on 1 MB of output, 94 ms
-  with 10 secrets (460 ms before), 267 ms with 40 (781 ms) and 1.2 s with 200, a project's
-  limit (0.8 s), in a release build on the development host.
-- `POST /internal/scrub/fingerprints` answers `{version: 2, salt, names, needles: [{secret,
-  len, tag, digest}]}`. A version 1 file is not read; a starting server replaces it.
+  guessable against the digests, as accepted before, and the tags shorten that search by the
+  bits in the table. Values that untrusted code could reach before this change may be known to
+  it: rotate them, and make new ones 20 random characters or longer.
+- Values copied into `.env` in a playground before a guest joined are no longer redacted in
+  that sandbox's command output (the guest can read the file); Yulius' own redaction of the
+  terminal, transcripts and tool results it serves still covers them.
+- Redaction is faster: on 1 MB of output, 126 ms with 10 secrets (460 ms before), 205 ms with
+  40 (781 ms) and 314 ms with 200, a project's limit (819 ms), in a release build on the
+  development host, the secrets' lengths spread over 20 values.
+- `POST /internal/scrub/fingerprints` takes `{version}` and answers `{version: 2, salt, names,
+  needles: [{secret, len, tag, digest}]}`.
+- A session from before version 2 redacts from its file alone. Uncontained, it runs the new
+  wrapper, which reads version 2 only: while the server cannot be reached its commands do not
+  run, as without a file.
+- The old format's writer (`LegacyFingerprintSet`, `legacy_fingerprints_for`) is of use only
+  while a session launched before this change is alive; it goes with a later release.
 - When the workspace secret cannot be saved, the salt changes with each server start; the tags
   do not, so a new start still tells nothing more about a value.

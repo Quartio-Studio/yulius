@@ -682,8 +682,10 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
         &w.h.router,
         Method::POST,
         "/api/sandboxes/p1/mcp",
-        Some(json!({"name": "lab", "transport": "stdio", "command": "npx", "args": ["lab-mcp"],
-            "env": {"LAB_KEY": MCP_VALUE}})),
+        Some(
+            json!({"name": "lab", "transport": "stdio", "command": "npx", "args": ["lab-mcp"],
+            "env": {"LAB_KEY": MCP_VALUE}}),
+        ),
         &w.alice,
     )
     .await?;
@@ -728,28 +730,14 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
         let fingerprints = w.h.app.scrub_fingerprints(token, version).await?;
         assert_eq!(fingerprints.names, ["lab.LAB_KEY"]);
         let matcher = yulius_harness::scrub_client::matcher(&fingerprints).ok_or("matcher")?;
-        let (out, _) = yulius_domain::vault::redact::redact_text(
-            &matcher,
-            &format!("{value} {MCP_VALUE}"),
-        );
+        let (out, _) =
+            yulius_domain::vault::redact::redact_text(&matcher, &format!("{value} {MCP_VALUE}"));
         assert_eq!(out, format!("{value} [secret:lab.LAB_KEY]"));
     }
     // The session that was running when the guest joined lost them at the join.
     let rewritten: yulius_contracts::scrub::FingerprintSet =
         serde_json::from_slice(&std::fs::read(&file)?)?;
     assert_eq!(rewritten.names, ["lab.LAB_KEY"]);
-    // A store that cannot say whether a guest joined gives no set at all: an empty one would
-    // let every command through unredacted.
-    w.h.store
-        .execute_for_tests("DROP TABLE playground_guests")
-        .await?;
-    let bob = yulius_domain::ids::UserId::parse("u-bob")?;
-    assert!(
-        w.h.app
-            .scrub_fingerprints_for(&p1, yulius_app::vault::Holder::Person(&bob))
-            .await
-            .is_err()
-    );
     // Revoking the link does not bring them back: what guests left in the sandbox stays.
     let listed = get(&w, "/api/sandboxes/p1/guest-invites", &w.alice).await?;
     let id = listed.body["invites"][0]["id"]
@@ -768,6 +756,18 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
     assert!(!later.contains(value), "{later}");
     w.h.app.ci_egress_close(&ci);
     w.h.app.ci_egress_close(&ci_after);
+    // A store that cannot say whether a guest joined gives no set at all: an empty one would
+    // let every command through unredacted.
+    w.h.store
+        .execute_for_tests("DROP TABLE playground_guests")
+        .await?;
+    let bob = yulius_domain::ids::UserId::parse("u-bob")?;
+    assert!(
+        w.h.app
+            .scrub_fingerprints_for(&p1, yulius_app::vault::Holder::Person(&bob))
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

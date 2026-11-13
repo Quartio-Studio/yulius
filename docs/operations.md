@@ -2581,6 +2581,14 @@ move is continued or aborted from there, or with the command.
 
 ### Notes for specific upgrades
 
+- Upgrading to fixed redaction fingerprints (SPEC-483, ADR-0313, 2026-11-13). Nothing to do
+  before the update. Sessions that are running across it keep the wrapper they started with (a
+  contained session binds the binary), which reads only the old fingerprint format: Yulius keeps
+  their `scrub.json` in that format, without the rolling hash that gave values away, and they
+  redact from it until they end. **After the update, rotate the agent secrets that code you do
+  not trust could have reached** (a prompt-injected agent, a dependency's install script): before
+  it, any process with a run's token could compute their values. Make agent secrets 20 random
+  characters or longer.
 - Upgrading to flags that say why (SPEC-472, ADR-0306, 2026-11-12): migration 0053 adds
   `tasks.attention`. Nothing to do. A task that was flagged "Needs your action" before the update
   has no reason kept: its bar reads "The agent needs your attention. Look at its terminal below."

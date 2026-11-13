@@ -2085,11 +2085,14 @@ fingerprint file in place for the new owner (SPEC-248), and `task_message` from 
 owner refuses a task holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
-gets covers only its holder's (`App::matcher_for`). A fingerprint says a value's length, its
-salted digest and a tag of 4 to 16 bits of a hash of its first 8 bytes; a sandbox's set is the
-same on every request, a playground a guest joined gets an empty one, and a starting server
-rewrites the files of the sessions that were running
-([decision 0313](decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md)). Global secrets are managed and switched by
+gets covers only its holder's and only what can be in its sandbox (`App::matcher_for`: no
+two-factor seed; in a playground a guest joined only its MCP servers' own values). A fingerprint
+says a value's length, its salted digest and a tag of 3 to 16 bits of a hash of its first 8
+bytes; a sandbox's set is the same on every request; a starting server and a guest's join
+rewrite the files of the sessions that are running, and a session an older Yulius launched keeps
+a file in the format its wrapper reads
+([decision 0313](decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md)).
+Global secrets are managed and switched by
 instance administrators, personal ones only by their owner (404 to everyone else), through
 `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`; the store counts the 200 secrets a project
 may get in the transaction that adds or switches one on. Schema version 39 switched every team-wide

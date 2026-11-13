@@ -64,26 +64,41 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (ADR-0014, `.config/vidoc.toml`) was a guessing oracle for weak values, not this.
 - **Guests.** A playground a guest joined gives no run an agent secret (SPEC-410 GST-004), but
   `scrub_fingerprints_for` still answered names, lengths and digests of the project's, the
-  global and the instance's values.
-- **Sessions across an update.** Task runs and Superagent shells outlive a server restart and
-  keep the `scrub.json` their launch wrote.
+  global and the instance's values. Its runs do keep the values its MCP servers hold themselves
+  (`mcp_secret_values`), which must stay redacted.
+- **Two-factor seeds.** A run's set held a secret's seed, which never enters a sandbox (Yulius
+  types the code).
+- **Sessions across an update.** An update freezes and thaws sessions; task runs and Superagent
+  shells outlive it and keep the `scrub.json` their launch wrote. A contained session also keeps
+  the `yulius` binary it started with (bound read-only by inode; the helper installs by rename),
+  so its wrapper keeps reading the old format only: a new answer or a new file would refuse
+  every command of every live session after the update.
 
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
-  launch until an agent secret changes: the salt is derived from the server's workspace secret
-  and the sandbox id; nothing else is random.
+  launch, and after a restart, until an agent secret changes: the salt is derived from the
+  server's workspace secret and the sandbox id; nothing else is random.
 - **FPR-002** A fingerprint is `{secret, len, tag, digest}`. `tag` is the top `tag_bits(len)`
-  bits (4 for 8 to 15 bytes, one more per doubling of the length, at most 16) of a 16-bit hash
-  of the needle's first 8 bytes. The set has no `base`, a needle no `rolling`; the format
-  version is 2.
+  bits (3 for 8 to 15 bytes, one more per doubling of the length, at most 16) of a 16-bit hash
+  of the needle's first 8 bytes, with the case of letters and the two base64 alphabets folded.
+  The set has no `base`, a needle no `rolling`; the format version is 2.
 - **FPR-003** The redactors find every form of a value as before (whole texts, streams, chunk
-  boundaries) and leave other text alone, a text sharing a tag included.
-- **FPR-004** A playground a guest joined gets a set without names and needles.
-- **FPR-005** A starting server rewrites, in place, the fingerprint file of every live task run
-  and of every adopted Superagent.
-- **FPR-006** Redaction of 1 MB of output is not slower than before for a project of up to 40
-  secrets.
+  boundaries, the corners of the data) and leave other text alone, a text sharing a tag
+  included.
+- **FPR-004** A run's set covers what can be in its sandbox: no two-factor seed; in a
+  playground a guest joined, no agent secret and no Vidoc key, only its MCP servers' own
+  values. A store that cannot say whether a guest joined gives an error, never an empty set.
+  The sessions running when a guest joins get their files rewritten at the join.
+- **FPR-005** A starting server rewrites, in place and only when it differs, the fingerprint
+  file of every live task run and of every Superagent; one that cannot be rewritten does not
+  stop the others.
+- **FPR-006** Redaction of 1 MB of output is not slower than before.
+- **FPR-007** A session launched before version 2 keeps redacting: its file stays in the old
+  format, written with `base` 0 (the old rolling hash is then a needle's last byte plus one),
+  at a start, at a guest's join and whenever a wrapper that does not name version 2 asks the
+  endpoint, which itself answers version 2 only. When its fingerprints cannot be made the file
+  is emptied.
 
 ## Plan
 
@@ -96,39 +111,62 @@ no code path reaches; documents, texts shown to agents and people, and code that
 
 - **AC-1** Three requests in a row to `/internal/scrub/fingerprints` answer the same body; it
   has the fields `version`, `salt`, `names`, `needles` only, each needle `secret`, `len`, `tag`,
-  `digest` only, and every tag is below `2^tag_bits(len)`. Two sandboxes have different salts.
+  `digest` only, and every tag is below `2^tag_bits(len)`. Two sandboxes have different salts;
+  a second server on the same data directory has the same salt; a changed value changes its
+  digests and nothing else.
 - **AC-2** The attack that recovered a 28-character value from 28 requests on `dev` has nothing
   to work on: no `base`, no `rolling`, equal answers.
 - **AC-3** A fingerprint set made by the server redacts a value in the wrapper's matcher
   (`scrub_client::matcher`), in every encoding the tests cover.
-- **AC-4** After a guest joined a playground, the maker's and the guest's tokens get empty
-  names and needles; before, the maker's got the project secret's.
-- **AC-5** A version 1 `scrub.json` of a live run is a version 2 file with the same inode after
-  `refresh_fingerprint_files`, and redacts the run's holder's value.
+- **AC-4** After a guest joined a playground, the maker's and the guest's tokens get the name
+  of the playground's MCP server value only, and the wrapper's matcher redacts that value and
+  not the project secret's; the maker's running session's file says the same; before, the
+  maker's set named the project secret too. With the guests' table unreadable the set is an
+  error.
+- **AC-5** After `refresh_fingerprint_files`: a file of this server's format holds exactly what
+  the endpoint answers; a file of an older Yulius is version 1 with `base` 0 and the same
+  inode, and the old wrapper's search (and the real wrapper of `dev`, Evidence) redacts with
+  it; a link in a run's place is refused and its target untouched, and the other runs' files
+  are still rewritten. The same for a Superagent's file.
+- **AC-6** A request without a version (the old wrapper's) is answered in version 2, and the
+  asking session's old-format file then also covers a secret added since.
+- **AC-7** The new wrapper refuses a file in the old format (`Invalid`), so nothing runs
+  unredacted while the server cannot be reached.
 
 ## Test plan
 
-- Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, spread over
-  all values), a text sharing a tag is not redacted, fingerprints too short or of an unknown
-  secret are ignored; the existing stream and whole-text tests run on the new matcher.
-- Harness (`scrub_client.rs`): the existing wrapper and hook tests on version 2 sets.
+- Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
+  and alphabets fold, spread over all values); corners (an 8-byte needle ending the data, data
+  shorter than the window, two secrets with one value, the longest of two needles at one
+  place); a text sharing a tag is not redacted; fingerprints too short or of an unknown secret
+  are ignored; the existing stream and whole-text tests run on the new matcher.
+- Harness (`scrub_client.rs`): the existing wrapper and hook tests on version 2 sets;
+  `a_fingerprint_file_in_the_format_before_version_2_fails_closed` (AC-7).
 - Integration (`crates/yulius/tests`): `secrets::repeated_fingerprint_requests_answer_the_same_set`
   (AC-1, AC-2), `secrets::agents_list_names_and_read_redacted_results` (AC-3),
   `playground_guests::a_playground_with_guests_gives_no_run_an_agent_secret` (AC-4),
-  `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs` (AC-5).
-- The proof of the defect was a temporary test on `dev` (Evidence).
-- Speed: a release-build probe on 1 MB of text with 10, 40 and 200 secrets, before and after.
+  `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs` (AC-5, AC-6),
+  `secrets_scopes::an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied` (FPR-007),
+  `cockpit::a_superagent_from_before_version_2_keeps_redacting_from_its_file` (AC-5, AC-6).
+  `support::old_wrapper_redacts` is the old wrapper's search written out, so these tests hold
+  the old format to what that wrapper computes.
+- Probes outside the suite (Evidence): the defect on `dev`; the wrapper built from `dev` against
+  this server's answer and file; speed in a release build on 1 MB with 10, 40 and 200 secrets,
+  before and after.
 
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
-  a fixed set per sandbox; a tag of 4 to 16 bits of a hash of the first 8 bytes instead of the
-  rolling hash; an empty set for a playground with guests; live sessions' files rewritten at
-  start. Rejected there: limiting requests, a fixed base, bits of a whole-needle rolling hash,
-  more tag bits, redacting on the server, leaving production secrets out.
+  a fixed set per sandbox; a tag of 3 to 16 bits of a hash of the first 8 bytes instead of the
+  rolling hash; a run's set without seeds and, in a playground with guests, without agent
+  secrets; live sessions' files rewritten at start, and kept in the old format for sessions
+  launched before version 2. It tables what a holder of a set can still compute. Rejected
+  there: limiting requests, a fixed base, bits of a whole-needle rolling hash, more or fewer
+  tag bits, redacting on the server, leaving production secrets out, restarting sessions, the
+  old format on the endpoint.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
-  set, and a tag that is the same in every sandbox says nothing a holder of two sets could not
-  compute.
+  set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
+  salted per sandbox, do not show that it is the same value.
 - The audit's slices are separate pull requests of this task instead of chained tasks: the
   findings share one ledger and one reviewer's context, and a slice's fix often changes how the
   next is best made.

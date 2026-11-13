@@ -13,11 +13,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   as often as a value has characters could compute the value, for every agent secret that
   reaches it, production ones and the instance Vidoc key included. A sandbox's fingerprints are
   now the same on every request, and a fingerprint says the value's length, its salted digest
-  and a tag of 4 to 16 bits of a hash of its first 8 bytes. A playground that a guest joined gets
-  no fingerprints, as its runs get no agent secret. Sessions that ran across the update get
-  their fingerprint file rewritten when the server starts. Redacting 1 MB of output takes 94 ms
-  with 10 secrets (460 ms before) and 267 ms with 40 (781 ms). Rotate agent secrets that
-  untrusted code could have reached before this change.
+  and a tag of 3 to 16 bits of a hash of its first 8 bytes. A run's fingerprints no longer
+  include two-factor seeds, and a playground that a guest joined keeps only those of its MCP
+  servers' own values. Sessions that were running across the update keep working: their
+  wrapper reads the old format, so Yulius keeps their fingerprint file in it, without the hash
+  that told too much. Redacting 1 MB of output takes 126 ms with 10 secrets (460 ms before) and
+  205 ms with 40 (781 ms). **After the update, rotate the agent secrets that untrusted code
+  could have reached**, and make new values 20 random characters or longer: a shorter one can
+  be guessed against its fingerprints (12 letters and digits within minutes on one graphics
+  card, as the ADR tables).
 
 ## 2026-11-12
 

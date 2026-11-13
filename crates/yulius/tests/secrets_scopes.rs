@@ -916,7 +916,10 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     )?;
     let inode = std::fs::metadata(&old_file)?.ino();
     let new_file = new.path().join(name);
-    std::fs::write(&new_file, br#"{"version":2,"salt":"00","names":[],"needles":[]}"#)?;
+    std::fs::write(
+        &new_file,
+        br#"{"version":2,"salt":"00","names":[],"needles":[]}"#,
+    )?;
     // A link where a run's file should be: refused, and what it points at is not written.
     let elsewhere = broken.path().join("elsewhere.json");
     std::fs::write(&elsewhere, b"not a fingerprint file")?;
@@ -961,7 +964,12 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
         &w,
         &w.alice,
         "s1",
-        secret("personal", "SECOND", "second-personal-token-77aa", "api.second.test"),
+        secret(
+            "personal",
+            "SECOND",
+            "second-personal-token-77aa",
+            "api.second.test",
+        ),
     )
     .await?;
     let asked = call(
