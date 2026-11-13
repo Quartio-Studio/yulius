@@ -243,6 +243,15 @@ impl<'a> Invocation<'a> {
         }
     }
 
+    /// [`Self::local_reading`] when `url` is a path of this machine, else unchanged.
+    pub(crate) fn local_reading_if_path(self, url: &str) -> Self {
+        if Path::new(url).is_absolute() {
+            self.local_reading(url)
+        } else {
+            self
+        }
+    }
+
     /// Names a path outside the command's folder that it reads or writes.
     pub(crate) fn touching(mut self, path: impl AsRef<Path>) -> Self {
         self.touches.push(path.as_ref().to_path_buf());
@@ -556,7 +565,11 @@ impl Git {
             let is_a_sandboxes = |path: &Path| confinement.sandbox_of_path(path).is_some();
             match invocation.cwd {
                 Some(cwd) => is_a_sandboxes(cwd),
-                None => invocation.touches.iter().any(|path| is_a_sandboxes(path)),
+                // What it writes, and what it takes from: both are read with their
+                // configuration by a command that has no folder of its own.
+                None => (invocation.touches.iter())
+                    .chain(&invocation.reads)
+                    .any(|path| is_a_sandboxes(path)),
             }
         })
     }
@@ -1132,6 +1145,12 @@ mod tests {
                 .arg(&origin)
                 .touching(data.join("sandboxes/s1/new"))
                 .local(&origin),
+            // Nor a command without a folder that takes from a sandbox's clone.
+            Invocation::new(&git, "clone", None)
+                .args(["clone", "--"])
+                .arg(&repo)
+                .touching(data.join("changes/c1"))
+                .local_reading(&repo),
         ] {
             let refused = git.run(local).map(|_| ()).map_err(|err| err.to_string());
             assert!(
@@ -1174,6 +1193,14 @@ mod tests {
                 .local_if_path("/srv/x.git")
                 .local
         );
+        // One that only takes from a folder reads it; an address elsewhere is neither.
+        let takes =
+            Invocation::new(&git, "fetch", Some(&courier)).local_reading_if_path("/srv/x.git");
+        assert!(takes.local && takes.touches.is_empty());
+        assert_eq!(takes.reads, [std::path::PathBuf::from("/srv/x.git")]);
+        let web = Invocation::new(&git, "fetch", Some(&courier))
+            .local_reading_if_path("https://github.com/a/b.git");
+        assert!(!web.local && web.reads.is_empty());
         Ok(())
     }
 

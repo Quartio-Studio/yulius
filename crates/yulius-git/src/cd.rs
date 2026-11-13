@@ -63,7 +63,7 @@ impl Git {
                 ])
                 .arg(from)
                 .arg(&refspec)
-                .local(from),
+                .local_reading(from),
         )?;
         let fetched = self.rev_parse(mirror, &format!("refs/heads/{branch}"))?;
         if !fetched.eq_ignore_ascii_case(sha) {
@@ -122,7 +122,7 @@ impl Git {
                     source,
                     &refspec,
                 ])
-                .local_if_path(source)
+                .local_reading_if_path(source)
                 .timeout(self.network_timeout),
         )?;
         self.rev_parse(mirror, &format!("refs/heads/{branch}"))

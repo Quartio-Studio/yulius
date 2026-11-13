@@ -48,7 +48,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
      merged, pull request #1248;
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
-  11. production secrets decided once (V6);
+  11. production secrets decided once (V6): slice 12 of the Plan;
   12. delivery and CI decided once (D4-D6, QB1);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
@@ -58,10 +58,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
-      found in slice 10): taken next, as slice 11 of the Plan (the earlier number 11, V6,
-      follows it);
+      found in slice 10): taken as slice 11 of the Plan (the earlier number 11, V6, follows
+      it): merged, pull request #1252;
   20. no command that reads a clone's configuration may start the shell (G5, from the review
-      of slice 11): taken into slice 11 itself, whose own step it concerns.
+      of slice 11): taken into slice 11 itself, whose own step it concerns: merged with it.
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -300,6 +300,20 @@ no code path reaches; documents, texts shown to agents and people, and code that
   was connected to", four times). The commands concerned were a playground's fetch, push
   and listing (slice 10), and the clone's fetch from a courier and a new clone's copy (this
   slice). Closed here by a rule instead of a list: no such command may start the shell.
+
+### Slice 12: a production secret that some runs still got
+
+- **V6 (low).** `EgressClient::may_use` answered `true` for an agent run whatever `cd_prod`
+  was, and `!cd_prod` for a Superagent and a CI job. A production secret has no hosts since
+  SPEC-134, so the difference showed only for a row made a production secret before that,
+  which kept its hosts: the proxy sent it there for an agent's run, while
+  `browser_fill_secret`, `secret_copy_to_env`, a `${secret:NAME}` reference, the Superagent
+  and CI refused it and `secrets_list` said "agents never use it, not through hosts".
+  SPEC-308 put the state into the Edit dialog ("agents' requests to them still get it").
+  The store's insert of a whole row did not check the pair.
+- **From the review of slice 11 (a nit, pre-existing):** a CD mirror's fetch from a
+  sandbox's clone, the copy of an upload's refs and a refresh of branches outside a sandbox
+  got write access to the folder they only read.
 
 ## Requirements
 
@@ -547,6 +561,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   none and writes into one) may start the shell, also where the tests' stand-in for GitHub
   gives the shell to every other command; a transfer between folders there is refused
   before anything is started.
+- **PSR-001** `EgressClient::may_use` is `false` for a production secret for every caller.
+- **PSR-002** Migration 0055 sets `hosts` to `[]` for every row with `cd_prod = 1` and hosts,
+  and writes one `audit_log` row per such secret (`vault.agent.hosts_cleared`, actor
+  `yulius`, target the secret's id, a sentence with its name and the hosts it had, time in
+  milliseconds; the Secrets page's Activity names the action); other rows are unchanged.
+- **PSR-003** The store refuses to insert a secret with `cd_prod` and hosts.
+- **PSR-004** The Edit dialog of a production secret has no Hosts input and no choice about
+  hosts; the web mock holds no production secret with hosts.
+- **PSR-005** A fetch, a listing and a clone between two folders reach the folder they take
+  from read-only (`Invocation::local_reading`), by a path the caller gives and by a remote's
+  name alike; a push reaches its destination read-write. A command without a folder of its
+  own that takes from a sandbox's folder counts as one in a sandbox's folder (no token, no
+  shell).
 
 ## Plan
 
@@ -563,7 +590,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
-- [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed
+- [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
+- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
 
 ## Acceptance criteria
 
@@ -870,6 +898,26 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the data folder reached through a link. With a link to a missing branch file of the
   origin where the clone's `shallow` file was, and the clone's remote branch deleted, the
   server's fetch creates nothing in the origin.
+- **AC-72** For an agent run, a Superagent and a CI job granted the name: `may_use` is true
+  for a secret that is no production secret and false for one that is; a CI job has no
+  secret it was not granted.
+- **AC-73** A database at schema version 54 with a production secret that has two hosts, a
+  production secret without hosts and an agents' secret with a host: after opening, the
+  first has none, the others are unchanged, and the audit log has one
+  `vault.agent.hosts_cleared` row, of `yulius`, for the first secret, with its name and both
+  hosts; the schema version is 55.
+- **AC-74** Inserting a production secret with hosts is refused ("no hosts"); without them it
+  is taken. With such a secret in a project: `browser_fill_secret` refuses it for what it
+  is, and a CI job that names it is told it is never given to CI. (That the proxy gives it
+  to no client is AC-72's: with no host bound, the integration tests' requests show nothing
+  about the proxy's rule.)
+- **AC-75** The Edit dialog of a production secret shows "None. This is a production secret:
+  …" and no Hosts input; the e2e test of the secrets page passes without the old rows.
+- **AC-76** The runner: `local_reading_if_path` makes a transfer with a folder a local one
+  that reads it and touches nothing; with an address elsewhere it changes nothing. A
+  repository of the server's own with a folder for its origin, through a launcher that notes
+  its words: the clone, the fetch by the remote's name and the listing reach the origin with
+  `--ro` and never `--rw`; the push with `--rw`.
 
 ## Test plan
 
@@ -1019,6 +1067,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `courier::tests::the_remotes_head_names_its_default_branch` (TKR-002). Every test of
   `yulius` that uses the real adapter with a playground or the stand-in for GitHub now
   makes its transfers through a courier (AC-60).
+- Slice 12: `yulius-app` `ports::egress::tests::a_production_secret_applies_to_no_client`
+  (AC-72); `yulius-store` `tests::a_production_secrets_old_hosts_are_removed` (AC-73);
+  `yulius` tests with `support::production_secret` (`browser`, `cockpit`, `secrets`,
+  `local_ci`: AC-74, the helper asserts the refusal); `e2e/tests/secrets.e2e.ts` "a
+  production secret’s Edit dialog offers no hosts and says why" (AC-75); `yulius-git`
+  `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` and `yulius`
+  `git_confined::a_folder_is_written_only_by_a_push` (AC-76).
 
 ## Decisions
 
@@ -1082,6 +1137,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- [ADR-0324](../../docs/decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md):
+  one rule for a production secret at the egress proxy (no client gets it), the hosts old
+  rows kept removed by a migration with an audit line, the pair refused at insert; the
+  dialog's choice for such rows removed with them. Chosen over keeping the hosts as text
+  and over leaving the rule to the rows alone.
 - From the review of slice 11, round 1 (two major, five minor, seven nits; all answered in
   the slice): a remote without an address is refused instead of named to Git, and no
   program is asked for a password; a new clone and the first commit of an empty repository
@@ -1186,10 +1246,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
 | G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | fixed (slice 10): what Git executes and the files it touches; the token's connection is G2 |
-| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 11 |
-| G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | slice 11 |
-| G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | slice 11 |
-| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders, and the shell runs what that configuration names for a transfer (a promisor remote's command, a submodule's remote's, a credential helper for a bundle address, a new clone's filter) (review of slice 11) | high | slice 11 |
+| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | fixed (slice 11) |
+| G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | fixed (slice 11) |
+| G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | fixed (slice 11) |
+| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders, and the shell runs what that configuration names for a transfer (a promisor remote's command, a submodule's remote's, a credential helper for a bundle address, a new clone's filter) (review of slice 11) | high | fixed (slice 11) |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
@@ -1211,7 +1271,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 11 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 12 |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 12 |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
@@ -2029,3 +2089,55 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested, besides the list above:** a failed clone through the application (the
   adapter's clone from an address where nothing listens is); a clone with more refs than
   the runner reads in one answer (16 MiB).
+
+### Slice 12 (2026-11-13)
+
+- **Slice 11's delivery.** Pull request #1252 merged into `dev` at 67ab28d09, whose own
+  Yulius CI run passed; the fresh reviewer approved that head in its second round ("every
+  round-1 finding (R1–R5, N1–N5) is answered"; two nits, answered here: the folders a
+  transfer only reads, and the index line of ADR-0323).
+- **Tests failing without their fix** (`target/audit/slice12/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): an agent run given a production secret; the old hosts
+  kept; their removal not written to the audit log; every secret's hosts removed; a
+  production secret with hosts inserted; what a transfer only reads granted for writing.
+- **The suites:** `2884 tests run: 2884 passed` for the four crates touched
+  (`target/audit/slice12-suite1.log`); the secrets page's e2e file, `30 passed`
+  (`target/audit/slice12-e2e.log`), with the part about a production secret's old hosts
+  removed from it.
+- **Gate.** `scripts/dev ci` at `a05564671`: exit 0; `4205 tests run: 4205 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** Whether any instance holds a production secret with hosts (the migration
+  changes nothing where none does; the audit line shows it where one did); the whole e2e
+  suite (one page's file changed, and its file was run).
+- **Review of slice 12, round 1** (head 3820558c5, request changes; the rule, the migration
+  and the store's check held: "`may_use` is false for cd_prod for every caller", "No write
+  path can make the pair cd_prod + hosts"). Three minor findings, in the reviewer's words:
+  "Two docs still describe the old state"; "Two such call sites still get read-write"
+  (the fetch and the listing by a remote's name); "Several integration assertions can no
+  longer fail for the rule they claim to hold". Five nits. Answered: both documents; both
+  sites, and a test that reads how each command reaches the origin from the launcher's own
+  words; the comments of those assertions say what they show, and AC-74 no longer cites
+  them for the proxy's rule; the doc comment a new test had taken from its neighbour; three
+  stale comments; the audit line as a sentence with a name on the Secrets page; a command
+  without a folder that takes from a sandbox's folder counted as one in it. Left as it is
+  (the fifth nit): the store's compare-and-sets still let a production row keep hosts
+  unchanged; no row has any, and the general rule they are part of (hosts change only
+  against what the editor saw) is not this slice's.
+- **Tests failing without their fix, after the review** (`mutations.log`, now 11 cases, each
+  failed its test): the six above and: a production secret like any other to the proxy
+  (the rule gone for every caller); a fetch, a listing and a clone allowed to write in the
+  folder they take from; a command without a folder that takes from a sandbox's folder
+  counted as none of a sandbox's.
+- **The suites after it:** `2885 tests run: 2885 passed` (`slice12-suite2.log`); the secrets
+  page's e2e file again, `30 passed`.
+- **Gate after it.** `scripts/dev ci` at `19018a164`: exit 0; `4206 tests run: 4206 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Noted, not a defect:** a clone between two folders now copies the objects where it
+  linked them (the source is read-only to the confined Git, and a link needs more); more
+  disk and time for a playground's first clone of a large repository.
+- **Review of slice 12, round 2** (head 5e30be1ed): "None open in own code"; approve. The
+  commit after it ticks this slice in the Plan and adds this line; the reviewer was shown
+  that delta.
