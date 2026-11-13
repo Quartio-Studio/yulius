@@ -81,23 +81,27 @@ to the person.
 
 - PLN-001 (a pull request delivers the finished part). `check_merge` no longer refuses a merge
   for steps that are not finished. It refuses only a plan none of whose steps is finished
-  (`DeliveryError::NoStepFinished`: "no step of the plan is finished; mark done what this pull
-  request delivers (`step_update`) before merging"). A plan without steps is as before.
+  (`DeliveryError::NoStepFinished`: "no step of the plan is finished (N open); mark done what
+  this merge delivers (`step_update`) before merging"). A plan without steps is as before.
   `DeliveryFacts` carries `steps_open` and `steps_finished`. The same holds for a playground's
   squash.
 - PLN-002 (what `delivery_merge` waits for). The delivery a `delivery_merge` call makes (push,
-  pull request, a new pull request after a merge) goes out with steps still ahead. It is
-  refused while a step is in progress ("step "…" is in progress: finish it if this pull request
-  delivers it, or set it back to pending (`step_update`) when it belongs to a later one") and
-  while no step is finished. The delivery at the end of a turn stays as it is: it waits for
-  every step, so a turn that ends between two steps opens no pull request. Its reason for a
-  plan with finished steps and others ahead names the way: "N step(s) are still ahead (next:
+  pull request, a new pull request after a merge; a playground's squash) goes out with steps
+  still ahead. It is refused while a step is in progress ("step "…" is in progress: finish it
+  if this delivery includes it, or set it back to pending (`step_update`) when it belongs to a
+  later one") and while no step is finished ("no step of the plan is finished: mark done what
+  this delivery includes (`step_update`)"); a person's merge follows the same rule. A merge
+  already armed is not asked again. The delivery at the end of a turn stays as it is: it waits
+  for every step, so a turn that ends between two steps opens no pull request. Its reason for
+  a plan with finished steps and others ahead names the way: "N step(s) are still ahead (next:
   "…"): Yulius delivers by itself once every step is finished; to deliver the finished part
-  now, call `delivery_merge` with its reviewed head".
+  now, call `delivery_merge` with its reviewed head". A turn that ends on a head its open pull
+  request already has leaves no such note.
 - PLN-003 (the agent hears what is ahead). The answers of `delivery_merge` (merged, armed,
-  armed already) and the message about a merged pull request (`merged_text`) name the steps
-  still ahead and the next one, and say that the task goes on with them on this branch; with
-  none ahead they are as before. A merged task with steps ahead is not Done and the tasks
+  armed already) and every message about a merge (`merged_text`, the armed merge's, the merge
+  train's, a playground's squash) name the steps still ahead and the next one and say "go on
+  with the next step" where they said "end with your summary"; what the delivery profile
+  still asks for the merged part stays in them. With none ahead they are as before. A merged task with steps ahead is not Done and the tasks
   chained after it wait (existing rules, pinned here by a test).
 - PLN-004 (a plan holds every slice). A plan has 1 to 60 steps (`steps::MAX_STEPS`; the spec's
   Plan, `steps_set` and a workflow's seed steps share the bound). The "too fine" nudge
@@ -158,9 +162,14 @@ to the person.
   (integration, the way #465 ran): a task with three slices as steps, the first finished.
   The end of a turn opens no pull request and says "still ahead … call `delivery_merge`".
   `delivery_merge` with the second in progress is refused with that step's title; with it
-  pending the pull request opens and merges, the answer names 2 steps ahead and the next, the
-  task reads 1/3 and is not Done. The second slice, committed and finished, goes out as a new
-  pull request by `delivery_merge` with one step ahead.
+  pending the pull request opens and merges, the answer names 2 steps ahead and the next, and
+  the task reads 1/3 (it is not Done by the rule `task::needs_you_follows_the_sidebar_rule`
+  pins). The second slice, committed and finished, goes out as a new pull request by
+  `delivery_merge` with one step ahead; the turn that ends on it leaves no "not delivered"
+  note, a commit for the step ahead is not pushed under the armed head, and the armed merge
+  lands although the agent started that step. In a playground:
+  `playground::an_armed_squash_delivers_the_finished_part_of_the_plan` and
+  `playground::an_unfinished_task_is_not_merged`.
 - AC-3 (PLN-002). `delivery::a_merge_call_delivers_nothing_while_no_step_is_finished`: every step
   pending, `delivery_merge` is refused with "no step of the plan is finished".
 - AC-4 (PLN-003). `agent_wait` `merged_text` with steps ahead says "2 steps of your plan are

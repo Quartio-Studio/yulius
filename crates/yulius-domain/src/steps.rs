@@ -535,12 +535,12 @@ pub fn delivery_hold(steps: &[StepState], ask: DeliveryAsk) -> Option<String> {
     match ask {
         DeliveryAsk::Call => match working {
             Some(step) => Some(format!(
-                "step \"{}\" is in progress: finish it if this pull request delivers it, or set \
-                 it back to pending (`step_update`) when it belongs to a later one",
+                "step \"{}\" is in progress: finish it if this delivery includes it, or set it \
+                 back to pending (`step_update`) when it belongs to a later one",
                 step.title
             )),
             None if !finished => Some(
-                "no step of the plan is finished: mark done what this pull request delivers \
+                "no step of the plan is finished: mark done what this delivery includes \
                  (`step_update`)"
                     .to_owned(),
             ),
@@ -1207,9 +1207,8 @@ mod tests {
         assert_eq!(
             delivery_hold(&working, Call).as_deref(),
             Some(
-                "step \"Review answered\" is in progress: finish it if this pull request \
-                 delivers it, or set it back to pending (`step_update`) when it belongs to a \
-                 later one"
+                "step \"Review answered\" is in progress: finish it if this delivery includes \
+                 it, or set it back to pending (`step_update`) when it belongs to a later one"
             )
         );
         assert_eq!(
@@ -1227,7 +1226,7 @@ mod tests {
         assert_eq!(
             delivery_hold(&untouched, Call).as_deref(),
             Some(
-                "no step of the plan is finished: mark done what this pull request delivers \
+                "no step of the plan is finished: mark done what this delivery includes \
                  (`step_update`)"
             )
         );

@@ -725,7 +725,7 @@ pub enum DeliveryError {
     SpecInvalid,
     /// The plan has steps and none of them is finished: there is no finished part to deliver.
     #[error(
-        "no step of the plan is finished ({0} open); mark done what this pull request delivers \
+        "no step of the plan is finished ({0} open); mark done what this merge delivers \
          (`step_update`) before merging"
     )]
     NoStepFinished(usize),
@@ -1354,7 +1354,7 @@ mod tests {
         assert!(blocked_actions(&stage, &profile, &part).is_empty());
         assert_eq!(
             DeliveryError::NoStepFinished(2).to_string(),
-            "no step of the plan is finished (2 open); mark done what this pull request delivers \
+            "no step of the plan is finished (2 open); mark done what this merge delivers \
              (`step_update`) before merging"
         );
         // No CI at all: nothing can fail, so the merge may proceed.

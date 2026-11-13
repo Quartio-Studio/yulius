@@ -123,7 +123,7 @@ impl App {
         } else if observed.steps_open > 0 && observed.steps_finished == 0 {
             // Steps still ahead wait for a later squash of the task (SPEC-484 PLN-001).
             Some(
-                "no step of the plan is finished: mark done what this merge delivers \
+                "no step of the plan is finished: mark done what this delivery includes \
                  (`step_update`)"
                     .to_owned(),
             )

@@ -850,15 +850,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                let next = self
-                    .after_merge_of(
-                        task,
-                        "Finish what the delivery profile still asks for this stage \
-                         (`delivery_status`; deploy and verify an integration environment with \
-                         `delivery_deploy`), then end with your summary. Do not promote unless \
-                         the task asks for it.",
-                    )
-                    .await;
+                let next = self.after_merge_of(task, PROFILE_ASKS).await;
                 Verdict::Decided(format!(
                     "Yulius merged pull request #{number} into `{base}` at {}: its checks \
                      passed. {next}",
@@ -942,7 +934,8 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                let next = self.after_merge_of(task, "End with your summary.").await;
+                // A playground has no stage after its squash.
+                let next = self.after_merge_of(task, "").await;
                 Verdict::Decided(format!(
                     "Yulius squashed your branch into `{integration}` at {}: its checks passed on \
                      it merged into `{integration}`. {next}",
@@ -1120,12 +1113,12 @@ impl App {
     }
 
     /// [`after_merge`] for `task` as its plan is now (a store failure reads as nothing ahead).
-    pub(crate) async fn after_merge_of(&self, task: &TaskRecord, ending: &str) -> String {
+    pub(crate) async fn after_merge_of(&self, task: &TaskRecord, asks: &str) -> String {
         let ahead = match self.deps.store.steps(&task.id).await {
             Ok(steps) => crate::delivery::steps_ahead_note(&steps),
             Err(_) => String::new(),
         };
-        after_merge(&ahead, ending)
+        after_merge(&ahead, asks)
     }
 
     /// What a merge of `task`'s pull request `number` counts as (SPEC-441 MQ-009): the merged
@@ -1308,8 +1301,7 @@ pub(crate) fn merged_text(
     let ahead = ahead.trim();
     let finish = after_merge(
         ahead,
-        "Finish what the delivery profile still asks for this stage (`delivery_status`), then \
-         end with your summary. Do not promote unless the task asks for it.",
+        "Finish what the delivery profile still asks for this stage (`delivery_status`)",
     );
     let (fact, then) = match gate {
         GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => (
@@ -1355,18 +1347,41 @@ pub(crate) fn merged_text(
     if next { format!("{fact} {then}") } else { fact }
 }
 
-/// What an agent does after a merge of its pull request: `ending`, the task's end, or, with
-/// steps of its plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that
-/// goes on: a merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
-pub(crate) fn after_merge(ahead: &str, ending: &str) -> String {
+/// What the delivery profile may still ask after a merge Yulius made, for [`after_merge`].
+pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still asks for this stage \
+                                       (`delivery_status`; deploy and verify an integration \
+                                       environment with `delivery_deploy`)";
+
+/// What an agent does after a merge of its work: what the delivery profile still asks for the
+/// merged part (`asks`, a clause; empty in a playground, which has no later stage), and then the
+/// end of the task, or, with steps of its plan still ahead (`ahead`,
+/// [`crate::delivery::steps_ahead_note`]), the work that goes on: a merge of one part of the
+/// plan is not the task's end (SPEC-484 PLN-003).
+pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
     let ahead = ahead.trim();
+    let then = |what: &str| {
+        if asks.is_empty() {
+            let mut chars = what.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars).collect()
+            })
+        } else {
+            format!("{asks}, then {what}")
+        }
+    };
+    let promote = if asks.is_empty() {
+        ""
+    } else {
+        " Do not promote unless the task asks for it."
+    };
     if ahead.is_empty() {
-        return ending.to_owned();
+        format!("{}.{promote}", then("end with your summary"))
+    } else {
+        format!(
+            "{}: the finished part of your plan is delivered. {ahead}{promote}",
+            then("go on with the next step")
+        )
     }
-    format!(
-        "The finished part of your plan is delivered. {ahead} Go on with the next step; do not \
-         promote unless the task asks for it."
-    )
 }
 
 /// The task's [`ArmedSlot`], also after a panic elsewhere held it (its values stay consistent:
@@ -1535,8 +1550,8 @@ mod tests {
     fn a_merge_with_steps_ahead_says_the_task_goes_on() {
         use yulius_domain::ci::{GateResult, RunState};
         let ahead = " 2 step(s) of your plan are still ahead (next: \"Slice 2\"): they stay \
-                     open, and Yulius opens a new pull request for the work you commit for them \
-                     on this branch.";
+                     open, and the work you commit for them on this branch is delivered next, \
+                     by a `delivery_merge` of its own.";
         for gate in [
             GateResult::Run(Some(RunState::Passed)),
             GateResult::NotConfigured,
@@ -1551,6 +1566,29 @@ mod tests {
             assert!(!text.contains("end with your summary"), "{text}");
             assert!(!text.contains("  "), "{text}");
         }
+        // What the profile asks for the merged part stays; only the task's end gives way.
+        assert_eq!(
+            after_merge(ahead, PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then go on \
+             with the next step: the finished part of your plan is delivered. 2 step(s) of your \
+             plan are still ahead (next: \"Slice 2\"): they stay open, and the work you commit \
+             for them on this branch is delivered next, by a `delivery_merge` of its own. Do not \
+             promote unless the task asks for it."
+        );
+        assert_eq!(
+            after_merge("", PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then end with \
+             your summary. Do not promote unless the task asks for it."
+        );
+        // A playground has no later stage and no promotion.
+        assert_eq!(after_merge("", ""), "End with your summary.");
+        assert!(
+            after_merge(ahead, "").starts_with(
+                "Go on with the next step: the finished part of your plan is delivered. 2 step(s)"
+            ) && !after_merge(ahead, "").contains("promote")
+        );
         // What the merge counts as is said without a next step, steps ahead or not.
         let fact = merged_text(
             7,

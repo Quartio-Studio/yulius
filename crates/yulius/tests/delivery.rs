@@ -4259,7 +4259,7 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
     assert_eq!(blocked["isError"], true, "{blocked}");
     let why = blocked["content"][0]["text"].as_str().unwrap_or_default();
     assert!(
-        why.contains("step \"Step 1\" is in progress: finish it if this pull request delivers it"),
+        why.contains("step \"Step 1\" is in progress: finish it if this delivery includes it"),
         "{why}"
     );
     assert_eq!(pulls_opened(), 0, "nothing opened");
@@ -4371,8 +4371,8 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     assert_eq!(held["isError"], true, "{held}");
     assert!(
         said(&held).contains(
-            "step \"Step 1\" is in progress: finish it if this pull request delivers it, or set \
-             it back to pending"
+            "step \"Step 1\" is in progress: finish it if this delivery includes it, or set it \
+             back to pending"
         ),
         "{held}"
     );
@@ -4516,7 +4516,7 @@ async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult
     assert_eq!(refused["isError"], true, "{refused}");
     let why = refused["content"][0]["text"].as_str().unwrap_or_default();
     assert!(
-        why.contains("no step of the plan is finished: mark done what this pull request delivers"),
+        why.contains("no step of the plan is finished: mark done what this delivery includes"),
         "{why}"
     );
     assert_eq!(pulls_opened(&f), 0, "{:?}", f.h.github.writes());

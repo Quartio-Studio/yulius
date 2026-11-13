@@ -478,7 +478,8 @@ pub(crate) fn steps_ahead_note(steps: &[StepRecord]) -> String {
     yulius_domain::steps::ahead(&states).map_or_else(String::new, |(open, next)| {
         format!(
             " {open} step(s) of your plan are still ahead (next: \"{next}\"): they stay open, and \
-             Yulius opens a new pull request for the work you commit for them on this branch."
+             the work you commit for them on this branch is delivered next, by a \
+             `delivery_merge` of its own."
         )
     })
 }
