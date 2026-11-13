@@ -35,16 +35,27 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   request is merged and the watch, which saw it open, has not said so, or an armed merge ended
   without merging and the watch has not said how. The watch's own conditions (`merge_untold`,
   `outcome_key`) decide both what it types and what is due.
-- **Typed is not heard.** After the watch typed, the task still reads idle until Claude Code's
-  prompt hook (or the transcript's turn) makes it Working. The news stays due until then,
-  for at most two minutes (`NEWS_TURN_WAIT_MS`: a paste Claude Code swallowed must not hold
-  a chain for ever).
+- **Typed is not heard.** After the watch typed into an idle session, the task still reads
+  idle until Claude Code's prompt hook (or the transcript's turn) makes it Working. The news
+  stays due until the task goes from idle to Working by a turn that began after the typing
+  (a prompt hook sent before it, or a prompt the transcript's watcher reads late, is another
+  turn's), for at most two minutes (`NEWS_TURN_WAIT_MS`: a paste Claude Code swallowed must
+  not hold a chain for ever). News
+  typed while a turn runs is queued by Claude Code (its prompt hook comes at the Enter and
+  starts nothing) and handed on after that turn. Once its entry was read in Claude Code's
+  queue, the queue says how long it waits (`Queue::hands_on`, SPEC-471 and SPEC-479), however
+  long the running turn takes; until that record is read, the two minutes apply.
+- **One reading per decision.** `task_is_done` and `task_is_done_locally` read the task's
+  delivery once and ask the news rule about that reading; a merge GitHub reports before the
+  record says so is news like any other merge.
 - **An armed merge is known before it is restored.** A server that started again serves
-  hooks and chain passes before it put the saved armed merges back; until it did, their file
-  answers (`App::merge_is_armed`).
-- **A paused task is told nothing, and reads as before.** The watch types nothing into a task
-  a person paused or an update holds, so no news is due to it, except an armed merge, which
-  Yulius makes whatever the agent does.
+  hooks and chain passes, and runs the watch, before it put the saved armed merges back;
+  until it did, their file answers (`App::merge_is_armed`), for the news rule and for what
+  the watch types.
+- **Only a person's pause mutes news.** Nothing is typed into a task a person paused, and
+  that pause may never end, so no news is due to it, except an armed merge, which Yulius
+  makes whatever the agent does. An update's hold and a pause for capacity end by
+  themselves and the watch types right after: news stays due through them.
 - **Such a task is not Done and not a person's turn.** `task_is_done` and
   `task_is_done_locally` answer no, and the task's `yulius_wait` fact is true, so the list
   reads "Waiting for checks or merge", as it does for an agent that waits in `yulius wait`.
@@ -88,8 +99,11 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   first), the task keeps waiting and so does its chain; the list says it waits. For the same
   time a merged task is not archived or deleted without stopping it first (the list does not
   show it Done yet): seconds, in the usual case.
-- A task paused with a merged pull request it was not told of reads Done, as before this
-  decision; when it is resumed it is told, and goes on if it has more to do.
+- A task a person paused with a merged pull request it was not told of reads Done, as before
+  this decision; when it is resumed it is told, and goes on if it has more to do.
+- When the news' turn ends before its lines were read (a turn of milliseconds, a loaded
+  host), that turn's own chain pass still finds news due; the watch's next pass (20 s) takes
+  the spent mark away and lets the chains go on.
 - News typed in the instant before a restart of the server is not remembered as "typed":
   the task may read Done until its turn begins.
 - A rule of 64 tasks reads each named task once per pass, and a reading may ask GitHub (an

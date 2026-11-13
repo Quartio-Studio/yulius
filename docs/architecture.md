@@ -3138,10 +3138,14 @@ reads "Waiting for checks or merge", and `task_is_done` answers no, so no chain 
 starts on it, no supertask takes it for finished and Home counts it as working. One rule says
 when (`news_due` in `pr_watch.rs`, asked through `App::pr_news_due`): a merge is armed or being
 decided (known from the armed merges' file until a restarted server put them back); or, for a
-task the watch types into, news was typed and its turn has not begun (at most two minutes), a
-merge the watch saw open is not told, or an armed merge that ended without merging is not
-explained yet. A task the watch tells nothing is Done as before: a playground's, one whose pull
-request it never saw open, one a person paused or an update holds
+task the watch types into, news was typed and its turn has not begun, a merge the watch saw
+open is not told (also one GitHub reports before the record says so), or an armed merge that
+ended without merging is not explained yet. Typed news is due until the task goes from idle to
+Working, at most two minutes; typed while a turn runs, Claude Code queues it, and its queue
+(SPEC-471) says how long it waits. One decision reads the task's delivery once. A task the
+watch tells nothing is Done as before: a playground's, one whose pull request it never saw
+open, one a person paused; an update's hold changes nothing, since the news is typed right
+after it
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 

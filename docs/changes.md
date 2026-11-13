@@ -16,7 +16,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   while Yulius has such news for its agent (a merge armed or being decided, an armed merge's
   end or a merge not told yet, news typed whose turn has not begun): it reads "Waiting for
   checks or merge", and chains, start rules and a supertask's wait keep waiting. Achieved
-  goals, closed and paused tasks and playgrounds are as before. The tools (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
+  goals, closed tasks, tasks a person paused and playgrounds are as before. The tools
+  (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
   waiting task's start as stored: `start_rule` with the whole rule (it read "after" the
   rule's first task only), `runs_after` for a task chained after one task, `start_blocked`
   with the reason when it will not start by itself. `after_all_tasks: true` on `task_create`
