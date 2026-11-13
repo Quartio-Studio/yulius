@@ -42,17 +42,22 @@ pub fn step_states(records: &[StepRecord], timings: &[StepTiming]) -> Vec<StepSt
 }
 
 /// The API's progress summary: effort-weighted `percent` and `active_percent` (in progress),
-/// finished (done or skipped) and all steps, and the current step.
+/// finished (done or skipped) and all steps, and the current step. `first` is how many steps
+/// the plan had when its first step was finished (`CoordinationStore::plan_first_steps`): it is
+/// passed on as `first_total` only where the plan has more steps now, which is when a person
+/// should be able to tell that it grew (SPEC-484 PLN-010).
 #[must_use]
-pub fn progress_view(records: &[StepRecord]) -> StepProgress {
+pub fn progress_view(records: &[StepRecord], first: Option<u32>) -> StepProgress {
     let states: Vec<StepState> = records.iter().map(|r| step_state(r, None)).collect();
     let p = rules::progress(&states);
+    let total = u32::try_from(p.total).unwrap_or(u32::MAX);
     StepProgress {
         done: u32::try_from(p.done).unwrap_or(u32::MAX),
-        total: u32::try_from(p.total).unwrap_or(u32::MAX),
+        total,
         current: rules::current(&states).map(|i| records[i].title.clone()),
         percent: p.percent(),
         active_percent: p.active_percent(),
+        first_total: first.filter(|first| *first > 0 && *first < total),
     }
 }
 
@@ -99,6 +104,20 @@ pub fn turn_end_nudge(
 }
 
 impl App {
+    /// The progress summary of `task`'s steps `records` with the plan's first size
+    /// ([`progress_view`]).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn step_progress(
+        &self,
+        task: &TaskId,
+        records: &[StepRecord],
+    ) -> AppResult<StepProgress> {
+        let first = self.deps.store.plan_first_steps(task).await?;
+        Ok(progress_view(records, first))
+    }
+
     /// A task's stored steps and their states for the rules (with timing from the history).
     ///
     /// # Errors
@@ -280,13 +299,28 @@ mod tests {
             record("b", "Store", "skipped", 1)?,
             record("c", "API", "in_progress", 2)?,
         ];
-        let view = progress_view(&records);
+        let view = progress_view(&records, None);
         assert_eq!((view.done, view.total, view.percent), (2, 3, 50));
         // The step in progress carries 2 of 4 effort units (#150).
         assert_eq!(view.active_percent, 50);
         assert_eq!(view.current.as_deref(), Some("API"));
-        assert_eq!(progress_view(&[]).percent, 0);
-        assert_eq!(progress_view(&[]).active_percent, 0);
+        assert_eq!(progress_view(&[], None).percent, 0);
+        assert_eq!(progress_view(&[], None).active_percent, 0);
+        // SPEC-484 PLN-010: the plan's first size is passed on only where the plan grew since.
+        assert_eq!(view.first_total, None);
+        let total = u32::try_from(records.len()).unwrap_or(u32::MAX);
+        assert!(total > 1, "the plan above has several steps");
+        assert_eq!(
+            progress_view(&records, Some(total - 1)).first_total,
+            Some(total - 1)
+        );
+        for same_or_more in [total, total + 3, 0] {
+            assert_eq!(
+                progress_view(&records, Some(same_or_more)).first_total,
+                None,
+                "{same_or_more}"
+            );
+        }
         assert_eq!(
             step_by_title(&records, "  store ").map(|r| r.id.as_str()),
             Some("b")

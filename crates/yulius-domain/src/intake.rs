@@ -184,8 +184,9 @@ pub const TYPED_WINDOW_MS: i64 = 60_000;
 pub const DRAFT_TOLD_MS: i64 = 10 * 60_000;
 /// Largest task goal, user prompt and step list given to Jev (each), in bytes.
 pub const STATE_PART_BYTES: usize = 8 * 1024;
-/// Most steps listed in a scope question.
-pub const STATE_MAX_STEPS: usize = 40;
+/// Most steps listed in a scope question: a whole plan ([`crate::steps::MAX_STEPS`]), within
+/// [`STATE_PART_BYTES`].
+pub const STATE_MAX_STEPS: usize = crate::steps::MAX_STEPS;
 
 /// Why Yulius types nothing into a session's prompt box now: a person holds it (SPEC-480).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

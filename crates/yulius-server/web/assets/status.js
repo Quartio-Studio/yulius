@@ -119,6 +119,18 @@ const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 
  */
 const ANSWERED = { glyph: '✓', icon: 'check', tone: 'done', label: 'Answered', group: 'done', answered: true };
 
+/**
+ * What a plan that grew says beside its count (SPEC-484 PLN-010): `first_total` is how many steps
+ * it had when its first step was finished, sent only where it has more now. `null` otherwise.
+ */
+export function planGrowth(steps) {
+  const first = steps && steps.first_total;
+  const total = steps && steps.total;
+  if (!Number.isInteger(first) || !Number.isInteger(total) || first < 1 || first >= total) return null;
+  const added = total - first;
+  return { text: `${first} at first`, title: `The plan had ${first} step${first === 1 ? '' : 's'} when its first step was finished; ${added} ${added === 1 ? 'was' : 'were'} added since.` };
+}
+
 /** Whether the task's plan has steps not done or skipped yet (STP-001, STP-005). */
 export function planOpen(task) {
   const steps = task.steps || {};

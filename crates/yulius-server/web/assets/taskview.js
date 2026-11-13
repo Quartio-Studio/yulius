@@ -7,7 +7,7 @@ import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitCause, pausedLine, pauseLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitCause, pausedLine, pauseLine, planGrowth, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -810,10 +810,13 @@ export function mountTaskView(ctx, sandbox, task) {
       const index = ordered.findIndex((s) => s.status === 'in_progress');
       if (index >= 0) n = index + 1;
     }
+    // A plan that grew since its first step was finished says what it had then (SPEC-484): the
+    // server sends `first_total` only for such a plan.
+    const first = planGrowth(steps);
     setChildren(stripLabel,
       h('span', { class: 'step-task', title: current.title }, h('span', { class: 'step-task-num' }, `#${current.number}`), h('span', { class: 'sr-only' }, ' '), current.title),
       total
-        ? [h('span', { class: 'step-count' }, `Step ${n || done}/${total}`), h('span', { class: 'step-current' }, steps.current ? `· ${steps.current}` : done === total ? '· All steps done' : '')]
+        ? [h('span', { class: 'step-count' }, `Step ${n || done}/${total}`, first ? h('span', { class: 'step-first', title: first.title }, ` · ${first.text}`) : null), h('span', { class: 'step-current' }, steps.current ? `· ${steps.current}` : done === total ? '· All steps done' : '')]
         : h('span', { class: 'step-current muted' }, 'No plan steps yet'));
     // The server weighs steps by their declared effort (STP-006); older servers send no percent.
     const pct = !total ? 0 : Number.isFinite(steps.percent) ? steps.percent : Math.floor((done / total) * 100);
