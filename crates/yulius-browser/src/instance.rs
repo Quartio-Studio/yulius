@@ -1157,6 +1157,8 @@ pub struct BrowserInstance {
     input_lock: tokio::sync::Mutex<()>,
     last_used: Mutex<Instant>,
     process: OnceLock<Supervised>,
+    /// What keeps the browser's way out open (its proxy, ADR-0321); let go when it ended.
+    network: Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
     event_task: Mutex<Option<JoinHandle<()>>>,
     /// The virtual display the browser runs on (headful), when it has one.
     display: Option<VirtualDisplay>,
@@ -1433,6 +1435,7 @@ impl BrowserInstance {
             input_lock: tokio::sync::Mutex::new(()),
             last_used: Mutex::new(Instant::now()),
             process: OnceLock::new(),
+            network: Mutex::new(None),
             event_task: Mutex::new(None),
             display,
             keyboard: Mutex::new(Keyboard::default()),
@@ -1465,6 +1468,11 @@ impl BrowserInstance {
                 "browser instance already owns a process"
             );
         }
+    }
+
+    /// Keeps `hold` (what serves the browser's proxy) until the browser is terminated.
+    pub(crate) fn hold_network(&self, hold: Box<dyn std::any::Any + Send + Sync>) {
+        *lock(&self.network) = Some(hold);
     }
 
     /// The owning sandbox.
@@ -3755,6 +3763,8 @@ impl BrowserInstance {
             }
             None => Ok(()),
         };
+        // Its way out closes with it: nothing else is to use that proxy.
+        drop(lock(&self.network).take());
         // The display goes after the browser that draws on it (encoder and X server reaped).
         let display = match &self.display {
             Some(display) => display.stop(timeouts).await,

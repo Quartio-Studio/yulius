@@ -14,7 +14,8 @@ use yulius_browser::fake::{
     write_fake_chromium,
 };
 use yulius_browser::{
-    BrowserConfig, BrowserError, BrowserManager, CdpError, PIPE_URL, StopTimeouts,
+    BrowserConfig, BrowserError, BrowserManager, BrowserNetwork, CdpError, NetworkLease, PIPE_URL,
+    StopTimeouts,
 };
 use yulius_contracts::browser::{NavigateParams, ScreenshotParams, TabId, TypeParams};
 use yulius_domain::ids::SandboxId;
@@ -505,5 +506,131 @@ async fn the_address_guard_is_on_before_use_or_the_browser_is_not_used() -> Test
         .await;
     assert!(refused.is_err(), "a browser without its guard is not used");
     assert!(manager.get(&sandbox).await.is_none());
+    Ok(())
+}
+
+/// A way out for tests: counts the proxies open, numbers them by port, fails when told to.
+#[derive(Debug, Default)]
+struct CountedNetwork {
+    open: Arc<std::sync::atomic::AtomicUsize>,
+    opened: std::sync::atomic::AtomicU16,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+struct Open(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl BrowserNetwork for CountedNetwork {
+    fn open(&self, _: &SandboxId) -> std::io::Result<NetworkLease> {
+        use std::sync::atomic::Ordering;
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("no proxy today"));
+        }
+        self.open.fetch_add(1, Ordering::SeqCst);
+        let port = 40_000 + self.opened.fetch_add(1, Ordering::SeqCst);
+        Ok(NetworkLease {
+            proxy: ([127, 0, 0, 1], port).into(),
+            hold: Box::new(Open(Arc::clone(&self.open))),
+        })
+    }
+}
+
+/// SPEC-483 E2 (ADR-0321): with a network configured, each browser is started behind a proxy
+/// of its own, kept open exactly as long as the browser runs (a stop, a crash's restart and a
+/// start that fails let it go), and a browser whose proxy cannot be opened is not started.
+#[tokio::test]
+async fn a_browser_runs_behind_its_own_proxy_or_not_at_all() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let network = Arc::new(CountedNetwork::default());
+    let manager = BrowserManager::new(BrowserConfig {
+        network: Some(network.clone()),
+        ..config(exe, dir.path())
+    });
+    let (s1, s2) = (SandboxId::parse("sbx-a")?, SandboxId::parse("sbx-b")?);
+    let (p1, p2) = (
+        manager.default_profile_dir(&s1),
+        manager.default_profile_dir(&s2),
+    );
+    let proxy_of = |profile: &Path| -> Result<String, Box<dyn std::error::Error>> {
+        let argv = std::fs::read_to_string(profile.join(FAKE_ARGV_FILE))?;
+        assert!(
+            argv.lines()
+                .any(|arg| arg == "--proxy-bypass-list=<-loopback>"),
+            "{argv}"
+        );
+        Ok(argv
+            .lines()
+            .find_map(|arg| arg.strip_prefix("--proxy-server="))
+            .ok_or("no proxy in the arguments")?
+            .to_owned())
+    };
+
+    let a = manager.ensure(&s1, &p1).await?;
+    manager.ensure(&s1, &p1).await?;
+    manager.ensure(&s2, &p2).await?;
+    assert_eq!(proxy_of(&p1)?, "http://127.0.0.1:40000");
+    assert_eq!(proxy_of(&p2)?, "http://127.0.0.1:40001", "one each");
+    assert_eq!(
+        network.open.load(Ordering::SeqCst),
+        2,
+        "a running browser keeps its own"
+    );
+
+    // A crashed browser's proxy closes when the next one starts, behind a new one.
+    kill_pid(a.pid().ok_or("no pid")?, Signal::SIGKILL)?;
+    assert!(wait_dead(a.pid().ok_or("no pid")?).await);
+    drop(a);
+    manager.ensure(&s1, &p1).await?;
+    assert_eq!(proxy_of(&p1)?, "http://127.0.0.1:40002");
+    assert_eq!(network.open.load(Ordering::SeqCst), 2);
+
+    assert!(manager.shutdown(&s2).await?);
+    assert_eq!(
+        network.open.load(Ordering::SeqCst),
+        1,
+        "a stopped browser's is closed"
+    );
+
+    // No proxy, no browser: nothing is spawned.
+    network.failing.store(true, Ordering::SeqCst);
+    let s3 = SandboxId::parse("sbx-c")?;
+    let p3 = manager.default_profile_dir(&s3);
+    let refused = manager.ensure(&s3, &p3).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::Network(error)) if error.to_string() == "no proxy today"),
+        "{refused:?}"
+    );
+    assert!(!p3.join(FAKE_ARGV_FILE).exists(), "it was not started");
+
+    // A start that fails after the proxy was opened closes it.
+    network.failing.store(false, Ordering::SeqCst);
+    let broken = write_fake_chromium(
+        dir.path(),
+        "broken-chromium",
+        FakeChromium::ExitsImmediately,
+    )?;
+    let failing = BrowserManager::new(BrowserConfig {
+        network: Some(network.clone()),
+        ..config(broken, dir.path())
+    });
+    assert!(failing.ensure(&s3, &p3).await.is_err());
+    assert_eq!(network.open.load(Ordering::SeqCst), 1);
+
+    assert!(manager.shutdown(&s1).await?);
+    assert_eq!(network.open.load(Ordering::SeqCst), 0);
     Ok(())
 }

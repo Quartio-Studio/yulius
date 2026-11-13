@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use crate::discovery::resolve_executable;
 use crate::display::{DisplayMode, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
 use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig, SecretMemory};
+use crate::network::BrowserNetwork;
 use crate::process::{StopTimeouts, Supervised, passed_env};
 use crate::url_policy::UrlDenyList;
 use serde_json::json;
@@ -64,6 +66,10 @@ pub struct BrowserConfig {
     /// Addresses the browser never loads: Yulius itself (BRW-008). Applied before the first
     /// page loads; a browser whose interception cannot be enabled is not used.
     pub deny: UrlDenyList,
+    /// The browsers' way out (ADR-0321): each is started behind a proxy of its own that this
+    /// opens, and not at all when that fails. `None`: Chrome connects by itself, from the
+    /// host (tests, and a developer's machine without sandboxes).
+    pub network: Option<Arc<dyn BrowserNetwork>>,
 }
 
 impl BrowserConfig {
@@ -89,6 +95,7 @@ impl BrowserConfig {
             load_timeout: instance.load_timeout,
             new_tab_url: None,
             deny: UrlDenyList::default(),
+            network: None,
         }
     }
 
@@ -102,9 +109,9 @@ impl BrowserConfig {
         }
     }
 
-    /// The Chromium argument vector for a profile directory.
+    /// The Chromium argument vector for a profile directory, behind `proxy` when it has one.
     #[must_use]
-    pub fn chromium_args(&self, profile_dir: &Path) -> Vec<OsString> {
+    pub fn chromium_args(&self, profile_dir: &Path, proxy: Option<SocketAddr>) -> Vec<OsString> {
         let (width, height) = self.default_viewport;
         let mut user_data_dir = OsString::from("--user-data-dir=");
         user_data_dir.push(profile_dir.as_os_str());
@@ -145,6 +152,9 @@ impl BrowserConfig {
         }
         if self.no_sandbox {
             args.push("--no-sandbox".into());
+        }
+        if let Some(proxy) = proxy {
+            args.extend(crate::network::proxy_args(proxy));
         }
         args.extend(self.extra_args.iter().map(OsString::from));
         args.push("about:blank".into());
@@ -286,7 +296,15 @@ impl BrowserManager {
     ) -> Result<Arc<BrowserInstance>, BrowserError> {
         let exe = resolve_executable(&self.config.chromium_exe)?;
         prepare_profile(profile_dir).await?;
-        let args = self.config.chromium_args(profile_dir);
+        // Its way out first: a browser that cannot have it is not started (ADR-0321). A start
+        // that fails below drops the lease, which closes it.
+        let network = match &self.config.network {
+            Some(network) => Some(network.open(sandbox).map_err(BrowserError::Network)?),
+            None => None,
+        };
+        let args = self
+            .config
+            .chromium_args(profile_dir, network.as_ref().map(|lease| lease.proxy));
         let quick = StopTimeouts {
             graceful: Duration::ZERO,
             ..self.config.stop
@@ -337,6 +355,9 @@ impl BrowserManager {
             Ok(instance) => {
                 info!(sandbox = %sandbox, pid = process.pid(), display = ?display_name, "browser started");
                 instance.set_process(process);
+                if let Some(lease) = network {
+                    instance.hold_network(lease.hold);
+                }
                 Ok(instance)
             }
             Err(error) => {
@@ -450,7 +471,7 @@ mod tests {
     fn chromium_args_use_the_devtools_pipe_and_are_sandboxed_by_default() {
         let config = BrowserConfig::new("chromium".into(), "/data/browsers".into());
         let args: Vec<String> = config
-            .chromium_args(Path::new("/data/s1/browser"))
+            .chromium_args(Path::new("/data/s1/browser"), None)
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -466,6 +487,7 @@ mod tests {
             );
         }
         assert!(!args.iter().any(|arg| arg.contains("no-sandbox")));
+        assert!(!args.iter().any(|arg| arg.contains("proxy")), "{args:?}");
         // No DevTools listener: any process on the network namespace could drive it (#626).
         assert!(
             !args
@@ -480,8 +502,37 @@ mod tests {
             headless: false,
             ..config
         };
-        let args = explicit.chromium_args(Path::new("/p"));
+        let args = explicit.chromium_args(Path::new("/p"), None);
         assert!(args.iter().any(|arg| arg == "--no-sandbox"));
         assert!(!args.iter().any(|arg| arg == "--headless=new"));
+    }
+
+    /// SPEC-483 E2: behind a proxy, Chrome is told to use it for every address (the loopback
+    /// too, which it reaches directly otherwise), to resolve no name itself and to send no UDP
+    /// past it; a switch an operator adds comes after and the page to open stays last.
+    #[test]
+    fn chromium_args_send_everything_through_the_browsers_proxy() {
+        let config = BrowserConfig {
+            extra_args: vec!["--lang=pl".into()],
+            ..BrowserConfig::new("chromium".into(), "/data/browsers".into())
+        };
+        let proxy = SocketAddr::from(([127, 0, 0, 1], 41234));
+        let args: Vec<String> = config
+            .chromium_args(Path::new("/p"), Some(proxy))
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = |wanted: &str| args.iter().position(|arg| arg == wanted);
+        for expected in [
+            "--proxy-server=http://127.0.0.1:41234",
+            "--proxy-bypass-list=<-loopback>",
+            "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-quic",
+        ] {
+            assert!(at(expected) < at("--lang=pl"), "{expected} in {args:?}");
+            assert!(at(expected).is_some(), "{expected} in {args:?}");
+        }
+        assert_eq!(args.last().map(String::as_str), Some("about:blank"));
     }
 }

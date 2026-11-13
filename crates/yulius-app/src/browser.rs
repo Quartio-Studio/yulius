@@ -154,6 +154,22 @@ impl App {
     }
 
     /// Whether `sandbox` reads as removed ([`reads_removed`]).
+    /// The dev-server ports of `sandbox`, which the host relays from its loopback into the
+    /// sandbox and which its browser therefore reaches there (ADR-0321); `None` when there is
+    /// no such sandbox.
+    ///
+    /// # Errors
+    /// The store could not be read.
+    pub async fn sandbox_ports(
+        &self,
+        sandbox: &SandboxId,
+    ) -> AppResult<Option<std::ops::RangeInclusive<u16>>> {
+        Ok(self.deps.store.sandbox(sandbox).await?.map(|record| {
+            let of = self.sandbox_ref(&record);
+            of.port_first..=of.port_last
+        }))
+    }
+
     pub(crate) async fn sandbox_removed(&self, sandbox: &SandboxId) -> bool {
         reads_removed(&self.deps.store.sandbox(sandbox).await)
     }

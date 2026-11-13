@@ -362,8 +362,14 @@ pub fn parse_port_range(text: &str) -> Result<std::ops::RangeInclusive<u16>, Str
     Ok(first..=last)
 }
 
-/// The browser adapter for the data directory (profiles live in each sandbox directory).
-fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::BrowserPort> {
+/// The browser adapter for the data directory (profiles live in each sandbox directory), and
+/// the browsers' way out, to be bound to the egress proxy once that runs (ADR-0321).
+fn browser_port(
+    args: &ServeArgs,
+) -> (
+    Arc<dyn yulius_app::ports::browser::BrowserPort>,
+    Arc<crate::wiring::egress::BrowserProxies>,
+) {
     let exe = args.chromium.clone().unwrap_or_else(|| {
         // An undiscoverable Chromium surfaces as a typed "not found" error on first use.
         yulius_browser::discover_chromium().unwrap_or_else(|_| PathBuf::from("chromium"))
@@ -381,7 +387,17 @@ fn browser_port(args: &ServeArgs) -> Arc<dyn yulius_app::ports::browser::Browser
         &[args.bind, args.internal_bind],
         vec![format!("{welcome}?"), format!("{welcome}/ports?")],
     );
-    Arc::new(ChromiumBrowsers::new(config))
+    // Every browser behind a proxy of its own: it reaches what its sandbox's processes reach,
+    // and of Yulius's internal listener the same two pages.
+    let network = Arc::new(crate::wiring::egress::BrowserProxies::new(
+        args.internal_bind,
+        vec![
+            "/browser/welcome?".to_owned(),
+            "/browser/welcome/ports?".to_owned(),
+        ],
+    ));
+    config.network = Some(network.clone());
+    (Arc::new(ChromiumBrowsers::new(config)), network)
 }
 
 /// Live preview origins: under the public host by default, under `domain` when given, none for
@@ -460,7 +476,11 @@ fn unit_limits(args: &ServeArgs) -> UnitLimits {
 }
 
 /// Builds the application over the data directory.
-pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
+///
+/// With it, the sandbox browsers' way out, which [`serve`] binds to the egress proxy.
+pub fn build_app(
+    args: &ServeArgs,
+) -> Result<(Arc<App>, Arc<crate::wiring::egress::BrowserProxies>), String> {
     prepare_data_dir(&args.data_dir)?;
     check_socket_paths(&args.data_dir)?;
     let store = SqliteStore::open(&args.data_dir.join("yulius.db")).map_err(|e| e.to_string())?;
@@ -492,6 +512,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     config
         .contained_readonly
         .clone_from(&args.contained_readonly);
+    let (browser, browser_network) = browser_port(args);
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
@@ -506,7 +527,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         )),
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(SysinfoProbe::new()),
-        browser: browser_port(args),
+        browser,
         usage: Arc::new(crate::wiring::usage::ProviderUsage::new()?),
     };
     let app = App::new(config, deps);
@@ -524,7 +545,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
     }
-    Ok(app)
+    Ok((app, browser_network))
 }
 
 /// Runs the server until SIGINT/SIGTERM.
@@ -538,7 +559,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     if !args.internal_bind.ip().is_loopback() {
         return Err("the internal listener must bind a loopback address".into());
     }
-    let app = build_app(&args)?;
+    let (app, browser_network) = build_app(&args)?;
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     // The runs people paused stay paused across the restart (SPEC-191 PER-003).
@@ -620,6 +641,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
     let egress =
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
+    browser_network.bind(&app, Arc::clone(&egress));
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
     // Sessions that ran across an update hold the fingerprint file an older server wrote.

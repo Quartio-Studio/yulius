@@ -39,7 +39,7 @@ pub type EgressBody = UnsyncBoxBody<Bytes, std::io::Error>;
 const WARN_EVERY: Duration = Duration::from_secs(60);
 
 /// Connect timeout toward a destination.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// TLS handshake with the agent's client.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Request head read timeout inside an intercepted connection.
@@ -51,7 +51,7 @@ const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
 /// waits without a byte.
 pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 /// DNS resolution timeout.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Headers that belong to one hop (RFC 9110 §7.6.1) or to the proxy.
 const HOP_BY_HOP: &[&str] = &[
@@ -111,9 +111,9 @@ pub struct EgressProxy {
     policy: Arc<dyn EgressPolicy>,
     ca: CertificateAuthority,
     http: reqwest::Client,
-    resolve: HashMap<String, SocketAddr>,
+    pub(crate) resolve: HashMap<String, SocketAddr>,
     /// How long a plain request waits for its response head with no progress (SPEC-369).
-    response_head_timeout: Duration,
+    pub(crate) response_head_timeout: Duration,
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
@@ -229,7 +229,7 @@ fn wall_ms() -> i64 {
 }
 
 /// A connection's place in its sandbox's share and the proxy. Freed when it ends.
-struct Slot {
+pub(crate) struct Slot {
     slots: Arc<Slots>,
     id: u64,
     activity: Activity,
@@ -453,7 +453,7 @@ impl reqwest::dns::Resolve for PolicyResolver {
     }
 }
 
-fn text(status: u16, message: &str) -> Response<EgressBody> {
+pub(crate) fn text(status: u16, message: &str) -> Response<EgressBody> {
     let mut response = Response::new(
         Full::new(Bytes::from(format!("{message}\n")))
             .map_err(|never| match never {})
@@ -479,7 +479,7 @@ fn auth_required() -> Response<EgressBody> {
     response
 }
 
-fn empty(status: StatusCode) -> Response<EgressBody> {
+pub(crate) fn empty(status: StatusCode) -> Response<EgressBody> {
     let mut response = Response::new(Empty::new().map_err(|never| match never {}).boxed_unsync());
     *response.status_mut() = status;
     response
@@ -497,7 +497,7 @@ fn proxy_token(headers: &hyper::http::HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_owned())
 }
 
-fn hop(name: &str) -> bool {
+pub(crate) fn hop(name: &str) -> bool {
     HOP_BY_HOP.contains(&name)
 }
 
@@ -511,7 +511,7 @@ fn url_host(host: &str) -> String {
 }
 
 /// `host:port` of a CONNECT request.
-fn connect_target(uri: &hyper::http::Uri) -> Option<(String, u16)> {
+pub(crate) fn connect_target(uri: &hyper::http::Uri) -> Option<(String, u16)> {
     let authority = uri.authority()?;
     let host = authority
         .host()
@@ -636,13 +636,12 @@ impl EgressProxy {
     ///
     /// A `held` connection (a plain request) is held in flight before the table is released, so
     /// nothing takes it meanwhile (review round 4).
-    fn slot(
+    pub(crate) fn slot(
         &self,
-        client: &EgressClient,
+        sandbox: &str,
+        run: &str,
         held: bool,
     ) -> Result<(Slot, oneshot::Receiver<()>), String> {
-        let sandbox = client.sandbox_id.as_str();
-        let run = client.use_key();
         let (end, ended) = oneshot::channel();
         let (admitted, counts, holders) = self.slots.admit(sandbox, run, held, end);
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
@@ -756,10 +755,11 @@ impl EgressProxy {
                 Ok(addrs) => addrs,
                 Err(message) => return text(403, &message),
             };
-            let (permit, ended) = match self.slot(&client, false) {
-                Ok(slot) => slot,
-                Err(refused) => return text(503, &refused),
-            };
+            let (permit, ended) =
+                match self.slot(client.sandbox_id.as_str(), client.use_key(), false) {
+                    Ok(slot) => slot,
+                    Err(refused) => return text(503, &refused),
+                };
             let on_upgrade = hyper::upgrade::on(&mut request);
             let proxy = Arc::clone(self);
             tokio::spawn(async move {
@@ -827,7 +827,7 @@ impl EgressProxy {
         };
         // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
         // through no tracked stream), so its wait for the head is bounded (SPEC-369 PHT-001).
-        let (permit, ended) = match self.slot(&client, true) {
+        let (permit, ended) = match self.slot(client.sandbox_id.as_str(), client.use_key(), true) {
             Ok(slot) => slot,
             Err(refused) => return text(503, &refused),
         };
@@ -1091,7 +1091,7 @@ fn respond(response: reqwest::Response, matcher: Arc<PlainMatcher>) -> Response<
 }
 
 /// An opaque tunnel to a host without agent secrets.
-async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
+pub(crate) async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
     let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await {
         Ok(Ok(stream)) => stream,
         _ => {

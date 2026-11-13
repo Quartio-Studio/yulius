@@ -40,6 +40,7 @@ pub mod flv;
 mod instance;
 mod keys;
 mod manager;
+mod network;
 pub mod policy;
 mod process;
 mod snapshot;
@@ -68,6 +69,7 @@ pub use instance::{
     VIEWPORT_MIN,
 };
 pub use manager::{BrowserConfig, BrowserManager, IdleReaper};
+pub use network::{BrowserNetwork, NetworkLease, proxy_args};
 pub use process::StopTimeouts;
 pub use url_policy::{UrlDenyList, UrlRefused, normalize_url};
 pub use video::{
