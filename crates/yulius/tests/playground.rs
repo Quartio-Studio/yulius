@@ -1589,6 +1589,99 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
     Ok(())
 }
 
+/// The output of job `name` in the playground task's run.
+async fn task_job_output(
+    h: &Harness,
+    creds: &Creds,
+    body: &Value,
+    name: &str,
+) -> BoxResult<String> {
+    let run = task_run(&ci_overview(h, creds, body).await?)?;
+    let sid = body["id"].as_str().ok_or("id")?;
+    let detail = call(
+        &h.router,
+        Method::GET,
+        &format!(
+            "/api/sandboxes/{sid}/ci/runs/{}",
+            run["id"].as_str().ok_or("run id")?
+        ),
+        None,
+        creds,
+    )
+    .await?;
+    detail.body["jobs"]
+        .as_array()
+        .and_then(|jobs| jobs.iter().find(|job| job["name"] == name))
+        .and_then(|job| job["output"].as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("no job {name}: {}", detail.body).into())
+}
+
+/// SPEC-483 D4: a playground task that changes a job is tested with its own jobs, as a pull
+/// request is: the run of its merge shows the task's command, not `dev`'s.
+#[tokio::test]
+async fn a_task_that_changes_the_jobs_is_tested_with_its_own() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let own = "\n[[ci.jobs]]\nname = \"check\"\ncommand = \"echo the-tasks-own-check\"\n";
+    let worktree = playground_task(&h, &body, "t1", &[("yulius.toml", own)], &["done"]).await?;
+    h.app.ci_sync_all().await;
+    ci_settle(&h, &owner, &body).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    ci_settle(&h, &owner, &body).await?;
+    let output = task_job_output(&h, &owner, &body, "check").await?;
+    assert!(output.contains("the-tasks-own-check"), "{output}");
+    assert!(!output.contains("check-ok"), "not dev's command: {output}");
+    Ok(())
+}
+
+/// SPEC-483 D4 (review of slice 13): a playground whose `dev` has a `yulius.toml` nobody can
+/// read is repaired by a task, and that task's merge is tested with the configuration it
+/// brings: what is tested is `dev` as it would be. (A pull request beside such a branch is
+/// not tested; a playground has no other way out, and no other checks.)
+#[tokio::test]
+async fn a_task_that_repairs_a_broken_configuration_is_tested_with_its_own() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let body = made.body;
+    let dev = push_to_dev(
+        &h,
+        &body,
+        &[("yulius.toml", "[[ci.jobs]\nname = \"check\"\n")],
+    )?;
+    h.app.ci_sync_all().await;
+    let overview = ci_overview(&h, &owner, &body).await?;
+    assert!(
+        overview["gate_problem"]
+            .as_str()
+            .is_some_and(|why| !why.is_empty()),
+        "{overview}"
+    );
+    let repaired = "\n[[ci.jobs]]\nname = \"check\"\ncommand = \"echo repaired-check\"\n";
+    let worktree =
+        playground_task(&h, &body, "t1", &[("yulius.toml", repaired)], &["done"]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(
+        armed.contains("armed: true"),
+        "tested first, not landed untested: {armed}"
+    );
+    assert_eq!(
+        git(&origin_of(&h, &body), &["rev-parse", "dev"])?.trim(),
+        dev,
+        "nothing lands before the checks pass"
+    );
+    ci_settle(&h, &owner, &body).await?;
+    let output = task_job_output(&h, &owner, &body, "check").await?;
+    assert!(output.contains("repaired-check"), "{output}");
+    Ok(())
+}
+
 /// `delivery_merge` of `head` by the agent whose task token is `token`, reviewed.
 async fn agent_merge(h: &Harness, token: &str, head: &str) -> BoxResult<Value> {
     agent_tool(
