@@ -172,9 +172,53 @@ mod tests {
             boxed(&["❯ "], (9, 3))
         );
         assert!(!empty(&deleted));
+        // A hint at the row's start, where a narrow terminal puts it.
+        let left = format!("\x1b[7;1H› stashed{}", boxed(&["❯ "], (9, 3)));
+        assert!(!empty(&left));
+        // The screen's first row is a hint row like any other.
+        let second = format!("\x1b[2;1H{}\x1b[3;1H❯ \x1b[4;1H{}\x1b[3;3H", rule(), rule());
+        assert!(empty(&second));
+        let second_hinted = format!("\x1b[1;30H› stashed{second}");
+        assert!(!empty(&second_hinted));
         // A box at the top of the screen has no hint row to look at.
         let top = format!("\x1b[1;1H{}\x1b[2;1H❯ \x1b[3;1H{}\x1b[2;3H", rule(), rule());
         assert!(!empty(&top));
+    }
+
+    /// SPEC-488 AC4 (review round 2): while a session's context is nearly full, Claude Code
+    /// keeps "N% context used" in the hint row for good; it says nothing about the box. That
+    /// notice alone, whole, is as good as a blank row. With anything beside it (a stash is
+    /// written behind it), cut short by a narrow terminal, or reworded, the row is no proof.
+    #[test]
+    fn the_context_notice_alone_is_as_good_as_a_blank_hint_row() {
+        let hinted = |hint: &str, column: u16| {
+            format!(
+                "\x1b[7;{column}H\x1b[38;5;246m{hint}{OFF}{}",
+                boxed(&[&format!("❯ {INV} ")], (9, 3))
+            )
+        };
+        for notice in ["88% context used", "100% context used", "5% context used"] {
+            assert!(empty(&hinted(notice, 20)), "{notice}");
+        }
+        // At the row's start, as on a terminal just wide enough.
+        assert!(empty(&hinted("94% context used", 1)));
+        for other in [
+            "88% context used · › stashed",
+            "88%… · › stashed",
+            "88% context u… · › stashed",
+            "88% context u…",
+            "Ctrl+Y to paste deleted text · › stashed",
+            "% context used",
+            "8888% context used",
+            "x8% context used",
+            "88% context used.",
+            "88% of context used",
+        ] {
+            assert!(!empty(&hinted(other, 1)), "{other}");
+        }
+        // Two notices apart in the row are not one.
+        let apart = format!("\x1b[7;1Hx{}", hinted("88% context used", 20));
+        assert!(!empty(&apart));
     }
 
     /// SPEC-488 AC4 (review round 1): the agents view's box starts a new background session
@@ -196,6 +240,13 @@ mod tests {
         assert!(!empty(&view(&unfocused)));
         // After typing and deleting there: an empty row between dim rules.
         assert!(!empty(&view(&format!("{DIM}❯{OFF} {INV} "))));
+        // A rule that is dim in part (its last cells) is no rule of the prompt box.
+        let part = format!(
+            "\x1b[8;1H{}{DIM}────{OFF}\x1b[9;1H❯ \x1b[10;1H{}\x1b[11;1H  status\x1b[9;3H",
+            "─".repeat(usize::from(COLS) - 4),
+            rule()
+        );
+        assert!(!empty(&part));
         // One dim rule is enough to refuse.
         let half = format!(
             "\x1b[8;1H{dim_rule}\x1b[9;1H❯ \x1b[10;1H{}\x1b[11;1H  status\x1b[9;3H",
@@ -263,6 +314,14 @@ mod tests {
             rule()
         );
         assert!(!empty(&history));
+        // Another session, opened from the agents view (or this one after `/rename`), names
+        // itself at the right end of the upper rule: a paste there goes to that session.
+        let named = format!(
+            "\x1b[8;1H{} stub title ─\x1b[9;1H❯ \x1b[10;1H{}\x1b[11;1H  status\x1b[9;3H",
+            "─".repeat(usize::from(COLS) - 13),
+            rule()
+        );
+        assert!(!empty(&named));
         // The rewind list: an indented marker, no rules, the cursor on it.
         let rewind = "\x1b[5;1H   Rewind\x1b[8;1H     hello\x1b[10;1H   ❯ (current)\
                       \x1b[12;1H   Enter to continue\x1b[10;4H";

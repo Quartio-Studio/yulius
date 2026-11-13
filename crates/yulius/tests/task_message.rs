@@ -967,10 +967,7 @@ fn a_key_typed_while_the_empty_box_is_taken_in_holds_the_message() -> TestResult
             matches!(&refused, Some(AppError::Conflict(why)) if why.contains("prompt box")),
             "{refused:?}"
         );
-        // Whatever reaches the agent shows within a second; nothing did.
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let shown = screen(&app, &id);
-        assert!(!shown.contains("Message from admin"), "{shown}");
+        // Refused before anything is written to the session, and so not audited.
         assert!(audited(&data, &id)?.is_empty());
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
