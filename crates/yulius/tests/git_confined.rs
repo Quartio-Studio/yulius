@@ -460,9 +460,18 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
     w.adapter
         .commit_all(&w.wt, "feat: a", "Alice", "alice@example.com")
         .await?;
+    // A proxy that counts who connects and hangs up at once.
     let proxy = std::net::TcpListener::bind("127.0.0.1:0")?;
-    proxy.set_nonblocking(true)?;
     let at = format!("http://{}", proxy.local_addr()?);
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&asked);
+    std::thread::spawn(move || {
+        for connection in proxy.incoming() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(connection);
+        }
+    });
+    let asked = || asked.load(std::sync::atomic::Ordering::SeqCst);
     // Nothing listens at the remote's address: a connection there is refused at once.
     let remote = "https://127.0.0.1:1/acme/app.git";
     git(&w.repo, &["config", "remote.origin.url", remote])?;
@@ -487,8 +496,9 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
         assert!(answer.starts_with("Err"), "{answer}");
         assert!(!answer.contains("the-servers-token-0451"), "{answer}");
     }
-    assert!(
-        matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+    assert_eq!(
+        asked(),
+        0,
         "the clone's proxy was asked for the server's connection"
     );
     // What the transfers were made in is gone.
@@ -505,10 +515,7 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
     )?;
     let lent = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
     assert!(lent.is_err(), "{lent:?}");
-    assert!(
-        matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
-        "still not asked"
-    );
+    assert_eq!(asked(), 0, "still not asked");
     Ok(())
 }
 

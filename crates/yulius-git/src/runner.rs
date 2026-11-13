@@ -316,13 +316,11 @@ impl Git {
         if let Some(folder) = self.local_remote(repo, remote) {
             return Ok(Route::Folder(folder));
         }
-        // Only an address on the web goes through a courier. A folder that is not the sandbox's
-        // own origin (another sandbox's, the host's) is the clone's word alone: it is not
-        // reached, by the remote's name as before.
-        let Some(url) = self
-            .remote_url(repo, remote)
-            .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
-        else {
+        // Any other address goes through a courier, whose commands reach the web and nothing
+        // of this machine: they are no transfers between folders, so a folder that is not the
+        // sandbox's own origin (another sandbox's, the host's) is neither served (no shell) nor
+        // reachable for them.
+        let Some(url) = self.remote_url(repo, remote) else {
             return Ok(Route::Named);
         };
         Ok(match self.courier(repo)? {
