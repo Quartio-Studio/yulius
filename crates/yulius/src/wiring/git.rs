@@ -87,6 +87,12 @@ impl GitAdapter {
         self
     }
 
+    /// How this adapter's Git is confined, if it is.
+    #[must_use]
+    pub fn confinement(&self) -> Option<&yulius_git::Confinement> {
+        self.confinement.as_deref()
+    }
+
     fn bare(&self) -> Git {
         match &self.confinement {
             Some(confinement) => Git::new(self.exe.clone()).confined(confinement.clone()),

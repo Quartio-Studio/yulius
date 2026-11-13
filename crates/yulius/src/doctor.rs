@@ -765,6 +765,26 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// ADR-0322: a host whose kernel cannot confine the server's Git fails the doctor, with
+    /// what the launcher said.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_host_that_cannot_confine_git_fails() {
+        let fine = super::git_confinement_check(Ok(()));
+        assert_eq!(
+            (fine.name, fine.level),
+            ("git confinement", super::Level::Ok)
+        );
+        let refused =
+            super::git_confinement_check(Err("this kernel does not enforce Landlock".into()));
+        assert_eq!(refused.level, super::Level::Fail);
+        assert!(
+            refused.detail.contains("does not enforce Landlock"),
+            "{}",
+            refused.detail
+        );
+    }
+
     /// SPEC-483 E1 (ADR-0318): the doctor says whether the sandbox browsers' policy is where
     /// `yulius host setup` writes it, and what is off while it is not.
     #[test]

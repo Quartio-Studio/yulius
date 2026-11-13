@@ -757,6 +757,31 @@ mod tests {
         args: ServeArgs,
     }
 
+    /// SPEC-483 G1 (ADR-0322): the server's Git adapter is confined by this program's own
+    /// `git-confined`, to the sandboxes of its data folder, with no shell of its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_servers_git_is_confined_to_its_data_folders_sandboxes() {
+        let adapter = git_adapter(
+            Path::new("/usr/local/bin/yulius"),
+            Path::new("/var/lib/yulius"),
+        );
+        let confinement = adapter.confinement();
+        assert_eq!(
+            confinement,
+            Some(&yulius_git::Confinement {
+                launcher: "/usr/local/bin/yulius".into(),
+                data: "/var/lib/yulius".into(),
+                data_depth: 0,
+                shared: Vec::new(),
+                shell: false,
+            })
+        );
+        // A data folder given by a relative path is one of the folder the server runs in.
+        let relative = git_adapter(Path::new("yulius"), Path::new("data"));
+        assert!(relative.confinement().is_some_and(|c| c.data.is_absolute()));
+    }
+
     /// SPEC-483 E2 (ADR-0321): the server's browsers always get a way out of their own (none
     /// starts without it), which gives them, of the internal listener, the pages their new
     /// tabs open and the guard lets through.

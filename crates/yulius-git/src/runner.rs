@@ -309,12 +309,10 @@ impl Git {
         self.run_once(&invocation)
     }
 
-    fn run_once(&self, invocation: &Invocation<'_>) -> Result<Output, GitError> {
-        let _changes = touches_worktree_registrations(&invocation.args).then(|| {
-            WORKTREE_CHANGES
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-        });
+    /// The process for `invocation`: Git with the constant options, the cleared environment and
+    /// the invocation's own; confined, the launcher with what the command may reach
+    /// (ADR-0322).
+    fn command(&self, invocation: &Invocation<'_>) -> Command {
         let mut command = match &self.confinement {
             // Through the launcher, which confines itself and then becomes Git (ADR-0322).
             Some(confinement) => {
@@ -372,6 +370,16 @@ impl Git {
         if let Some(cwd) = invocation.cwd {
             command.current_dir(cwd);
         }
+        command
+    }
+
+    fn run_once(&self, invocation: &Invocation<'_>) -> Result<Output, GitError> {
+        let _changes = touches_worktree_registrations(&invocation.args).then(|| {
+            WORKTREE_CHANGES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
+        let mut command = self.command(invocation);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -632,6 +640,137 @@ pub(crate) fn failure(label: &'static str, output: &Output) -> GitError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn confined(data: &Path) -> Git {
+        Git::new("git")
+            .with_env("GIT_CONFIG_COUNT", "1")
+            .with_env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
+            .with_env("GIT_CONFIG_VALUE_0", "AUTHORIZATION: basic dG9rZW4=")
+            .with_env("OTHER", "kept")
+            .confined(std::sync::Arc::new(crate::Confinement {
+                launcher: "/opt/yulius".into(),
+                data: data.to_path_buf(),
+                data_depth: 0,
+                shared: Vec::new(),
+                shell: false,
+            }))
+    }
+
+    fn words(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn sets(command: &Command, name: &str) -> bool {
+        command
+            .get_envs()
+            .any(|(key, value)| key == OsStr::new(name) && value.is_some())
+    }
+
+    /// ADR-0322: a confined command is the launcher, the folders it may touch (its sandbox's
+    /// and what it names besides), then Git with the constant options; no shell, and the
+    /// adapter's own configuration (a token's header) in its environment.
+    #[test]
+    fn a_confined_command_is_the_launcher_with_its_sandboxes_folders() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let data = dir.path().canonicalize()?;
+        let repo = data.join("sandboxes/s1/repo");
+        std::fs::create_dir_all(&repo)?;
+        std::fs::create_dir_all(data.join("out"))?;
+        let git = confined(&data);
+        let invocation = Invocation::new(&git, "status", Some(&repo))
+            .args(["status", "--porcelain"])
+            .touching(data.join("out/x.bundle"));
+        let command = git.command(&invocation);
+        assert_eq!(command.get_program(), OsStr::new("/opt/yulius"));
+        let mut expected = vec!["git-confined".to_owned()];
+        for folder in [data.join("out"), data.join("sandboxes/s1")] {
+            expected.extend(["--rw".to_owned(), folder.to_string_lossy().into_owned()]);
+        }
+        expected.extend(["--", "git"].map(str::to_owned));
+        expected.extend(FIXED_CONFIG.iter().map(|word| (*word).to_owned()));
+        expected.extend(["status", "--porcelain"].map(str::to_owned));
+        assert_eq!(words(&command), expected);
+        assert!(sets(&command, "GIT_CONFIG_VALUE_0") && sets(&command, "OTHER"));
+
+        // Unconfined (this crate's tests, macOS): Git itself.
+        let plain = Git::new("git");
+        let command = plain.command(&Invocation::new(&plain, "status", Some(&repo)).arg("status"));
+        assert_eq!(command.get_program(), OsStr::new("git"));
+        assert!(!words(&command).iter().any(|word| word == "git-confined"));
+        Ok(())
+    }
+
+    /// A transfer with a folder Yulius names: the other folder is reached, the shell is
+    /// allowed, the transports are pinned to `file` with no alternate-refs command, and none
+    /// of the adapter's configuration (where a token travels) is in the environment.
+    #[test]
+    fn a_local_transfer_gets_the_shell_and_no_credential() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let data = dir.path().canonicalize()?;
+        let repo = data.join("sandboxes/s1/repo");
+        let origin = data.join("playgrounds/s1.git");
+        std::fs::create_dir_all(&repo)?;
+        std::fs::create_dir_all(&origin)?;
+        let git = confined(&data);
+        let command = git.command(
+            &Invocation::new(&git, "push", Some(&repo))
+                .args(["push", "--"])
+                .arg(&origin)
+                .local(&origin),
+        );
+        let said = words(&command);
+        let split = said.iter().position(|word| word == "--").unwrap_or(0);
+        let (launcher, git_words) = said.split_at(split);
+        assert!(launcher.iter().any(|word| word == "--shell"), "{said:?}");
+        for folder in [&origin, &data.join("sandboxes/s1")] {
+            assert!(
+                launcher.contains(&folder.to_string_lossy().into_owned()),
+                "{said:?}"
+            );
+        }
+        for pinned in [
+            "protocol.allow=never",
+            "protocol.file.allow=always",
+            "protocol.ssh.allow=never",
+            "protocol.https.allow=never",
+            "core.alternateRefsCommand=",
+        ] {
+            assert!(
+                git_words.iter().any(|word| word == pinned),
+                "{pinned}: {said:?}"
+            );
+        }
+        assert!(
+            !sets(&command, "GIT_CONFIG_COUNT")
+                && !sets(&command, "GIT_CONFIG_KEY_0")
+                && !sets(&command, "GIT_CONFIG_VALUE_0"),
+            "no token near the shell"
+        );
+        assert!(sets(&command, "OTHER"));
+
+        // No local transfer: no shell and no pins.
+        let command =
+            git.command(&Invocation::new(&git, "fetch", Some(&repo)).args(["fetch", "origin"]));
+        let said = words(&command);
+        assert!(!said.iter().any(|word| word == "--shell"), "{said:?}");
+        assert!(
+            !said.iter().any(|word| word.starts_with("protocol.file")),
+            "{said:?}"
+        );
+        // An address that is no folder of this machine is no local transfer.
+        let https =
+            Invocation::new(&git, "fetch", Some(&repo)).local_if_path("https://github.com/a/b.git");
+        assert!(!https.local);
+        assert!(
+            Invocation::new(&git, "fetch", Some(&repo))
+                .local_if_path("/srv/x.git")
+                .local
+        );
+        Ok(())
+    }
 
     fn args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()

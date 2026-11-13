@@ -199,6 +199,14 @@ async fn nothing_the_clones_configuration_names_is_run() -> TestResult {
         git(&w.repo, &["config", key, &command])?;
     }
     git(&w.repo, &["config", "commit.gpgSign", "true"])?;
+    // An alternate, so that a transfer has refs of one to list (`core.alternateRefsCommand`).
+    let alternate = w.sandbox.join("alternate.git");
+    std::fs::create_dir_all(&alternate)?;
+    git(&alternate, &["init", "--bare", "-q", "-b", "main"])?;
+    std::fs::write(
+        w.repo.join(".git/objects/info/alternates"),
+        format!("{}\n", alternate.join("objects").display()),
+    )?;
     let hook = w.repo.join(".git/hooks/pre-commit");
     std::fs::write(&hook, format!("#!/bin/sh\n{}\n", mark("ran-hook")))?;
     {
@@ -423,5 +431,22 @@ fn the_launcher_starts_git_which_executes_gits_programs_only() -> TestResult {
         "go",
     ])?;
     assert!(!said(&other).contains("ran-another-program"), "{other:?}");
+    Ok(())
+}
+
+/// `yulius doctor` says whether the server's Git can be confined on this host: here it can.
+#[test]
+fn the_doctor_reports_the_confinement() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let doctor = Command::new(env!("CARGO_BIN_EXE_yulius"))
+        .arg("doctor")
+        .current_dir(dir.path())
+        .output()?;
+    let said = String::from_utf8_lossy(&doctor.stdout).into_owned();
+    let line = said
+        .lines()
+        .find(|line| line.contains("git confinement"))
+        .ok_or_else(|| format!("no such check in: {said}"))?;
+    assert!(line.starts_with("ok"), "{line}");
     Ok(())
 }
