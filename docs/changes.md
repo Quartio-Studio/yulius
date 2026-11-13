@@ -20,7 +20,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   later. When every step is finished the agent is asked once more whether work it knows of is
   left out. A plan that grew since its first step was finished says so: "Step 6/11 · 4 at
   first" in the task strip, the same on the task page and in the tools (API
-  `steps.first_total`, schema version 55).
+  `steps.first_total`, schema version 56).
+- A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
+  A secret allowed for production deploys that still had hosts from before such secrets
+  became exclusive was sent to those hosts for an agent's run by the egress proxy, while a
+  Superagent, a CI job, the browser, `.env` files and the secrets list all said agents never
+  get it. The proxy now refuses it for everyone; migration 0055 removes the hosts such rows
+  kept (one audit line per secret, `vault.agent.hosts_cleared`), the store takes no new row
+  with both, and the Edit dialog no longer offers "Remove these hosts". Also: a fetch, a
+  listing and a clone that only take from a folder of the machine (a CD mirror from a clone,
+  a new origin from an upload) reach that folder read-only.
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no

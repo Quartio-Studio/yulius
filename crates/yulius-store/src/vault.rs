@@ -122,6 +122,13 @@ fn ensure_agent_unique(tx: &Transaction<'_>, record: &VaultSecretRecord) -> AppR
 
 /// Inserts a row, keeping agent names unique where they apply.
 fn insert_row(tx: &Transaction<'_>, r: &VaultSecretRecord) -> AppResult<()> {
+    // A production secret is sent to no host (ADR-0324): no row says otherwise, from the
+    // first one on. Every later change keeps the pair apart by its own compare-and-set.
+    if r.cd_prod && !r.hosts.is_empty() {
+        return Err(AppError::Conflict(
+            "a production secret has no hosts: production deploys get it, agents never".into(),
+        ));
+    }
     ensure_agent_unique(tx, r)?;
     tx.execute(
         &format!(

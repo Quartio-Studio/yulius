@@ -22,7 +22,7 @@ pub struct EgressClient {
 /// deleted task applies also to credentials resolved before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressCaller {
-    /// An agent run: every agent secret of its sandbox applies.
+    /// An agent run: every agent secret of its sandbox applies but a production-deploy one.
     Agent {
         /// The run (attempt) id.
         attempt_id: String,
@@ -75,13 +75,15 @@ impl EgressClient {
     }
 
     /// Whether agent secret `name` (`cd_prod`: allowed for production deploys) applies to it.
+    /// A production secret applies to no client of the proxy (ADR-0324): only a production
+    /// deploy gets it, and that is no client. Of the others, a CI job has what it was granted.
     #[must_use]
     pub fn may_use(&self, name: &str, cd_prod: bool) -> bool {
-        match &self.caller {
-            EgressCaller::Agent { .. } => true,
-            EgressCaller::Superagent { .. } => !cd_prod,
-            EgressCaller::Ci { secrets, .. } => !cd_prod && secrets.iter().any(|s| s == name),
-        }
+        !cd_prod
+            && match &self.caller {
+                EgressCaller::Agent { .. } | EgressCaller::Superagent { .. } => true,
+                EgressCaller::Ci { secrets, .. } => secrets.iter().any(|s| s == name),
+            }
     }
 }
 
@@ -159,4 +161,44 @@ pub trait EgressPolicy: Send + Sync {
     /// The values (and their encodings) to redact from responses the client receives; `None`
     /// when they cannot be read: the proxy then sends nothing, as it could not check the answer.
     async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-483 V6 (ADR-0324): a production secret applies to no client of the proxy, whoever
+    /// it is; any other agent secret applies to an agent run and a Superagent, and to a CI job
+    /// when the job was granted it.
+    #[test]
+    fn a_production_secret_applies_to_no_client() -> Result<(), Box<dyn std::error::Error>> {
+        let client = |caller| -> Result<EgressClient, Box<dyn std::error::Error>> {
+            Ok(EgressClient {
+                caller,
+                sandbox_id: SandboxId::parse("s1")?,
+            })
+        };
+        let agent = client(EgressCaller::Agent {
+            attempt_id: "a1".into(),
+            task_id: TaskId::parse("t1")?,
+            task_number: 1,
+        })?;
+        let superagent = client(EgressCaller::Superagent {
+            shell_id: "sh".into(),
+            actor: "cockpit:alice".into(),
+            person: UserId::parse("u-alice")?,
+        })?;
+        let ci = client(EgressCaller::Ci {
+            run_id: "r".into(),
+            job_id: "j".into(),
+            secrets: vec!["KEY".into()],
+        })?;
+        for who in [&agent, &superagent, &ci] {
+            assert!(who.may_use("KEY", false), "{}", who.actor());
+            assert!(!who.may_use("KEY", true), "{}", who.actor());
+        }
+        assert!(agent.may_use("OTHER", false) && superagent.may_use("OTHER", false));
+        assert!(!ci.may_use("OTHER", false), "not granted");
+        Ok(())
+    }
 }

@@ -3,5 +3,5 @@
 -- (work found later) is shown beside this number, so a person can tell that it grew. Written
 -- once by the step write that finishes the first step, never changed after. NULL while no step
 -- is finished, and for a task whose steps were finished before this version until its next
--- step write (schema version 55).
+-- step write (schema version 56).
 ALTER TABLE tasks ADD COLUMN plan_first_steps INTEGER;

@@ -89,7 +89,7 @@ a later delivery.
 - A person's merge through the API follows the same rule as the agent's.
 - "Open steps: N" in `delivery_status` and the Git page is the work ahead, not a reason the
   merge is refused.
-- Tasks whose steps were finished before schema version 55 get their plan's first size at
+- Tasks whose steps were finished before schema version 56 get their plan's first size at
   their next step write: the plan as it is then.
 - The plan's first size is taken when the first step is finished. An agent that finishes a
   step of its workflow's seed plan before it writes its own plan gets the seed plan's size as

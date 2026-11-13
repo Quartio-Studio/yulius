@@ -1048,6 +1048,69 @@ async fn a_shallow_origin_makes_a_whole_shallow_clone() -> TestResult {
     Ok(())
 }
 
+/// A transfer that only takes from a folder of the machine reads it; only a push writes
+/// there. Here a repository of the server's own (outside every sandbox) with a folder for its
+/// origin: the launcher's words are kept, and say how each command reaches the origin.
+#[tokio::test]
+async fn a_folder_is_written_only_by_a_push() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let origin = root.join("github/acme/app.git");
+    seeded(&origin, "README.md", "# one\n")?;
+    // The real launcher, behind a script that notes what it is given.
+    let (launcher, log) = (root.join("launcher"), root.join("launched.log"));
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            env!("CARGO_BIN_EXE_yulius")
+        ),
+    )?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755))?;
+    }
+    let adapter = GitAdapter::new("git")
+        .confined(launcher, std::env::temp_dir(), 1)
+        .with_local_origins();
+    let repo = root.join("changes/c1/repo");
+    std::fs::create_dir_all(root.join("changes/c1"))?;
+    let address = origin.to_string_lossy().into_owned();
+    adapter.sync_clone(&address, &repo, &token()).await?;
+    adapter.sync_clone(&address, &repo, &token()).await?;
+    let head = git(&repo, &["rev-parse", "HEAD"])?;
+    assert_eq!(
+        adapter
+            .remote_branch_head(&repo, "main", &token())
+            .await?
+            .as_deref(),
+        Some(head.as_str())
+    );
+    adapter.push(&repo, "main", "pushed", &token()).await?;
+    assert_eq!(git(&origin, &["rev-parse", "pushed"])?, head);
+
+    let launched = std::fs::read_to_string(&log)?;
+    let reaches = |command: &str, how: &str| {
+        let with_the_origin: Vec<&str> = launched
+            .lines()
+            .filter(|line| {
+                line.contains(&format!(" {command} ")) && line.contains(&format!(" -- {address}"))
+            })
+            .collect();
+        !with_the_origin.is_empty()
+            && with_the_origin
+                .iter()
+                .all(|line| line.contains(&format!("{how} {address} ")))
+    };
+    for takes in ["clone", "fetch", "ls-remote"] {
+        assert!(reaches(takes, "--ro"), "{takes}: {launched}");
+        assert!(!reaches(takes, "--rw"), "{takes}: {launched}");
+    }
+    assert!(reaches("push", "--rw"), "{launched}");
+    Ok(())
+}
+
 /// A push goes into no submodule. A clone can ask for its submodules to be pushed along
 /// (`push.recurseSubmodules`, `submodule.recurse`); a submodule is pushed by its own
 /// configuration, with its own command for the other side, which the shell of a push to a

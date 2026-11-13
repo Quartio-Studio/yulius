@@ -143,7 +143,11 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0054_attempt_model.sql"),
-    // Schema version 55 (SPEC-484). The file is 0056, the number `record_number` gave this
+    // Schema version 55 (SPEC-483 V6). The file is 0055, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0055_production_secrets_have_no_hosts.sql"),
+    // Schema version 56 (SPEC-484). The file is 0056, the number `record_number` gave this
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0056_plan_first_steps.sql"),
@@ -777,21 +781,21 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-484 PLN-009: a version-54 task has no first plan size, whatever its steps; its next
+    /// SPEC-484 PLN-009: a version-55 task has no first plan size, whatever its steps; its next
     /// step write gives it one (the plan as it is then).
     #[tokio::test]
-    async fn version_fifty_four_plans_get_their_first_size_at_the_next_step_write()
+    async fn version_fifty_five_plans_get_their_first_size_at_the_next_step_write()
     -> Result<(), Box<dyn std::error::Error>> {
         use yulius_app::ports::store::CoordinationStore as _;
         use yulius_domain::ids::{StepId, TaskId};
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("v54.db");
+        let path = dir.path().join("v55.db");
         {
             let conn = rusqlite::Connection::open(&path)?;
-            for sql in &MIGRATIONS[..54] {
+            for sql in &MIGRATIONS[..55] {
                 conn.execute_batch(sql)?;
             }
-            conn.pragma_update(None, "user_version", 54)?;
+            conn.pragma_update(None, "user_version", 55)?;
             conn.execute_batch(
                 "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
                  INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
@@ -815,7 +819,7 @@ mod tests {
             )
             .await?;
         assert_eq!(store.plan_first_steps(&task).await?, Some(3));
-        assert_eq!(schema_version(), 55);
+        assert_eq!(schema_version(), 56);
         Ok(())
     }
 
@@ -985,6 +989,63 @@ mod tests {
         let automation = store.automation("au1").await?.ok_or("automation")?;
         assert_eq!(automation.start, AutomationStart::Now);
         assert_eq!(automation.name, "Docs");
+        Ok(())
+    }
+
+    /// SPEC-483 V6 (ADR-0324): a production secret that kept hosts from before such secrets
+    /// became exclusive loses them at the migration, with a line in the audit log; another
+    /// secret's hosts, and a production secret without any, are left as they are.
+    #[tokio::test]
+    async fn a_production_secrets_old_hosts_are_removed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v54.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..54] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 54)?;
+            for (id, name, hosts, cd_prod) in [
+                ("old", "PROD_OLD", r#"["api.example.com","*.old.test"]"#, 1),
+                ("prod", "PROD_NEW", "[]", 1),
+                ("agent", "AGENT_KEY", r#"["api.example.com"]"#, 0),
+            ] {
+                conn.execute(
+                    "INSERT INTO vault_secrets (id, section, sandbox_id, name, hosts, kek_id, \
+                     wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
+                     value_updated_at, cd_prod) \
+                     VALUES (?1, 'agent', NULL, ?2, ?3, 1, x'00', x'00', 'u', 1, 'u', 1, 1, ?4)",
+                    rusqlite::params![id, name, hosts, cd_prod],
+                )?;
+            }
+        }
+        drop(SqliteStore::open(&path)?);
+        let conn = rusqlite::Connection::open(&path)?;
+        let hosts = |id: &str| -> rusqlite::Result<String> {
+            conn.query_row(
+                "SELECT hosts FROM vault_secrets WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+        };
+        assert_eq!(hosts("old")?, "[]");
+        assert_eq!(hosts("prod")?, "[]");
+        assert_eq!(hosts("agent")?, r#"["api.example.com"]"#);
+        let noted: Vec<(String, String, String, i64)> = conn
+            .prepare("SELECT actor, target, detail, at FROM audit_log WHERE action = 'vault.agent.hosts_cleared'")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(noted.len(), 1, "{noted:?}");
+        let (actor, target, detail, at) = &noted[0];
+        assert_eq!((actor.as_str(), target.as_str()), ("yulius", "old"));
+        // A sentence, as every line of the log: the secret and the hosts it had.
+        assert_eq!(
+            detail,
+            "PROD_OLD: api.example.com, *.old.test (a production secret is sent to no host)"
+        );
+        // Milliseconds, as every time in the log.
+        assert!(*at > 1_700_000_000_000, "{at}");
         Ok(())
     }
 

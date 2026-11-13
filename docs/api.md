@@ -1971,9 +1971,9 @@ task; other hooks answer as usual.
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it
   ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
-  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
-  it kept from before production secrets became exclusive, which only the egress proxy still uses
-  (SPEC-405). The page is the one the browser shows when the typing begins, not the one Yulius
+  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), and the
+  egress proxy sends it for no one; it has no hosts
+  ([ADR-0324](decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)). The page is the one the browser shows when the typing begins, not the one Yulius
   last listed for the tab: a tab that went elsewhere meanwhile gets nothing typed ("nothing was
   typed: this tab shows … now"), and a page that moves on by itself while it is typed to a
   site the secret is not for answers with where it went instead of `filled` (ADR-0319). The
