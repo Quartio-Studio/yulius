@@ -23,7 +23,7 @@ use yulius_domain::auto_choice::AUTO;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::rule::{MAX_ATOMS, Rule};
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{TaskGroup, TaskStatus};
 
 use crate::auth::AuthContext;
 use crate::automations::{CreatedVia, templates};
@@ -101,6 +101,7 @@ fn after_all_tasks_arg(args: &Value) -> AppResult<bool> {
     if !flag_arg(args, "after_all_tasks")? {
         return Ok(false);
     }
+    // A blank text is no choice, as `opt_str` reads it.
     let other = [
         "after_task",
         "start_rule",
@@ -109,7 +110,11 @@ fn after_all_tasks_arg(args: &Value) -> AppResult<bool> {
         "start_at",
     ]
     .into_iter()
-    .any(|key| !matches!(args.get(key), None | Some(Value::Null | Value::Bool(false))));
+    .any(|key| match args.get(key) {
+        None | Some(Value::Null | Value::Bool(false)) => false,
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(_) => true,
+    });
     if other {
         return Err(AppError::Invalid(
             "`after_all_tasks` stands alone: give no after_task, start_rule, supertask, prepared or start_at with it".into(),
@@ -120,10 +125,12 @@ fn after_all_tasks_arg(args: &Value) -> AppResult<bool> {
 
 impl App {
     /// The start rule `after_all_tasks` means now (SPEC-487 CHN-005): every task of `sandbox`
-    /// that has not ended is done. A prepared task is left out (it waits for a person or a
-    /// time), and so are `of`, the task whose start changes, and the tasks waiting on it,
-    /// directly or through others: waiting for them would be waiting for itself. `None` when
-    /// no task is left.
+    /// that still has work coming is done. Left out: a task that ended or is stopping; one the
+    /// task list shows under Done (done, or "Answered": an idle session with nothing open,
+    /// which never becomes `done` by itself); a prepared task (it waits for a person or a
+    /// time); and `of`, the task whose start changes, with the tasks waiting on it, directly or
+    /// through others (waiting for them would be waiting for itself). `None` when no task is
+    /// left.
     ///
     /// # Errors
     /// `Invalid` for more tasks than a rule names; store failures.
@@ -158,15 +165,20 @@ impl App {
                 break;
             }
         }
-        let mut numbers: Vec<u32> = tasks
-            .iter()
-            .filter(|task| {
-                !task.status.is_resting()
-                    && task.status != TaskStatus::Prepared
-                    && !held.contains(&task.number)
-            })
-            .map(|task| task.number)
-            .collect();
+        let requested = self.browser_requests(sandbox).await;
+        let mut numbers = Vec::new();
+        for task in &tasks {
+            if task.status == TaskStatus::Prepared || held.contains(&task.number) {
+                continue;
+            }
+            // By the list's own rule (`AttentionFacts::group`).
+            if !matches!(
+                self.task_group(task, &requested).await?,
+                TaskGroup::Done | TaskGroup::Ended
+            ) {
+                numbers.push(task.number);
+            }
+        }
         numbers.sort_unstable();
         if numbers.len() > MAX_ATOMS {
             return Err(AppError::Invalid(format!(
@@ -278,6 +290,9 @@ impl App {
             .get("prompt")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::Invalid("missing string argument `prompt`".into()))?;
+        // Before anything is read for the caller: what `after_all_tasks` answers says how
+        // many tasks the project has.
+        let user = self.manage_authority(caller).await?;
         let all_tasks = if after_all_tasks_arg(args)? {
             Some(self.all_tasks_rule(&caller.sandbox, None).await?)
         } else {
@@ -315,7 +330,6 @@ impl App {
             prepared: flag_arg(args, "prepared")?,
             start_at: opt_str(args, "start_at")?,
         };
-        let user = self.manage_authority(caller).await?;
         let now = self.now().0;
         self.tool_tasks
             .reserve(&caller.sandbox, now)
