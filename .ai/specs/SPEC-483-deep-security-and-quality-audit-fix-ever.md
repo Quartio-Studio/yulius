@@ -262,7 +262,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **The old wrapper's speed on the file it now gets** (the same probe in the checkout of `dev`,
   `base` 0 and the last byte as its hash): 614 ms, 896 ms and 923 ms for 10, 40 and 200
   secrets, against 460, 781 and 819 ms with the file it had.
-- **Gate.** `scripts/dev ci` at GATE_HEAD: exit 0; `GATE_TESTS`; doctor, repository check, lint,
+- **Gate.** `scripts/dev ci` at 106bbb5e1: exit 0; `4112 tests run: 4112 passed, 16 skipped`; doctor, repository check, lint,
   the macOS compile, cargo-deny, cargo-shear and rustdoc passed. (At 6535968fe, before round 2:
   exit 0, `4112 tests run: 4112 passed, 16 skipped`.)
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
