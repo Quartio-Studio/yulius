@@ -498,7 +498,6 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
 /// that started behind the withheld screen, and flags the task with what to do.
 #[test]
 fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
-    use yulius_app::ports::vault::VaultStore as _;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
