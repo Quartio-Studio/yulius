@@ -4161,6 +4161,59 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     Ok(())
 }
 
+/// SPEC-483 D4: a run again tests a pull request with the jobs the scheduler gave it. A pull
+/// request that changes the CI is tested with its own jobs; run again (by a person, by the
+/// agent's `ci_rerun`, by Yulius after an errored run), it was tested with the integration
+/// branch's instead, and that newest run was the head's verdict.
+#[tokio::test]
+async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo changed\"\n\n\
+             [[ci.jobs]]\nname = \"added\"\ncommand = \"echo added\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let newest = || async {
+        let overview = f.get("/api/sandboxes/s1/ci").await?;
+        let run = overview["runs"]
+            .as_array()
+            .and_then(|runs| runs.iter().find(|run| run["sha"] == sha.as_str()))
+            .ok_or("no run of the head")?;
+        BoxResult::Ok(run["id"].as_str().ok_or("id")?.to_owned())
+    };
+    let first_run = newest().await?;
+    let first = job_outputs(&f, &sha).await?;
+    assert!(output_of(&first, "plain")?.contains("changed"), "{first:?}");
+    assert!(output_of(&first, "added")?.contains("added"), "{first:?}");
+
+    let again = f
+        .post(
+            &format!("/api/sandboxes/s1/ci/runs/{first_run}/rerun"),
+            None,
+        )
+        .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    f.settle().await?;
+    assert_ne!(newest().await?, first_run, "a new run");
+    let second = job_outputs(&f, &sha).await?;
+    let names = |outputs: &[(String, String)]| -> Vec<String> {
+        outputs.iter().map(|(name, _)| name.clone()).collect()
+    };
+    assert_eq!(names(&second), names(&first), "the same jobs");
+    assert!(
+        output_of(&second, "plain")?.contains("changed"),
+        "its own command, not the integration branch's: {second:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]

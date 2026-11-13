@@ -570,7 +570,8 @@ impl App {
         // tested with it before it merges; one whose configuration Yulius CI cannot read, or any
         // while the integration branch's is unusable (then nothing is tested), never merges here.
         if gate == GateResult::NotConfigured && self.config.ci.enabled {
-            if let Some(problem) = self.ci_gate(sandbox).await.problem {
+            let view = self.ci_gate(sandbox).await;
+            if let Some(problem) = &view.problem {
                 return Err(AppError::Conflict(format!(
                     "Yulius CI tests nothing while the integration branch's yulius.toml is unusable ({problem}); merge this fix on GitHub, or have a task fix it"
                 )));
@@ -579,8 +580,16 @@ impl App {
                 .ci_jobs_at(&self.sandbox_repo(&sandbox.id), &pull.head_sha)
                 .await
             {
-                Ok(jobs) if !jobs.is_empty() => gate = GateResult::Run(None),
-                Ok(_) => {}
+                // Whether Yulius CI will test this head is the scheduler's own answer.
+                Ok(_) => {
+                    if self
+                        .ci_gate_for_head(sandbox, &view, &pull.head_sha)
+                        .await
+                        .is_some()
+                    {
+                        gate = GateResult::Run(None);
+                    }
+                }
                 Err(why) => {
                     return Err(AppError::Conflict(format!(
                         "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"

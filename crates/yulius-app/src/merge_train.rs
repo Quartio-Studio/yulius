@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use yulius_domain::ci::{CiRef, Gate, GateResult, GateSource, RunState};
+use yulius_domain::ci::{CiRef, GateResult, RunState};
 use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
@@ -1125,7 +1125,8 @@ impl App {
             MergeMethod::Merge => TrainLanding::MergeCommit,
             MergeMethod::Rebase => return None,
         };
-        let gate = self.ci_gate(sandbox).await.gate?;
+        let view = self.ci_gate(sandbox).await;
+        let gate = view.gate.clone()?;
         let repo = self.sandbox_repo(&sandbox.id);
         let integration = format!("origin/{}", profile.integration_branch);
         let base = self
@@ -1267,24 +1268,11 @@ impl App {
             one_by_one(state, key);
             return None;
         }
-        // Its own CI when the members changed it, as for a pull request (CI-110).
-        let own = match self.ci_jobs_at(&repo, &built.head).await {
-            Ok(jobs) if !jobs.is_empty() => Some(jobs),
-            _ => None,
-        };
-        let at_base = self.ci_jobs_at(&repo, &built.base).await.ok();
-        // It keeps the trusted security job, as a pull request does (SPEC-217 VDP-001).
-        let gate = match own {
-            Some(jobs) if crate::ci::own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
-                let own = Gate {
-                    jobs,
-                    source: GateSource::PullRequest,
-                };
-                let scans = self.ci_scans(sandbox).await;
-                yulius_domain::ci::keep_security_jobs(own, Some(&gate), scans)
-            }
-            _ => gate,
-        };
+        // Its own CI when the members changed it, as for a pull request (`ci_gate_for_head`).
+        let gate = self
+            .ci_gate_for_head(sandbox, &view, &built.head)
+            .await
+            .unwrap_or(gate);
         let prs = numbers(&members);
         // Ahead of the sandbox's queued runs: it decides every member's merge at once.
         let place = self
