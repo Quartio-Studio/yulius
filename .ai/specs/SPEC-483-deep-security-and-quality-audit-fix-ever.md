@@ -359,3 +359,23 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
     the read is bounded, the corner test names the secret, and #1239 tracks the removal of
     the old format's writer. The Global Superagent has no fingerprint file and no test of
     that absence.
+
+### Slice 2 (2026-11-13)
+
+- **The defects, each by a test that failed before its fix** (on the code of `dev`):
+  - `a_bwrap_planted_on_the_runs_path_never_starts_a_run`: failed, the stand-in `bwrap` in
+    `<sandbox>/home/.cargo/bin` had left its marker.
+  - `managed_attributes_follow_no_link_an_agent_planted`: failed at its first check, the file
+    outside the repository held `*.png binary` and Yulius's block instead of `kept`.
+  - `the_push_guard_follows_no_link_an_agent_planted`: failed, the file outside the repository
+    held the `pre-push` script instead of `kept`.
+- **After the fix** all three pass, with the 95 tests of `yulius-git` (the guard, the scrub and
+  the union merge among them) and `delivery::the_changes_log_merges_by_union_in_any_repository`.
+- **Gate.** `scripts/dev ci` at 70e27996a (on `dev` b4eaca1e5 merged in): exit 0; `4117 tests
+  run: 4117 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested here.** A joined run (`yulius sandbox-exec` after the holder's namespaces): this
+  sandbox has no holder to join; the refusal of a bare name there is a unit test, and the
+  process host's lookup, which every launch passes first, is tested end to end.
+
