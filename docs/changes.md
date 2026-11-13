@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
+  are green was decided in five places by three rules: a task's merge and the Git page
+  asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
+  cases of its own, a promotion pull request read GitHub's checks only, and a fast-forward
+  promotion read none. A failed Yulius CI run at the `dev` head whose status had not been
+  published read as "no checks", and the promotion went through with required checks on.
+  All of them now ask one function: Yulius CI's newest run of the commit where the project
+  has Yulius CI, else GitHub's checks. A pull request that brings CI to a project without
+  any is "pending" until its first run, for every caller.
 - A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
   #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
   pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and
@@ -26,8 +35,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stricter job failed passed on the rerun. Which jobs test a commit on its way into the
   integration branch is one rule now, for the scheduler, a merge train, a playground task,
   a run again and a change from the remote control. A playground task that changes its jobs
-  keeps the trusted security job, as a pull request does, and one that did not change them
-  is tested with `dev`'s jobs of now also when `dev` changed them since the task began.
+  keeps the trusted security job, as a pull request does.
 - A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
   A secret allowed for production deploys that still had hosts from before such secrets
   became exclusive was sent to those hosts for an agent's run by the egress proxy, while a

@@ -551,6 +551,72 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
     }
 }
 
+/// What the checks at a commit say ([`App::dlv_checks_at`]).
+pub(crate) struct HeadChecks {
+    /// What a gate reads.
+    pub(crate) state: ChecksState,
+    /// The word shown: `success`, `failure`, `pending`, `none`, `unknown`, and `error` for a
+    /// Yulius CI run that could not happen.
+    pub(crate) word: &'static str,
+    /// What GitHub would not let Yulius read (nothing with Yulius CI).
+    pub(crate) unreadable: Vec<gh::ChecksSource>,
+}
+
+impl App {
+    /// What the checks at `sha` say, for whoever decides on them (DLV-006): a task's merge, the
+    /// Git page, a change from the remote control and a promotion alike. Yulius CI is a
+    /// project's only CI: with it, its newest run of the commit alone decides (none yet is
+    /// pending), and checks GitHub reports from elsewhere do not count. Without it, GitHub's
+    /// checks decide.
+    ///
+    /// # Errors
+    /// GitHub's, when its checks are the ones to read.
+    pub(crate) async fn dlv_checks_at(
+        &self,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        sha: &str,
+    ) -> AppResult<HeadChecks> {
+        let gate = self.ci_gate_result(sandbox, sha).await;
+        if let Some(word) = ci_checks_word(gate) {
+            return Ok(HeadChecks {
+                state: yulius_domain::ci::gate_checks(ChecksState::None, gate),
+                word,
+                unreadable: Vec::new(),
+            });
+        }
+        let report = self
+            .deps
+            .github
+            .checks(token, &sandbox.repo_owner, &sandbox.repo_name, sha)
+            .await?;
+        Ok(HeadChecks {
+            state: domain_checks(report.state),
+            word: report.state.as_str(),
+            unreadable: report.unreadable,
+        })
+    }
+
+    /// Refuses unless the checks at `sha` allow what requires them: passed, or none at all
+    /// (with `or_pending`, also checks that have not reported yet). Unreadable checks never
+    /// count as passed (#111).
+    async fn dlv_checks_allow(
+        &self,
+        sandbox: &SandboxRecord,
+        token: &Secret,
+        sha: &str,
+        or_pending: bool,
+    ) -> AppResult<()> {
+        match self.dlv_checks_at(sandbox, token, sha).await?.state {
+            ChecksState::Failure => Err(refusal(&DeliveryError::ChecksFailing)),
+            ChecksState::Pending if or_pending => Ok(()),
+            ChecksState::Pending => Err(refusal(&DeliveryError::ChecksPending)),
+            ChecksState::Unknown => Err(refusal(&DeliveryError::ChecksUnknown)),
+            ChecksState::None | ChecksState::Success => Ok(()),
+        }
+    }
+}
+
 /// The checks word of a pull request head from Yulius CI's run there, when the project has Yulius
 /// CI: an errored run is `error` (the run could not happen: disk, a timeout, the host), not a
 /// failure of the code (S5, F 2026-10-13: infrastructure errors read "checks failing · Needs you").
@@ -1571,24 +1637,17 @@ impl App {
                 }
             }
             if let Some(pull) = pr.as_ref().filter(|p| is_open(p)) {
-                let gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
-                if gate == yulius_domain::ci::GateResult::NotConfigured {
-                    match github.checks(token, owner, repo, &pull.head_sha).await {
-                        Ok(report) => {
-                            checks = domain_checks(report.state);
-                            checks_unreadable = report.unreadable;
-                        }
-                        Err(err) => {
-                            // Unknown checks never allow a merge that requires them.
-                            checks = ChecksState::Unknown;
-                            notes.push(format!("Checks can't be read: {}", github_reason(&err)));
-                        }
+                match self.dlv_checks_at(sandbox, token, &pull.head_sha).await {
+                    Ok(at) => {
+                        checks_errored = at.word == "error";
+                        checks = at.state;
+                        checks_unreadable = at.unreadable;
                     }
-                } else {
-                    // Yulius CI is the project's only CI: its run at this head alone decides
-                    // (DLV-006); checks GitHub reports from elsewhere do not count.
-                    checks_errored = ci_checks_word(gate) == Some("error");
-                    checks = yulius_domain::ci::gate_checks(ChecksState::None, gate);
+                    Err(err) => {
+                        // Unknown checks never allow a merge that requires them.
+                        checks = ChecksState::Unknown;
+                        notes.push(format!("Checks can't be read: {}", github_reason(&err)));
+                    }
                 }
             }
         }
@@ -1857,23 +1916,11 @@ impl App {
             }
             let mut checks_failed = false;
             for pull in &open_pulls {
-                // With Yulius CI its run at the head decides, as in the merge gate (S5).
-                if let Some(word) =
-                    ci_checks_word(self.ci_gate_result(&sandbox, &pull.head_sha).await)
-                {
-                    checks_by_pr.push((pull.number, word));
-                    continue;
-                }
-                let state = match self
-                    .deps
-                    .github
-                    .checks(token, owner, name, &pull.head_sha)
-                    .await
-                {
-                    Ok(report) => {
+                let state = match self.dlv_checks_at(&sandbox, token, &pull.head_sha).await {
+                    Ok(at) => {
                         // A missing permission is said once for the repository, not per PR.
-                        merge_sources(&mut checks_unreadable, &report.unreadable);
-                        report.state.as_str()
+                        merge_sources(&mut checks_unreadable, &at.unreadable);
+                        at.word
                     }
                     Err(err) => {
                         if !checks_failed {
@@ -3861,6 +3908,19 @@ impl App {
             .collect();
         let (result, sha) = match profile.promote {
             PromoteMethod::FastForward => {
+                // What goes to production is the integration head: its checks decide, as a
+                // promotion pull request's do (the head is the same commit).
+                if profile.require_checks {
+                    // An automatic promotion (after a merge, or after the last integration
+                    // environment of a merged change) does not wait for a verdict of the
+                    // integration head: what it promotes went in on green checks of a current
+                    // head, the commit the merge made may have no run yet, and nothing
+                    // promotes later if this one is refused as pending. A verdict that is
+                    // there (failed, unreadable) stops it.
+                    let automatic = matches!(by, Initiator::Policy);
+                    self.dlv_checks_allow(sandbox, token, &integration_sha, automatic)
+                        .await?;
+                }
                 github
                     .fast_forward(
                         token,
@@ -3944,20 +4004,8 @@ impl App {
                         self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
                             .await?;
                         if profile.require_checks {
-                            let report = github.checks(token, owner, name, &pull.head_sha).await?;
-                            match domain_checks(report.state) {
-                                ChecksState::Failure => {
-                                    return Err(refusal(&DeliveryError::ChecksFailing));
-                                }
-                                ChecksState::Pending => {
-                                    return Err(refusal(&DeliveryError::ChecksPending));
-                                }
-                                // Unreadable checks never count as passed (#111).
-                                ChecksState::Unknown => {
-                                    return Err(refusal(&DeliveryError::ChecksUnknown));
-                                }
-                                ChecksState::None | ChecksState::Success => {}
-                            }
+                            self.dlv_checks_allow(sandbox, token, &pull.head_sha, false)
+                                .await?;
                         }
                         let sha = github
                             .merge_pull(
