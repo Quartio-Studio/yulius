@@ -597,16 +597,19 @@ impl App {
         })
     }
 
-    /// Refuses unless the checks at `sha` allow what requires them: passed, or none at all.
-    /// Unreadable checks never count as passed (#111).
+    /// Refuses unless the checks at `sha` allow what requires them: passed, or none at all
+    /// (with `or_pending`, also checks that have not reported yet). Unreadable checks never
+    /// count as passed (#111).
     async fn dlv_checks_allow(
         &self,
         sandbox: &SandboxRecord,
         token: &Secret,
         sha: &str,
+        or_pending: bool,
     ) -> AppResult<()> {
         match self.dlv_checks_at(sandbox, token, sha).await?.state {
             ChecksState::Failure => Err(refusal(&DeliveryError::ChecksFailing)),
+            ChecksState::Pending if or_pending => Ok(()),
             ChecksState::Pending => Err(refusal(&DeliveryError::ChecksPending)),
             ChecksState::Unknown => Err(refusal(&DeliveryError::ChecksUnknown)),
             ChecksState::None | ChecksState::Success => Ok(()),
@@ -3908,7 +3911,12 @@ impl App {
                 // What goes to production is the integration head: its checks decide, as a
                 // promotion pull request's do (the head is the same commit).
                 if profile.require_checks {
-                    self.dlv_checks_allow(sandbox, token, &integration_sha)
+                    // The automatic promotion is part of the merge it follows: the checks
+                    // that allowed that merge, on a current head, are its checks, and the
+                    // integration head they made has no run of its own yet. Only a verdict
+                    // that is there (failed, unreadable) stops it.
+                    let part_of_the_merge = matches!(by, Initiator::Policy);
+                    self.dlv_checks_allow(sandbox, token, &integration_sha, part_of_the_merge)
                         .await?;
                 }
                 github
@@ -3994,7 +4002,7 @@ impl App {
                         self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
                             .await?;
                         if profile.require_checks {
-                            self.dlv_checks_allow(sandbox, token, &pull.head_sha)
+                            self.dlv_checks_allow(sandbox, token, &pull.head_sha, false)
                                 .await?;
                         }
                         let sha = github

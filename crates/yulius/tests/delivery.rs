@@ -1218,6 +1218,52 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 D5: an automatic promotion (`auto_promote`) is part of the merge it follows. With
+/// required checks and Yulius CI, the merge needs the pull request's head green; the
+/// integration head that merge makes has no run of its own yet, and the fast-forward goes on
+/// the merge's checks instead of waiting for ever on a run nobody would act on.
+#[tokio::test]
+async fn an_automatic_promotion_goes_on_the_checks_of_its_merge() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let mut profile = DeliveryProfile::studio();
+    profile.require_checks = true;
+    let f = fixture(&profile).await?;
+    // Yulius CI is the project's CI: a commit without a run is pending.
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut stored: Value = serde_json::from_str(&record.profile_json)?;
+    stored["gate"] = json!("true");
+    f.h.store.set_profile(&sandbox, &stored.to_string()).await?;
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    commit_file(&wt, "landing.txt", "v1", "Landing")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let waiting = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(
+        waiting.status,
+        StatusCode::CONFLICT,
+        "pending: {}",
+        waiting.body
+    );
+    yulius_ci_run(&f.h.store, "run-pr-1", &head, RunState::Passed, 10).await?;
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    let quartio = f.origin_sha("quartio")?;
+    assert_ne!(quartio, head, "the merge made a commit of its own");
+    assert_eq!(f.origin_sha("main")?, quartio, "promoted with the merge");
+    Ok(())
+}
+
 /// A run of Yulius CI at `sha` of branch `dev`, ended in `state`, queued at `at` (the newest
 /// run of a commit is its verdict).
 async fn yulius_ci_run(
@@ -1665,6 +1711,18 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
     // for a fast-forward as for a promotion pull request: a failed run of Yulius CI there
     // refuses it, the run passed again lets it go.
     use yulius_domain::ci::RunState;
+    // A run that still goes: a person's promotion waits for it.
+    yulius_ci_run(&f.h.store, "run-q-0", &quartio, RunState::Running, 5).await?;
+    let running = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(running.status, StatusCode::CONFLICT, "{}", running.body);
+    assert_ne!(f.origin_sha("main")?, quartio, "main did not move");
     yulius_ci_run(&f.h.store, "run-q-1", &quartio, RunState::Failed, 10).await?;
     let failing = f
         .req(
