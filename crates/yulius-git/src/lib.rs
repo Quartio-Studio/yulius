@@ -143,9 +143,9 @@ impl Confinement {
         self.sandbox_folder_of(path).map(|(data, id, _)| (data, id))
     }
 
-    /// [`Self::sandbox_of`] for a path as a caller gives it (made absolute first): `Some` says
-    /// that the folder is a sandbox's, whose every file, a clone's configuration included,
-    /// its agents write.
+    /// The data folder and sandbox id of a path as a caller gives it (made absolute first),
+    /// when it lies in a sandbox's folder: `Some` says that the folder is a sandbox's, whose
+    /// every file, a clone's configuration included, its agents write.
     #[must_use]
     pub fn sandbox_of_path(&self, path: &std::path::Path) -> Option<(PathBuf, String)> {
         self.sandbox_of(&std::path::absolute(path).ok()?)
