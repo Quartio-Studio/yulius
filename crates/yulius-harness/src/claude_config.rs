@@ -148,6 +148,18 @@ pub fn ensure_claude_config(
 /// path, then home and config dir one at a time with `O_DIRECTORY | O_NOFOLLOW`, each made 0700
 /// when missing. A link or a file on the way fails, naming it (SPEC-253 CFG-002).
 fn open_config_dir(config_dir: &Path) -> io::Result<OwnedFd> {
+    open_config_dir_with(config_dir, true)
+}
+
+/// The config dir `config_dir` opened as [`ensure_claude_config`] opens it, without making
+/// anything: `None` when the home or the config dir is missing, a link or not a folder
+/// (SPEC-485 LSP-002).
+pub(crate) fn open_existing_config_dir(config_dir: &Path) -> Option<OwnedFd> {
+    open_config_dir_with(config_dir, false).ok()
+}
+
+/// [`open_config_dir`], home and config dir made when missing only with `create`.
+fn open_config_dir_with(config_dir: &Path, create: bool) -> io::Result<OwnedFd> {
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -167,7 +179,7 @@ fn open_config_dir(config_dir: &Path) -> io::Result<OwnedFd> {
         Mode::empty(),
     )?;
     for name in [home, config] {
-        dir = open_dir_at(&dir, name, true).map_err(|err| match err {
+        dir = open_dir_at(&dir, name, create).map_err(|err| match err {
             Errno::ELOOP | Errno::ENOTDIR => io::Error::other(format!(
                 "{} on the way to the Claude config dir is a link or not a folder: Yulius follows \
                  no links",
@@ -446,7 +458,7 @@ fn read_regular(dir: &OwnedFd, name: &str) -> Option<String> {
 
 /// The regular file `name` in `dir` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is
 /// missing or larger. Anything but a regular file is an error ([`open_regular`]).
-fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
+pub(crate) fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
     dir: impl AsFd,
     name: &P,
 ) -> io::Result<Option<String>> {
