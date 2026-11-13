@@ -559,3 +559,87 @@ async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
     })
     .await
 }
+
+/// SPEC-487 CHN-002 (review round 1, M3): a task whose pull request is merged while its agent
+/// has not heard of it goes on by itself. A supertask does not take it for finished, and Home
+/// counts it as working. A task the watch never saw with its pull request open is told
+/// nothing, and is Done as before.
+#[tokio::test]
+async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::store_ext::DeliveryStore;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::delivery::DeliveryStage;
+
+    let (h, alice) = world(8).await?;
+    let agent = h
+        .store
+        .task(&TaskId::parse("t-agent")?)
+        .await?
+        .ok_or("agent")?;
+    let unseen = seed_task(&h, "t-unseen", "s1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&h, "t-unseen", "tok-unseen").await?;
+    for task in [&agent, &unseen] {
+        h.store
+            .set_activity(&task.id, Some(Activity::Waiting), h.app.now())
+            .await?;
+    }
+    let open = |task: &TaskRecord, pr| DeliveryRecord {
+        task_id: task.id.clone(),
+        stage: DeliveryStage::PrOpen,
+        pr_number: Some(pr),
+        updated_at: h.app.now(),
+    };
+    // The watch sees the agent's pull request open (its run is known to this server).
+    h.store
+        .transition_delivery(&DeliveryStage::None, &open(&agent, 7))
+        .await?;
+    summary(&h, &alice, agent.id.as_str()).await?;
+    assert!(h.app.watch_prs(&WatchBounds::default()).await.is_empty());
+    // Both are merged; the other one's pull request the watch never saw open.
+    h.store
+        .transition_delivery(&DeliveryStage::None, &open(&unseen, 8))
+        .await?;
+    for (task, pr) in [(&agent, 7), (&unseen, 8)] {
+        let merged = DeliveryRecord {
+            stage: DeliveryStage::MergedIntegration,
+            ..open(task, pr)
+        };
+        h.store
+            .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+    }
+
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    assert_eq!(offer(&h, &s).await?, TaskStatus::Queued);
+    assert_eq!(
+        held_by(&h, &alice, &s).await?,
+        json!([agent.number]),
+        "the one that will hear of its merge and go on, not the one that is Done"
+    );
+    assert_eq!(
+        summary(&h, &alice, agent.id.as_str()).await?["yulius_wait"],
+        true
+    );
+    assert_eq!(
+        summary(&h, &alice, unseen.id.as_str()).await?["yulius_wait"],
+        false
+    );
+    let sandbox = call(&h.router, Method::GET, "/api/sandboxes/s1", None, &alice).await?;
+    assert_eq!(
+        (
+            &sandbox.body["counts"]["running"],
+            &sandbox.body["counts"]["queued"]
+        ),
+        (&json!(1), &json!(1)),
+        "{}",
+        sandbox.body
+    );
+    Ok(())
+}

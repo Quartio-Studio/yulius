@@ -738,6 +738,26 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
         None,
     )
     .await?;
+    // Tasks that will not become done by themselves are not waited for (review round 1, M4):
+    // one that is stopping, and a session that answered and has nothing open (the list reads
+    // "Answered" under Done; it never becomes `done` and would hold the rule for ever).
+    seed_task(
+        &h,
+        "t-stopping",
+        "s1",
+        "u-alice",
+        TaskStatus::Stopping,
+        None,
+    )
+    .await?;
+    let answered = seed_task(&h, "t-answered", "s1", "u-alice", TaskStatus::Running, None).await?;
+    h.store
+        .set_activity(
+            &answered.id,
+            Some(yulius_domain::task::Activity::Waiting),
+            h.app.now(),
+        )
+        .await?;
     let (last, is_error) = task_create(
         &h,
         "tok-agent",
@@ -768,6 +788,14 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
     )
     .await?;
     assert!(!is_error, "{follower}");
+    // And one that waits on that follower by a rule: it waits on the first through it.
+    let (second, is_error) = task_create(
+        &h,
+        "tok-agent",
+        json!({"prompt": "After the follower", "start_rule": format!("#{} done or #{} merged", follower["task"]["number"], b.number)}),
+    )
+    .await?;
+    assert!(!is_error, "{second}");
     let updated = mcp_tool(
         &h,
         "tok-agent",
@@ -810,6 +838,15 @@ async fn after_all_tasks_names_every_task_that_has_not_ended() -> TestResult {
     )
     .await?;
     assert!(is_error, "{text}");
+    // A blank text is no start choice, as for every other tool argument.
+    let (blank, is_error) = task_create(
+        &h,
+        "tok-agent",
+        json!({"prompt": "Blank texts are no choice", "after_all_tasks": true, "start_rule": " ", "start_at": ""}),
+    )
+    .await?;
+    assert!(!is_error, "{blank}");
+    assert_eq!(blank["task"]["status"], "chained", "{blank}");
     Ok(())
 }
 
@@ -874,5 +911,100 @@ async fn after_all_tasks_with_nothing_left_starts_now() -> TestResult {
         "{refused}"
     );
     assert_eq!(h.store.tasks(&sid, false).await?.len(), before);
+    Ok(())
+}
+
+/// SPEC-487 CHN-004, CHN-005 (review round 1, L8): `task_update` with `after_all_tasks` and
+/// nothing left starts the task now and says so, and a task that has started no longer answers
+/// how it waited.
+#[tokio::test]
+async fn task_update_after_all_tasks_with_nothing_left_starts_now() -> TestResult {
+    use yulius_app::coordination::{Channel, ProjectCaller};
+    let h = world().await?;
+    let sid = SandboxId::parse("s1")?;
+    let agent = TaskId::parse("t-agent")?;
+    let caller = ProjectCaller {
+        sandbox: sid.clone(),
+        user: UserId::parse("u-alice")?,
+        task: None,
+        channel: Channel::Superagent,
+        actor: "cockpit:alice".into(),
+        detail: json!({}),
+    };
+    let waiting = h
+        .app
+        .tool_task_create(
+            &caller,
+            &json!({"prompt": "After the agent's task", "after_task": 1}),
+        )
+        .await?;
+    assert_eq!(waiting["task"]["runs_after"], 1, "{waiting}");
+    let number = waiting["task"]["number"].clone();
+    h.store
+        .transition_task(&agent, None, TaskStatus::Closed, None, h.app.now())
+        .await?;
+    h.app.advance_chains(&agent).await;
+    let blocked = h
+        .app
+        .tool_task_get(&caller, &json!({"number": number}))
+        .await?;
+    assert!(
+        blocked["start_blocked"]
+            .as_str()
+            .is_some_and(|why| why.contains("was closed before it was done")),
+        "{blocked}"
+    );
+
+    let updated = h
+        .app
+        .tool_task_update(&caller, &json!({"number": number, "after_all_tasks": true}))
+        .await?;
+    assert_eq!(updated["task"]["status"], "queued", "{updated}");
+    assert!(
+        updated["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("No task of this project is left to wait for")),
+        "{updated}"
+    );
+    for key in ["start_rule", "start_blocked"] {
+        assert!(updated["task"][key].is_null(), "{key}: {updated}");
+    }
+    Ok(())
+}
+
+/// Review round 1, L11: a caller whose person may not work in the project learns nothing of
+/// its tasks from `after_all_tasks`' bound.
+#[tokio::test]
+async fn after_all_tasks_counts_nothing_for_a_person_without_access() -> TestResult {
+    use yulius_app::coordination::{Channel, ProjectCaller};
+    let h = world().await?;
+    for n in 0..=yulius_domain::rule::MAX_ATOMS {
+        seed_task(
+            &h,
+            &format!("t-many-{n}"),
+            "s1",
+            "u-alice",
+            TaskStatus::Queued,
+            None,
+        )
+        .await?;
+    }
+    let reader = ProjectCaller {
+        sandbox: SandboxId::parse("s1")?,
+        user: UserId::parse("u-bob")?,
+        task: None,
+        channel: Channel::Superagent,
+        actor: "cockpit:bob".into(),
+        detail: json!({}),
+    };
+    let refused = h
+        .app
+        .tool_task_create(&reader, &json!({"prompt": "x", "after_all_tasks": true}))
+        .await
+        .err()
+        .map(|err| err.public_message())
+        .unwrap_or_default();
+    assert!(!refused.is_empty(), "accepted");
+    assert!(!refused.contains("tasks of this project"), "{refused}");
     Ok(())
 }
