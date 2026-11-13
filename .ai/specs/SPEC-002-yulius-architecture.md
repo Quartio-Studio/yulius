@@ -1001,15 +1001,19 @@ skills assumed Open Mercato's harness.
 
 | Rule | Where | Kind |
 | --- | --- | --- |
-| 1-30 unique, non-empty steps ≤ 200 chars; effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 30 top-level items, no repeats) | refusal |
+| 1-60 unique, non-empty steps ≤ 200 chars (`MAX_STEPS`; all the work the agent knows of, 3-12 for one pull request, SPEC-484); effort 1-3 (default 1); `blocked` only with a note | `steps_set` (`validate_plan`), `spec_check` (Plan ≤ 60 top-level items, no repeats) | refusal |
 | At most 2 in progress; an agent never reopens done/skipped; blocked always and skipped by an agent need a note | `step_update` (`check_update`) | refusal |
 | Effort-weighted `percent` (skipped counts as finished) | API, tools, briefing, strip | — |
-| Coarse plan (< 3 when a spec is needed), fine plan (> 12), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min) | step tool results, `spec_check`, briefing | nudge |
+| Coarse plan (< 3 when a spec is needed), phase-only titles, > ⅓ of steps at effort 3, none started, two open, stale (> max(45 min, 3 × typical duration per effort unit)), burst (≥ 3 steps and ≥ 30 % of the effort finished in the last 10 min), complete (every step finished: "add the steps of any work you know is not done"; no nudge counts a long plan, SPEC-484) | step tool results, `spec_check`, briefing | nudge |
 | Branch changed and no step ever started; for a goal, a stale step | Stop hook, once per task and kind, only when the turn stays on its subscription, never counted as a gate block | one-shot nudge |
+| A merge: at least one step finished; steps still ahead do not hold it (`check_merge`: `NoStepFinished`). A head `delivery_merge` has to deliver first (push, pull request): also no step in progress (`steps::delivery_hold`). At a turn's end: every step finished. A playground's squash: every step finished | `delivery_merge`, `POST …/delivery/merge`, `try_auto_open_pr`, `playground_merge` (SPEC-484, ADR-0325) | refusal |
+| The plan's size when its first step was finished, kept once (`tasks.plan_first_steps`); sent as `steps.first_total` where the plan has more steps now | step writes of the store; API, tools, strip | — |
 
 Start and finish times are the latest `in_progress` and `done`/`skipped` events of `step_events`
 (indexed per task by migration 11), so every path that changes steps (tools, spec sync, people)
 feeds them without new bookkeeping. Effort lives in `steps.effort`; the spec sync keeps it by title.
+The history has no record of a removed step, so the plan's first size is stored by the write
+that finishes the first step (`keep_first_plan_size`, in the same transaction), not derived.
 
 **Spec policy** (`SpecPolicy`): the task's workflow decides (`require_spec`); without one, a spec
 is required as soon as the branch's changed paths (`review_changes` against the integration
@@ -1634,7 +1638,7 @@ Schema version 1 (tables; columns abbreviated):
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
 | `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
-| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id, supertask (SPEC-071, schema version 17) |
+| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id, supertask (SPEC-071, schema version 17), plan_first_steps (the plan's size when its first step was finished, written once; SPEC-484, schema version 56) |
 | `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
 | `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
 | `accounts` | id, provider, label, credential (enc), status, usage (json), last_error (version 4 drops priority and enabled, ADR-17) |
@@ -2014,7 +2018,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `record_number` | The next free number of a directory's numbered files (ADRs, specs, migrations), past the integration branch, every live task and every reservation, reserved for the task (SPEC-083 NUM-001..003) |
-| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
+| `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..009): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent`, the plan's first size where it grew (`first_total`) and `nudges` in every result (ADR-19, ADR-0325) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
 | `task_update` | Change how a chained or prepared task starts (`after_task`, `start_rule`, `supertask`, `prepared`, `start_at`), as `PUT /api/tasks/{tid}/start` (SPEC-126, SPEC-396) |
 | `attachments_trash` | Deleted tasks' attachments, kept 7 days; `restore` moves one entry's files into a task (`into`, by default the caller's own) (SPEC-396, ADR-0253) |
@@ -2114,7 +2118,8 @@ from.
 
 Assembled in domain from store data and repository files, in this order, truncating each part to
 its budget: role and discipline rules (know the product first, the spec policy of the task's
-workflow, steps of similar effort, tests, decisions, evidence; ADR-19), the delivery pipeline with
+workflow, all the known work as steps of similar effort, tests, decisions, evidence; ADR-19,
+ADR-0325), the delivery pipeline with
 Git hygiene and the profile's path, "Read before you build" (the docs index and sessions as docs:
 `sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
 and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project

@@ -635,6 +635,31 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
     assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
 
+    // A playground squashes a task once, with its whole plan (SPEC-484 PLN-001): steps still
+    // ahead hold it, whether or not a part is finished.
+    for (id, file, steps, open, next) in [
+        ("t3", "c.txt", &["pending", "blocked"][..], 2, "Step 0"),
+        (
+            "t4",
+            "d.txt",
+            &["done", "pending", "blocked"][..],
+            2,
+            "Step 1",
+        ),
+    ] {
+        playground_task(&h, &made.body, id, &[(file, "x\n")], steps).await?;
+        let held = merge(&h, &owner, id).await?;
+        assert_eq!(held.status, StatusCode::CONFLICT, "{id}: {:?}", held.body);
+        assert!(
+            text(&held).contains(&format!(
+                "not merged: {open} step(s) of the plan are still open (next: \"{next}\"): a \
+                 playground squashes a task once, with its whole plan"
+            )),
+            "{id}: {:?}",
+            held.body
+        );
+    }
+
     assert_eq!(
         git(&origin, &["rev-parse", "dev"])?,
         before,
@@ -1707,6 +1732,86 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
         git(&origin, &["rev-parse", "dev"])?.trim(),
         dev,
         "nothing landed"
+    );
+    nothing_on_github(&h)?;
+    Ok(())
+}
+
+/// A task's steps replaced with one step per status (as `playground_task` sets them).
+async fn set_steps(h: &Harness, id: &str, statuses: &[&str]) -> BoxResult<()> {
+    use yulius_app::model::StepRecord;
+    use yulius_app::ports::store::CoordinationStore;
+    use yulius_domain::ids::{StepId, TaskId};
+    let task = TaskId::parse(id)?;
+    let records = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            Ok(StepRecord {
+                id: StepId::parse(&format!("{id}-step-{i}"))?,
+                task_id: task.clone(),
+                ordinal: u32::try_from(i)?,
+                title: format!("Step {i}"),
+                status: (*status).to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+                effort: 1,
+            })
+        })
+        .collect::<BoxResult<Vec<_>>>()?;
+    h.store
+        .replace_steps(&task, &records, "test", yulius_domain::time::Timestamp(3))
+        .await?;
+    Ok(())
+}
+
+/// SPEC-484 PLN-001 in a playground: its agent's merge is the task's one squash, so it waits for
+/// the whole plan and says so (a merged playground task delivers nothing again, so a part
+/// squashed first would leave the rest undeliverable); with the plan finished it is armed and
+/// lands as before.
+#[tokio::test]
+async fn a_playground_squashes_a_task_once_with_its_whole_plan() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let worktree = playground_task(
+        &h,
+        &body,
+        "t1",
+        &[("feature.txt", "one\n")],
+        &["done", "pending"],
+    )
+    .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+
+    let held = agent_merge(&h, "tok-t1", &head).await?;
+    assert_eq!(held["isError"], true, "{held}");
+    assert!(
+        held.to_string().contains(
+            "not merged: 1 step(s) of the plan are still open (next: \\\"Step 1\\\"): a playground \
+             squashes a task once, with its whole plan"
+        ),
+        "{held}"
+    );
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+
+    set_steps(&h, "t1", &["done", "done"]).await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    ci_settle(&h, &owner, &body).await?;
+    dev_moves(&h, &body, &dev).await?;
+    assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["stage"], "merged_integration", "{state}");
+    assert!(
+        state["merge_outcome"]
+            .as_str()
+            .is_some_and(|o| o.ends_with("End with your summary.")),
+        "{state}"
     );
     nothing_on_github(&h)?;
     Ok(())

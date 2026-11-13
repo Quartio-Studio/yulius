@@ -6,9 +6,10 @@
 //!
 //! An agent acts with the authority of the person who created its task, through the same
 //! delivery paths and machine checks a person's action takes (the delivery profile, the PR's
-//! checks on the exact head, a valid spec, no open steps, an up-to-date head, environments in
-//! order). On top of them an agent's merge needs an independent review of the exact head it
-//! merges (`reviewed_head`, the head commit the fresh-session reviewer approved) and checks that
+//! checks on the exact head, a valid spec, a finished part of the plan (the steps still ahead wait
+//! for a later pull request, SPEC-484), an up-to-date head, environments in order). On top of
+//! them an agent's merge needs an independent review of the exact head it merges
+//! (`reviewed_head`, the head commit the fresh-session reviewer approved) and checks that
 //! passed, never merely "none" when the profile requires checks. An environment that a person
 //! must verify (`verify = "manual"`, or no command) is never confirmed by an agent. Every agent
 //! action is also audited as `task:<number>`.
@@ -21,6 +22,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::git::RunEnvironment;
+use yulius_domain::steps::DeliveryAsk;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -31,6 +33,17 @@ use crate::model::SandboxRecord;
 
 /// Longest review summary kept in the audit.
 const MAX_REVIEW_SUMMARY_CHARS: usize = 500;
+
+/// `delivery_merge`'s answer to a merge it made: the delivery, and with steps of the plan still
+/// ahead (`ahead`, [`crate::delivery::steps_ahead_note`]) that the task goes on (SPEC-484
+/// PLN-003).
+fn merged_answer(view: &impl serde::Serialize, ahead: &str) -> Value {
+    let mut answer = json!({"merged": true, "delivery": view});
+    if !ahead.is_empty() {
+        answer["next"] = json!(format!("Merged: the finished part is delivered.{ahead}"));
+    }
+    answer
+}
 
 /// Why an issue is not ready (Definition of Ready, DLV-008), or `None`.
 #[must_use]
@@ -170,6 +183,12 @@ impl App {
                 " [reviewed at {reviewed}; since then only clean merges of the integration branch]"
             ));
         }
+        // The call delivers the finished part of the plan: the steps still ahead stay open for a
+        // later pull request, and the answer names them (SPEC-484 PLN-002, PLN-003). While the
+        // merge is armed their work waits: a commit on the branch drops it.
+        let steps = self.deps.store.steps(&ctx.task.id).await?;
+        let ahead = crate::delivery::steps_ahead_note(&steps);
+        let armed_ahead = crate::delivery::steps_ahead_armed_note(&steps);
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);
         // A playground has no pull request (SPEC-099): it squashes here on green, and arms while
@@ -200,6 +219,7 @@ impl App {
                         &format!("playground: squashed at head {head} reviewed independently"),
                     )
                     .await;
+                    // A playground squashes a task once, with its whole plan: nothing is ahead.
                     Ok(json!({"merged": true, "delivery": view}))
                 }
                 crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
@@ -230,7 +250,7 @@ impl App {
         // Deliver the head first, as the end of a clean turn would: a goal task's evaluator may
         // keep every turn going, and without its pull request the merge would wait for nothing
         // (SPEC-116 DMG-001, task #101).
-        let delivered = match self.try_auto_open_pr(&ctx.task.id).await {
+        let delivered = match self.try_auto_open_pr(&ctx.task.id, DeliveryAsk::Call).await {
             Ok(delivered) => delivered,
             // A refused push answers with the remedy `yulius wait` would say (never force), a pull
             // request that did not open after its push with that. Only the note this delivery
@@ -277,7 +297,8 @@ impl App {
                 "next": format!(
                     "{pull} is already merged and this head adds nothing to it: there is nothing \
                      to deliver.{counts} Commit new work on this branch and Yulius opens a new pull \
-                     request for it."
+                     request for it (at your turn's end once every step is finished, or when you \
+                     call `delivery_merge` for a finished part)."
                 ),
             }));
         }
@@ -348,10 +369,12 @@ impl App {
                         "merged": false,
                         "armed": true,
                         "checks": other,
-                        "next": "This head is armed already and keeps its place in the merge \
-                                 queue: Yulius merges it as soon as it can, and `yulius wait` says \
-                                 where it stands. Start `yulius wait` with run_in_background and \
-                                 end your turn; do not call delivery_merge again for this head.",
+                        "next": format!(
+                            "This head is armed already and keeps its place in the merge queue: \
+                             Yulius merges it as soon as it can, and `yulius wait` says where it \
+                             stands. Start `yulius wait` with run_in_background and end your \
+                             turn; do not call delivery_merge again for this head.{armed_ahead}"
+                        ),
                     }));
                 }
                 self.agent_audit(
@@ -365,10 +388,12 @@ impl App {
                     "merged": false,
                     "armed": true,
                     "checks": other,
-                    "next": "Yulius merges this exact head as soon as its checks pass. Start \
-                             `yulius wait` with run_in_background and end your turn: it says how \
-                             the merge ended (or why it could not merge); do not call \
-                             delivery_merge again for this head.",
+                    "next": format!(
+                        "Yulius merges this exact head as soon as its checks pass. Start `yulius \
+                         wait` with run_in_background and end your turn: it says how the merge \
+                         ended (or why it could not merge); do not call delivery_merge again for \
+                         this head.{armed_ahead}"
+                    ),
                 }));
             }
         }
@@ -396,7 +421,7 @@ impl App {
                     "next": format!(
                         "{} Yulius merges this exact head by itself on its next pass. Start \
                          `yulius wait` with run_in_background and end your turn: it says how \
-                         the merge ended; do not call delivery_merge again for this head.",
+                         the merge ended; do not call delivery_merge again for this head.{armed_ahead}",
                         err.public_message()
                     ),
                 }));
@@ -419,7 +444,7 @@ impl App {
             ),
         )
         .await;
-        Ok(json!({"merged": true, "delivery": view}))
+        Ok(merged_answer(&view, &ahead))
     }
 
     /// `delivery_deploy`: runs a command-verified environment of the profile (DLV-008).

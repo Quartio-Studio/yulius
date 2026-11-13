@@ -1181,6 +1181,58 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     Ok(())
 }
 
+/// SPEC-484 PLN-004, PLN-005, AC-11: a spec whose Plan lists every slice of a long task, 36 of
+/// them with their parts nested, five ticked, gives 36 steps (30 was the bound, and a longer
+/// Plan was cut). What the agent is told about the plan stands before the list in the
+/// briefing, where a long list cannot push it out, and nothing there tells it to merge slices.
+#[tokio::test]
+async fn a_plan_of_every_slice_becomes_steps_and_is_not_told_to_shrink() -> TestResult {
+    let f = fixture().await?;
+    let plan: String = (1..=36)
+        .map(|n| {
+            format!(
+                "- [{}] Slice {n}: the findings of area {n} fixed and reviewed\n  - [{0}] its fixes, test-first\n  - [{0}] its review answered\n",
+                if n <= 5 { "x" } else { " " }
+            )
+        })
+        .collect();
+    let spec = format!(
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Audit\n\n\
+         ## Goal\n\nEvery finding fixed.\n\n## Context\n\nThirty-six slices, one pull request each.\n\n\
+         ## Requirements\n\n- Each finding has a failing test first.\n\n## Plan\n\n{plan}\n\
+         ## Acceptance Criteria\n\nThe ledger is empty.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- One pull request per slice.\n"
+    );
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    // The fixture's task spec.
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec)?;
+    let body = hook(&f, "SessionStart", json!({"session_id": "s2"})).await?;
+    let steps = f.h.app.deps.store.steps(&f.task).await?;
+    assert_eq!(steps.len(), 36, "every slice is a step; its parts are not");
+    assert_eq!(steps.iter().filter(|s| s.status == "done").count(), 5);
+    assert_eq!(
+        steps[35].title,
+        "Slice 36: the findings of area 36 fixed and reviewed"
+    );
+    let briefing = body["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .ok_or("briefing")?;
+    let header = briefing
+        .find("Steps (5/36 done, 13 %; current: 6. Slice 6:")
+        .ok_or_else(|| format!("no header: {briefing}"))?;
+    let nudges = briefing
+        .find("Nudges:\n- No step is in progress. Mark \"Slice 6:")
+        .ok_or_else(|| format!("no nudges: {briefing}"))?;
+    let list = briefing
+        .find("1. [done] Slice 1:")
+        .ok_or_else(|| format!("no list: {briefing}"))?;
+    assert!(header < nudges && nudges < list, "{briefing}");
+    // The one nudge of this plan: none about its length.
+    let told: Vec<&str> = briefing[nudges..list].lines().skip(1).collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    Ok(())
+}
+
 /// SPEC-341 LSS-002: the spec sync now also runs while a turn goes on, next to the agent's step
 /// tools. It waits for the task's steps lock and reads the steps only then, so a status changed
 /// while it waited is kept, never written back to the one before.

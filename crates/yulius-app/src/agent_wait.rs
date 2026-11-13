@@ -286,8 +286,9 @@ impl App {
 
     /// Records `task`'s armed merge, or that it has none any more, in [`ARMED_MERGES_FILE`]
     /// (written whole, then renamed into place). Called with the task's [`ArmedSlot`] locked, so
-    /// the file follows the slot's order of changes; only the startup restore forgets a task that
-    /// is not running without it. Failures are logged: the merge stays armed in memory.
+    /// the file follows the slot's order of changes; only the startup restore forgets, without
+    /// it, a task whose state keeps no armed merge. Failures are logged: the merge stays armed
+    /// in memory.
     fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
         let _guard = ARMED_FILE_LOCK
             .lock()
@@ -315,7 +316,8 @@ impl App {
         }
     }
 
-    /// Puts back the armed merges of running tasks after a restart (DLV-205); the others are
+    /// Puts back the armed merges after a restart (DLV-205) for the tasks whose run keeps one
+    /// (`TaskStatus::keeps_an_armed_merge`, the rule every pass decides by); the others are
     /// forgotten.
     pub async fn restore_armed_merges(&self) {
         let path = self.config.data_dir.join(ARMED_MERGES_FILE);
@@ -329,11 +331,11 @@ impl App {
             let Ok(task_id) = TaskId::parse(&entry.task) else {
                 continue;
             };
-            let running = matches!(
+            let kept = matches!(
                 self.deps.store.task(&task_id).await,
-                Ok(Some(task)) if task.status == yulius_domain::task::TaskStatus::Running
+                Ok(Some(task)) if task.status.keeps_an_armed_merge()
             );
-            if !running {
+            if !kept {
                 self.save_armed(&task_id, None);
                 continue;
             }
@@ -622,6 +624,18 @@ impl App {
     /// Merges one armed task when its checks passed; says whether to keep waiting or how it
     /// ended.
     async fn merge_armed_task(self: &Arc<Self>, task: &TaskRecord, armed: ArmedMerge) -> Verdict {
+        // An armed merge lives with the run that armed it (SPEC-483 D6): a task a person
+        // stopped or closed is not merged behind their back, and one that could only wait for
+        // an agent that is gone does not wait for ever. Said below, once it is known that the
+        // pull request was not merged already.
+        let ended = (!task.status.keeps_an_armed_merge()).then(|| {
+            Verdict::Decided(format!(
+                "The merge you armed was dropped: the task's run ended ({}) before the merge \
+                 could be made. Yulius leaves its pull request as it is: continue the task and \
+                 call `delivery_merge` again with the reviewed head, or merge it on GitHub.",
+                task.status.as_str()
+            ))
+        });
         let head = match task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
@@ -633,7 +647,8 @@ impl App {
                 .map(|commit| commit.sha),
             None => None,
         };
-        if head.as_deref() != Some(armed.head.as_str()) {
+        // (Of an ended run only what became of its pull request is asked, below.)
+        if ended.is_none() && head.as_deref() != Some(armed.head.as_str()) {
             // The agent's own clean merges of the integration branch keep the review, so the
             // armed merge follows its head (SPEC-083 REV-001; 12 merges were dropped this way on
             // 2026-10-12/13). Its checks then decide at that head.
@@ -692,19 +707,25 @@ impl App {
         // A playground has no pull request: its run of the head merged into the integration
         // branch decides (SPEC-163 PCI-003).
         if sandbox.is_playground() {
+            if let Some(ended) = ended {
+                return ended;
+            }
             return self
                 .merge_armed_playground(task, &auth, &sandbox, armed)
                 .await;
         }
         // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
         // merges it itself (its note says where it stands); nothing to ask GitHub meanwhile.
-        if self.train_hold(task) == crate::merge_train::Hold::Held {
+        if ended.is_none() && self.train_hold(task) == crate::merge_train::Hold::Held {
             return Verdict::Keep(armed);
         }
         let Ok(view) = self.task_delivery(&auth, &id).await else {
-            return Verdict::Keep(armed);
+            return ended.unwrap_or(Verdict::Keep(armed));
         };
         let Some(pr) = view.pr.as_ref() else {
+            if let Some(ended) = ended {
+                return ended;
+            }
             self.note_armed(
                 &task.id,
                 "Yulius cannot read this task's pull request right now; it tries again on its \
@@ -716,6 +737,9 @@ impl App {
         // Merged already, by anyone: what counts is whether its head passed (SPEC-441 MQ-009).
         if pr.state == "merged" {
             return Verdict::Decided(self.merged_note(task, &sandbox, pr.number, true).await);
+        }
+        if let Some(ended) = ended {
+            return ended;
         }
         // A task's change merges into the integration branch only (SPEC-483 D3): a pull request
         // pointed elsewhere since it was armed (the agent's own token may do that) is dropped,
@@ -850,12 +874,10 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
+                let next = self.after_merge_of(task, PROFILE_ASKS).await;
                 Verdict::Decided(format!(
                     "Yulius merged pull request #{number} into `{base}` at {}: its checks \
-                     passed. Finish what the delivery profile still asks for this stage \
-                     (`delivery_status`; deploy and verify an integration environment with \
-                     `delivery_deploy`), then end with your summary. Do not promote unless \
-                     the task asks for it.",
+                     passed. {next}",
                     short(&armed.head)
                 ))
             }
@@ -936,6 +958,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
+                // A playground squashes a task once, with its whole plan: nothing is ahead.
                 Verdict::Decided(format!(
                     "Yulius squashed your branch into `{integration}` at {}: its checks passed on \
                      it merged into `{integration}`. End with your summary.",
@@ -1112,6 +1135,15 @@ impl App {
         }
     }
 
+    /// [`after_merge`] for `task` as its plan is now (a store failure reads as nothing ahead).
+    pub(crate) async fn after_merge_of(&self, task: &TaskRecord, asks: &str) -> String {
+        let ahead = match self.deps.store.steps(&task.id).await {
+            Ok(steps) => crate::delivery::steps_ahead_note(&steps),
+            Err(_) => String::new(),
+        };
+        after_merge(&ahead, asks)
+    }
+
     /// What a merge of `task`'s pull request `number` counts as (SPEC-441 MQ-009): the merged
     /// head and whether its own Yulius CI run passed there, whoever merged it.
     pub(crate) async fn merged_note(
@@ -1122,6 +1154,11 @@ impl App {
         next: bool,
     ) -> String {
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        // A merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
+        let ahead = match self.deps.store.steps(&task.id).await {
+            Ok(steps) if next => crate::delivery::steps_ahead_note(&steps),
+            _ => String::new(),
+        };
         let head = match self.task_github_token(task, sandbox).await {
             Ok(token) => self
                 .deps
@@ -1145,6 +1182,7 @@ impl App {
             &head,
             self.ci_gate_result(sandbox, &head).await,
             next,
+            &ahead,
         )
     }
 
@@ -1267,33 +1305,38 @@ impl App {
 
 /// What a merge of pull request `number` into `integration` at `head` counts as, from Yulius
 /// CI's result there (SPEC-441 MQ-009): merged on green when its own run passed, whoever merged
-/// it. With `next`, what the agent does now follows.
+/// it. With `next`, what the agent does now follows: the end of the task, or, with steps of its
+/// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on
+/// (SPEC-484 PLN-003).
 pub(crate) fn merged_text(
     number: u64,
     integration: &str,
     head: &str,
     gate: yulius_domain::ci::GateResult,
     next: bool,
+    ahead: &str,
 ) -> String {
     use yulius_domain::ci::{GateResult, RunState};
     let at = format!(
         "Pull request #{number} is merged into `{integration}` at {}",
         short(head)
     );
-    let finish = "Finish what the delivery profile still asks for this stage \
-                  (`delivery_status`), then end with your summary. Do not promote unless the \
-                  task asks for it.";
+    let ahead = ahead.trim();
+    let finish = after_merge(
+        ahead,
+        "Finish what the delivery profile still asks for this stage (`delivery_status`)",
+    );
     let (fact, then) = match gate {
         GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => (
             format!(
                 "{at}, whose own Yulius CI run passed: it counts as merged on green Yulius CI, \
                  whoever merged it."
             ),
-            finish.to_owned(),
+            finish,
         ),
         GateResult::NotConfigured => (
             format!("{at}; the project has no Yulius CI, so no run had to pass."),
-            finish.to_owned(),
+            finish,
         ),
         GateResult::Run(Some(state @ (RunState::Queued | RunState::Running))) => (
             format!(
@@ -1301,9 +1344,16 @@ pub(crate) fn merged_text(
                  that run passes.",
                 state.as_str()
             ),
-            "Wait for that run with `yulius wait` (run_in_background), then end with your \
-             summary."
-                .to_owned(),
+            if ahead.is_empty() {
+                "Wait for that run with `yulius wait` (run_in_background), then end with your \
+                 summary."
+                    .to_owned()
+            } else {
+                format!(
+                    "Wait for that run with `yulius wait` (run_in_background), then go on with \
+                     the next step. {ahead}"
+                )
+            },
         ),
         GateResult::Run(state) => (
             format!(
@@ -1318,6 +1368,27 @@ pub(crate) fn merged_text(
         ),
     };
     if next { format!("{fact} {then}") } else { fact }
+}
+
+/// What the delivery profile may still ask after a merge Yulius made, for [`after_merge`].
+pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still asks for this stage \
+                                       (`delivery_status`; deploy and verify an integration \
+                                       environment with `delivery_deploy`)";
+
+/// What an agent does after a merge of its pull request: what the delivery profile still asks
+/// for the merged part (`asks`, a clause), and then the end of the task, or, with steps of its
+/// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on: a
+/// merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
+pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
+    let ahead = ahead.trim();
+    if ahead.is_empty() {
+        format!("{asks}, then end with your summary. Do not promote unless the task asks for it.")
+    } else {
+        format!(
+            "{asks}, then go on with the next step: the finished part of your plan is delivered. \
+             {ahead} Do not promote unless the task asks for it."
+        )
+    }
 }
 
 /// The task's [`ArmedSlot`], also after a panic elsewhere held it (its values stay consistent:
@@ -1457,6 +1528,7 @@ mod tests {
             "abcdef0123",
             GateResult::Run(Some(RunState::Passed)),
             true,
+            "",
         );
         assert!(
             green.starts_with("Pull request #7 is merged into `dev` at abcdef012, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
@@ -1469,13 +1541,63 @@ mod tests {
             "abcdef0123",
             GateResult::Run(Some(RunState::Failed)),
             false,
+            "",
         );
         assert_eq!(
             red,
             "Pull request #7 is merged into `dev` at abcdef012, but Yulius CI did not pass at \
              that head (failed): it does not count as merged on green."
         );
-        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false);
+        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false, "");
         assert!(none.contains("(no run)"), "{none}");
+    }
+
+    /// SPEC-484 PLN-003: a merge of one part of the plan is not the task's end.
+    #[test]
+    fn a_merge_with_steps_ahead_says_the_task_goes_on() {
+        use yulius_domain::ci::{GateResult, RunState};
+        let ahead = " 2 step(s) of your plan are still ahead (next: \"Slice 2\"): they stay \
+                     open, and the work you commit for them on this branch is delivered next, \
+                     by a `delivery_merge` of its own.";
+        for gate in [
+            GateResult::Run(Some(RunState::Passed)),
+            GateResult::NotConfigured,
+            GateResult::Run(Some(RunState::Running)),
+        ] {
+            let text = merged_text(7, "dev", "abcdef0123", gate, true, ahead);
+            assert!(
+                text.contains("2 step(s) of your plan are still ahead (next: \"Slice 2\")"),
+                "{text}"
+            );
+            assert!(text.contains("the next step"), "{text}");
+            assert!(!text.contains("end with your summary"), "{text}");
+            assert!(!text.contains("  "), "{text}");
+        }
+        // What the merge counts as is said without a next step, steps ahead or not.
+        let fact = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            GateResult::Run(Some(RunState::Passed)),
+            false,
+            ahead,
+        );
+        assert!(!fact.contains("ahead"), "{fact}");
+        // What the profile asks for the merged part stays; only the task's end gives way.
+        assert_eq!(
+            after_merge(ahead, PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then go on \
+             with the next step: the finished part of your plan is delivered. 2 step(s) of your \
+             plan are still ahead (next: \"Slice 2\"): they stay open, and the work you commit \
+             for them on this branch is delivered next, by a `delivery_merge` of its own. Do not \
+             promote unless the task asks for it."
+        );
+        assert_eq!(
+            after_merge("", PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then end with \
+             your summary. Do not promote unless the task asks for it."
+        );
     }
 }

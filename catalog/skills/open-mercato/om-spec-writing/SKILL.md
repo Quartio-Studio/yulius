@@ -39,9 +39,12 @@ process and the lens. You decide autonomously: nobody answers questions for you.
    changed, draw the data-model graph per `references/data-model-graph.md`.
 7. **Plan of similar-effort steps.** Split delivery into phases and steps. Every step is a slice
    of similar effort (roughly the same time), named by what it delivers ("Store drafts per user",
-   not "Implement"), testable on its own, and leaves the project working. 3-12 steps for a normal
-   task; when one step is clearly bigger, split it. This list is the spec's Plan checklist and
-   the task's progress: 9 of 10 done must mean about 90 %.
+   not "Implement"), testable on its own, and leaves the project working. 3-12 steps for one
+   pull request; when one step is clearly bigger, split it. List all the work you know of: a
+   task that will deliver several pull requests lists every slice from the start (at most 60
+   steps; a slice's own parts can be nested items) and adds a step later only for work found
+   later. This list is the spec's Plan checklist and the task's progress: 9 of 10 done must mean
+   about 90 %, and all done must mean nothing known is left.
 8. **Review.** Apply the heuristics below. Give the scope-cohesion check to a fresh-context
    subagent that receives only the spec path: an author cannot adversarially re-read their own
    spec.

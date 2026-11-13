@@ -352,7 +352,7 @@ TaskSummary = {
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
-  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
+  "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14, "first_total?": 4},
   "archived": false, "account_label": "Claude #2|null", "account_id?": "…",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
@@ -398,7 +398,11 @@ share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an 
 default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
 `steps.active_percent` is the share of the steps **in progress** (SPEC-159), so that `percent +
 active_percent` is the finished and in-progress share rounded down; the task strip draws it as a
-second segment in the working colour. Older servers omit it (read 0).
+second segment in the working colour. Older servers omit it (read 0). `steps.first_total` is
+how many steps the plan had when its first step was finished, sent only where the plan has more
+steps now (SPEC-484): the plan grew by `total - first_total`, and the strip says "· 4 at first".
+A plan holds all the work its agent knows of, 1 to 60 steps; a pull request delivers the
+finished part of it.
 
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
@@ -576,7 +580,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, a finished step of the plan, checks per profile; steps still ahead do not hold it and stay open for the task's next pull request, SPEC-484); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, every step resolved: a playground squashes a task once, with its whole plan; a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | admin | `{"confirm":"<slug>"}` → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write; admin for the command of an environment that follows production | `{"confirm":true}`, with `"slug":"<slug>"` typed for such a command (a production deploy, ADR-0110) → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
@@ -662,12 +666,19 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   through Yulius once no integration environment is pending; the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
-  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges, promotes or deploys on its own. Agents deliver their own
-  work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
-  independent review approved: the branch head, or an earlier head followed only by clean merges of
-  the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
+  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
+  promotes or deploys on its own. Agents deliver their own work through the MCP tools
+  `delivery_merge` (passed checks and `reviewed_head`, the commit an independent review
+  approved: the branch head, or an earlier head followed only by clean merges of the
+  integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
-  the task owner's authority and are audited as `task:<n>` too (DLV-008). Work committed after
+  the task owner's authority and are audited as `task:<n>` too (DLV-008). `delivery_merge`
+  delivers the finished part of the task's plan: it is refused while no step is finished, and
+  while a step is in progress when the call has a new head to deliver (a head the pull request
+  already has is merged whatever step was started since). Steps still ahead stay open
+  (`steps_open` counts them); its answer and the message about the merge name them and the
+  next one, and while the merge is armed their work waits, because a commit on the branch
+  drops an armed merge (SPEC-484). Work committed after
   the task's pull request merged is delivered as a new pull request of the task; with nothing
   new, `delivery_merge` answers `merged: true` and that it is merged already, arming nothing,
   and what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a
@@ -1901,6 +1912,12 @@ boundary and the client sends the same request again after `Retry-After` seconds
 2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
+
+Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
+`/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application
+error with the status the public API gives that kind of error, and no body: a failure inside
+Yulius is `500` (and logged), never `502`, which `yulius wait` reads as something that cannot be
+reached and waits out.
 
 `PreToolUse` reaches the listener only for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (Bash
 is checked in the sandbox). The client sends a trimmed body, `{"hook_event_name", "tool_name",
