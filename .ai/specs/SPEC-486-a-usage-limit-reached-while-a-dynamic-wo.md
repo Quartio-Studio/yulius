@@ -166,7 +166,7 @@ reset) only when no subscription can.
 - [x] A prompt typed at a workflow paused by a limit tells the agent to resume it
 - [x] ADR-0326, the architecture, product and contract documents and the changes entry agree
 - [x] The gate and the security scan are run and the head is given to an independent review
-- [ ] The review's first round is answered: the Superagent, another model's limit, stale runs and eight smaller findings
+- [x] The review's first round is answered: the Superagent, another model's limit, stale runs and eight smaller findings
 
 ## Acceptance criteria
 
@@ -278,30 +278,47 @@ reset) only when no subscription can.
   limits, no third one. `limit-kill-resume`: the transcript-only notice ends the old launch
   and starts no turn. `bg-agent`: as before the change.
 - **Tests that fail without the fix** (`target/evidence/mutants.sh`, log
-  `target/evidence/mutants.log`): five mutants, each removing one part, against
-  `workflow_limit::` (four tests) and the hook test.
-  - The workflow agents' files not followed, and their limit not reported (the bug as it
-    was): `a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow` fails
-    after 90 s waiting for the move, `with_no_subscription_free_the_task_waits_and_then_resumes_the_workflow`
-    after 30 s waiting for the pause.
-  - The launch not naming its run: all four fail. The relaunch past a limit saying nothing:
-    three fail (the move while a workflow runs is not past a limit). The prompt hook adding
-    nothing: `task_done::a_prompt_at_a_workflow_paused_by_a_limit_is_told_to_resume_it` fails.
-  - Unmutated: all pass (1.6 s each).
+  `target/evidence/mutants.log`, at `ccb0f3ad1`): nine mutants, each removing one part, against
+  the nine integration tests (`workflow_limit::`, eight, and the hook test). Unmutated: all
+  nine pass (1.5 to 2.6 s each).
+  - 1 and 2, the workflow agents' files not followed and their limit not reported (the bug as
+    it was): seven fail, among them
+    `a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow` after 90 s
+    waiting for the move and
+    `with_no_subscription_free_the_task_waits_and_then_resumes_the_workflow` after 30 s waiting
+    for the pause; the two that pass need no agent's limit (the session's own turn cut, a
+    person's move).
+  - 3, the launch not naming its run: eight fail. 4, the relaunch past a limit saying
+    nothing: five fail. 5, the prompt hook adding nothing: the hook test fails.
+  - 6, another model's limit taken for the session's, and 7, the agent's own model not looked
+    up: `a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task` fails.
+  - 8, the runs forgotten when the launch is decided:
+    `a_relaunch_that_fails_still_knows_the_workflow_at_the_next_one` fails. 9, a replay's
+    unfinished runs not kept: `a_workflow_paused_at_a_limit_is_known_after_a_restart` fails.
 - **Unit tests.** `yulius-harness`: `subagents::tests::a_workflow_s_agents_are_followed_and_marked`,
   `…_are_read_over_the_run_s_window`, `a_workflow_s_links_are_not_followed` (a linked file, a
-  linked run folder, a linked `workflows` folder), `the_workflow_bounds_hold`;
+  linked run folder, a linked `workflows` folder), `the_workflow_bounds_hold`,
+  `the_newest_runs_and_this_run_s_files_come_first`,
+  `a_file_that_cannot_be_read_does_not_cost_the_others_lines`;
   `claude::tests::a_workflow_s_launch_is_background_work_and_names_its_run`,
   `a_turn_end_counts_the_pending_workflows`, `a_transcript_only_notification_starts_no_turn`,
-  `a_workflow_agent_s_refusal_reads_as_a_limit_with_its_reset`. `yulius` (wiring):
-  `a_workflow_agent_s_limit_is_reported_as_the_session_s_once`,
-  `a_workflow_agent_s_limit_is_reported_only_while_it_is_news`. `yulius-app`:
-  `dynamic_workflow::tests` (four). `fake-agent`: `workflow::tests` (two) and
-  `cli::a_workflow_is_launched_paused_by_a_limit_and_resumed`.
-- **The gate.** `scripts/dev ci` at `b75a01cbd` (before merging `dev`): exit 0, 4225 tests run,
-  4225 passed, 16 skipped (`target/evidence/gate.log`). After merging `dev` (#1253, the vault's
-  slice 12; no file of this change): `scripts/dev check` exit 0 and the five integration tests
-  above pass; the whole gate at the final head is Yulius CI's run.
+  `a_workflow_agent_s_refusal_reads_as_a_limit_with_its_reset`. `yulius-domain`:
+  `agent_cli::tests::an_entry_written_for_the_transcript_only_ends_its_hand_over`. `yulius`
+  (wiring): `a_workflow_agent_s_limit_is_reported_as_the_session_s_once`,
+  `a_workflow_agent_s_limit_is_reported_only_while_it_is_news`,
+  `a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model`. `yulius-app`:
+  `dynamic_workflow::tests` (five), `cockpit::tests::a_workflow_agent_s_limit_is_not_the_cockpit_s_to_act_on`.
+  `fake-agent`: `workflow::tests` (two), `cli::a_workflow_is_launched_paused_by_a_limit_and_resumed`
+  and `cli::a_workflow_agent_s_model_refusal_names_its_model_in_the_meta_file`.
+- **A workflow agent's own model, in the real Claude Code** (probe runs `agent-models`,
+  `agent-models-limit`): `agent(prompt, {model: 'haiku'})` and `{model: 'claude-opus-4-5'}`
+  ask the API for `claude-haiku-5-5` and `claude-opus-4-5`, and the agent's
+  `agent-<id>.meta.json` then has `"model": "haiku"` and `"model": "claude-opus-4-5"`; an
+  agent given none has no `model` key and asks for the session's model.
+- **The gate.** `scripts/dev ci` at `b75a01cbd` (before merging `dev` and before the review):
+  exit 0, 4225 tests passed, 16 skipped. After merging `dev` (#1253) and the answers to the
+  review's first round, at `db8ff8d6a`: exit 0, 4239 tests run, 4239 passed, 16 skipped
+  (`target/evidence/gate.log`); `scripts/dev lint` exit 0.
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius". Disabled, not passed: nothing was scanned.
 - **Not tested here.**
@@ -312,3 +329,36 @@ reset) only when no subscription can.
     the run's journal stays on disk either way, and the session is told to resume by run id.
   - A session at a real limit on the instance: nothing here could be run on a subscription.
   - The web UI is unchanged, so the end-to-end suite was not run.
+  - A run stopped in the terminal (which, by Claude Code's own notice, leaves no record) was
+    not produced with the real CLI; the rule for it is tested on the turn records' counts.
+- **Independent review, first round** (a fresh session given the diff range, the spec and the
+  review skills; head `9f02878be`): request changes, three majors and eight smaller findings,
+  all in this change's code. Each is answered in the code at `ccb0f3ad1`:
+  1. Major, reproduced by the reviewer: the Superagent was moved on a workflow agent's limit
+     and its workflow lost. Answer: the limit is an observation of its own
+     (`WorkflowLimitReached`) that the Cockpit does not act on (Decisions; `own_limit` and its
+     test).
+  2. Major: a model's limit met by an agent on another model was booked against the session's
+     model. Answer: the agent's model is read from its meta file (confirmed with the real CLI),
+     and only a limit that binds the run's model is the session's; mutants 6 and 7.
+  3. Major: the unfinished runs went stale (a run stopped in the terminal; a fresh session).
+     Answer: a turn record that counts less ends the oldest runs; a fresh launch drops them.
+  4. The runs were taken before the launch could fail. Answer: they stay known until the new
+     process's transcript is read; mutant 8.
+  5. Over the bound the alphabetically first files were followed. Answer: the newest runs'
+     first, only files changed since the run under watch began, 1024 entries listed.
+  6. The hook's note outlived the limit. Answer: it ends with the thread's own work or the
+     reset, and goes to typed prompts only.
+  7. A transcript-only notice left the queue reading "handed on". Answer:
+     `QueueChange::Written`; the fake agent writes the queue records.
+  8. When the limit is acted on: (a) the thread's own turn in flight is ended too, now said
+     in Decisions; (b) a limit whose reset has passed is not news; (c) an answer under way at
+     the refusal no longer makes it history (a later prompt worked on does).
+  9. Missing tests: the restart, the failed launch and the Superagent are tested now.
+  10. Nits: an idle task is not given its idle activity back by a launch that opens with the
+      workflow prompt. The terminal notice can still say "resumed" for a relaunch that then
+      finds no recorded session to resume (it starts afresh): left, a wording case of a rare
+      path.
+  11. Nits: a file that cannot be read no longer costs the others' lines. The two-step link
+      check and the larger worst case of one poll (768 files instead of 256, each read with
+      the same per-poll bound) are stated in Decisions and left.
