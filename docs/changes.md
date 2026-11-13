@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- Sessions no longer show Claude Code's "Language server … couldn't start" notice, and are not
+  asked to install a language server (SPEC-485, task #467, ADR-0327). The cause, measured with
+  Claude Code 2.1.323: when a session writes a file of a language whose server is on `PATH`,
+  Claude Code offers the server's plugin in the terminal, yes by default; one Enter installed
+  it into the sandbox's home, switched on for every session. Each session then started its own
+  server at the first edited file (here 2.6 GiB, 6.2 GiB with its `cargo check` in the
+  worktree's `target/`; 20 GB with parallel tasks in October), or, where rustup's proxy found
+  no `rust-analyzer` in the toolchain, showed the notice. Now Yulius decides per run: the
+  plugins of the session's config dir that bring a language server are switched off in the
+  run's own settings, which outrank the home's, a repository's and a worktree's, and the offer
+  is switched off (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a
+  sandbox's home needs changing. Checked against the real CLI by an opt-in test that needs no
+  account.
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no

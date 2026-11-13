@@ -133,6 +133,8 @@ watching, steering and unblocking.
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. Like task runs, it answers in Claude
   Code's Concise output style unless someone picks another with `/output-style` (SPEC-210).
+  Neither starts a Claude Code plugin's language server or is asked to install one: Yulius
+  switches those off for each run (SPEC-485).
   `/clear` starts over, it cannot be
   deleted and comes back with its conversation. When it cannot reach Yulius from its sandbox, its
   panel says so and Restart Superagent starts it again in place, keeping its conversation

@@ -120,7 +120,7 @@ found for them); Claude Code's own notices about limits and goals (listed under 
 - [x] Yulius finds the installed plugins that bring a language server (LSP-002)
 - [x] Every task run and Superagent switches those plugins off in its own settings (LSP-003)
 - [x] The live check with the real CLI, and real sessions shown without the notice (LSP-004)
-- [ ] ADR-0327, the architecture document, the operations guide and the changes log (LSP-005)
+- [x] ADR-0327, the architecture document, the operations guide and the changes log (LSP-005)
 - [ ] Every gate green and the independent review in a fresh session answered
 
 ## Acceptance criteria

@@ -1492,7 +1492,21 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). No session
+Yulius starts runs a plugin's language server, and none is asked to install one: before each
+launch Yulius reads which plugins installed in the session's config dir bring a language server
+(`lspServers` in the plugin's marketplace entry or manifest, or a `.lsp.json`; read through
+handles that follow no link, never failing the launch) and switches them off in the run's own
+settings (`"enabledPlugins": {"<id>": false}` in a task run's `claude-settings.json` and a
+Superagent's `--settings`), which outrank the home's `settings.json`, a repository's
+`.claude/settings.json` and a worktree's `.claude/settings.local.json`; the same preparation as
+above sets `"lspRecommendationDisabled": true` in `.claude.json`. Claude Code otherwise offers,
+in the terminal and with yes as the default, to install the plugin of any language server it
+finds on `PATH`, for every session of the home, and then starts one server per session at the
+first edited file, or reports that it could not
+([SPEC-485](../.ai/specs/SPEC-485-task-sessions-start-without-yellow-error.md),
+[decision 0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md)).
+Task runs and the
 Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
 full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
