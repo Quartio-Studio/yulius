@@ -1,11 +1,11 @@
 ---
 yulius-task: a126e4ca-1a96-4142-884c-c5162cac1549
-status: in-progress
+status: done
 ---
 
 # SPEC-486: a usage limit met while a dynamic workflow runs moves the task
 
-Status: in progress
+Status: done
 Date: 2026-11-13
 Owner: Yulius task #468
 Scope authorization: the request of task #468 (by MrFishPL, 2026-11-13): "in ultra-code it didn't
@@ -188,3 +188,72 @@ reset) only when no subscription can.
   itself.** That continuation is written only to the agents' files; reading it as "the session
   went on" would also take an agent that finishes after the session's own refusal for a
   continuation. The relaunch costs the agents in flight, never the finished ones.
+
+## Evidence
+
+- **The real Claude Code, reproduced.** Claude Code 2.1.323 run in a terminal against a local
+  stand-in for the model API (`$HOME/.cache/yulius-task-468/probe`: `stub_api.py`, `drive.py`,
+  the runs' outputs; a subscriber's sign-in imitated with made-up tokens, nothing left the
+  host). Runs and what they showed:
+  - `limit` (the workflow's second agent refused): the record `apiError: "usage_limit_reached"`
+    is in `subagents/workflows/<run>/agent-<id>.jsonl` only; the session's transcript ends with
+    `turn_duration` (`pendingWorkflowCount: 1`); the screen reads "Waiting for 1 dynamic
+    workflow to finish" and "paused · usage limit resets at 7:27pm". A typed "continue" was
+    answered and the workflow's row stayed.
+  - `goal-run`, `goal-limit` (a goal set): the goal's check is not asked while the workflow is
+    unfinished (first check after the workflow's end); with the agents refused, nothing is
+    written to the session's transcript for 85 s, until a prompt is typed.
+  - `limit-both` (the session's next request refused too): the session's transcript has the
+    limit record and "Usage limit reached · continuing automatically at …", as in the first
+    screenshot; a typed "continue" gives "Usage limit reached again …", and the row stays.
+  - `limit-kill-resume`, `a-resume-prompt`, `both-resume-prompt` (the process ended and the
+    session resumed, as a move does): the resumed process writes the transcript-only notice
+    ("Background workflow … (run wf_…) didn't finish before the previous session ended") and
+    asks the model nothing; `Workflow({scriptPath, resumeFromRunId})` then asks the model for
+    the refused agent and the next one only (the stand-in's log: `alpha` once, before the
+    limit), also when the resume carries the prompt on the command line.
+  - `bg-agent` (a background agent refused): its notification wakes the session's thread at
+    once and the thread asks the model, so the limit reaches the session's own transcript.
+- **The real records through the watch** (a throwaway test, not kept; output in
+  `target/evidence/real-replay.log`). The `limit` and `goal-limit` runs cut before the typed
+  "continue": `WorkflowLaunched`, `BackgroundStarted`, `TurnEnded background=Some(1)`, then
+  `LimitReached` with the reset (`1794598079000`), window 300 and the refusal's time; the
+  facts say `limit_pending=true`, the run unfinished and paused. The whole `limit` run (the
+  thread answered after the limit): no limit reported. `limit-both`: the session's own two
+  limits, no third one. `limit-kill-resume`: the transcript-only notice ends the old launch
+  and starts no turn. `bg-agent`: as before the change.
+- **Tests that fail without the fix** (`target/evidence/mutants.sh`, log
+  `target/evidence/mutants.log`): five mutants, each removing one part, against
+  `workflow_limit::` (four tests) and the hook test.
+  - The workflow agents' files not followed, and their limit not reported (the bug as it
+    was): `a_limit_met_by_a_workflow_s_agent_moves_the_task_and_resumes_the_workflow` fails
+    after 90 s waiting for the move, `with_no_subscription_free_the_task_waits_and_then_resumes_the_workflow`
+    after 30 s waiting for the pause.
+  - The launch not naming its run: all four fail. The relaunch past a limit saying nothing:
+    three fail (the move while a workflow runs is not past a limit). The prompt hook adding
+    nothing: `task_done::a_prompt_at_a_workflow_paused_by_a_limit_is_told_to_resume_it` fails.
+  - Unmutated: all pass (1.6 s each).
+- **Unit tests.** `yulius-harness`: `subagents::tests::a_workflow_s_agents_are_followed_and_marked`,
+  `…_are_read_over_the_run_s_window`, `a_workflow_s_links_are_not_followed` (a linked file, a
+  linked run folder, a linked `workflows` folder), `the_workflow_bounds_hold`;
+  `claude::tests::a_workflow_s_launch_is_background_work_and_names_its_run`,
+  `a_turn_end_counts_the_pending_workflows`, `a_transcript_only_notification_starts_no_turn`,
+  `a_workflow_agent_s_refusal_reads_as_a_limit_with_its_reset`. `yulius` (wiring):
+  `a_workflow_agent_s_limit_is_reported_as_the_session_s_once`,
+  `a_workflow_agent_s_limit_is_reported_only_while_it_is_news`. `yulius-app`:
+  `dynamic_workflow::tests` (four). `fake-agent`: `workflow::tests` (two) and
+  `cli::a_workflow_is_launched_paused_by_a_limit_and_resumed`.
+- **The gate.** `scripts/dev ci` at `b75a01cbd` (before merging `dev`): exit 0, 4225 tests run,
+  4225 passed, 16 skipped (`target/evidence/gate.log`). After merging `dev` (#1253, the vault's
+  slice 12; no file of this change): `scripts/dev check` exit 0 and the five integration tests
+  above pass; the whole gate at the final head is Yulius CI's run.
+- **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
+  Yulius". Disabled, not passed: nothing was scanned.
+- **Not tested here.**
+  - Whether a real model follows the resume prompt and the hook's note: that needs a paid
+    session at a real limit. The stand-in model was scripted, and the fake agent obeys.
+  - The second screenshot's lost row: in 2.1.323 with a scripted model a typed prompt leaves
+    the paused workflow in place, so what removed it in the person's session is not shown;
+    the run's journal stays on disk either way, and the session is told to resume by run id.
+  - A session at a real limit on the instance: nothing here could be run on a subscription.
+  - The web UI is unchanged, so the end-to-end suite was not run.
