@@ -90,8 +90,9 @@ sandbox's own plugin folder copied; scripts and logs are in the Evidence section
   - A marketplace lies where `plugins/known_marketplaces.json` says (`installLocation`); else
     where one of those three settings files names it as a folder (`extraKnownMarketplaces`,
     source `directory`, a relative path being the worktree's), which Claude Code registers
-    during a session and, in a terminal, loads from in that same session; else at
-    `plugins/marketplaces/<marketplace>`.
+    during a session and, in a terminal, loads from in that same session (when two files name
+    one marketplace, the worktree's local settings win over the repository's and those over the
+    home's); else at `plugins/marketplaces/<marketplace>`.
   - A plugin brings a language server when its entry in the marketplace's
     `.claude-plugin/marketplace.json` names `lspServers` with a value other than `null`, or one
     of its folders holds a file `.lsp.json` or a `.claude-plugin/plugin.json` that names
@@ -238,8 +239,8 @@ found for them); Claude Code's own notices about limits and goals (listed under 
 - **A repository's own marketplace is read from the settings that bring it** (review round 2).
   The first rework waited for Claude Code to register it, on a headless measurement ("the
   first session loads nothing"). In a terminal, which is what Yulius runs, the registering
-  session loads its language servers too (`Total LSP servers loaded: 0`, then `3`), and so
-  does the first session of each new worktree.
+  session loads its language servers too (`Total LSP servers loaded: 0`, then `3`), and
+  it recurred once the worktree that had registered it was gone.
 - **Not covered, by decision.** A marketplace or an installed copy outside the sandbox's folders
   (the host does not open a path the agent names there); for a contained Superagent that
   includes a folder marketplace or a copy in the person's own home, which its Claude Code
@@ -351,10 +352,11 @@ the session's process has no language server among its children and the sandbox 
 … Status: ✘ disabled`.
 
 **Gates.** `scripts/dev ci` at 6539ce637, after the second review round's fixes: exit 0; `4221
-tests run: 4221 passed, 17 skipped` (`gate4.log`). After it dev was merged once more (#1254, CI
-code): `scripts/dev check` exit 0, the two changed crates' tests and the live test passed
-again, and only this section changed; the whole gate on that head is the reviewer's run and
-Yulius CI's. Earlier: at 2fd99c346 with #1253 merged 4220 passed (`gate3.log`); at 49d9ebfac
+tests run: 4221 passed, 17 skipped` (`gate4.log`); with dev merged once more (#1254), at
+730cd257e, the reviewer's run: exit 0, 4226 passed. After that only the third round's delta
+(the order of three settings files in the lookup, with its test, and the live test): the two
+changed crates' tests, `scripts/dev lint` and `scripts/dev check` pass; the whole gate on the
+final head is Yulius CI's. Earlier: at 2fd99c346 with #1253 merged 4220 passed (`gate3.log`); at 49d9ebfac
 4217 (`gate2.log`); before the review, at e877462e9, 4213 (`gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
 turned off in Yulius, for this project or the whole instance; nothing was scanned." (disabled,
 not passed). The end-to-end suite was not run: no web UI change.
@@ -407,6 +409,28 @@ layout 0.19 s and 41 MiB RSS (was 370 s, 32 GiB)") but for these, all own code, 
   the launch's warning (its nit).
 - Nits: the cap of 8 notes is tested; the live layout of copies outside the cache now depends
   on `installPath`; the anchors' real paths are resolved once.
+
+**Independent review, round 3** (the same reviewer, head 730cd257e; gate run by it: exit 0,
+4226 passed). Verdict: "**REQUEST CHANGES** — for one finding, in a test only (R3-1): the live
+test fails about half of its runs through a race of its own. I would merge the product code and
+the documents as they are." It found R2-1 to R2-5 and the nits fixed or answered ("In a real
+terminal session the registering session now loads 0 servers (relative and absolute path), and
+so does the first session after the registering worktree was removed"; the non-UTF-8 layout
+"now reads 14.0 MiB (`strace`), was 2,560 MiB"), confirmed that the surviving wiring mutant "is
+the same program", and that the id rule "excluded nothing the CLI loaded in this sample".
+- R3-1 (major, a test only, own code): "line 613 ends the registering session as soon as its
+  log says `Total LSP servers loaded`. Claude Code registers the marketplace only after that
+  line". Reproduced here: 2 of 10 runs failed at that control. Fixed: the registering session
+  is kept until `known_marketplaces.json` names the marketplace; 25 of 25 runs passed (load
+  average about 50). No product code changed for it.
+- R3-2 (minor, non-blocking, own code): when the home and the repository name one marketplace
+  as different folders, the home's was read and the CLI registers the repository's. Fixed,
+  test first (it failed with `left: []`): local, then repository, then home.
+- Nits (non-blocking): the Decisions sentence about new worktrees said more than was measured:
+  reworded. A Superagent handing its working directory over as the sandbox directory still
+  passes the wiring test: left, the two arguments name nested folders there and the lookup's
+  own tests cover what each is used for. A switched-on plugin whose marketplace is not on the
+  machine warns at every launch: left, that is the case the warning is for.
 
 **Not tested.** Which session showed the person the notice (not written to transcripts;
 terminals are on the host). Other projects' sandboxes and other languages' servers (the rule is
