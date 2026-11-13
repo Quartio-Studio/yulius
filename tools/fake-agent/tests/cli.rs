@@ -1245,3 +1245,154 @@ fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-486 WFL-007: a workflow as Claude Code 2.1.323 records one. The launch and the turn's
+/// end are in the session's transcript; the usage limit that refuses the run's second agent is
+/// in that agent's file only. A resumed process names the unfinished run for the transcript
+/// only, and a prompt naming the run and `resumeFromRunId` resumes it to its end.
+#[test]
+fn a_workflow_is_launched_paused_by_a_limit_and_resumed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("s-wf.jsonl");
+    let path = transcript.to_str().ok_or("a path")?;
+    let args = [
+        "--session-id",
+        "s-wf",
+        "--transcript",
+        path,
+        "--transcript-kind",
+        "claude",
+    ];
+    let first = run(
+        &[&args[..], &["--workflow-limit"]].concat(),
+        "/workflow\n/exit\n",
+    )?;
+    let text = stdout(&first);
+    let run_id = text
+        .lines()
+        .find_map(|line| line.strip_prefix("WORKFLOW ")?.split(' ').next())
+        .ok_or("the run's id")?
+        .to_owned();
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} PAUSED")),
+        "{text}"
+    );
+    let records = read_jsonl(&transcript)?;
+    let launch = records
+        .iter()
+        .find_map(|r| r.get("toolUseResult"))
+        .ok_or("the launch's tool result")?;
+    assert_eq!(launch["status"], "async_launched");
+    assert_eq!(launch["taskType"], "local_workflow");
+    assert_eq!(launch["runId"], run_id.as_str());
+    let task = launch["taskId"].as_str().ok_or("a task id")?.to_owned();
+    let last = records.last().ok_or("records")?;
+    assert_eq!(last["subtype"], "turn_duration");
+    assert_eq!(last["pendingWorkflowCount"], 1);
+    let own = std::fs::read_to_string(&transcript)?;
+    assert!(!own.contains("usage_limit_reached"), "not in the session's");
+    let run_dir = dir.path().join("s-wf/subagents/workflows").join(&run_id);
+    let mut agents = Vec::new();
+    for entry in std::fs::read_dir(&run_dir)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.starts_with("agent-") && name.ends_with(".jsonl") {
+            agents.extend(read_jsonl(&path)?);
+        }
+    }
+    assert_eq!(agents.len(), 2, "a finished agent and a refused one");
+    assert!(agents.iter().all(|r| r["isSidechain"] == true));
+    let refused: Vec<&Value> = agents
+        .iter()
+        .filter(|r| r["apiError"] == "usage_limit_reached")
+        .collect();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0]["isApiErrorMessage"], true);
+    assert_eq!(
+        refused[0]["apiErrorParams"]["rate_limit_info"]["status"],
+        "rejected"
+    );
+    assert!(refused[0]["apiErrorParams"]["rate_limit_info"]["resetsAt"].is_i64());
+
+    // A resumed process with nothing to say: the run is named, and stays unfinished.
+    let idle = run(&args, "/exit\n")?;
+    assert!(
+        stdout(&idle).contains(&format!("WORKFLOW {run_id} ORPHANED")),
+        "{}",
+        stdout(&idle)
+    );
+    let notice = read_jsonl(&transcript)?;
+    let notice = notice.last().ok_or("records")?;
+    assert_eq!(notice["queueTranscriptOnly"], true);
+    assert_eq!(notice["promptSource"], "system");
+    let said = notice["message"]["content"].as_str().unwrap_or_default();
+    assert!(
+        said.contains(&format!("<task-id>{task}</task-id>")),
+        "{said}"
+    );
+    assert!(said.contains("<status>stopped</status>"), "{said}");
+
+    // A prompt that names another run is a message like any other; one that names this run
+    // resumes it.
+    let other = run(
+        &[
+            &args[..],
+            &["--prompt", "use resumeFromRunId for run wf_none"],
+        ]
+        .concat(),
+        "/exit\n",
+    )?;
+    assert!(stdout(&other).contains("ECHO: use resumeFromRunId"));
+    let prompt = format!("Resume (run {run_id}) with resumeFromRunId.");
+    let resumed = run(&[&args[..], &["--prompt", &prompt]].concat(), "/exit\n")?;
+    let text = stdout(&resumed);
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} RESUMED")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} COMPLETED")),
+        "{text}"
+    );
+    assert!(!text.contains("ECHO: Resume"), "{text}");
+    let records = read_jsonl(&transcript)?;
+    let relaunch = records
+        .iter()
+        .rev()
+        .find_map(|r| r.get("toolUseResult"))
+        .ok_or("the relaunch")?;
+    assert_eq!(relaunch["runId"], run_id.as_str());
+    let new_task = relaunch["taskId"].as_str().ok_or("a task id")?;
+    assert_ne!(new_task, task, "a task of its own");
+    let wake = records
+        .iter()
+        .rev()
+        .find(|r| r["origin"]["kind"] == "task-notification")
+        .ok_or("the wake-up")?;
+    assert!(wake.get("queueTranscriptOnly").is_none());
+    let said = wake["message"]["content"].as_str().unwrap_or_default();
+    assert!(
+        said.contains(&format!("<task-id>{new_task}</task-id>")),
+        "{said}"
+    );
+    assert!(said.contains("<status>completed</status>"), "{said}");
+    assert!(
+        records
+            .last()
+            .ok_or("records")?
+            .get("pendingWorkflowCount")
+            .is_none()
+    );
+    assert!(
+        dir.path()
+            .join(format!("s-wf/workflows/{run_id}.json"))
+            .exists()
+    );
+    // Nothing is unfinished any more.
+    let after = run(&args, "/exit\n")?;
+    assert!(!stdout(&after).contains("ORPHANED"), "{}", stdout(&after));
+    Ok(())
+}
