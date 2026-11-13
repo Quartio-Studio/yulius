@@ -478,9 +478,11 @@ fn file_dialogs(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> Result<Vec<
 /// as the service user: a click on a page's file input must open no native file chooser, in
 /// which the viewer could pick any file the service user reads (the instance's master key,
 /// another sandbox's repository) for the page to read. With the host's managed policy
-/// installed (`yulius host setup`) the click reaches the page and Chrome opens nothing;
-/// without it the click is refused. Before ADR-0318 the chooser opened: "Open File", over
-/// the whole display (Google Chrome 157).
+/// installed (`yulius host setup`) the click reaches the page and Chrome opens nothing, nor do
+/// its accelerators for Open File, Save as, Print, the page's source and the developer tools
+/// (no window shown, no `devtools:`, `view-source:`, `file:` or print page); without it the
+/// click is refused. Before ADR-0318 the chooser opened: "Open File", over the whole display
+/// (Google Chrome 157).
 #[tokio::test]
 async fn a_viewers_click_on_a_file_input_opens_no_file_chooser() -> TestResult {
     use yulius_browser::{DisplayConfig, DisplayMode, MouseInput};
@@ -595,8 +597,100 @@ onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.fi
         tokio::time::sleep(Duration::from_millis(250)).await;
         shown = file_dialogs(&env)?;
     }
+    // With input taken, Chrome's own accelerators arrive too: Open File, Save as, Print, the
+    // developer tools, the page's source. None may open a window of its own or a page of
+    // Chrome's.
+    let mut own = Vec::new();
+    if !refused && shown.is_empty() {
+        use yulius_browser::KeyInput;
+        use yulius_contracts::browser::KeyEventKind;
+        // The top-level windows shown on the display (mapped: GTK also keeps unmapped ones).
+        let windows = || -> Vec<String> {
+            let xwininfo = |args: &[&str]| {
+                std::process::Command::new("xwininfo")
+                    .args(args)
+                    .envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default()
+            };
+            xwininfo(&["-root", "-children"])
+                .lines()
+                .filter_map(|line| line.trim().split(' ').next())
+                .filter(|id| id.starts_with("0x"))
+                .filter(|id| xwininfo(&["-id", id]).contains("Map State: IsViewable"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let before = windows();
+        let key = |event, key: &str, code: &str| KeyInput {
+            event,
+            key: Some(key.to_owned()),
+            code: Some(code.to_owned()),
+            text: None,
+            modifiers: 0,
+        };
+        for (held, name, code) in [
+            (vec![("Control", "ControlLeft")], "o", "KeyO"),
+            (vec![("Control", "ControlLeft")], "s", "KeyS"),
+            (vec![("Control", "ControlLeft")], "p", "KeyP"),
+            (vec![("Control", "ControlLeft")], "u", "KeyU"),
+            (vec![], "F12", "F12"),
+            (
+                vec![("Control", "ControlLeft"), ("Shift", "ShiftLeft")],
+                "I",
+                "KeyI",
+            ),
+        ] {
+            for (modifier, code) in &held {
+                browser
+                    .dispatch_key(&tab, key(KeyEventKind::Down, modifier, code))
+                    .await?;
+            }
+            browser
+                .dispatch_key(&tab, key(KeyEventKind::Down, name, code))
+                .await?;
+            browser
+                .dispatch_key(&tab, key(KeyEventKind::Up, name, code))
+                .await?;
+            for (modifier, code) in held.iter().rev() {
+                browser
+                    .dispatch_key(&tab, key(KeyEventKind::Up, modifier, code))
+                    .await?;
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            let dialogs = file_dialogs(&env)?;
+            let targets = browser.cdp().call("Target.getTargets", json!({})).await?;
+            let pages: Vec<String> = targets["targetInfos"]
+                .as_array()
+                .map(|infos| {
+                    infos
+                        .iter()
+                        .filter_map(|t| t["url"].as_str())
+                        .filter(|url| {
+                            ["devtools://", "view-source:", "file://", "chrome://print"]
+                                .iter()
+                                .any(|own| url.starts_with(own))
+                        })
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !dialogs.is_empty() || !pages.is_empty() || windows() != before {
+                own.push(format!(
+                    "{held:?}+{name}: dialogs {dialogs:?}, pages {pages:?}, windows {:?} (were {before:?})",
+                    windows()
+                ));
+            }
+        }
+    }
     let _ = manager.shutdown(&sandbox).await;
     server.abort();
     assert_eq!(shown, Vec::<String>::new(), "a native file dialog opened");
+    assert_eq!(
+        own,
+        Vec::<String>::new(),
+        "Chrome opened a window or page of its own"
+    );
     Ok(())
 }
