@@ -594,6 +594,7 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
     h.store
         .transition_delivery(&DeliveryStage::None, &open(&agent, 7))
         .await?;
+    // (Reading the task makes this server know its run, as the watch needs.)
     summary(&h, &alice, agent.id.as_str()).await?;
     assert!(h.app.watch_prs(&WatchBounds::default()).await.is_empty());
     // Both are merged; the other one's pull request the watch never saw open.
@@ -640,6 +641,89 @@ async fn a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge() -> TestR
         (&json!(1), &json!(1)),
         "{}",
         sandbox.body
+    );
+    Ok(())
+}
+
+/// SPEC-487 CHN-002 (review round 2, R2-2): an update's hold ends by itself and the watch tells
+/// the task right after, so a merge that lands while an update holds the runs is still news
+/// due: the task is not Done, and a task chained after it keeps waiting.
+#[tokio::test]
+async fn a_merge_during_an_updates_hold_is_still_news_due() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::ports::store_ext::{DeliveryStore, UpdateStore};
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::updates::UpdateRunRecord;
+    use yulius_domain::delivery::DeliveryStage;
+    use yulius_domain::time::Timestamp;
+    use yulius_domain::update::RunState;
+
+    let (h, alice) = world(8).await?;
+    let agent = h
+        .store
+        .task(&TaskId::parse("t-agent")?)
+        .await?
+        .ok_or("agent")?;
+    h.store
+        .set_activity(&agent.id, Some(Activity::Waiting), h.app.now())
+        .await?;
+    let open = DeliveryRecord {
+        task_id: agent.id.clone(),
+        stage: DeliveryStage::PrOpen,
+        pr_number: Some(7),
+        updated_at: h.app.now(),
+    };
+    h.store
+        .transition_delivery(&DeliveryStage::None, &open)
+        .await?;
+    // (Reading the task makes this server know its run, as the watch needs.)
+    summary(&h, &alice, agent.id.as_str()).await?;
+    assert!(h.app.watch_prs(&WatchBounds::default()).await.is_empty());
+    let next = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "After the agent", "after_task_id": agent.id.as_str()}),
+    )
+    .await?;
+    assert_eq!(next.status, TaskStatus::Chained);
+    // An update drains the instance, and the merge queue merges meanwhile.
+    let now = Timestamp(1);
+    h.store
+        .insert_update_run(&UpdateRunRecord {
+            id: "update-1".into(),
+            target_commit: "b".repeat(40),
+            from_commit: None,
+            summary: "next".into(),
+            state: RunState::Draining,
+            outcome: None,
+            error: None,
+            requested_by: "admin".into(),
+            created_at: now,
+            state_since: now,
+            finished_at: None,
+        })
+        .await?;
+    h.app.restore_update_hold().await;
+    let merged = DeliveryRecord {
+        stage: DeliveryStage::MergedIntegration,
+        ..open
+    };
+    h.store
+        .transition_delivery(&DeliveryStage::PrOpen, &merged)
+        .await?;
+    assert!(
+        h.app.watch_prs(&WatchBounds::default()).await.is_empty(),
+        "held: nothing is typed"
+    );
+    h.app.advance_all_chains().await;
+    assert_eq!(
+        h.store.task(&next.id).await?.ok_or("next")?.status,
+        TaskStatus::Chained
+    );
+    assert_eq!(
+        summary(&h, &alice, agent.id.as_str()).await?["yulius_wait"],
+        true
     );
     Ok(())
 }

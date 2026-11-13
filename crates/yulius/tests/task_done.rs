@@ -6982,3 +6982,147 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-487 CHN-002 (review round 2, R2-1): news the watch types while a turn runs waits in
+/// Claude Code's queue (its prompt hook ran at the Enter) and is handed on after that turn's
+/// Stop. Between that Stop and the handed-on turn the task reads idle and told; it still goes
+/// on by itself, so a task chained after it keeps waiting.
+#[test]
+fn news_typed_while_a_turn_runs_is_due_until_its_own_turn() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_domain::delivery::DeliveryStage;
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    // A turn ends only while the first file exists, a handed-on turn starts only with the second.
+    let (may_end, may_turn) = (data.join("turn-may-end"), data.join("queue-may-turn"));
+    std::fs::write(&may_end, b"")?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            queue_prompts: true,
+            turn_hold_file: Some(may_end.clone()),
+            queue_turn_file: Some(may_turn.clone()),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let new_task = |title: &'static str| NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: format!("{title}: answer with an echo"),
+            harness: Harness::ClaudeCode,
+            title: Some(title.into()),
+            workflow_id: None,
+            steps: Vec::new(),
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: TaskMode::Prompt,
+            supertask: false,
+        };
+        let id = app.create_task_internal(new_task("Sliced")).await?.id;
+        wait_for("the first answer", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: Sliced: answer with an echo")
+        })
+        .await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(7),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let bounds = WatchBounds::default();
+        assert!(app.watch_prs(&bounds).await.is_empty());
+        let before = task(&app, &id).await?;
+        let next = app
+            .create_task_with(new_task("Next"), Some(&before))
+            .await?
+            .id;
+        let status = || async { task(&app, &next).await.ok().map(|task| task.status) };
+
+        // A turn runs (held), and the merge lands meanwhile: its news is typed into the queue.
+        std::fs::remove_file(&may_end)?;
+        app.send_input(&id, b"Go on with the next slice\r").await?;
+        wait_for("the running turn", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "TURN HELD")
+        })
+        .await?;
+        let merged = DeliveryRecord {
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+            ..open
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+        let typed = app.watch_prs(&bounds).await;
+        assert!(
+            typed
+                .iter()
+                .any(|(task, text)| task == &id && text.contains("Pull request #7 is merged")),
+            "{typed:?}"
+        );
+        wait_for("the queued news", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "QUEUED: Yulius, about your pull request #7")
+        })
+        .await?;
+
+        // That turn ends; the queue is not handed on yet. Idle and told, and still going on.
+        std::fs::write(&may_end, b"")?;
+        wait_for("the held hand-over", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "QUEUED TURN HELD")
+        })
+        .await?;
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status().await,
+            Some(TaskStatus::Chained),
+            "the news' own turn has not begun"
+        );
+        let predecessor = task(&app, &id).await?;
+        assert!(app.task_summary(&predecessor).await?.yulius_wait);
+
+        // The news' turn runs and ends: the chain goes on.
+        std::fs::write(&may_turn, b"")?;
+        // (That turn's own end may look before its lines were read: the watch's next pass, run
+        // here as its 20 s loop would, lets the chain go on.)
+        wait_for(
+            "the chained task's start",
+            Duration::from_secs(60),
+            || async {
+                app.watch_prs(&bounds).await;
+                status().await != Some(TaskStatus::Chained)
+            },
+        )
+        .await?;
+        let predecessor = task(&app, &id).await?;
+        assert!(
+            !app.task_summary(&predecessor).await?.yulius_wait,
+            "its news' turn ran"
+        );
+        stop(&app, &next).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
