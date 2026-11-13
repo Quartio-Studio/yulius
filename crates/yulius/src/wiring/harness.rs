@@ -378,7 +378,7 @@ struct Watch {
 /// A usage limit met by a dynamic workflow's agent is the session's (SPEC-486 WFL-002): Claude
 /// Code writes it to that agent's transcript only, pauses the workflow and does not wake the
 /// session's thread. It is reported once the session's own transcript is read to its end, and
-/// only while it is news: not when the thread did something after it (a limit the session went
+/// only while it is news: not when the thread did something later than it (a limit the session went
 /// on past is history, SPEC-072 LRS-001), not while the thread's own limit stands (that one was
 /// reported), and once until the thread does something again.
 #[derive(Debug, Default)]
@@ -430,7 +430,7 @@ impl WorkflowLimits {
             return None;
         }
         let (at, limit) = self.held.take()?;
-        if self.said || at.is_some_and(|at| self.thread_at >= Some(at)) {
+        if self.said || at.is_some_and(|at| self.thread_at > Some(at)) {
             return None;
         }
         self.said = true;
@@ -741,15 +741,18 @@ mod tests {
             })
         ));
         assert_eq!(limits.report(true), None, "once");
-        // The thread worked after it: history. Work before it leaves it news.
+        // The thread worked after it: history. Work before it, or at its very time (the end of
+        // the turn that launched the workflow), leaves it news.
         let mut limits = WorkflowLimits::default();
         limits.side(side(10));
         limits.thread(&work(11));
         assert_eq!(limits.report(true), None);
-        let mut limits = WorkflowLimits::default();
-        limits.thread(&work(9));
-        limits.side(side(10));
-        assert!(limits.report(true).is_some());
+        for before in [9, 10] {
+            let mut limits = WorkflowLimits::default();
+            limits.thread(&work(before));
+            limits.side(side(10));
+            assert!(limits.report(true).is_some(), "{before}");
+        }
         // A sub-agent's turn end (no time) is not the thread's.
         let mut limits = WorkflowLimits::default();
         limits.side(side(10));

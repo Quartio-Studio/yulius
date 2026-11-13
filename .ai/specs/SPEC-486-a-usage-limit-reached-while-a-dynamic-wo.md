@@ -119,7 +119,7 @@ reset) only when no subscription can.
 ## Plan
 
 - [x] The cause is reproduced with Claude Code 2.1.323 against a local stand-in API and written here
-- [ ] The harness follows workflow agents' transcripts and reads a workflow's launch and pending count
+- [x] The harness follows workflow agents' transcripts and reads a workflow's launch and pending count
 - [ ] The transcript watch reports a workflow agent's limit as the session's
 - [ ] The fake agent writes a workflow's records and a limit in its agent's transcript
 - [ ] A limit during a workflow moves the task and the relaunch resumes the workflow by its run id

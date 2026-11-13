@@ -145,6 +145,9 @@ pub struct FakeAgentOptions {
     /// The transcript's records name the Claude Code version read from this file at each start
     /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
     pub cli_version_file: Option<PathBuf>,
+    /// A workflow the agent launches (`/workflow`) has its second agent refused by a usage
+    /// limit, written to that agent's transcript only (`--workflow-limit`, SPEC-486).
+    pub workflow_limit: bool,
     /// Planning a launch fails while this file exists: the run cannot be started at all (a
     /// harness, MCP or isolation error), after a switch's preflight passed.
     pub fail_launch_file: Option<PathBuf>,
@@ -391,6 +394,19 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.trust_prompt {
             argv.push("--trust-prompt".into());
+        }
+        if self.options.workflow_limit {
+            argv.push("--workflow-limit".into());
+        }
+        // The prompt of a resume that tells the agent to resume its workflows reaches it, as
+        // `claude --resume <id> <prompt>` gives it (SPEC-486 WFL-004).
+        if let yulius_app::ports::harness::SessionMode::Resume {
+            prompt: Some(prompt),
+            ..
+        } = &launch.mode
+            && prompt.contains("resumeFromRunId")
+        {
+            argv.extend(["--prompt".into(), prompt.clone()]);
         }
         if self.options.hooks && !self.options.no_session_start {
             argv.push("--session-start".into());

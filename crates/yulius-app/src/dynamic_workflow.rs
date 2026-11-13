@@ -82,20 +82,25 @@ fn named(runs: &[String]) -> String {
     }
 }
 
-/// The prompt a session relaunched past a usage limit starts with when workflow `runs` of it
-/// were unfinished (WFL-004). Claude Code neither resumes them by itself nor, when the session's
-/// own turn had ended, has a turn to continue.
+/// What a session relaunched while workflow `runs` of it were unfinished is told (WFL-004), as
+/// the prompt its new process opens with, or after the prompt it would open with (`after`).
+/// Claude Code neither resumes them by itself nor, when the session's own turn had ended, has a
+/// turn to continue.
 #[must_use]
-pub fn resume_prompt(runs: &[String]) -> String {
-    format!(
-        "Yulius moved this session past a usage limit that was met while its dynamic workflow \
-         ({}) was running. The workflow stopped with the previous process; the results of its \
-         finished agents are kept. Resume it now with the Workflow tool, giving the scriptPath \
-         and the run id (resumeFromRunId) of its launch: finished agents return their kept \
-         results and only the others run again. Do not start the workflow again from the \
-         beginning. Then continue the task where you left off.",
+pub fn resume_prompt(after: Option<&str>, runs: &[String]) -> String {
+    let told = format!(
+        "Yulius continued this session in a new process (a move to another Claude subscription \
+         or a restart), and its dynamic workflow ({}) stopped with the previous one. The results \
+         of its finished agents are kept. Resume it now with the Workflow tool, giving the \
+         scriptPath and the run id (resumeFromRunId) of its launch: finished agents return \
+         their kept results and only the others run again. Do not start the workflow again \
+         from the beginning. Then continue the task where you left off.",
         named(runs)
-    )
+    );
+    match after.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        Some(prompt) => format!("{prompt}\n\n{told}"),
+        None => told,
+    }
 }
 
 /// What a prompt is told that reaches a session whose workflow `runs` are paused at a usage
@@ -113,7 +118,7 @@ pub fn paused_context(runs: &[String]) -> String {
     )
 }
 
-/// What the terminal says of the workflow when Yulius relaunches the session past the limit.
+/// What the terminal says of the workflow when Yulius relaunches the session.
 pub const RESUMED_NOTICE: &str = " Its agent is asked to resume the unfinished dynamic workflow.";
 
 #[cfg(test)]
@@ -220,7 +225,7 @@ mod tests {
     /// start again.
     #[test]
     fn the_words_name_the_runs_and_the_resume() {
-        let one = resume_prompt(&["wf_13b2b557-e88".to_owned()]);
+        let one = resume_prompt(None, &["wf_13b2b557-e88".to_owned()]);
         assert!(one.contains("(run wf_13b2b557-e88)"), "{one}");
         assert!(
             one.contains("resumeFromRunId") && one.contains("scriptPath"),
@@ -232,6 +237,16 @@ mod tests {
             "{one}"
         );
         assert!(!one.contains("  "), "one line, single spaces: {one}");
+        // After the prompt the launch would open with, which stays first and whole.
+        let after = resume_prompt(Some("Fix the build.\n"), &["wf_a".to_owned()]);
+        assert!(
+            after.starts_with("Fix the build.\n\nYulius continued"),
+            "{after}"
+        );
+        assert_eq!(
+            resume_prompt(Some("  "), &["wf_a".to_owned()]),
+            resume_prompt(None, &["wf_a".to_owned()])
+        );
         let two = paused_context(&["wf_a".to_owned(), "wf_b".to_owned()]);
         assert!(two.contains("(runs wf_a and wf_b)"), "{two}");
         assert!(two.contains("paused at a usage limit"), "{two}");

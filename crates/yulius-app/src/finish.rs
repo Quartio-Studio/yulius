@@ -1541,6 +1541,15 @@ impl App {
         u32::try_from(runtime.background_shells.load(Ordering::SeqCst)).ok()
     }
 
+    /// The run ids of the dynamic workflows the task's session launched whose end was not read
+    /// (SPEC-486 WFL-003). Public for tests, which wait until a launch was read.
+    #[must_use]
+    pub fn dynamic_workflows(&self, task_id: &TaskId) -> Vec<String> {
+        self.existing_runtime(task_id)
+            .map(|runtime| runtime.with_workflows(|workflows| workflows.runs()))
+            .unwrap_or_default()
+    }
+
     /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
     /// merge), as last probed: it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {

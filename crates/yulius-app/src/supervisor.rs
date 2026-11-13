@@ -1625,32 +1625,40 @@ impl App {
         // The task's request file could not be written, so a fresh goal session has no goal.
         let mut request_unwritten = false;
         // Decide new / resume.
+        // Workflows the old process left unfinished end with it: the session is told to resume
+        // them by their run ids, which Claude Code does not do by itself. Past a limit that
+        // prompt is the turn the launch opens with, in place of the silent continuation
+        // (SPEC-486 WFL-004).
+        let unfinished = match (&start, &previous) {
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => self
+                .runtime(&task.id)
+                .with_workflows(crate::dynamic_workflow::Unfinished::take),
+            _ => Vec::new(),
+        };
+        let resumes = |prompt: Option<&str>| {
+            Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+        };
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: prompt.clone(),
+                    prompt: if unfinished.is_empty() {
+                        prompt.clone()
+                    } else {
+                        resumes(prompt.as_deref())
+                    },
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::AfterLimit, Some(prev)) => {
-                // Workflows the old process left unfinished end with it: the session is told
-                // to resume them by their run ids, which Claude Code does not do by itself;
-                // that prompt is the turn this launch opens with (SPEC-486 WFL-004).
-                let runs = self
-                    .runtime(&task.id)
-                    .with_workflows(crate::dynamic_workflow::Unfinished::take);
-                (
-                    SessionMode::Resume {
-                        session_id: prev.session_id.clone(),
-                        prompt: (!runs.is_empty())
-                            .then(|| crate::dynamic_workflow::resume_prompt(&runs)),
-                        continue_interrupted: runs.is_empty(),
-                    },
-                    LaunchKind::Resume,
-                )
-            }
+            (RunStart::AfterLimit, Some(prev)) => (
+                SessionMode::Resume {
+                    session_id: prev.session_id.clone(),
+                    prompt: (!unfinished.is_empty()).then(|| resumes(None)).flatten(),
+                    continue_interrupted: unfinished.is_empty(),
+                },
+                LaunchKind::Resume,
+            ),
             // Without a recorded session there is nothing to resume: the task starts afresh.
             (RunStart::Resume { .. } | RunStart::AfterLimit, None)
             | (RunStart::Fresh { .. }, _) => {
@@ -3779,9 +3787,9 @@ impl App {
             } else {
                 "↻ Yulius continues this session…"
             };
-            // Past a limit met while a workflow ran, the workflow is resumed (SPEC-486 WFL-004).
-            let resumes_workflow = matches!(start, RunStart::AfterLimit)
-                && runtime.with_workflows(|workflows| !workflows.runs().is_empty());
+            // A workflow the old process leaves unfinished is resumed (SPEC-486 WFL-004).
+            let resumes_workflow =
+                !fresh && runtime.with_workflows(|workflows| !workflows.runs().is_empty());
             if resumes_workflow {
                 let resumed = crate::dynamic_workflow::RESUMED_NOTICE;
                 runtime.hub.notice(&format!("{line}{resumed}"));
