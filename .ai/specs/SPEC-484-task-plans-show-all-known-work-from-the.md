@@ -151,7 +151,7 @@ to the person.
 - [x] Skills, workflows and templates say the same rule, checked against the constants
 - [x] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
 - [x] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
-- [ ] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
+- [x] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
 - [ ] Independent review's findings answered test-first
 
 ## Acceptance criteria
@@ -253,6 +253,60 @@ to the person.
   the size of the plan at an earlier moment cannot be read back. "When the first step was
   finished" is the baseline because the spec's Plan has replaced the workflow's seed steps by
   then; a count taken at the first `steps_set` would be the seed plan's on nearly every task.
+- **One pull request, about 470 lines of code outside tests.** The parts depend on each other
+  (the texts may only ask for every slice as a step once a merge passes with steps ahead), and
+  the server this task runs on still refuses a merge while a step is open, so this task could
+  not itself deliver in two pull requests with the second one's steps in its plan.
+- **The texts say "this delivery", not "this pull request".** A playground squashes without a
+  pull request and follows the same rule.
 - **Assumed (reversible):** the Superagent, chains and the sidebar read the same counts and need
   no change of their own; the task page's Plan bar keeps its count ratio (it differs from the
   strip's effort share today, outside this change).
+
+## Evidence
+
+Commands run in this task's worktree, at the head named. Logs are kept in the ignored
+`target/evidence/`.
+
+- **The cause, from real tasks.** `target/evidence/task-465-steps.txt` (the plans #465 set and
+  the refusal it got: "2026-11-13T02:19 delivery_status: Open steps: 4 … merge: 4 step(s) are
+  still open", then the plan cut back to finished slices only), `step-history.txt` (385 tasks:
+  the count grew in 184, in 69 right after n/n or (n-1)/n) and `step-additions.txt` (613 added
+  steps by kind). The numbers in Context are these files'.
+- **Each test fails without its change.** `python3 target/evidence/mutants.py` undoes one
+  change at a time on a clean tree and runs the tests that pin it: 26 mutants, "every mutant
+  was killed" (`mutants.log`; the seven whose lines changed afterwards again in
+  `mutants-rerun.log`). They cover the merge rule, the call's two holds, the turn's end, a
+  person's merge, the playground's three paths, the merged messages, the bound, the complete
+  nudge, the briefing's and the tools' texts, the skill and workflow texts, the four store
+  rules of the first size, and its way through the API and the tools. Two web mutants by hand
+  (`mutant-web-1.log`: a first size not below the plan's is shown; `mutant-web-2.log`: the
+  strip shows none): `steps.e2e.ts` fails for each.
+- **A defect of this change, found by reading it and fixed test-first.** With a part delivered
+  and armed and steps ahead, the end of the turn noted "Yulius has not delivered …" for the
+  head the open pull request already had, which ends the agent's `yulius wait` at once. The
+  test reproduced it (`push_problem` set); `try_auto_open_pr` now asks about the plan after the
+  open pull request's head. Commit 13325719b.
+- **The gate.** `scripts/dev ci` at 83944755d: exit 0 (`gate-1.log`): repository contracts
+  passed, clippy with `-D warnings`, the macOS build, "4218 tests run: 4218 passed, 16
+  skipped", doctests, `cargo deny`, `cargo shear`, `cargo doc`. Its first run at c959bd28b
+  failed in clippy (a needless borrow in `merge_train.rs`), fixed in 83944755d.
+- **The e2e suite.** `cd e2e && npx e2e run` at 83944755d: 1020 passed, 1 failed, 1 skipped
+  (`e2e-1.log`). The failure is `tests/cd.e2e.ts` "a needs_you decision reads Decide, and an
+  action alone only To do", one of the tests of the open issue #1171 (fails under host load;
+  the load average was 20), in files this change does not touch; the file alone: 26 passed
+  (`e2e-cd-alone.log`). `tests/steps.e2e.ts`: 5 passed, with the two new tests.
+- **The strip, seen.** `target/evidence/strip.png` (mock `planfirst=4`, 1280 px): "#12 Checkout
+  API  Step 3/7 · 4 at first · Implement checkout API". At 760 px the count gives way whole,
+  as before.
+- **The security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off
+  in Yulius, for this project or the whole instance; nothing was scanned." Disabled, not passed.
+- **`dev` merged.** #465's branch, which this task started from, was squash-merged with the
+  same tree (`git diff --quiet 67ab28d09 1afaa65af`: exit 0), taken with `-s ours`; #465's
+  slice 12 (1206541e1) merged for real: one conflict, the migration list (dev's 0055 is schema
+  version 55, this task's 0056 is 56), and the decision index repaired after the union merge
+  repeated ADR-0323's line.
+- **Not tested, and why.** The running server (397d5bdd, the instance's own build) has the
+  old rules, so this task's own delivery cannot show a merge with steps ahead: its steps are
+  all finished before its merge. A live session's reading of the new briefing and tool texts
+  starts when the instance is updated to a build with this change (a person's promotion).
