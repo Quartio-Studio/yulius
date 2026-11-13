@@ -894,6 +894,90 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-484 PLN-007, PLN-008: the plan rule reads the same wherever agents are told it. The
+    /// plan holds all the known work; the numbers are the constants' (task #465 read "3-12 steps"
+    /// in one text and "3-10 slices" in another, and kept its 18 slices out of its plan).
+    #[test]
+    fn the_plan_rule_reads_the_same_everywhere() -> TestResult {
+        use yulius_domain::spec_format::{TemplateKind, scaffold_files, spec_template};
+        use yulius_domain::steps::{COARSE_BELOW, MAX_STEPS, PER_PULL_REQUEST};
+        let per = format!("{COARSE_BELOW}-{PER_PULL_REQUEST}");
+        let most = format!("at most {MAX_STEPS}");
+        let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut texts: Vec<(String, String)> = Vec::new();
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-spec-writing/SKILL.md",
+            "catalog/workflows/feature.md",
+        ] {
+            texts.push((rel.to_owned(), flat(&fs::read_to_string(root.join(rel))?)));
+        }
+        let scaffold = scaffold_files("Online Shop", TemplateKind::WebApplication);
+        let agents = scaffold
+            .iter()
+            .find(|(path, _)| path == "AGENTS.md")
+            .ok_or("the scaffold has an AGENTS.md")?;
+        texts.push(("the scaffolded AGENTS.md".to_owned(), flat(&agents.1)));
+        let tools = crate::mcp::tool_descriptors();
+        let tool = |name: &str| -> Result<String, String> {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .map(|t| flat(&t.description))
+                .ok_or_else(|| format!("no tool {name}"))
+        };
+        texts.push(("the steps_set tool".to_owned(), tool("steps_set")?));
+        for (place, text) in &texts {
+            assert!(
+                text.contains("all the work"),
+                "{place} does not say the plan holds all the work known"
+            );
+            assert!(text.contains(&per), "{place} does not say {per}");
+            assert!(
+                text.contains(&format!("pull request, {most}"))
+                    || text.contains(&most)
+                    || text.contains(&format!("1-{MAX_STEPS}")),
+                "{place} does not say {most}"
+            );
+            assert!(text.contains("found later"), "{place}: a step added later");
+            for gone in ["3-10", "1-30", "at most 30"] {
+                assert!(!text.contains(gone), "{place} still says {gone:?}");
+            }
+        }
+        // The merge delivers the finished part: nobody is told that every step has to be done.
+        let pipeline = &texts[0].1;
+        assert!(
+            pipeline.contains("delivers the finished part")
+                && !pipeline.contains("every step is done"),
+            "delivery-pipeline, merge on green"
+        );
+        let merge = tool("delivery_merge")?;
+        assert!(
+            merge.contains("delivers the finished part of your plan")
+                && merge.contains("a step of the plan is finished and none is in progress")
+                && !merge.contains("every step is done"),
+            "{merge}"
+        );
+        assert!(tool("spec_check")?.contains(&most), "spec_check");
+        assert!(
+            tool("step_update")?.contains("Before you finish the last open step"),
+            "step_update"
+        );
+        // A new spec's Plan asks for it where the agent writes the checklist.
+        let spec = spec_template(
+            "A task",
+            &yulius_domain::ids::TaskId::parse("t1").map_err(|e| e.to_string())?,
+            yulius_domain::cron::CivilDate::new(2026, 11, 13).ok_or("date")?,
+        );
+        assert!(
+            flat(&spec)
+                .contains("of all the work known now, later slices and pull requests included"),
+            "{spec}"
+        );
+        Ok(())
+    }
+
     /// SPEC-174 (task #164, ADR-0141): every place that states the review rule says the same
     /// three things — a finding in the change's own code is fixed in its pull request whatever the
     /// round, only pre-existing bugs, unrelated flaky tests and leftover nits become issues, and

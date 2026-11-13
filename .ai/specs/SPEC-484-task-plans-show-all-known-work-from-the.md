@@ -116,10 +116,11 @@ to the person.
   only for work found later), `step_update`, `spec_check` (at most 60) and `delivery_merge`
   (merges the finished part; refused while a step is in progress or none is finished) say the
   rule; so does the server's instruction line.
-- PLN-008 (skills, workflows, templates). `delivery-pipeline` (sections 1 and 6),
-  `om-spec-writing` (step 7), the Feature and Fix workflows' instructions, the spec template's
-  Plan comment and the scaffolded AGENTS.md rule 3 say the same rule with the same numbers.
-  One test reads the numbers in the shipped texts against the constants.
+- PLN-008 (skills, workflows, templates). `delivery-pipeline` (sections 1, 5 and 6),
+  `om-spec-writing` (step 7), the Feature workflow's instructions, the spec template's Plan
+  comment and the scaffolded AGENTS.md rule 3 say the same rule with the same numbers. (The Fix
+  workflow states no count and its instructions are at their byte limit: unchanged.) One test
+  reads the numbers in the shipped texts against the constants.
 - PLN-009 (the plan's first size is kept). The store keeps, per task, how many steps the plan
   had when its first step was finished (`tasks.plan_first_steps`, migration `0056`): written
   once, in the transaction of the step write that finishes the first step, never changed
@@ -140,7 +141,7 @@ to the person.
 - [x] A pull request merges with later steps still ahead: the merge rule, `delivery_merge`, what the agent hears
 - [x] A plan holds every slice: 60 steps, no "too fine" nudge, a nudge when it reads complete
 - [x] The briefing and the tools' texts tell agents to plan all the known work
-- [ ] Skills, workflows and templates say the same rule, checked against the constants
+- [x] Skills, workflows and templates say the same rule, checked against the constants
 - [ ] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
 - [ ] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
 - [ ] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
@@ -166,13 +167,19 @@ to the person.
   holds at the new bound.
 - AC-6 (PLN-005). `steps::a_complete_plan_asks_for_the_work_still_known`: all steps done or
   skipped gives `Nudge::Complete`; one open step, or no steps, gives none.
-- AC-7 (PLN-006). `briefing`: the needles "all the work you know of now", "at most 60" and
-  "merges the finished part" are in every briefing (`assert_mandatory`), and the budget tests
+- AC-7 (PLN-006). `briefing`: the needles "plan all the work you know of now, later slices and
+  pull requests too", "(3-12 per pull request, at most 60)", "done once nothing of it remains
+  (a review: once approved)", "Add a step only for work found later" and "or when you call
+  `delivery_merge` for the finished part (steps ahead stay open)" are in every briefing of a
+  GitHub sandbox (`assert_mandatory`), and the budget tests
   (`small_input_contains_everything_in_order`, `a_long_goal_shrinks_before_a_mandatory_part_is_cut`,
   `a_tight_budget_settles_in_a_few_passes`) pass.
-- AC-8 (PLN-007, PLN-008). `skills::the_plan_rule_reads_the_same_everywhere`: the briefing's
-  rule, the tool descriptions, the two skills, the two workflows and the scaffolded AGENTS.md
-  each name `PER_PULL_REQUEST` and `MAX_STEPS` as the constants have them and say "all the work".
+- AC-8 (PLN-007, PLN-008). `skills::the_plan_rule_reads_the_same_everywhere`: the two skills,
+  the Feature workflow, the scaffolded AGENTS.md and `steps_set` each say "all the work", name
+  `COARSE_BELOW`-`PER_PULL_REQUEST` and `MAX_STEPS` as the constants have them, say that a step
+  is added only for work found later, and none says "3-10", "1-30" or "at most 30";
+  `delivery_merge` and the skill's merge rule say "the finished part" and not "every step is
+  done"; a new spec's Plan comment asks for all the work known now.
 - AC-9 (PLN-009). `yulius-store` `the_plan_keeps_its_first_size`: a plan of 4 set with nothing
   finished has no first size; finishing a step (by `update_step`, and by `replace_steps`) sets
   4; growing to 11 and finishing more leaves 4.

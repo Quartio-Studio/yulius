@@ -21,8 +21,9 @@ Follow `delivery-pipeline` end to end; nobody accepts the result for you.
 - One feature, one concern: split independent capabilities into chained tasks.
 - Write the spec with `om-spec-writing` (`om-brainstorm` first when the request is vague, and
   `om-ux-shape` for user-facing flows). Its Plan replaces these steps: keep the first step and the
-  last two, and put 3-10 slices of similar effort between them, each named by what it delivers and
-  leaving the project working.
+  last two, and put between them all the work you know of as slices of similar effort (3-12 steps
+  per pull request, at most 60; a step is added later only for work found later), each named by
+  what it delivers and leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
   change. One step in progress at a time, marked done as soon as it is finished.
 - Review: a fresh reviewer with no shared context runs `om-code-review` on the diff and the spec; it
