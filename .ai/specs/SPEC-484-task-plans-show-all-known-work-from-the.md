@@ -39,14 +39,16 @@ to the person.
   it is merged") and into the agent's memory ("park next-slice items in `target/`"). From then
   on the plan held only what was already finished or under way: n/n before every merge. Today
   it reads 11/11, 100 %, with slices 12 to 18 named in its spec.
-- **How common, from the transcripts of 385 tasks** (the results of `steps_set`, `step_update`
-  and `steps_get`, in time order; `target/evidence/step-history.txt`): the count of steps grew
-  in 184 tasks (48 %), by three or more in 65, to at least double in 31. In 69 tasks (18 %) it
-  grew right after the plan read n/n or (n-1)/n, in 34 of them from n/n. Of 613 steps added
-  later, 410 replaced a seed plan before anything was done (harmless), and of the rest the
-  largest groups are review rounds ("Review round 2 answered", 252 with the next two groups
-  overlapping), merges and gates ("Merged into dev on green CI", 86) and the next slice or
-  delivery ("Second delivery: …", "After the merge: …").
+- **How common, from the transcripts of 385 tasks** (what `steps_set`, `step_update` and
+  `steps_get` answered, in time order; `target/evidence/step-history.txt`): the count of steps
+  grew in 184 tasks (48 %), by three or more in 65, to at least double in 31. In 69 tasks (18 %)
+  it grew right after the plan read n/n or (n-1)/n, in 34 of them from n/n. Which steps were
+  added (the plans `steps_set` and `steps_get` answered with, 179 tasks,
+  `target/evidence/step-additions.txt`): 613 steps, 410 of them before any step was finished (a
+  workflow's seed plan replaced by the task's own: harmless). Of the 203 added after that (78
+  tasks), 140 name a review round or its findings, 29 a merge, a gate or a delivery, 34 other
+  work. 78 were added while the plan read n/n or (n-1)/n (34 tasks): 48 a review round, 16 a
+  merge, gate or delivery ("Second delivery: …", "After the merge: …"), 14 other work.
 - **The forms.**
   1. *The next slice after the merge* (#465; #452's "Second delivery"; #449's and #453's "After
      the merge: …"): the work was known, and the delivery rule kept it out of the plan.
@@ -131,9 +133,10 @@ to the person.
   added since"), the task page's Plan tile says "d/t · N at first", and the tools say
   "(N at first)" after the count (`steps_get`, `steps_set`, `step_update`, `task_get`,
   `tasks_list`).
-- PLN-011 (documents). SPEC-001 (STP-006, STP-008, GIT-001, DLV-008, AC-STP-4, AC-STP-6,
-  §7.2), SPEC-002 (ADR-19's table, §5, §7.4), `docs/api.md`, `docs/product.md`, ADR-0325 with
-  its index line and `docs/changes.md` state the rules as the code has them.
+- PLN-011 (documents). SPEC-001 (STP-006, STP-008, the new STP-009 with AC-STP-7, GIT-001,
+  DLV-008, AC-STP-4, AC-STP-6, §7.2), SPEC-002 (ADR-19's table, §5, §7.4, §7.6), `docs/api.md`,
+  `docs/product.md`, `docs/engineering/workflow.md`, `e2e/README.md`, ADR-0325 with its index
+  line and `docs/changes.md` state the rules as the code has them.
 
 ## Plan
 
@@ -143,7 +146,7 @@ to the person.
 - [x] The briefing and the tools' texts tell agents to plan all the known work
 - [x] Skills, workflows and templates say the same rule, checked against the constants
 - [x] The plan's first size is kept and shown where the plan grew: store, API, tools, strip
-- [ ] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
+- [x] SPEC-001, SPEC-002, the API reference, ADR-0325 and the changes log agree with the code
 - [ ] Every gate, the e2e suite and the security scan run on the final code, with the evidence here
 - [ ] Independent review's findings answered test-first
 

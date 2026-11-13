@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A task's steps show all the work it knows of (SPEC-484, task #466, ADR-0325). Task #465 read
+  "Step 6/6" with a full bar while its spec named 15 slices: a merge was refused while any step
+  was open, so a task that delivers one pull request per slice kept every later slice out of
+  its plan and added each one after the merge before it. Now a pull request delivers the
+  finished part of the plan: `delivery_merge` (and a person's merge) is refused only while a
+  step is in progress or none is finished, the steps still ahead stay open, and every message
+  about a merge names them instead of ending the task. The end of a turn still opens a pull
+  request only when every step is finished. A plan has up to 60 steps (it was 30) and is no
+  longer told that more than 12 is "too fine"; the briefing, the step tools, the
+  `delivery-pipeline` and `om-spec-writing` skills, the Feature workflow and the templates ask
+  for all the known work as steps from the start, a step added later only for work found
+  later. When every step is finished the agent is asked once more whether work it knows of is
+  left out. A plan that grew since its first step was finished says so: "Step 6/11 · 4 at
+  first" in the task strip, the same on the task page and in the tools (API
+  `steps.first_total`, schema version 55).
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no
