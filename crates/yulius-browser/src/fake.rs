@@ -199,11 +199,14 @@ impl FakeState {
         let Some(page) = self.page(session) else {
             return json!({"kind": "none"});
         };
-        if page.focused.is_empty() {
-            return json!({"kind": "other"});
-        }
         if !password.contains(&page.focused) {
-            return json!({"kind": "field"});
+            // A field a selector focused is a text field; with none focused, something else.
+            let kind = if page.focused.is_empty() {
+                "other"
+            } else {
+                "field"
+            };
+            return json!({"kind": kind});
         }
         let value = page
             .fields
