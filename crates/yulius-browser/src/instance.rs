@@ -967,8 +967,8 @@ struct Leaving {
 #[derive(Default)]
 struct LeavingFrames {
     /// By frame: where it is going, and since when. At most [`LEAVING_MAX`]; one older than
-    /// [`LEAVING_STANDS`] no longer counts. An address too long to keep is kept as none (the
-    /// empty one, which no secret is for).
+    /// [`LEAVING_STANDS`] no longer counts. Of an address too long to keep, its site is kept,
+    /// or none (the empty one, which no secret is for).
     going: HashMap<String, (String, Instant)>,
     /// More frames were on their way than are kept: for [`LEAVING_STANDS`] from then, where
     /// this session's frames are going is not known.
@@ -1000,15 +1000,17 @@ impl Leaving {
             return;
         }
         // A cut address can read as another site's (its end as the host, when what comes
-        // before the host is long): one too long is kept as no address.
+        // before the host is long): of one too long its site is kept (sign-in redirects carry
+        // long queries), and no address at all when that is too long as well.
         let kept = if url.len() > LEAVING_ADDRESS_MAX {
-            ""
+            origin_of(url)
+                .filter(|origin| origin.len() < LEAVING_ADDRESS_MAX)
+                .map(|origin| format!("{origin}/"))
+                .unwrap_or_default()
         } else {
-            url
+            url.to_owned()
         };
-        frames
-            .going
-            .insert(frame.to_owned(), (kept.to_owned(), now));
+        frames.going.insert(frame.to_owned(), (kept, now));
     }
 
     /// `frame` of `session` arrived, stopped loading or is gone.
@@ -3958,10 +3960,20 @@ mod tests {
 
     /// An address is never kept cut: its end could read as the host. A link to
     /// `https://<long>.bank.example@evil.example/` cut inside what comes before the host would
-    /// be an address of `*.bank.example`; kept as none, no secret is for it.
+    /// be an address of `*.bank.example`. Of one too long the site is kept (so a sign-in
+    /// redirect with a long query to a site the secret is for does not refuse the fill), and
+    /// no address when the site is too long as well: no secret is for that.
     #[test]
-    fn an_address_too_long_to_keep_is_no_address() {
+    fn an_address_too_long_to_keep_is_kept_by_its_site() {
         let now = Instant::now();
+        let going = |url: &str| {
+            let mut leaving = Leaving::default();
+            leaving.announce("s1", "main", url, now);
+            match leaving.going("s1", &frames(&["main"]), now) {
+                Going::To(kept) => kept,
+                Going::Unknown => panic!("known"),
+            }
+        };
         let filler = "a".repeat(LEAVING_ADDRESS_MAX - "https://.bank.example".len());
         let cut_reads_as_the_bank = format!("https://{filler}.bank.example@evil.example/");
         assert_eq!(
@@ -3969,22 +3981,24 @@ mod tests {
             Some(format!("{filler}.bank.example")),
             "the cut address names a host of the bank"
         );
-        let mut leaving = Leaving::default();
-        leaving.announce("s1", "main", &cut_reads_as_the_bank, now);
-        assert_eq!(
-            leaving.going("s1", &frames(&["main"]), now),
-            Going::To(vec![String::new()])
+        assert_eq!(going(&cut_reads_as_the_bank), ["https://evil.example/"]);
+        // A long query: the site stands for the address.
+        let redirect = format!(
+            "https://id.bank.example:8443/authorize?request={}",
+            "a".repeat(LEAVING_ADDRESS_MAX)
         );
+        assert_eq!(going(&redirect), ["https://id.bank.example:8443/"]);
+        // The site itself too long, or none (`data:`): no address.
+        let long_site = format!("https://{}.example/", "a".repeat(LEAVING_ADDRESS_MAX));
+        assert_eq!(going(&long_site), [""]);
+        let data = format!("data:text/html,{}", "a".repeat(LEAVING_ADDRESS_MAX));
+        assert_eq!(going(&data), [""]);
         // One that fits is kept whole.
         let fits = format!(
             "https://evil.example/{}",
             "a".repeat(LEAVING_ADDRESS_MAX - 21)
         );
         assert_eq!(fits.len(), LEAVING_ADDRESS_MAX);
-        leaving.announce("s1", "main", &fits, now);
-        assert_eq!(
-            leaving.going("s1", &frames(&["main"]), now),
-            Going::To(vec![fits])
-        );
+        assert_eq!(going(&fits), [fits.clone()]);
     }
 }
