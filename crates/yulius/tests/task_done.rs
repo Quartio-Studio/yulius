@@ -6847,3 +6847,138 @@ fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> 
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-487 CHN-002 (13 November 2026: #466, #467 and #468 were started "after #465" while it
+/// went from one merged slice to the next): a merged pull request makes a running task Done only
+/// once the task was told of the merge and the turn that news starts has ended. A task chained
+/// after it waits through all of it: while the news is not typed, and (review round 1, H1) while
+/// it is typed and its turn has not begun. Real hooks: the prompt hook of the news is held at
+/// its check, where the task still reads idle.
+#[test]
+fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::pr_watch::WatchBounds;
+    use yulius_app::race::Point;
+    use yulius_domain::delivery::DeliveryStage;
+
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let new_task = |title: &'static str| NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: format!("{title}: answer with an echo"),
+            harness: Harness::ClaudeCode,
+            title: Some(title.into()),
+            workflow_id: None,
+            steps: Vec::new(),
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: TaskMode::Prompt,
+            supertask: false,
+        };
+        let id = app.create_task_internal(new_task("Sliced")).await?.id;
+        wait_for("the first answer", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: Sliced: answer with an echo")
+        })
+        .await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(7),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let bounds = WatchBounds::default();
+        // The watch sees the pull request open: its merge will be told.
+        assert!(app.watch_prs(&bounds).await.is_empty());
+
+        let before = task(&app, &id).await?;
+        let next = app
+            .create_task_with(new_task("Next"), Some(&before))
+            .await?
+            .id;
+        let status = || async { task(&app, &next).await.ok().map(|task| task.status) };
+        let waits = || async {
+            let task = task(&app, &id).await?;
+            let summary = app.task_summary(&task).await?;
+            Ok::<_, BoxError>((task.activity, summary.yulius_wait))
+        };
+        assert_eq!(status().await, Some(TaskStatus::Chained));
+
+        // Merged while its agent is idle with nothing open: what read Done at once.
+        let merged = DeliveryRecord {
+            stage: DeliveryStage::MergedIntegration,
+            updated_at: app.now(),
+            ..open
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+        app.advance_chains(&id).await;
+        app.advance_all_chains().await;
+        assert_eq!(
+            status().await,
+            Some(TaskStatus::Chained),
+            "its agent has not heard of the merge yet"
+        );
+        assert_eq!(waits().await?, (Some(Activity::Waiting), true));
+
+        // The news is typed, and its prompt hook waits at its check: the agent has the news,
+        // and the task still reads idle.
+        let (at_check, go_on) = support::hold_point(Point::PromptTurnChecked, id.as_str());
+        let typed = app.watch_prs(&bounds).await;
+        assert!(
+            typed
+                .iter()
+                .any(|(task, text)| task == &id && text.contains("Pull request #7 is merged")),
+            "{typed:?}"
+        );
+        support::point_reached(at_check).await?;
+        app.advance_chains(&id).await;
+        assert_eq!(
+            status().await,
+            Some(TaskStatus::Chained),
+            "the turn the news starts has not ended"
+        );
+        assert_eq!(waits().await?, (Some(Activity::Waiting), true));
+
+        // That turn runs and ends: Done, and the chain goes on by the turn's end alone.
+        let _ = go_on.send(());
+        wait_for(
+            "the chained task's start",
+            Duration::from_secs(60),
+            || async { status().await != Some(TaskStatus::Chained) },
+        )
+        .await?;
+        assert!(
+            screen_contains(&app, &id, "ECHO: Yulius, about your pull request #7").await,
+            "the news' turn ran"
+        );
+        assert_eq!(waits().await?, (Some(Activity::Waiting), false));
+        stop(&app, &next).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
