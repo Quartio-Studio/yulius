@@ -2461,3 +2461,20 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested.** A member of a merge train under test whose task is closed meanwhile (the
   pass ends its armed merge by the same line; the train's own handling of a member that
   left is as before); a playground's armed merge for a closed task (the same function).
+- **Review of slice 15, round 1** (head 3c263ef00, request changes). Two minor findings in
+  own code, in the reviewer's words: "a run that is only held can pass through `Queued`,
+  and the rule treats that as ended" (capacity back while every slot is taken; a task
+  revived by a host move) and "a merged pull request is reported as 'dropped'" (a person's
+  merge does not clear the armed slot). Both answered (ARM-001, ARM-002, AC-90). A third,
+  from before this slice with a new effect, is finding D8 of the ledger: a task with an
+  armed merge can be grouped Done, and archiving it there ends the merge unseen; it goes
+  with the lifecycles (the grouping is theirs). Three nits answered: the long line of
+  `docs/api.md`, the reason's sentence asserted in AC-88's test, two doc sentences.
+- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
+  failed its tests): the five above with the predicate's cases split (held, queued,
+  closed), and a merged pull request of an ended task said to be dropped.
+- **Gate after it.** `scripts/dev ci` at `9eec2f02b`: exit 0; `4249 tests run: 4249 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Not tested, besides the list above:** the path that queues a held run (capacity back
+  with every slot taken) end to end; the test sets the state.
