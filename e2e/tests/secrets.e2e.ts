@@ -542,7 +542,6 @@ test('a production secret’s Edit dialog offers no hosts and says why', async (
   await expect(prod.getByText('None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await prod.getByRole('button', 'Cancel').click();
-
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and

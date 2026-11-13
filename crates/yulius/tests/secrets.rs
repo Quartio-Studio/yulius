@@ -2056,7 +2056,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         !app.egress_intercepts(&ci, "eu.hdr.test", 443).await,
         "a host bound only to a secret the job was not granted is a plain tunnel"
     );
-    // A production-deploy secret is never a CI job's, even when its name is granted.
+    // A production-deploy secret is never a CI job's, even when its name is granted. It has no
+    // host either (ADR-0324), so nothing here is intercepted for it whatever the proxy's rule
+    // is: the rule itself is held by `ports::egress::tests`.
     assert!(!app.egress_intercepts(&ci, "prod.test", 443).await);
     let named = app
         .egress_apply(

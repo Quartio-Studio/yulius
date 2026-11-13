@@ -564,13 +564,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **PSR-001** `EgressClient::may_use` is `false` for a production secret for every caller.
 - **PSR-002** Migration 0055 sets `hosts` to `[]` for every row with `cd_prod = 1` and hosts,
   and writes one `audit_log` row per such secret (`vault.agent.hosts_cleared`, actor
-  `yulius`, target the secret's id, detail with its name, sandbox and the hosts it had, time
-  in milliseconds); other rows are unchanged.
+  `yulius`, target the secret's id, a sentence with its name and the hosts it had, time in
+  milliseconds; the Secrets page's Activity names the action); other rows are unchanged.
 - **PSR-003** The store refuses to insert a secret with `cd_prod` and hosts.
 - **PSR-004** The Edit dialog of a production secret has no Hosts input and no choice about
   hosts; the web mock holds no production secret with hosts.
 - **PSR-005** A fetch, a listing and a clone between two folders reach the folder they take
-  from read-only (`Invocation::local_reading`); a push reaches its destination read-write.
+  from read-only (`Invocation::local_reading`), by a path the caller gives and by a remote's
+  name alike; a push reaches its destination read-write. A command without a folder of its
+  own that takes from a sandbox's folder counts as one in a sandbox's folder (no token, no
+  shell).
 
 ## Plan
 
@@ -904,12 +907,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `vault.agent.hosts_cleared` row, of `yulius`, for the first secret, with its name and both
   hosts; the schema version is 55.
 - **AC-74** Inserting a production secret with hosts is refused ("no hosts"); without them it
-  is taken. With such a secret in a project: `browser_fill_secret` refuses it, a Superagent's
-  and a CI job's requests do not get it, as before.
+  is taken. With such a secret in a project: `browser_fill_secret` refuses it for what it
+  is, and a CI job that names it is told it is never given to CI. (That the proxy gives it
+  to no client is AC-72's: with no host bound, the integration tests' requests show nothing
+  about the proxy's rule.)
 - **AC-75** The Edit dialog of a production secret shows "None. This is a production secret:
   …" and no Hosts input; the e2e test of the secrets page passes without the old rows.
 - **AC-76** The runner: `local_reading_if_path` makes a transfer with a folder a local one
-  that reads it and touches nothing; with an address elsewhere it changes nothing.
+  that reads it and touches nothing; with an address elsewhere it changes nothing. A
+  repository of the server's own with a folder for its origin, through a launcher that notes
+  its words: the clone, the fetch by the remote's name and the listing reach the origin with
+  `--ro` and never `--rw`; the push with `--rw`.
 
 ## Test plan
 
@@ -1064,7 +1072,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `yulius` tests with `support::production_secret` (`browser`, `cockpit`, `secrets`,
   `local_ci`: AC-74, the helper asserts the refusal); `e2e/tests/secrets.e2e.ts` "a
   production secret’s Edit dialog offers no hosts and says why" (AC-75); `yulius-git`
-  `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` (AC-76).
+  `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` and `yulius`
+  `git_confined::a_folder_is_written_only_by_a_push` (AC-76).
 
 ## Decisions
 

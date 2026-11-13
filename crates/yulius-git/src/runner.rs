@@ -565,7 +565,11 @@ impl Git {
             let is_a_sandboxes = |path: &Path| confinement.sandbox_of_path(path).is_some();
             match invocation.cwd {
                 Some(cwd) => is_a_sandboxes(cwd),
-                None => invocation.touches.iter().any(|path| is_a_sandboxes(path)),
+                // What it writes, and what it takes from: both are read with their
+                // configuration by a command that has no folder of its own.
+                None => (invocation.touches.iter())
+                    .chain(&invocation.reads)
+                    .any(|path| is_a_sandboxes(path)),
             }
         })
     }
@@ -1141,6 +1145,12 @@ mod tests {
                 .arg(&origin)
                 .touching(data.join("sandboxes/s1/new"))
                 .local(&origin),
+            // Nor a command without a folder that takes from a sandbox's clone.
+            Invocation::new(&git, "clone", None)
+                .args(["clone", "--"])
+                .arg(&repo)
+                .touching(data.join("changes/c1"))
+                .local_reading(&repo),
         ] {
             let refused = git.run(local).map(|_| ()).map_err(|err| err.to_string());
             assert!(

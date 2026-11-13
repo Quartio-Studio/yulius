@@ -9,8 +9,8 @@ INSERT INTO audit_log (at, actor, action, target, detail)
            'yulius',
            'vault.agent.hosts_cleared',
            id,
-           json_object('name', name, 'sandbox', sandbox_id, 'hosts', json(hosts),
-                       'reason', 'a production secret is sent to no host')
+           name || ': ' || (SELECT group_concat(host.value, ', ') FROM json_each(vault_secrets.hosts) AS host)
+                || ' (a production secret is sent to no host)'
     FROM vault_secrets
     WHERE cd_prod = 1 AND hosts != '[]';
 

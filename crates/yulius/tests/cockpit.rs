@@ -4077,7 +4077,9 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     )
     .await?;
     assert_eq!(deploy.status, StatusCode::CREATED, "{:?}", deploy.body);
-    // A production secret (it was bound to a host before it was one): never used.
+    // A production secret: never used. It lost its host when it became one (ADR-0324), so the
+    // requests below show a host no secret is bound to; the proxy's own rule is held by
+    // `ports::egress::tests`.
     let prod = call(
         &f.h.router,
         Method::POST,

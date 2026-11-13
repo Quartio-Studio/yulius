@@ -946,9 +946,6 @@ mod tests {
         Ok(())
     }
 
-    /// A version-5 database (the subscription pool) migrates to updates and the Jev key (ADR-18,
-    /// ADM-002): the instance row keeps its values and has no saved key; at most one update run is
-    /// open at a time, and a state moves only from the expected one.
     /// SPEC-483 V6 (ADR-0324): a production secret that kept hosts from before such secrets
     /// became exclusive loses them at the migration, with a line in the audit log; another
     /// secret's hosts, and a production secret without any, are left as they are.
@@ -996,13 +993,10 @@ mod tests {
         assert_eq!(noted.len(), 1, "{noted:?}");
         let (actor, target, detail, at) = &noted[0];
         assert_eq!((actor.as_str(), target.as_str()), ("yulius", "old"));
-        let detail: serde_json::Value = serde_json::from_str(detail)?;
-        assert_eq!(detail["name"], "PROD_OLD");
-        // A global secret here (a project's would need its project's row): no sandbox.
-        assert!(detail["sandbox"].is_null());
+        // A sentence, as every line of the log: the secret and the hosts it had.
         assert_eq!(
-            detail["hosts"],
-            serde_json::json!(["api.example.com", "*.old.test"])
+            detail,
+            "PROD_OLD: api.example.com, *.old.test (a production secret is sent to no host)"
         );
         // Milliseconds, as every time in the log.
         assert!(*at > 1_700_000_000_000, "{at}");
@@ -1010,6 +1004,9 @@ mod tests {
         Ok(())
     }
 
+    /// A version-5 database (the subscription pool) migrates to updates and the Jev key (ADR-18,
+    /// ADM-002): the instance row keeps its values and has no saved key; at most one update run is
+    /// open at a time, and a state moves only from the expected one.
     #[tokio::test]
     async fn version_five_databases_migrate_to_updates_and_the_jev_key()
     -> Result<(), Box<dyn std::error::Error>> {

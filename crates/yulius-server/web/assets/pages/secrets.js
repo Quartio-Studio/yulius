@@ -399,6 +399,7 @@ const ACTIONS = {
   'vault.agent.copy': 'copied agent secret',
   'vault.agent.create': 'added agent secret',
   'vault.agent.update': 'changed agent secret',
+  'vault.agent.hosts_cleared': 'removed the hosts of production secret',
   'vault.agent.delete': 'deleted agent secret',
   'vault.agent.use': 'used',
   'vault.agent.fill': 'typed',

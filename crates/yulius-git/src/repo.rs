@@ -79,8 +79,10 @@ impl Git {
         let named = !Path::new(remote).is_absolute();
         let tracking = format!("+refs/heads/*:refs/remotes/{remote}/*");
         let fetch = match self.remote_route(repo, remote, true)? {
-            Route::Folder(origin) if named => fetch.arg(&origin).arg(tracking).local(&origin),
-            Route::Folder(origin) => fetch.arg(&origin).local(&origin),
+            Route::Folder(origin) if named => {
+                fetch.arg(&origin).arg(tracking).local_reading(&origin)
+            }
+            Route::Folder(origin) => fetch.arg(&origin).local_reading(&origin),
             Route::Courier(courier, url) if named => {
                 return self.fetch_through(&courier, repo, (remote, Tags::Reached), &url);
             }

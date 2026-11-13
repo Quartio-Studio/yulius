@@ -1161,8 +1161,8 @@ async fn a_screenshot_is_refused_when_the_secrets_cannot_be_checked() -> TestRes
     .await
 }
 
-/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page, not even
-/// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
+/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page: the
+/// refusal is for what it is, before any host is looked at (it has none, ADR-0324).
 #[tokio::test]
 async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
     const VALUE: &str = "prod-pass-5512-qrs";
