@@ -105,7 +105,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - [x] Fingerprints are fixed per sandbox and carry a tag instead of a rolling hash
 - [x] A playground with guests gets no fingerprints
 - [x] A starting server rewrites the fingerprint files of live sessions
-- [ ] Independent review of slice 1 and its findings answered
+- [x] Independent review of slice 1 and its findings answered
 
 ## Acceptance criteria
 
