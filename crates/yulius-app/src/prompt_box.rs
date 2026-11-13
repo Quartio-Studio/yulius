@@ -83,11 +83,11 @@ mod tests {
         parser
     }
 
-    /// Claude Code's lower screen: `above` (the row over the box), the box's `rows` between
-    /// two rules, two status rows, and the cursor at (`row`, `col`), 1-based as in the
-    /// sequence. The box's first row is row 9.
+    /// Claude Code's lower screen: the conversation's last row, the hint row (blank), the
+    /// box's `rows` between two rules, two status rows, and the cursor at (`row`, `col`),
+    /// 1-based as in the sequence. The box's first row is row 9.
     fn boxed(rows: &[&str], cursor: (u16, u16)) -> String {
-        let mut out = format!("\x1b[7;1Hsome answer of the agent\x1b[8;1H{}", rule());
+        let mut out = format!("\x1b[6;1Hsome answer of the agent\x1b[8;1H{}", rule());
         let mut at = 9;
         for row in rows {
             out.push_str(&format!("\x1b[{at};1H{row}{OFF}"));
@@ -114,12 +114,12 @@ mod tests {
         assert!(empty(&boxed(&[&format!("❯ {INV} ")], (9, 3))));
         // Unfocused: no caret is drawn.
         assert!(empty(&boxed(&["❯ "], (9, 3))));
-        // With a hint in the row above the upper rule, and with the shortcut help below.
-        let hinted = format!(
-            "\x1b[6;10HCtrl+Y to paste deleted text{}",
+        // The shortcut help replaces the status rows below the box.
+        let help = format!(
+            "{}\x1b[11;1H  ! for shell mode\x1b[12;1H  / for commands\x1b[9;3H",
             boxed(&["❯ "], (9, 3))
         );
-        assert!(empty(&hinted));
+        assert!(empty(&help));
         // Text that was typed and deleted again leaves blanks.
         assert!(empty(&boxed(&["❯ abc\x08\x08\x08   "], (9, 3))));
     }
@@ -140,6 +140,61 @@ mod tests {
         assert!(empty(&boxed(&[&queued], (9, 3))));
     }
 
+    /// SPEC-488 AC4 (review round 1): a draft put aside with Claude Code's stash key leaves the
+    /// box empty and comes back into it by itself after the next submit, so a message typed
+    /// now would be followed by one glued to the draft. Claude Code says "› stashed" in the
+    /// hint row, directly above the upper rule, for as long as the stash lasts: a box with
+    /// anything in that row is not proof. The hint after deleted text shows there for some
+    /// seconds, and is no proof for as long.
+    #[test]
+    fn a_hint_above_the_box_is_no_proof() {
+        let stashed = format!(
+            "\x1b[7;31H\x1b[38;5;246m› stashed{OFF}{}",
+            boxed(&[&format!("❯ {INV} ")], (9, 3))
+        );
+        assert!(!empty(&stashed));
+        let deleted = format!(
+            "\x1b[7;12HCtrl+Y to paste deleted text{}",
+            boxed(&["❯ "], (9, 3))
+        );
+        assert!(!empty(&deleted));
+        // A box at the top of the screen has no hint row to look at.
+        let top = format!("\x1b[1;1H{}\x1b[2;1H❯ \x1b[3;1H{}\x1b[2;3H", rule(), rule());
+        assert!(!empty(&top));
+    }
+
+    /// SPEC-488 AC4 (review round 1): the agents view's box starts a new background session
+    /// with what is entered into it. Under the theme `dark-ansi` its placeholder is dim, like
+    /// a suggestion; its rules are dim too, in every theme, and the conversation's never are.
+    #[test]
+    fn the_agents_view_is_not_the_prompt_box_in_any_theme() {
+        let dim_rule = format!("{DIM}{}{OFF}", rule());
+        let view = |row: &str| {
+            format!(
+                "\x1b[5;1H{DIM} sections above so you know when it needs you.{OFF}\x1b[8;1H{dim_rule}\
+                 \x1b[9;1H{row}{OFF}\x1b[10;1H{dim_rule}\x1b[11;1H{DIM}  enter to return{OFF}\x1b[9;3H"
+            )
+        };
+        // dark-ansi, focused and not.
+        let focused = format!("{DIM}❯{OFF} {INV}d{OFF}{DIM}escribe a task for a new session");
+        assert!(!empty(&view(&focused)));
+        let unfocused = format!("{DIM}❯ describe a task for a new session");
+        assert!(!empty(&view(&unfocused)));
+        // After typing and deleting there: an empty row between dim rules.
+        assert!(!empty(&view(&format!("{DIM}❯{OFF} {INV} "))));
+        // One dim rule is enough to refuse.
+        let half = format!(
+            "\x1b[8;1H{dim_rule}\x1b[9;1H❯ \x1b[10;1H{}\x1b[11;1H  status\x1b[9;3H",
+            rule()
+        );
+        assert!(!empty(&half));
+        let other_half = format!(
+            "\x1b[8;1H{}\x1b[9;1H❯ \x1b[10;1H{dim_rule}\x1b[11;1H  status\x1b[9;3H",
+            rule()
+        );
+        assert!(!empty(&other_half));
+    }
+
     /// SPEC-488 AC4: a draft is never shown empty, wherever its cursor is.
     #[test]
     fn a_draft_is_not_shown_empty() {
@@ -158,6 +213,12 @@ mod tests {
         // One character under the cursor: like a suggestion's first cell, with nothing dim
         // behind it.
         assert!(!empty(&boxed(&[&format!("❯ {INV}x")], (9, 3))));
+        // A blank and one character, the cursor at the start: only the cell behind the first
+        // holds text.
+        assert!(!empty(&boxed(&[&format!("❯ {INV} {OFF}y")], (9, 3))));
+        // A typed character directly behind the one under the cursor, dim text further on.
+        let behind = format!("❯ {INV}x{OFF}y{DIM} and a hint");
+        assert!(!empty(&boxed(&[&behind], (9, 3))));
         // A pasted block.
         let pasted = format!("❯ {INV}[{OFF}Pasted text #1 +39 lines]");
         assert!(!empty(&boxed(&[&pasted], (9, 3))));
