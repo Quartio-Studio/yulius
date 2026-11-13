@@ -130,7 +130,7 @@ impl App {
         let store = &self.deps.store;
         let record = store.sandbox(&id).await?.ok_or(AppError::NotFound)?;
         if record.removed_at.is_none() {
-            self.require(&ctx.user, &id, Action::Administer).await?;
+            self.require_for(ctx, &id, Action::Administer).await?;
         } else if !ctx.user.is_superadmin {
             return Err(AppError::NotFound);
         }

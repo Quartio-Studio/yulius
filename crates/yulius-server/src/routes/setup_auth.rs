@@ -81,7 +81,11 @@ pub struct StartQuery {
 
 /// Starts GitHub sign-in: 303 to GitHub. Like the callback it never answers with an error body
 /// (ACC-004): without a GitHub App it returns to the sign-in page saying so (SPEC-422).
-pub async fn github_start(State(app): State<AppState>, Query(q): Query<StartQuery>) -> Response {
+pub async fn github_start(
+    State(app): State<AppState>,
+    client: ClientAddress,
+    Query(q): Query<StartQuery>,
+) -> Response {
     let select_account = q.prompt.as_deref() == Some("select_account");
     let next = q.next.as_deref().and_then(local_return_path);
     match app.github_configured().await {
@@ -95,15 +99,63 @@ pub async fn github_start(State(app): State<AppState>, Query(q): Query<StartQuer
     // Never stopped by what the instance knows of its callback, and no question to GitHub:
     // GitHub decides, and a sign-in that completes proves the callback (SPEC-466 MVC-013).
     match app
-        .github_sign_in_url(next.unwrap_or("/"), select_account)
+        .github_sign_in_url(next.unwrap_or("/"), select_account, &client.limit_key())
         .await
     {
-        Ok(url) => Redirect::to(&url).into_response(),
+        Ok((url, state)) => {
+            // The state stays with the browser that started: the callback is honoured only
+            // where this cookie is (SPEC-483 A2).
+            let mut response = Redirect::to(&url).into_response();
+            let max_age = yulius_app::auth::OAUTH_STATE_TTL_MS / 1000;
+            set_cookie(
+                &mut response,
+                &oauth_cookie(&state, max_age, app.config.secure_cookies),
+            );
+            response
+        }
+        Err(yulius_app::error::AppError::Capacity(_)) => sign_in_refused("busy", next, None),
         Err(err) => {
             tracing::warn!(error = %err, "could not start GitHub sign-in");
             sign_in_refused("failed", next, None)
         }
     }
+}
+
+/// The cookie that keeps a started GitHub sign-in's state in the browser that started it.
+const OAUTH_COOKIE: &str = "yulius_oauth";
+/// Its name on HTTPS: `__Host-`, so no other host of the domain can set it.
+const OAUTH_COOKIE_SECURE: &str = "__Host-yulius_oauth";
+
+fn oauth_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        OAUTH_COOKIE_SECURE
+    } else {
+        OAUTH_COOKIE
+    }
+}
+
+fn oauth_cookie(state: &str, max_age_s: i64, secure: bool) -> String {
+    let name = oauth_cookie_name(secure);
+    let secure = if secure { "; Secure" } else { "" };
+    format!("{name}={state}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age_s}{secure}")
+}
+
+fn set_cookie(response: &mut Response, cookie: &str) {
+    if let Ok(value) = HeaderValue::from_str(cookie) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+/// The state the starting browser kept, from its `Cookie` header.
+fn started_state(headers: &HeaderMap, secure: bool) -> Option<&str> {
+    let name = oauth_cookie_name(secure);
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|raw| raw.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))
 }
 
 /// GitHub's redirect: `code` and `state` on success, `error` (e.g. `access_denied`) and `state`
@@ -146,8 +198,27 @@ fn sign_in_refused(reason: &str, next: Option<&str>, login: Option<&str>) -> Res
 
 pub async fn github_callback(
     State(app): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<CallbackQuery>,
 ) -> Response {
+    let secure = app.config.secure_cookies;
+    let mut response = github_callback_answer(&app, &headers, q).await;
+    // Used or not, the started sign-in's cookie goes.
+    set_cookie(&mut response, &oauth_cookie("", 0, secure));
+    response
+}
+
+async fn github_callback_answer(app: &AppState, headers: &HeaderMap, q: CallbackQuery) -> Response {
+    // Only the browser that started this sign-in completes it: a callback link handed to
+    // someone else would sign them in as the one who made it (SPEC-483 A2). The state is not
+    // spent, so the starting browser can still finish.
+    let started_here = |state: &str| {
+        started_state(headers, app.config.secure_cookies)
+            .is_some_and(|kept| app.same_secret(kept, state))
+    };
+    if !q.state.as_deref().is_some_and(started_here) {
+        return sign_in_refused("expired", None, None);
+    }
     let (code, state) = match (q.code, q.state) {
         (Some(code), Some(state)) if q.error.is_none() => (code, state),
         (_, state) => {
@@ -189,9 +260,7 @@ pub async fn github_callback(
         session.max_age_s,
         app.config.secure_cookies,
     );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
-    }
+    set_cookie(&mut response, &cookie);
     response
 }
 

@@ -88,7 +88,7 @@ impl App {
         let checked_at = self.now().0;
         let task = self.load_task(ctx, task_id, Action::View).await?;
         let (_, level) = self
-            .require(&ctx.user, &task.sandbox_id, Action::View)
+            .require_for(ctx, &task.sandbox_id, Action::View)
             .await?;
         let runtime = self.runtime(&task.id);
         if !runtime.hub.has_output()
@@ -355,7 +355,7 @@ impl App {
         if ctx.user.disabled_at.is_some() || task.owner != ctx.user.id {
             return false;
         }
-        self.require(&ctx.user, &task.sandbox_id, Action::Work)
+        self.require_for(ctx, &task.sandbox_id, Action::Work)
             .await
             .is_ok()
     }
@@ -365,7 +365,7 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return false;
         };
-        self.require(&ctx.user, &task.sandbox_id, Action::View)
+        self.require_for(ctx, &task.sandbox_id, Action::View)
             .await
             .is_ok()
     }

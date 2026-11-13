@@ -589,8 +589,14 @@ impl App {
     /// their Superagent in `sid`, oldest first; a request's task as it is now (XST-006).
     ///
     /// # Errors
-    /// Store failures.
+    /// `Forbidden` for a read-only token (a Superagent is its person's work, SPEC-247 RMT-001);
+    /// store failures.
     pub async fn superagent_requests(&self, ctx: &AuthContext, sid: &str) -> AppResult<Vec<Value>> {
+        if ctx.read_only() {
+            return Err(AppError::Forbidden(
+                "this API token is read-only; make an operate token on Settings to do this".into(),
+            ));
+        }
         let listed: Vec<(Value, Option<Named>)> = {
             let waiting = self.cross_requests.lock();
             let mut mine: Vec<(&String, &Waiting)> = waiting

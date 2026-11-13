@@ -481,14 +481,14 @@ impl App {
         owned: bool,
     ) -> AppResult<()> {
         match (sandbox_id, owned) {
-            (Some(sid), true) => self.require(&ctx.user, sid, Action::Work).await.map(drop),
-            (None, true) => self.require(&ctx.user, from, Action::Work).await.map(drop),
+            (Some(sid), true) => self.require_for(ctx, sid, Action::Work).await.map(drop),
+            (None, true) => self.require_for(ctx, from, Action::Work).await.map(drop),
             (Some(sid), false) => self
-                .require(&ctx.user, sid, Action::Configure)
+                .require_for(ctx, sid, Action::Configure)
                 .await
                 .map(drop),
             (None, false) => {
-                self.require(&ctx.user, from, Action::View).await?;
+                self.require_for(ctx, from, Action::View).await?;
                 self.require_instance_admin(ctx)
             }
         }
@@ -505,7 +505,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<McpServerView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         self.deps
             .store
             .mcp_servers(&sid, Some(&ctx.user.id))
@@ -588,11 +588,11 @@ impl App {
             // Another person's server does not exist for the caller, administrators included.
             (Some(owner), _) if *owner != ctx.user.id => return Err(AppError::NotFound),
             (Some(_), Some(sid)) => {
-                self.require(&ctx.user, sid, Action::Work).await?;
+                self.require_for(ctx, sid, Action::Work).await?;
             }
             (Some(_), None) => {}
             (None, Some(sid)) => {
-                self.require(&ctx.user, sid, Action::Configure).await?;
+                self.require_for(ctx, sid, Action::Configure).await?;
             }
             (None, None) => self.require_instance_admin(ctx)?,
         }

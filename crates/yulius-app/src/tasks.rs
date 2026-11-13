@@ -417,7 +417,7 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
-        self.require(&ctx.user, &task.sandbox_id, action).await?;
+        self.require_for(ctx, &task.sandbox_id, action).await?;
         if action != Action::View {
             self.require_owner(ctx, &task).await?;
         }
@@ -454,7 +454,7 @@ impl App {
         archived: bool,
     ) -> AppResult<Vec<TaskSummary>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let mut out = Vec::new();
         for task in self.deps.store.tasks(&sid, archived).await? {
             out.push(self.task_summary(&task).await?);

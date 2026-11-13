@@ -737,7 +737,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<AgentStateView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let records = self.deps.store.agent_states(&sid).await?;
         Ok(records.iter().map(view).collect())
     }
@@ -755,7 +755,7 @@ impl App {
         name: &str,
     ) -> AppResult<StateImport> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         self.require_manage_agent(ctx, &AgentScope::Project(sid.clone()))
             .await?;
         let name = SecretName::parse(name.trim()).map_err(invalid)?;
@@ -914,7 +914,7 @@ impl App {
             ));
         }
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         self.require_manage_agent(ctx, &AgentScope::Project(sid.clone()))
             .await?;
         let name = SecretName::parse(name.trim()).map_err(invalid)?;

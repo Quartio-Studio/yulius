@@ -177,6 +177,10 @@ pub struct RunEnvironment {
     /// Explicit confirmation (deployments are outward-facing); required on every run.
     #[serde(default)]
     pub confirm: bool,
+    /// The project's slug, typed: required to run the command of an environment that follows
+    /// production, which is a production deploy (ADR-0110).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
 }
 
 /// Environment run status.

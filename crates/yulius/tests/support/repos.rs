@@ -1049,6 +1049,7 @@ impl World {
             cookie: Some(cookie),
             csrf: Some(csrf),
             bearer: None,
+            oauth: None,
         })
     }
 

@@ -156,14 +156,17 @@ pub trait SessionStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Marks an approved grant consumed and clears its sealed token; `Ok(false)` if not approved.
     async fn consume_device_grant(&self, device_code_hash: &str) -> AppResult<bool>;
-    /// Stores an OAuth state.
+    /// Stores an OAuth state, after forgetting the expired ones; `Ok(false)`, storing nothing,
+    /// while `max_live` unexpired states are kept (a start needs no sign-in, so the table is
+    /// bounded: SPEC-483 A4).
     async fn insert_oauth_state(
         &self,
         state_hash: &str,
         next_path: &str,
         at: Timestamp,
         expires_at: Timestamp,
-    ) -> AppResult<()>;
+        max_live: usize,
+    ) -> AppResult<bool>;
     /// Removes and returns an unexpired OAuth state's next path.
     async fn take_oauth_state(&self, state_hash: &str, now: Timestamp)
     -> AppResult<Option<String>>;

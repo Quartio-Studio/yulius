@@ -575,7 +575,7 @@ impl App {
 
     async fn stage_sandbox(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<SandboxId> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        Ok(self.require(&ctx.user, &sid, Action::View).await?.0.id)
+        Ok(self.require_for(ctx, &sid, Action::View).await?.0.id)
     }
 
     /// `GET /api/sandboxes/{sid}/stages/timeline?subject=<kind>:<id>` (read access).

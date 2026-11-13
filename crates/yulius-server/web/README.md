@@ -151,8 +151,10 @@ keyed on `data-brand`.
 
 ### Brand lab: preview whole brand proposals
 
-Open the app with `?lab=1` (mock mode: `/?mock=1&lab=1`) and a panel restyles it live on the real
-screens, in both themes, without a rebuild:
+Open the app in mock mode with `/?mock=1&lab=1` and a panel restyles it live on the real screens,
+in both themes, without a rebuild. The lab is a design aid of mock mode only: a real instance does
+not ship `lab.js` or `lab-proposals.js` and ignores `?lab=` (it styles the page from the address,
+which no page a signed-in person can be sent to should do):
 
 - **Proposals** are complete brands: any tokens of `tokens.css` — both themes' colours, state
   colours, typefaces, type scale, control heights, radii, motion. Built-in ones live in
@@ -165,8 +167,8 @@ screens, in both themes, without a rebuild:
   go; directions also warn when the accent sits next to a state colour.
 
 Typefaces come from Google Fonts in the lab only. **Copy settings** gives the tokens to write into
-`tokens.css` (and the typefaces to self-host). `lab.js` loads only when the URL asks for it and is
-not part of the app's start-up.
+`tokens.css` (and the typefaces to self-host). `lab.js` loads only in mock mode when the URL asks
+for it and is not part of the app's start-up.
 
 ### Brand typeface
 

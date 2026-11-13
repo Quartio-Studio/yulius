@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- Six access rules now hold on every way in (SPEC-483 slice 4, task #465, ADR-0316). A `read`
+  API token no longer reads what only people who work in a sandbox see (its working tree with
+  the `.env` files secrets are copied into, their shells, previews and Superagent): the scope
+  is checked with every access check, not only by the request's method. Revoking an API token
+  stops typing on the terminal sockets it opened at the next key. A GitHub sign-in completes
+  only in the browser that started it (its callback link, handed to someone else, signed them
+  in as whoever made it), and starts are limited per client. The brand lab, a design aid that
+  styles the page from its address, is no longer shipped: on a real instance a link with
+  `?lab=` could cover the device approval page with its one button. A task's pull request is
+  merged only into the integration branch: one pointed at the production branch (an agent's
+  own token may do that) used to be brought up to date with production and merged there. And
+  the command of a delivery environment that follows production needs an administrator and the
+  project's slug, as every production deploy does.
 - The server no longer reads a host file, or hangs, because of what an agent put in its own
   folders (SPEC-483 slice 3, task #465, ADR-0315). Five readers went by path where an agent can
   write. A session's transcript in the sandbox home: a FIFO there held a server thread for good

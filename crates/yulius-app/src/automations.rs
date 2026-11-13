@@ -500,7 +500,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<Automation>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let mut out = Vec::new();
         for record in self.deps.store.automations(&sid).await? {
             out.push(self.automation_view(&record).await?);
@@ -569,7 +569,7 @@ impl App {
         input: &Automation,
     ) -> AppResult<Automation> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         let fields = validate(input)?;
         let workflow = self
             .resolve_workflow_id(&sid, input.workflow_id.as_deref())
@@ -602,7 +602,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<AutomationTemplate>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let existing = self.deps.store.automations(&sid).await?;
         Ok(templates::templates()
             .iter()
@@ -635,7 +635,7 @@ impl App {
         template: &str,
     ) -> AppResult<(Automation, bool)> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         let actor = self.login_of(&ctx.user.id).await;
         self.enable_template_as(
             &sid,
@@ -730,7 +730,7 @@ impl App {
             .automation(id)
             .await?
             .ok_or(AppError::NotFound)?;
-        self.require(&ctx.user, &record.sandbox_id, action).await?;
+        self.require_for(ctx, &record.sandbox_id, action).await?;
         Ok(record)
     }
 

@@ -597,6 +597,11 @@ pub struct DeliveryFacts {
     /// The production branch has commits the integration branch lacks, so a fast-forward is
     /// impossible.
     pub production_diverged: bool,
+    /// The task's pull request goes into the integration branch and comes from the repository
+    /// itself, or there is none. A pull request someone pointed at another branch (the agent's
+    /// own token may change its base) is never merged as a task's change: that would be a
+    /// promotion nobody asked for (ADR-0110, SPEC-483 D3).
+    pub base_is_integration: bool,
 }
 
 /// Who requests a transition.
@@ -738,6 +743,12 @@ pub enum DeliveryError {
     /// The pull request head moved after it was checked.
     #[error("the pull request head changed since it was checked; refresh and try again")]
     StaleHead,
+    /// The pull request does not go into the integration branch, or comes from a fork.
+    #[error(
+        "the pull request does not go into the integration branch of this repository; a task's \
+         change merges only there: point the pull request back at it"
+    )]
+    WrongBase,
     /// Merges, promotions, environment runs and manual confirmations need a person.
     #[error("this action needs an explicit user action")]
     UserActionRequired,
@@ -961,6 +972,9 @@ fn check_merge(
             actual: facts.pr_state.as_str(),
         });
     }
+    if !facts.base_is_integration {
+        return Err(DeliveryError::WrongBase);
+    }
     if !facts.head_current {
         return Err(DeliveryError::StaleHead);
     }
@@ -1089,6 +1103,7 @@ mod tests {
             pr_state: PrState::Absent,
             head_current: true,
             production_diverged: false,
+            base_is_integration: true,
         }
     }
 
@@ -1278,6 +1293,13 @@ mod tests {
                     expected: "open",
                     actual: "closed",
                 },
+            ),
+            (
+                DeliveryFacts {
+                    base_is_integration: false,
+                    ..open.clone()
+                },
+                DeliveryError::WrongBase,
             ),
             (
                 DeliveryFacts {

@@ -578,7 +578,7 @@ impl App {
         kind: Option<ShellKind>,
     ) -> AppResult<Arc<ShellRuntime>> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        self.require_for(ctx, &sandbox_id, Action::Work).await?;
         self.shell(id)
             .filter(|shell| {
                 shell.creator == ctx.user.id
@@ -631,7 +631,7 @@ impl App {
     /// `NotFound`/`Forbidden` without write access.
     pub async fn shell_list(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<Vec<ShellInfo>> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        self.require_for(ctx, &sandbox_id, Action::Work).await?;
         Ok(self
             .own_shells(&ctx.user.id, &sandbox_id)
             .iter()
@@ -655,7 +655,7 @@ impl App {
         name: Option<&str>,
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let name = name.map(clean_name).transpose()?;
         let (cwd, task_id) = match task {
             Some(task) => (
@@ -1194,7 +1194,7 @@ impl App {
             .shell(shell_id)
             .filter(|shell| shell.creator == ctx.user.id)
             .ok_or(AppError::NotFound)?;
-        self.require(&ctx.user, &runtime.sandbox, Action::Work)
+        self.require_for(ctx, &runtime.sandbox, Action::Work)
             .await?;
         if !self.owns_shell_task(ctx, &runtime).await {
             return Err(AppError::Forbidden(
@@ -1247,7 +1247,7 @@ impl App {
         ctx.user.disabled_at.is_none()
             && !runtime.closing.load(Ordering::SeqCst)
             && self
-                .require(&ctx.user, &runtime.sandbox, Action::Work)
+                .require_for(ctx, &runtime.sandbox, Action::Work)
                 .await
                 .is_ok()
             && self.owns_shell_task(ctx, runtime).await

@@ -113,7 +113,7 @@ impl App {
     /// `NotFound` for invisible sandboxes, `Forbidden` for read-only users.
     pub async fn browser_grant(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<BrowserGrant> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        self.require_for(ctx, &sandbox_id, Action::Work).await?;
         Ok(BrowserGrant { sandbox_id })
     }
 
@@ -121,7 +121,7 @@ impl App {
     pub async fn browser_still_allowed(&self, ctx: &AuthContext, grant: &BrowserGrant) -> bool {
         ctx.user.disabled_at.is_none()
             && self
-                .require(&ctx.user, &grant.sandbox_id, Action::Work)
+                .require_for(ctx, &grant.sandbox_id, Action::Work)
                 .await
                 .is_ok()
     }

@@ -234,7 +234,7 @@ impl App {
         days: Option<u32>,
     ) -> AppResult<GuestInviteCreated> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        let (record, _) = self.require_for(ctx, &sid, Action::Administer).await?;
         if !ctx.acts_for_person() {
             return Err(AppError::Forbidden(
                 "a person lets guests in: create the link in the browser".into(),
@@ -295,7 +295,7 @@ impl App {
     /// `NotFound` for an invisible sandbox, `Forbidden` for a non-admin.
     pub async fn guest_invites(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<GuestInvites> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Administer).await?;
+        self.require_for(ctx, &sid, Action::Administer).await?;
         let store = &self.deps.store;
         let invites = store.live_playground_invites(&sid, self.now()).await?;
         let guests = store.playground_guests(&sid).await?;
@@ -323,7 +323,7 @@ impl App {
         invite: &str,
     ) -> AppResult<()> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Administer).await?;
+        self.require_for(ctx, &sid, Action::Administer).await?;
         let now = self.now();
         let store = &self.deps.store;
         if !store.revoke_playground_invite(&sid, invite, now).await? {

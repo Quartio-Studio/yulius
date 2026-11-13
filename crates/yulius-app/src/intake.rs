@@ -300,7 +300,7 @@ impl App {
         req: &IntakeRequest,
     ) -> AppResult<IntakeVerdict> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Work).await?;
+        self.require_for(ctx, &sid, Action::Work).await?;
         let prompt = req.prompt.trim();
         if prompt.len() > MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(
@@ -355,7 +355,7 @@ impl App {
         req: &IntakeRequest,
     ) -> AppResult<SplitProposal> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Work).await?;
+        self.require_for(ctx, &sid, Action::Work).await?;
         let prompt = req.prompt.trim();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(

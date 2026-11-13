@@ -137,7 +137,7 @@ impl App {
             .filter(|r| r.section == VaultSection::Team)
             .ok_or(AppError::NotFound)?;
         if let Some(sandbox) = &record.sandbox_id {
-            self.require(&ctx.user, sandbox, Action::View).await?;
+            self.require_for(ctx, sandbox, Action::View).await?;
         }
         Ok(record)
     }
@@ -151,7 +151,7 @@ impl App {
     ) -> AppResult<VaultSecretRecord> {
         let record = self.team_record(ctx, id).await?;
         if let Some(sandbox) = &record.sandbox_id {
-            self.require(&ctx.user, sandbox, Action::Work).await?;
+            self.require_for(ctx, sandbox, Action::Work).await?;
         }
         Ok(record)
     }
@@ -182,7 +182,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<TeamSecretView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let mut out = Vec::new();
         for record in self.deps.store.vault_team(Some(&sid)).await? {
             out.push(self.team_view(&record).await?);
@@ -204,7 +204,7 @@ impl App {
         let sid = match sandbox {
             Some(text) => {
                 let sid = SandboxId::parse(text).map_err(|_| AppError::NotFound)?;
-                self.require(&ctx.user, &sid, Action::View).await?;
+                self.require_for(ctx, &sid, Action::View).await?;
                 Some(sid)
             }
             None => None,
@@ -212,7 +212,7 @@ impl App {
         let scope = match (input.scope.as_deref(), sid) {
             (Some("instance"), _) | (None, None) => None,
             (Some("sandbox") | None, Some(sid)) => {
-                self.require(&ctx.user, &sid, Action::Work).await?;
+                self.require_for(ctx, &sid, Action::Work).await?;
                 Some(sid)
             }
             (Some("sandbox"), None) => {

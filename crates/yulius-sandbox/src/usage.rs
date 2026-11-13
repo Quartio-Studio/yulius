@@ -202,20 +202,22 @@ mod tests {
         let dir = tempfile::tempdir()?;
         // Two folders per level, so each level's handle waits for its sibling.
         let mut at = dir.path().to_path_buf();
+        let mut deep_file = PathBuf::new();
         for level in 0..MAX_DEPTH + 20 {
             std::fs::create_dir(at.join("side"))?;
             at.push("down");
             std::fs::create_dir(&at)?;
             if level == MAX_DEPTH + 10 {
-                std::fs::write(at.join("deep"), vec![7u8; 256 * 1024])?;
+                deep_file = at.join("deep");
+                std::fs::write(&deep_file, vec![7u8; 256 * 1024])?;
             }
         }
         let usage = measure(&[(dir.path(), None)]);
         assert!(usage.truncated, "{usage:?}");
-        assert!(
-            usage.bytes < 256 * 1024,
-            "the file below the bound is not counted"
-        );
+        // The file below the bound is not counted: without it the measurement is the same
+        // (folders take blocks of their own on some file systems, so no fixed figure).
+        std::fs::remove_file(&deep_file)?;
+        assert_eq!(measure(&[(dir.path(), None)]).bytes, usage.bytes);
         let entries = u64::try_from(2 * MAX_DEPTH).unwrap_or(0);
         assert!(usage.entries <= entries + 1, "{usage:?}");
         Ok(())

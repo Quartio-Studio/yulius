@@ -659,6 +659,7 @@ fn merged_facts(production_diverged: bool) -> DeliveryFacts {
         pr_state: PrState::Merged,
         head_current: true,
         production_diverged,
+        base_is_integration: true,
     }
 }
 
@@ -1070,6 +1071,8 @@ struct Observed {
     worktree_head: Option<String>,
     dirty: bool,
     notes: Vec<String>,
+    /// The profile's integration branch: where the task's pull request must go.
+    integration: String,
 }
 
 impl Observed {
@@ -1094,6 +1097,10 @@ impl Observed {
                 (Some(pull), Some(head)) if pull.head_sha == *head
             ),
             production_diverged: false,
+            base_is_integration: self
+                .pr
+                .as_ref()
+                .is_none_or(|pull| pull.base == self.integration && !pull.from_fork),
         }
     }
 }
@@ -1174,7 +1181,7 @@ impl App {
         action: Action,
     ) -> AppResult<SandboxRecord> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        Ok(self.require(&ctx.user, &sid, action).await?.0)
+        Ok(self.require_for(ctx, &sid, action).await?.0)
     }
 
     /// Short-lived installation token for Git transport (push, fetch).
@@ -1597,6 +1604,7 @@ impl App {
             worktree_head,
             dirty,
             notes,
+            integration: profile.integration_branch.clone(),
         };
         if !pr_known {
             return Ok(observed);
@@ -2098,7 +2106,7 @@ impl App {
         sandbox_id: &str,
     ) -> AppResult<SandboxVidocView> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::View).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::View).await?;
         if sandbox.is_playground() {
             return Err(playground_has_no_vidoc());
         }
@@ -2180,7 +2188,7 @@ impl App {
         req: &UpdateSandbox,
     ) -> AppResult<Sandbox> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (_, level) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        let (_, level) = self.require_for(ctx, &sid, Action::Administer).await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         let writing = self.profile_writes.lock().await;
         // Read under the lock: a switch or profile saved meanwhile is kept.
@@ -4066,7 +4074,7 @@ impl App {
         // A promotion is a production release: an administrator's, with the project's slug typed,
         // as a production deploy on the CD page (SPEC-134, ADR-0110).
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::Work).await?;
         crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
         yulius_domain::cd::may_deploy(
             yulius_domain::cd::CdStage::Prod,
@@ -4178,9 +4186,8 @@ impl App {
         req: &RunEnvironment,
         for_task: Option<&TaskRecord>,
     ) -> AppResult<EnvironmentRun> {
-        let sandbox = self
-            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
-            .await?;
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::Work).await?;
         // A playground has no deploy: its maker may be anyone signed in (SPEC-099).
         crate::playground::refuse_in_playground(&sandbox, "A deploy")?;
         let profile = delivery_profile(&sandbox);
@@ -4190,6 +4197,25 @@ impl App {
                 .dlv_record_confirmation(ctx, &sandbox, &profile, &env, req.confirm)
                 .await;
         };
+        // The command of an environment that follows production is a production deploy: an
+        // administrator's, with the project's slug typed, by the rule every production deploy
+        // goes through (ADR-0110; SPEC-483 P8).
+        if env.after == Stage::Production {
+            yulius_domain::cd::may_deploy(
+                yulius_domain::cd::CdStage::Prod,
+                yulius_domain::cd::Requester::Person {
+                    administrator: level.allows(Action::Administer),
+                    confirmation: req.slug.as_deref(),
+                },
+                &sandbox.slug,
+            )
+            .map_err(|refused| match refused {
+                yulius_domain::cd::CdRefusal::ConfirmationMismatch { .. } => {
+                    AppError::Invalid(refused.to_string())
+                }
+                other => AppError::Forbidden(other.to_string()),
+            })?;
+        }
         if !req.confirm {
             return Err(refusal(&DeliveryError::ConfirmationRequired(
                 env.name.clone(),

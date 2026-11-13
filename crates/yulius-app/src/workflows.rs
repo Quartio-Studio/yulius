@@ -352,7 +352,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<Vec<Workflow>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         Ok(self
             .workflows_for(&sid)
             .await?
@@ -383,10 +383,10 @@ impl App {
             }
         };
         if instance {
-            self.require(&ctx.user, &sid, Action::View).await?;
+            self.require_for(ctx, &sid, Action::View).await?;
             self.require_instance_admin(ctx)?;
         } else {
-            self.require(&ctx.user, &sid, Action::Configure).await?;
+            self.require_for(ctx, &sid, Action::Configure).await?;
         }
         let fields = validate(input)?;
         let record = WorkflowRecord {
@@ -426,7 +426,7 @@ impl App {
             .ok_or(AppError::NotFound)?;
         match &record.sandbox_id {
             Some(sid) => {
-                self.require(&ctx.user, sid, Action::Configure).await?;
+                self.require_for(ctx, sid, Action::Configure).await?;
             }
             None => self.require_instance_admin(ctx)?,
         }
