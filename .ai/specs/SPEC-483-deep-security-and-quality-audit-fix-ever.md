@@ -58,10 +58,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
-      found in slice 10): taken next, as slice 11 of the Plan (the earlier number 11, V6,
-      follows it);
+      found in slice 10): taken as slice 11 of the Plan (the earlier number 11, V6, follows
+      it): merged, pull request #1252;
   20. no command that reads a clone's configuration may start the shell (G5, from the review
-      of slice 11): taken into slice 11 itself, whose own step it concerns.
+      of slice 11): taken into slice 11 itself, whose own step it concerns: merged with it.
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -563,7 +563,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
-- [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed
+- [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 
 ## Acceptance criteria
 
@@ -1186,10 +1186,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
 | G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | fixed (slice 10): what Git executes and the files it touches; the token's connection is G2 |
-| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 11 |
-| G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | slice 11 |
-| G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | slice 11 |
-| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders, and the shell runs what that configuration names for a transfer (a promisor remote's command, a submodule's remote's, a credential helper for a bundle address, a new clone's filter) (review of slice 11) | high | slice 11 |
+| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | fixed (slice 11) |
+| G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | fixed (slice 11) |
+| G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | fixed (slice 11) |
+| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders, and the shell runs what that configuration names for a transfer (a promisor remote's command, a submodule's remote's, a credential helper for a bundle address, a new clone's filter) (review of slice 11) | high | fixed (slice 11) |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
