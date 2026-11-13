@@ -1656,6 +1656,124 @@ async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
     Ok(())
 }
 
+/// A task's steps replaced with one step per status (as `playground_task` sets them).
+async fn set_steps(h: &Harness, id: &str, statuses: &[&str]) -> BoxResult<()> {
+    use yulius_app::model::StepRecord;
+    use yulius_app::ports::store::CoordinationStore;
+    use yulius_domain::ids::{StepId, TaskId};
+    let task = TaskId::parse(id)?;
+    let records = statuses
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            Ok(StepRecord {
+                id: StepId::parse(&format!("{id}-step-{i}"))?,
+                task_id: task.clone(),
+                ordinal: u32::try_from(i)?,
+                title: format!("Step {i}"),
+                status: (*status).to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+                effort: 1,
+            })
+        })
+        .collect::<BoxResult<Vec<_>>>()?;
+    h.store
+        .replace_steps(&task, &records, "test", yulius_domain::time::Timestamp(3))
+        .await?;
+    Ok(())
+}
+
+/// SPEC-484 PLN-001, PLN-002 in a playground: the agent's merge delivers the finished part of
+/// its plan (refused while a step is in progress), and once armed it is not undone by the step
+/// the agent starts while its checks run; the answer and the outcome name the steps ahead. An
+/// armed squash of a plan a person reopened whole (nothing finished any more) is dropped.
+#[tokio::test]
+async fn an_armed_squash_delivers_the_finished_part_of_the_plan() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let worktree = playground_task(
+        &h,
+        &body,
+        "t1",
+        &[("feature.txt", "one\n")],
+        &["done", "in_progress", "pending"],
+    )
+    .await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+
+    // The work under way is finished first.
+    let held = agent_merge(&h, "tok-t1", &head).await?;
+    assert_eq!(held["isError"], true, "{held}");
+    assert!(
+        held.to_string()
+            .contains("not merged: step \\\"Step 1\\\" is in progress"),
+        "{held}"
+    );
+
+    // With two steps ahead the finished part is armed, and the answer names them.
+    set_steps(&h, "t1", &["done", "pending", "pending"]).await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    assert!(
+        armed.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")"),
+        "{armed}"
+    );
+
+    // The agent starts the next step while the checks run: the squash lands all the same.
+    set_steps(&h, "t1", &["done", "in_progress", "pending"]).await?;
+    ci_settle(&h, &owner, &body).await?;
+    dev_moves(&h, &body, &dev).await?;
+    assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["stage"], "merged_integration", "{state}");
+    let outcome = state["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")")
+            && !outcome.contains("End with your summary"),
+        "{state}"
+    );
+
+    // Another task, armed with a finished step that a person then reopens: nothing is finished
+    // when its checks pass, so nothing lands.
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let second = playground_task(
+        &h,
+        &body,
+        "t2",
+        &[("second.txt", "two\n")],
+        &["done", "pending"],
+    )
+    .await?;
+    let head = git(&second, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t2", "tok-t2").await?;
+    let armed = answer(&agent_merge(&h, "tok-t2", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    set_steps(&h, "t2", &["pending", "pending"]).await?;
+    ci_settle(&h, &owner, &body).await?;
+    h.app.merge_armed(&sid).await;
+    let state = wait_state(&h, "tok-t2", &head).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    assert!(
+        state["merge_outcome"]
+            .as_str()
+            .is_some_and(|o| o.contains("no step of the plan is finished")),
+        "{state}"
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?.trim(),
+        dev,
+        "nothing landed"
+    );
+    nothing_on_github(&h)?;
+    Ok(())
+}
+
 /// PCI-003 (#411): when `dev` moves while a merge is armed, the next decision tests the head
 /// merged into the new `dev` (the older run is cancelled as superseded) and lands that.
 #[tokio::test]
