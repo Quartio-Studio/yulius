@@ -16,8 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   there too and copied, and an empty repository's first commit is made in `<data>/changes`
   instead of the sandbox's folder. Also, for every Git command of the server in one place:
   no external diff or text conversion, no signing, no editor, no `ssh` or `git` transport,
-  no program asked for a password, and no missing object fetched from a remote the clone
-  names (its command for the other side ran in a push to a playground's origin).
+  no program asked for a password, no missing object fetched from a remote the clone
+  names (its command for the other side ran in a push to a playground's origin), no push
+  into a submodule (the same, by the submodule's configuration), and a new clone's files
+  checked out by a command that starts no shell (a filter added to the new clone's
+  configuration while it was made ran).
   `yulius doctor` checks the host's Git for the last one as "git missing objects": Git
   2.45.1 or a patched release of the system's (Ubuntu 24.04's has it).
 - The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server

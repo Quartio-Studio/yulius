@@ -1422,7 +1422,8 @@ clone is made in a courier and copied. No command in a sandbox's folder, and non
 new repository there, gets the adapter's own configuration, where the token travels. What the
 server itself commits and pushes (a change from the remote control, an empty repository's first
 commit) is made in `<data>/changes`, not in the sandbox's folder. No Git command asks a program
-for a password or fetches a missing object from a remote the clone names
+for a password, fetches a missing object from a remote the clone names or goes into a
+submodule, and a new clone's files are checked out by a command that may start no shell
 (`yulius_git::courier`,
 [decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
 

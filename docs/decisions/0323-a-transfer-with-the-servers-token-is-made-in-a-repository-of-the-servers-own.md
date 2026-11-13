@@ -81,6 +81,18 @@ merge after a fetch, a listing), in a folder whose configuration the agents writ
   clone's `core.askPass`: that program would be started with the question, which holds the
   address). This is a list of what Git does today, not a property of Git: a later Git that
   starts another configured word needs another line here.
+- **Where the shell may be started, the clone's configuration starts nothing through it.**
+  A transfer between two folders may start the shell (ADR-0322), and in a sandbox's clone
+  that command reads the clone's configuration. Three ways it made the shell run a command
+  of the clone's were found in this change and its review, and each is switched off: the
+  fetch of a missing object (next point); a push that goes into submodules
+  (`push.recurseSubmodules`, `submodule.recurse`: a submodule is pushed by its own
+  configuration, with its own command for the other side), pinned off for every command;
+  and a filter for the files of a new clone, added to its configuration while the clone is
+  made: a clone into a sandbox's folder checks nothing out (`--no-checkout`), and its files
+  are checked out by a command of their own, in the clone, which may start no shell. This
+  too is a list, and the commands it covers are few (a fetch, a push, a listing and a clone
+  without files, each with a folder Yulius names): see Consequences for what replaces it.
 - **A missing object is missing.** A clone can name a "promisor" remote that Git fetches
   missing objects from, with a command for the other side; in a transfer between two
   folders, where a confined Git may start the shell, the shell ran that command (a push of
@@ -125,6 +137,13 @@ merge after a fetch, a listing), in a folder whose configuration the agents writ
 - A repository whose diff needs a text conversion or an external program shows without it in
   the server's pages (as before for most of them), and a signed-commits setting of the clone
   does not make the server's own commits signed.
+- **Open, finding G5 of SPEC-483:** a command that reads a clone's configuration can still
+  start the shell (a transfer between a clone and its playground's origin, the clone's fetch
+  from a courier, a new clone's copy). What that configuration could make the shell run is
+  switched off case by case above, by what Git does today. The rule that needs no list is
+  that no such command may start the shell at all: the transfers made from the server's
+  side, with the clone's objects shared and its refs written as data. That is the next
+  change.
 - **Not confined, G2 stays open:** Git on macOS (a developer's machine) and in tests of the
   adapter's crate runs transfers where it always did, with the token, in the clone. The
   courier and the rule on the adapter's configuration need the confinement's knowledge of

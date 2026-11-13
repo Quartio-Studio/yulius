@@ -59,7 +59,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
       found in slice 10): taken next, as slice 11 of the Plan (the earlier number 11, V6,
-      follows it).
+      follows it);
+  20. no command that reads a clone's configuration may start the shell (G5, from the review
+      of slice 11): taken right after it, as slice 12 of the Plan.
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -280,6 +282,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   wrote the new repository's configuration and then connected with the token; and the first
   commit of an empty repository was made in `<sandbox>/seed`, where the agents could add
   files to a commit that goes to the default branch without a review.
+- **Two more of G3's kind (review of this slice, round 2; both reproduced by the reviewer
+  under the launcher, and here).** A push to a playground's origin went into the clone's
+  submodules when the clone asked for it (`push.recurseSubmodules=on-demand`,
+  `submodule.recurse=true`), and a submodule is pushed by its own configuration: its
+  `remote.origin.receivepack` ran through the shell (there since slice 10). And the copy of a
+  new clone from its courier (added in round 1) checked the files out in a command that may
+  start the shell, while the new repository's configuration was already the sandbox's to
+  write: a filter appended to it ran.
+- **G5 (the class of G3, medium, open).** Wherever a command that reads a clone's
+  configuration may start the shell, each way that configuration can make the shell run
+  something has to be found and switched off. Three were (G3 and the two above); the
+  commands concerned are a fetch, a push, a listing and a clone without files. The rule
+  that needs no list is slice 20.
 
 ## Requirements
 
@@ -499,15 +514,17 @@ no code path reaches; documents, texts shown to agents and people, and code that
   gets them.
 - **TKR-004** Every command of the runner carries the constant options that switch off the
   `ssh` and `git` transports, signing (of commits, tags and pushes), signatures and the
-  alternate-refs command, and `GIT_EDITOR=:`, an empty `GIT_ASKPASS` and
-  `GIT_NO_LAZY_FETCH=1`; every `diff`, `log`, `show`, `diff-tree`, `diff-index` and
+  alternate-refs command, and pin `push.recurseSubmodules` and `submodule.recurse` off, and
+  `GIT_EDITOR=:`, an empty `GIT_ASKPASS` and `GIT_NO_LAZY_FETCH=1`; every `diff`, `log`, `show`, `diff-tree`, `diff-index` and
   `diff-files` carries `--no-ext-diff --no-textconv` right after its name, once (a call
   site's own copy among its options is dropped; the same word past `--` stays).
 - **TKR-005** A command for a sandbox whose folder does not exist reaches that folder only,
   not the folder of all sandboxes, and makes nothing; which sandbox a path lies in is read
   from the path without its `.` and `..` parts.
 - **TKR-006** A clone from an address that is no folder into a sandbox's folder is made in
-  a courier and copied from there, with the address as its origin's. The first commit of an
+  a courier and copied from there, with the address as its origin's. Every clone into a
+  sandbox's folder is copied without its files (`--no-checkout`), which are then checked
+  out by a command in the clone that is no transfer between folders. The first commit of an
   empty repository is made in `<data>/changes`, never in the sandbox's folder.
 - **TKR-007** `yulius doctor` fails a host whose Git, told `GIT_NO_LAZY_FETCH=1`, still
   starts a promisor remote's command for a missing object.
@@ -805,6 +822,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-67** `yulius doctor` reports "git missing objects" as ok on this machine; its probe
   answers that a Git with the variable taken away does not leave the object missing, and
   nothing for a Git that is not there.
+- **AC-68** With a submodule in the task's worktree that knows a branch of its remote, has a
+  commit beyond it and names a command for the other side that leaves a marker, and the
+  clone asking for submodules to be pushed (by either key): the server's push to the
+  playground's origin arrives and leaves no marker.
+- **AC-69** While the server clones a playground's origin (400 files) into the sandbox's
+  folder with the adapter as the server builds it, a thread keeps a filter for every file,
+  whose command leaves a marker, in the new repository's configuration from the moment it
+  exists: the clone ends with its files as committed, the filter in its configuration, and
+  no marker.
 
 ## Test plan
 
@@ -936,6 +962,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `git_confined::a_data_folder_behind_a_link_transfers_as_any_other` (AC-62),
   `git_confined::the_loader_is_never_started_with_a_file_of_the_clone` (AC-64),
   `git_confined::a_missing_object_is_not_fetched_with_the_clones_command` (AC-65),
+  `git_confined::a_push_goes_into_no_submodule` (AC-68),
+  `git_confined::a_filter_added_to_a_new_clone_is_not_run` (AC-69),
   `projects::a_refused_first_commit_leaves_onboarding_pending` (AC-66),
   `git_confined::the_doctor_reports_the_confinement` and
   `doctor::tests::a_git_that_fetches_missing_objects_fails` (AC-67);
@@ -1019,6 +1047,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and the launcher to pass descriptors; Ubuntu 24.04's Git honours the variable, checked in
   a container, and the doctor asks every host's Git). G2 stays open where Git is not
   confined (macOS, a developer's machine): ADR-0323 says so.
+- From the review of slice 11, round 2 (two major): no command goes into a submodule (both
+  keys pinned, for every command, rather than an option on each push: the same rule in one
+  place); a clone into a sandbox's folder checks nothing out, and its files are checked out
+  without the shell (chosen over making the whole clone elsewhere and moving it in: a move
+  between folders with different quota projects is refused by the file system, and a copy
+  by the server itself would follow links that Git, confined, cannot). Both are again cases
+  of one class, which this slice closes case by case and names as G5; the next slice takes
+  the shell from every command that reads a clone's configuration.
 - From the review of slice 10 (four nits, answered in slice 11): the loader (what the claim
   rests on is in ADR-0322 and enforced in the runner); a sandbox being made gets its own
   folder; what `/etc` and `/usr` readable means is in ADR-0322 already; the safety of a
@@ -1074,6 +1110,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 11 |
 | G3 | git | A clone can name a "promisor" remote whose command for the other side the shell of a transfer between two folders runs when an object is missing (found in slice 11) | high | slice 11 |
 | G4 | git | A new clone with the token, and the first commit of an empty repository, are made in the sandbox's folder, where its agents can add to the configuration or the commit (review of slice 11) | medium | slice 11 |
+| G5 | git | A command that reads a clone's configuration may start the shell in a transfer between folders; what the configuration can make the shell run is switched off case by case (a missing object, a push into submodules, a new clone's filter), not by a rule (review of slice 11) | medium | slice 20 (next) |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
