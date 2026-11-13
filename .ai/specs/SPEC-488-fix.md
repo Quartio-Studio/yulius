@@ -1,6 +1,6 @@
 ---
 yulius-task: e68c4e9a-3bfb-42b0-bf5d-e6fa5aeec9dc
-status: in-progress
+status: done
 ---
 
 # SPEC-488: A key that left nothing in the prompt box holds no message
@@ -139,8 +139,8 @@ still never typed behind text that is there (SPEC-480).
 - [x] A message is typed when the box is seen empty, and its hold, mark and flag end
 - [x] The pull-request watch still tries a task flagged only for a held message
 - [x] The documents and the decision say when a message waits
-- [ ] The independent review's findings are answered
-- [ ] The full gate passes on the final code and the spec carries the evidence
+- [x] The independent review's findings are answered
+- [x] The full gate passes on the final code and the spec carries the evidence
 
 ## Acceptance criteria
 
@@ -272,3 +272,113 @@ still never typed behind text that is there (SPEC-480).
   probed: where they draw the box differently, SPEC-480's hold stays. The person's keys in
   the 300 ms between Yulius's paste and its Enter still join the message (ADR-0178). Whether
   the browser terminal passes `Ctrl+S` on was not checked; the rule does not depend on it.
+
+## Evidence
+
+Run in this task's worktree on 2026-11-13; logs under the ignored `target/evidence/`, the
+probe in `$HOME/.cache/yulius-task-470`, the review's in `$HOME/.cache/yulius-review-470`.
+
+- **Reproduced before the fix** (commit d638f48cc: the reader and the tests, the rule as on
+  `dev` 607121220): `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (…three
+  tests…)'`: 0 passed, 3 failed. `a_key_that_left_nothing_in_the_prompt_box_holds_no_message`:
+  `Conflict("a person typed into task #1's terminal and sent no prompt since, so their text
+  may still be in its prompt box and nothing is typed behind it: …")`.
+  `a_message_of_yulius_is_typed_into_a_box_a_key_left_empty`: nothing typed, attention
+  `"problem":"Yulius has a message for this session and does not type it: someone typed in
+  the terminal and sent no prompt since, so their text may still be in the prompt box."`, the
+  reported screen. `a_draft_the_screen_shows_holds_until_it_is_cleared` failed at its last
+  pass (a cleared box released nothing). Reported as issue #1260.
+- **The pull-request watch reproduced** (commit aab3762d4, with the fix of the hold but not of
+  the watch): `a_flag_of_a_held_message_does_not_stop_the_pull_request_watch` failed with "the
+  news was not typed into the flagged task".
+- **The real tool** (Claude Code 2.1.323 against a local stub of the model API, no account):
+  `verdicts.py` runs `prompt_box::shown_empty` (the file of this branch, included by path)
+  over every captured screen: 537 screens over 62 runs (the author's 15 runs, the reviewer's
+  47). 213 read empty: each holds `❯` alone (144) or Claude Code's own dim text (44 the
+  suggestion, 14 the queue hint, 11 its `Try "…"` placeholders), under a blank hint row (192)
+  or the context notice (21). No screen with typed text, a stash, the agents view or a named
+  rule reads empty. In all six built-in themes (`s8.json`, 12 states each): empty, suggestion
+  (focused and not), cleared, mid-turn and queue hint read empty; draft, draft with the cursor
+  home, stash and agents view do not. A paste over a suggestion and Enter: the prompt hook
+  got `Message from Yulius:\n\nCI failed` alone (run s4).
+- **After the fix**, on the merged head e89826b1c:
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
+  test(/^pr_watch::/))'`: 29 passed (the 21 earlier tests of `task_message::` unchanged, 7
+  new, and `pr_watch::`); the reader's unit tests, the hub's and the two rules':
+  `cargo test -p yulius-app --lib prompt_box` 7 passed, `a_snapshot_keeps` 1,
+  `only_a_held_message_flag` 1, `cargo test -p yulius-domain an_empty_box_ends` 1.
+- **Mutation checks by hand**, 31, each restored and touched afterwards
+  (`target/evidence/mutate*.py`, logs `mutations-*.log`): 30 fail a test; one survived and
+  showed a redundant guard, which was removed.
+  - the reader, 12: no alternate screen, no cursor column, no prompt character, no blank
+    behind it, no upper rule, no lower rule, a shorter rule, any text behind the first cell,
+    an inverse first cell without dim text behind it, dim text taken for typed, the first
+    cell not looked at: each fails a unit test; "a box in the screen's last row" survived
+    (the rule check already refuses it; the guard went);
+  - the fix, 6: no minute (AC1 and the domain test fail); a box seen empty ends neither mark
+    nor flag, and does not count as emptied (the hookless test fails for both); the screen
+    not asked (seven tests fail, SPEC-480's among them); a flag outlived its reason whatever
+    the screen shows (the pure rule's test); no flag ever did (the pull-request watch test);
+  - review round 1, 5: no hint row, a dim rule accepted, the hold not judged again, half the
+    hint row, the cell behind the first skipped (the reviewer's survivor): each fails;
+  - review round 2, 8: four ways of reading the context notice loosely, no notice accepted,
+    and the reviewer's three survivors (the hint row's right half, dim at a rule's first cell
+    only, two rows asked above the rule): each fails.
+- **The gate** (`scripts/dev ci`): at e2869044c (before the review) exit 1: 4256 tests, 4237
+  passed, 19 failed, all "timed out waiting for …" within seconds of each other in
+  `usage_credits::`, `task_done::`, `trusted_proxy::` and three of `task_message::`, at a
+  load average of 98 on the shared 64-core host (the review was building beside it); the
+  same 19 alone at once after: 19 passed. At 68ae83200 (review round 1's fixes): exit 0, 4260
+  tests passed, 16 skipped.
+  At e89826b1c (review round 2's fixes, with `origin/dev` e662ef766 merged in without a
+  conflict and the decisions index put back in order): exit 0, 4295 tests passed, 17 skipped.
+  After that only this section, the status and the Plan's ticks changed.
+- **Security scan**: `yulius security-scan` printed "Security scan disabled: Vidoc is turned
+  off in Yulius, for this project or the whole instance; nothing was scanned." Unrun, not
+  passed.
+- **Independent review, round 1** (a fresh session, head e2869044c, skill `om-code-review`,
+  with its own runs of the real tool): "request changes". Its findings and what was done:
+  - own code, major: "a stashed draft reads as 'empty' and is glued to Yulius' second
+    message." Fixed test-first: a hint above the box is no proof (EBX-002).
+  - own code, major: "under theme dark-ansi the agents view reads as an empty prompt box,
+    and Yulius' message creates a new background session." Fixed test-first: dim rules are
+    refused; probed in all six themes.
+  - own code, minor: "box_seen_empty awaits store I/O … between the screen read and the
+    paste; `held = None` is unconditional". The hold is judged again; a test at a pause
+    point (AC8).
+  - own code, minor: one mutant of the reader's tests survived. Two cases added.
+  - own code, minor: three statements in the spec and ADR-0329 went further than the code or
+    the runs (`has_draft`, "every other state", an Evidence section cited before it existed).
+    Rewritten to what was run; this section.
+  - own code, nits: a long doc line; "grey" for the dim attribute; the hub's snapshot test
+    "proves the hub's `viewer_snapshot`, a twin of the process host's". Fixed; a test across
+    a real restart added (AC5).
+  - pre-existing, major: "text Claude Code puts into the box without a keystroke is unknown
+    to box_held" (a stash restored by the person's own prompt). Issue #1264, with the nit
+    about `draft_ended`'s two steps.
+- **Independent review, round 2** (the same reviewer, head 68ae83200, the delta): "request
+  changes (one major in the delta's own code)"; round 1's findings checked as fixed. Its
+  findings and what was done:
+  - own code, major: "'N% context used' stays in the hint row for as long as the session's
+    context is high, so the reported false flag (#1260) is back for such sessions … Fails
+    safe (nothing glued)." Fixed test-first: that notice alone, whole, is as good as a blank
+    row; with a stash behind it the row is no proof.
+  - own code, minor: "a labelled upper rule is the only thing that tells another session,
+    and it is neither tested as such nor documented." A unit test with a name at the rule's
+    end; the spec, ADR-0329 and the guide say that a named rule is no proof and that a
+    renamed session keeps the old hold.
+  - own code, nits: three surviving mutants (tests added, all three fail now); a one-second
+    sleep as a negative wait in the pause-point test (removed).
+  - outside the change, not checked in Yulius by the reviewer: "a trip through the agents
+    view re-homes the conversation" (new `SessionStart` hooks, another session id). Read in
+    the code afterwards: `hook_session_start` takes a new session id of the run's own Claude
+    Code into the attempt and the lineage (SPEC-281), so Yulius follows it by design; not
+    run with the real tool, and no issue was filed for it.
+  A third look, at this section's commit, follows it; its verdict is in the pull request.
+- **Not tested here.** Yulius end to end with the real Claude Code: the reader was run over
+  the real tool's screens, and the hold's logic with the fake agent, whose `--tui` draws the
+  same box. Other Claude Code versions than 2.1.323; a model with a 1M context (the context
+  notice's threshold was seen on a 200k model); a task list shown mid-turn; whether the
+  browser terminal passes `Ctrl+S` on. That the reviewer's reading of a re-homed session is
+  harmless in Yulius was read in the code, not run. The web UI is unchanged, so the
+  end-to-end suite was not run.
