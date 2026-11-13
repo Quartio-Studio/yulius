@@ -112,8 +112,9 @@ struct FakeState {
     /// blocked by the administrator (ADR-0318).
     browser_policy: bool,
     /// A page target Chrome makes by itself, opened by no page, announced just before the
-    /// next `Target.createTarget` is answered.
-    alongside: Option<String>,
+    /// next `Target.createTarget` is answered: the addresses it goes through, and whether it
+    /// is closed again before that answer.
+    alongside: Option<(Vec<String>, bool)>,
     selection: String,
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
@@ -128,6 +129,9 @@ struct FakeState {
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
+    /// The address the next mid-call navigation ([`FakeCdpServer::navigate_during_nth`]) goes
+    /// to; `None`: another document at the same address.
+    navigating_to: Option<String>,
     going_back_after: HashMap<String, usize>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
@@ -326,6 +330,7 @@ impl FakeCdpServer {
                 enter_submits: false,
                 failing_after: HashMap::new(),
                 navigating_after: HashMap::new(),
+                navigating_to: None,
                 going_back_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
@@ -470,10 +475,13 @@ impl FakeCdpServer {
         lock(&self.shared.state).emit_load_events = emit;
     }
 
-    /// Makes a page target at `url`, opened by no page, appear just before the next
-    /// `Target.createTarget` is answered (a tab made while a caller waits for its own).
-    pub fn create_alongside_next_target(&self, url: &str) {
-        lock(&self.shared.state).alongside = Some(url.to_owned());
+    /// Makes a page target, opened by no page, appear just before the next
+    /// `Target.createTarget` is answered (a tab made while a caller waits for its own): created
+    /// at the first of `urls`, then navigated to each later one, and with `closed` closed again,
+    /// all before the answer.
+    pub fn create_alongside_next_target(&self, urls: &[&str], closed: bool) {
+        lock(&self.shared.state).alongside =
+            Some((urls.iter().map(|&url| url.to_owned()).collect(), closed));
     }
 
     /// Changes a target's address and notifies connected clients (`Target.targetInfoChanged`):
@@ -490,6 +498,15 @@ impl FakeCdpServer {
         };
         for connection in connections {
             let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
+    /// Moves a target to another address without telling connected clients yet: a navigation
+    /// that committed in the browser and that the client has not heard of.
+    pub fn move_target_unannounced(&self, target_id: &str, url: &str) {
+        let mut state = lock(&self.shared.state);
+        if let Some(target) = state.targets.iter_mut().find(|t| t.id == target_id) {
+            url.clone_into(&mut target.url);
         }
     }
 
@@ -583,6 +600,14 @@ impl FakeCdpServer {
         lock(&self.shared.state)
             .navigating_after
             .insert(method.to_owned(), nth);
+    }
+
+    /// As [`Self::navigate_during_nth`], and the document the page moves to is at `url` (the
+    /// page went on to another site by itself; clients are not told).
+    pub fn navigate_to_during_nth(&self, method: &str, nth: usize, url: &str) {
+        let mut state = lock(&self.shared.state);
+        state.navigating_after.insert(method.to_owned(), nth);
+        state.navigating_to = Some(url.to_owned());
     }
 
     /// While the `nth` request of `method` runs, the page of its session goes back to the document
@@ -856,6 +881,20 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             if let Some(page) = state.page(session_id.as_deref()) {
                 page.move_to(loader);
             }
+            // To another address when one was named: the page went to another site.
+            if let Some(url) = state.navigating_to.take() {
+                let target_id = session_id
+                    .as_deref()
+                    .and_then(|s| state.sessions.get(s))
+                    .cloned();
+                if let Some(target) = state
+                    .targets
+                    .iter_mut()
+                    .find(|t| Some(&t.id) == target_id.as_ref())
+                {
+                    target.url = url;
+                }
+            }
         }
         if state.going_back_after.get(&method) == Some(&seen)
             && let Some(page) = state.page(session_id.as_deref())
@@ -987,15 +1026,28 @@ fn respond(
             before.push(target_event("Target.targetCreated", &target));
             let id = target.id.clone();
             state.targets.push(target);
-            if let Some(url) = state.alongside.take() {
-                let beside = FakeTarget {
+            if let Some((urls, closed)) = state.alongside.take() {
+                let mut beside = FakeTarget {
                     id: fake_target_id(state.next_target),
-                    url,
+                    url: String::new(),
                     title: String::new(),
                 };
                 state.next_target += 1;
-                before.push(target_event("Target.targetCreated", &beside));
-                state.targets.push(beside);
+                for (step, url) in urls.into_iter().enumerate() {
+                    beside.url = url;
+                    let method = if step == 0 {
+                        "Target.targetCreated"
+                    } else {
+                        "Target.targetInfoChanged"
+                    };
+                    before.push(target_event(method, &beside));
+                }
+                if closed {
+                    before.push(json!({"method": "Target.targetDestroyed",
+                        "params": {"targetId": beside.id}}));
+                } else {
+                    state.targets.push(beside);
+                }
             }
             Ok(json!({"targetId": id}))
         }

@@ -597,6 +597,8 @@ const PDF_VIEWER: &str = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
 struct Document {
     frame: String,
     loader: String,
+    /// The main frame's address.
+    address: String,
     /// Its host; `None` for an opaque origin.
     host: Option<String>,
     /// Hosts of its frames the probe cannot read: those of another origin in the frame tree,
@@ -660,6 +662,11 @@ impl Document {
         Some(Self {
             frame,
             loader: main.get("loaderId")?.as_str()?.to_owned(),
+            address: main
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             host: own,
             framed,
             own_frames,
@@ -1047,13 +1054,16 @@ struct ProbeWait<'a> {
 
 impl Drop for ProbeWait<'_> {
     fn drop(&mut self) {
-        let held = {
+        // What a newer event listed while the others waited: a held announcement of it is
+        // older than what is shown. What the replay itself lists takes its later ones too.
+        let (held, listed) = {
             let mut state = lock(&self.browser.state);
             state.probing = false;
             if let Some(target) = &self.target {
                 state.probe_tabs.insert(target.clone());
             }
-            std::mem::take(&mut state.probe_held)
+            let listed: HashSet<TabId> = state.tabs.iter().map(|tab| tab.id.clone()).collect();
+            (std::mem::take(&mut state.probe_held), listed)
         };
         if let Some(target) = &self.target {
             self.browser.forget_tab(target);
@@ -1064,8 +1074,7 @@ impl Drop for ProbeWait<'_> {
                 .get("targetInfo")
                 .and_then(page_entry)
                 .map(|(id, _, _)| id);
-            let stale = id.is_some_and(|id| lock(&self.browser.state).has(&id));
-            if !stale {
+            if !id.is_some_and(|id| listed.contains(&id)) {
                 self.browser.on_event(&event);
             }
         }
@@ -1129,6 +1138,18 @@ fn page_entry(info: &Value) -> Option<(TabId, String, String)> {
             .to_owned()
     };
     Some((id, text("title"), text("url")))
+}
+
+/// Whether a page at an address may get a secret typed into it
+/// ([`BrowserInstance::tool_type_secret`]).
+pub type PageRule<'r> = dyn for<'a> Fn(&'a str) -> bool + Send + Sync + 'r;
+
+/// A document as an error names it: its host, or its address when it has none.
+fn shown_as(document: &Document) -> String {
+    document
+        .host
+        .clone()
+        .unwrap_or_else(|| document.address.clone())
 }
 
 /// Whether an address is a page of Chrome itself: a target created at one is no tab for
@@ -1512,7 +1533,17 @@ impl BrowserInstance {
                     .and_then(Value::as_str)
                     .and_then(|id| TabId::parse(id).ok());
                 if let Some(tab) = tab {
-                    lock(&self.state).probe_tabs.remove(&tab);
+                    {
+                        let mut state = lock(&self.state);
+                        state.probe_tabs.remove(&tab);
+                        // A page made and closed while a probe waits is no tab afterwards.
+                        state.probe_held.retain(|held| {
+                            held.params
+                                .get("targetInfo")
+                                .and_then(page_entry)
+                                .is_none_or(|(id, _, _)| id != tab)
+                        });
+                    }
                     self.forget_tab(&tab);
                 }
             }
@@ -1722,6 +1753,9 @@ impl BrowserInstance {
         session: &str,
         url: &str,
     ) -> Result<(), BrowserError> {
+        // Never under a secret being typed, or between a screenshot's look and its capture:
+        // those hold this lock from their look at the page to their end (SPEC-483 E3).
+        let _input = self.input_lock.lock().await;
         let result = self
             .cdp
             .call_session(session, "Page.navigate", json!({"url": url}))
@@ -1819,6 +1853,8 @@ impl BrowserInstance {
             .get("id")
             .and_then(Value::as_i64)
             .ok_or_else(|| malformed("Page.getNavigationHistory", "entry without id"))?;
+        // As every navigation of Yulius's: never under a secret being typed.
+        let _input = self.input_lock.lock().await;
         self.cdp
             .call_session(
                 &session,
@@ -1836,6 +1872,8 @@ impl BrowserInstance {
     pub async fn reload(&self, tab: &TabId) -> Result<(), BrowserError> {
         self.touch();
         let session = self.session(tab).await?;
+        // As every navigation of Yulius's: never under a secret being typed.
+        let _input = self.input_lock.lock().await;
         self.cdp
             .call_session(&session, "Page.reload", json!({}))
             .await?;
@@ -2177,16 +2215,35 @@ impl BrowserInstance {
             browser: self,
             target: None,
         };
-        let created = tokio::time::timeout(
-            PROBE_TIMEOUT,
-            self.cdp.call(
-                "Target.createTarget",
-                json!({"url": crate::policy::PROBE_BLANK, "background": true}),
-            ),
-        )
-        .await
-        .map_err(|_| BrowserError::NavigationFailed("the policy probe got no tab in time".into()))
-        .and_then(|created| created.map_err(BrowserError::from))
+        // The call lives in its own task, which closes the tab Chrome made unless this probe
+        // takes its answer: after the probe gave up on it, or was dropped (it runs in a
+        // viewer's connection), nobody else would.
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let cdp = self.cdp.clone();
+        tokio::spawn(async move {
+            let created = cdp
+                .call(
+                    "Target.createTarget",
+                    json!({"url": crate::policy::PROBE_BLANK, "background": true}),
+                )
+                .await;
+            if let Err(Ok(unclaimed)) = answer.send(created)
+                && let Some(target) = unclaimed.get("targetId").and_then(Value::as_str)
+            {
+                let _ = cdp
+                    .call("Target.closeTarget", json!({"targetId": target}))
+                    .await;
+            }
+        });
+        let created = match tokio::time::timeout(PROBE_TIMEOUT, answered).await {
+            Ok(Ok(created)) => created.map_err(BrowserError::from),
+            Ok(Err(_)) => Err(BrowserError::NavigationFailed(
+                "the policy probe's tab could not be asked for".into(),
+            )),
+            Err(_) => Err(BrowserError::NavigationFailed(
+                "the policy probe got no tab in time".into(),
+            )),
+        }
         .and_then(|created| {
             created
                 .get("targetId")
@@ -2836,7 +2893,7 @@ impl BrowserInstance {
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
     pub async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
-        self.type_text(params, false).await
+        self.type_text(params, None).await
     }
 
     /// `browser_fill_secret`'s typing: as [`Self::tool_type`], and the browser remembers the
@@ -2846,14 +2903,18 @@ impl BrowserInstance {
     /// # Errors
     /// As [`Self::tool_type`]; [`BrowserError::InvalidInput`] when the tab's document cannot be
     /// told or the browser remembers too many secrets or documents already (nothing is typed).
-    pub async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
-        self.type_text(params, true).await
+    pub async fn tool_type_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &PageRule<'_>,
+    ) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, Some(allowed)).await
     }
 
     async fn type_text(
         &self,
         params: &TypeParams,
-        secret: bool,
+        secret: Option<&PageRule<'_>>,
     ) -> Result<TypeResult, BrowserError> {
         self.touch();
         params.validate()?;
@@ -2868,16 +2929,22 @@ impl BrowserInstance {
         }
         // Screenshots hold the same lock from their look at the page to the capture.
         let _input = self.input_lock.lock().await;
-        if !secret {
+        let Some(allowed) = secret else {
             let watched = self.watched_values(&session).await;
             return self.type_lines(&session, params, watched.as_ref()).await;
-        }
+        };
         let Some(before) = self.document(&session).await else {
             return Err(BrowserError::InvalidInput(
                 "the tab's page cannot be identified, so the secret was not typed; try again"
                     .into(),
             ));
         };
+        // The page as it is now, with the lock held: what the caller saw of the tab may be
+        // from before a navigation, and Yulius's own navigations wait for this lock
+        // (SPEC-483 E3).
+        if !allowed(&before.address) {
+            return Err(BrowserError::SecretPageRefused(shown_as(&before)));
+        }
         {
             let mut typed = self.secrets.lock();
             if !typed.room_for(&params.text) {
@@ -2903,10 +2970,17 @@ impl BrowserInstance {
             }
         }
         let mut secrets = self.secrets.lock();
-        // A navigation meanwhile may have put it into the next document.
-        if after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str()) {
+        // A navigation meanwhile (the page's own) may have put it into the next document.
+        let moved = after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str());
+        if moved {
             secrets.record(after.as_ref(), &params.text);
         }
+        // The page it moved to is asked too. One that cannot be identified is not called a
+        // page it went astray to: every screenshot is refused from here on instead (below).
+        let astray = after
+            .as_ref()
+            .filter(|document| moved && !allowed(&document.address))
+            .map(shown_as);
         // Only a password field keeps it out of the pixels: anywhere else exposes the site,
         // the one it was typed into and the one shown since.
         if !page
@@ -2927,7 +3001,11 @@ impl BrowserInstance {
                 secrets.expose(None);
             }
         }
-        typed
+        // Where it went is said whatever else the typing ran into.
+        match astray {
+            Some(page) => Err(BrowserError::SecretAstray(page)),
+            None => typed,
+        }
     }
 
     /// Before other typing (`browser_type`, a user name): the secrets typed into this document

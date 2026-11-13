@@ -41,16 +41,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
      request #1243;
   5. the vault's rules on every path (V3-V5): merged, pull request #1244;
   6. the sandbox browser's own windows: a viewer's real input reaches Chrome's file dialogs,
-     DevTools and `file:` pages on the host (E1);
-  7. the sandbox browser's network and its secret typing (E2, E3, W1b, C4);
-  8. the host's own Git in a clone its agents write (G1);
-  9. production secrets decided once (V6);
-  10. delivery and CI decided once (D4-D6, QB1);
-  11. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
-  12. documents and shipped texts against the code (P1-P14, QB9);
-  13. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
-  14. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
-  15. efficiency (QA8, QB5, QC1, QC6).
+     DevTools and `file:` pages on the host (E1): merged, pull request #1245;
+  7. the sandbox browser's secret typing (E3);
+  8. what a secret's keys can still reach: a focused frame of another site, a navigation
+     under way (E8, E9);
+  9. the sandbox browser's network (E2, W1b, C4);
+  10. the host's own Git in a clone its agents write (G1);
+  11. production secrets decided once (V6);
+  12. delivery and CI decided once (D4-D6, QB1);
+  13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
+  14. documents and shipped texts against the code (P1-P14, QB9);
+  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
+  16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
+  17. efficiency (QA8, QB5, QC1, QC6).
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -170,6 +173,17 @@ no code path reaches; documents, texts shown to agents and people, and code that
   the host's files whatever window opens; inside a sandbox namespaces cannot be made, so it
   cannot be proven on this machine, and Chrome's own sandbox inside one needs a host test.
   It stays the firmer fix, for the slice that moves the browser into its sandbox (E2).
+
+### Slice 7: the sandbox browser's secret typing
+
+- **E3 (high).** `tool_browser_fill_secret` (`vault/runtime.rs`) takes the tab's address from
+  `browser.tabs()`, a cache fed by Chrome's target events, checks it against the secret's
+  hosts and calls `tool_type_secret`. `type_text` (`yulius-browser` `instance.rs`) focuses the
+  field, waits for `input_lock`, reads the document only to record where the secret went, and
+  types. `navigate_session`, `history` and `reload` take no lock; a screenshot holds it from
+  its look at the page to the capture. So: a slow screenshot, a fill on a tab at the secret's
+  host, a navigation of that tab; the secret is typed into the new page and the tool answers
+  `filled` with the secret's host.
 
 ## Requirements
 
@@ -297,6 +311,17 @@ no code path reaches; documents, texts shown to agents and people, and code that
   that goes to one stays a tab.
 - **BRL-004** `yulius doctor` says whether the policy is installed.
 
+- **FSR-001** `tool_type_secret` takes the rule "may a page at this address get the secret" and
+  applies it to the tab's document read with the input lock held; a page that may not gets
+  nothing typed, no record of a typed secret, and an error naming where the tab is.
+- **FSR-002** `browser_navigate`, `browser_open`'s navigation, a viewer's address bar, back,
+  forward and reload take the input lock for their request to the browser. (A navigation
+  already under way when a typing begins is FSR-003's case and finding E9.)
+- **FSR-003** When the document changed while the secret was typed and the new one may not get
+  it, the tool fails naming where the tab went, whatever else the typing ran into, and the
+  secret's activity records it; a page
+  that cannot be identified afterwards keeps SPEC-450's rule (every screenshot refused).
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -307,7 +332,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
-- [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy, reviewed
+- [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
+- [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it, reviewed
 
 ## Acceptance criteria
 
@@ -432,6 +458,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   re-check says to run the setup, the setup writes the drop-in with the directories, and the
   re-check is then satisfied.
 
+- **AC-39** A fill on a tab whose page is not one the secret may go to types nothing
+  (`SecretPageRefused` with the page's host) and leaves screenshots working; on an allowed
+  page it types. Through the MCP tool: a tab that moved to another site without Yulius having
+  heard of it (still listed at the secret's host) gets nothing typed and the answer names the
+  site.
+- **AC-40** A page that moves on during the typing to another site answers `SecretAstray` with
+  that site's host; the rule was asked of the page where the typing began and of the one it
+  moved to; a move within the secret's sites is no error. Through the MCP tool the answer
+  names the site, not the value, and a `vault.agent.fill` activity entry names both sites.
+- **AC-41** A `browser_navigate`, a reload and a step back asked for while a secret is typed
+  each return only after the typing ended.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -512,6 +550,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   are off"; `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once` (the
   nit left by slice 5's review).
 
+- Slice 7: `yulius-browser` `instance::a_secret_is_typed_only_into_a_page_it_may_go_to` and
+  `browser::agents_type_secrets_only_into_pages_of_their_hosts` (AC-39),
+  `instance::a_secret_typed_while_the_page_moves_on_is_reported` (AC-40),
+  `instance::a_navigation_waits_for_a_secret_being_typed` (AC-41);
+  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays` and
+  `browser::a_tab_made_and_closed_while_the_probe_waits_is_no_tab` (the nits left by slice 6's
+  review).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -550,6 +596,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   untaken launch goal is flagged as "Claude Code did not take the task's goal" while the
   terminal says its screen is withheld; nothing is typed either way, and telling the two
   apart needs a program that draws without answering, which no test here has.
+- [ADR-0319](../../docs/decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md):
+  the page rule is applied in the browser with the input lock held; Yulius's navigations wait
+  for the lock; a page's own move is reported.
+- From the review of slice 6, round 3 (three nits, all answered in slice 7): a tab's later
+  announcement held with its first is replayed too; a tab made and closed during the wait is
+  no tab; a probe whose tab comes after it gave up closes it.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -568,7 +620,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | fixed (slice 2) |
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
-| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 8 |
+| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 10 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
@@ -580,41 +632,43 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 7 |
-| E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | slice 6 |
-| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 7 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 9 |
+| E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
+| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 9 |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 7 |
+| E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | slice 8 |
+| E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | slice 8 |
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 9 |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 10 |
-| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 10 |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 10 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 10 |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 11 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 11 |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 11 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 11 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 11 |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 11 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 11 |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 11 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 11 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 11 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 11 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 11 |
-| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 12 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 12 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 13 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 13 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 13 |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 13 |
-| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 14 |
-| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 14 |
-| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 14 |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 15 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 7 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 11 |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 12 |
+| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 13 |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 13 |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
+| E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
+| QC8 | store | `tasks.closed_at` is never cleared | low | slice 13 |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 13 |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
+| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
+| W7 | web UI | Dead exports and CSS rules | low | slice 15 |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 15 |
+| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
+| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
+| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
+| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 17 |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 9 |
 
 ## Evidence
 
@@ -928,3 +982,43 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   entries (Save as, Inspect) were not clicked on the real browser; their accelerators were
   pressed. That the accelerator check would see a window or page were one to open was not
   shown (without the policy the keys are refused before they reach Chrome).
+
+### Slice 7 (2026-11-13)
+
+- **Tests failing without their fix** (`target/audit/slice7/mutate.py`, ten cases; the two
+  added after the review: the wrong page asked after the move, no activity entry for a
+  secret gone astray): the page
+  not asked under the lock: `instance::a_secret_is_typed_only_into_a_page_it_may_go_to` and
+  `browser::agents_type_secrets_only_into_pages_of_their_hosts` failed (the secret was typed
+  into `evil.example`); the page it moved to not asked:
+  `instance::a_secret_typed_while_the_page_moves_on_is_reported` failed; navigate, reload and
+  history each without the lock: `instance::a_navigation_waits_for_a_secret_being_typed`
+  failed each time; a later held announcement dropped, a closed tab's announcement kept: the
+  two probe tests failed.
+- **Real browser.** `drives_a_real_chromium_when_configured` (Google Chrome 157, opt-in; it
+  types secrets into a real page and takes screenshots): passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed in this slice; the e2e suite last ran at
+  slice 6 (1019 passed).
+- **Review of slice 7, round 1** (head 48dbe9523): request changes, three minor findings and
+  three nits in this slice's code, and one major finding that was on `dev` before it. Minor:
+  the astray test could not tell which page the rule was asked about (the fake now moves to
+  another site mid-typing and the test asserts both addresses and the host named); the
+  application's answer and activity entry for a secret gone astray were untested (they are,
+  through the MCP tool); "none of them can put another page under the keys" claimed more
+  than a lock on the request gives (ADR-0319 and FSR-002 say what it covers; finding E9).
+  Nits: a typing error no longer hides the astray report; one task owns the probe tab's
+  creation and closes it unless the probe takes it, also when the probe is dropped; the
+  ADR says who waits behind a navigation. The major one, a secret typed into a focused
+  frame of another site, is finding E8 with its own slice.
+- **Gate.** `scripts/dev ci` at `5a89ab57f` (round 1's answers; `0d924205e` before the review:
+  4152 passed): exit 0; `4152 tests run: 4152 passed, 16 skipped`; doctor, repository check,
+  lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Slice 6's delivery.** Its first CI run failed in one e2e test of a page it does not touch
+  (`notes.e2e.ts` "a failed reload after a teammate's edit backs off": 4 loads counted in a
+  fixed 2.5 s window, at most 3 expected), filed as issue #1246; the run was repeated once at
+  the same head and passed.
+- **Review of slice 6, round 3** (head 70cc7698d): approve, three nits, all answered here.
+- **Not tested here.** The race on a real browser (a slow screenshot, a fill and a navigation
+  at once): the order is tested on the fake with the lock held by a delayed look at the page.
+  A page that redirects by itself while it is typed into, on a real site.

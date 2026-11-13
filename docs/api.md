@@ -1961,7 +1961,11 @@ task; other hooks answer as usual.
   ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
   secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
   it kept from before production secrets became exclusive, which only the egress proxy still uses
-  (SPEC-405). Pixels are not redacted, so `browser_screenshot` is a tool error pointing to
+  (SPEC-405). The page is the one the browser shows when the typing begins, not the one Yulius
+  last listed for the tab: a tab that went elsewhere meanwhile gets nothing typed ("nothing was
+  typed: this tab shows … now"), and a page that moves on by itself while it is typed to a
+  site the secret is not for answers with where it went instead of `filled` (ADR-0319). Pixels
+  are not redacted, so `browser_screenshot` is a tool error pointing to
   `browser_snapshot` while the page shows an agent secret, cannot be read or frames a site a value
   was filled into, and, after a fill of a value (not a user name or TOTP code) outside a password
   field or edited in place, on every page of that host until Yulius restarts (SPEC-450).

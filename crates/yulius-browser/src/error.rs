@@ -126,6 +126,18 @@ pub enum BrowserError {
         "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host"
     )]
     InputLocked,
+    /// The tab's page, read with the input lock held, is not one the secret may be typed into
+    /// (the tab went elsewhere since the caller looked): nothing was typed (SPEC-483 E3).
+    #[error(
+        "nothing was typed: this tab shows {0} now, which is not a page this secret may be typed into"
+    )]
+    SecretPageRefused(String),
+    /// The tab's document changed while a secret was typed, to a page it may not be typed
+    /// into: part of the secret may be in that page.
+    #[error(
+        "the tab went to {0} while the secret was typed, so part of it may be in that page: tell the secret's person, who may want to replace it"
+    )]
+    SecretAstray(String),
     /// The page may show a secret (typed with [`crate::BrowserInstance::tool_type_secret`] or
     /// one Yulius hides), or cannot be read to tell, so no screenshot is taken (SPEC-450).
     #[error(
@@ -154,6 +166,8 @@ impl BrowserError {
             | Self::InvalidSelector(_)
             | Self::ElementNotFound
             | Self::ElementNotVisible
+            | Self::SecretPageRefused(_)
+            | Self::SecretAstray(_)
             | Self::SecretOnPage => ViewerErrorCode::Invalid,
             Self::Cdp(_)
             | Self::NavigationFailed(_)
