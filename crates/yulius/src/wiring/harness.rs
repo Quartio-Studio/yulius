@@ -672,18 +672,40 @@ mod tests {
                 r#"{"enabledPlugins":{"x-lsp@official":true,"skills@official":true}}"#,
             )
         };
-        let off = serde_json::json!({ "x-lsp@official": false });
+        // A plugin only the repository switches on, from a marketplace that is a folder of the
+        // repository: found only when the lookup is given the session's own working directory
+        // and the sandbox directory that folder lies in.
+        let repository = |config: &Path, work: &Path| -> std::io::Result<()> {
+            let market = work.join("market");
+            std::fs::create_dir_all(market.join(".claude-plugin"))?;
+            std::fs::write(
+                market.join(".claude-plugin/marketplace.json"),
+                r#"{"name":"folder","plugins":[{"name":"y-lsp","lspServers":{"y":{"command":"y-language-server"}}}]}"#,
+            )?;
+            std::fs::write(
+                config.join("plugins/known_marketplaces.json"),
+                serde_json::json!({ "folder": { "installLocation": market } }).to_string(),
+            )?;
+            std::fs::create_dir_all(work.join(".claude"))?;
+            std::fs::write(
+                work.join(".claude/settings.json"),
+                r#"{"enabledPlugins":{"y-lsp@folder":true}}"#,
+            )
+        };
+        let off = serde_json::json!({ "x-lsp@official": false, "y-lsp@folder": false });
         let dir = tempfile::tempdir()?;
         let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
         let home = dir.path().join("home");
         seed(&home.join(".claude"))?;
+        let worktree = dir.path().join("worktrees").join("t1");
+        repository(&home.join(".claude"), &worktree)?;
         let planned = adapter.plan(&HarnessLaunch {
             harness: Harness::ClaudeCode,
             mode: SessionMode::New {
                 session_id: None,
                 prompt: None,
             },
-            worktree: dir.path().to_path_buf(),
+            worktree: worktree.clone(),
             sandbox_home: home.clone(),
             run_dir: dir.path().join("run"),
             model: None,
@@ -706,11 +728,15 @@ mod tests {
         )?)?;
         assert_eq!(kept["enabledPlugins"]["x-lsp@official"], true);
 
-        let config = dir.path().join("user").join(".claude");
+        // A Superagent: its config dir in the person's own folder, its working directory the
+        // sandbox's repository, in another folder.
+        let config = dir.path().join("users").join("u1").join(".claude");
         seed(&config)?;
+        let sandbox = dir.path().join("sandboxes").join("s1");
+        repository(&config, &sandbox.join("repo"))?;
         let plan = adapter.plan_cockpit(&CockpitLaunch {
-            cwd: dir.path().to_path_buf(),
-            sandbox_dir: dir.path().to_path_buf(),
+            cwd: sandbox.join("repo"),
+            sandbox_dir: sandbox,
             config_dir: PathBuf::from("/home/person/.claude"),
             config_dir_host: config,
             resume: None,

@@ -493,9 +493,9 @@ impl LiveHome {
     }
 }
 
-/// SPEC-485 LSP-004 (ADR-0327): in every layout in which the real CLI loads a plugin's language
-/// server, it loads none when started with the settings Yulius plans for a run of that home and
-/// worktree, and the plugin without a language server stays on. Each layout is first shown to be
+/// SPEC-485 LSP-004 (ADR-0327): in each of eight layouts in which the real CLI loads a plugin's
+/// language server, it loads none when started with the settings Yulius plans for a run of that
+/// home and worktree, and the plugin without a language server stays on. Each layout is first shown to be
 /// one the CLI loads three servers from (the control), so a layout a later Claude Code no longer
 /// loads, or loads differently, fails here too.
 ///
@@ -557,17 +557,46 @@ async fn a_runs_settings_keep_the_real_cli_from_loading_a_language_server() -> T
         homes.push(home);
     }
 
-    // Installed copies outside the cache.
+    // Installed copies outside the cache, and nothing but the copies says that two of the
+    // plugins bring a server: their folders in the marketplace are gone.
     let home = LiveHome::new(&dir, "copies-elsewhere")?;
     let market = home.config.join("plugins/marketplaces/m");
     home.marketplace(&market)?;
     home.known(&market)?;
     home.install(&market, &home.root.join("copies"))?;
+    // A cloned marketplace: Claude Code then loads the installed copies, not the clone.
+    std::fs::write(
+        home.config.join("plugins/known_marketplaces.json"),
+        serde_json::json!({ "m": {
+            "source": { "source": "github", "repo": "yulius-live-check/no-such-repository" },
+            "installLocation": market,
+            "lastUpdated": "2026-11-13T00:00:00.000Z",
+        } })
+        .to_string(),
+    )?;
+    for name in ["by-manifest", "by-file"] {
+        std::fs::remove_dir_all(market.join("plugins").join(name))?;
+    }
     home.switch_on(&home.config.join("settings.json"), serde_json::json!({}))?;
     homes.push(home);
 
-    // A repository that brings its own marketplace: Claude Code registers it at a session's
-    // start and loads from it from the next session on.
+    // A repository that brings its own marketplace by an absolute path: loaded in the very
+    // session that registers it.
+    let home = LiveHome::new(&dir, "repository-marketplace-absolute")?;
+    let market = home.work.join("tools/market");
+    home.marketplace(&market)?;
+    home.switch_on(
+        &home.work.join(".claude/settings.json"),
+        serde_json::json!({ "extraKnownMarketplaces": { "m": {
+            "source": { "source": "directory", "path": market },
+        } } }),
+    )?;
+    homes.push(home);
+
+    // The same by a path relative to the repository. Run without a terminal, as here, the
+    // session that registers it loads nothing and the next one does; in a terminal the
+    // registering session loads the servers too (measured on 2.1.323). So the run's settings are
+    // planned before anything is registered, and must hold after.
     let home = LiveHome::new(&dir, "repository-marketplace")?;
     home.marketplace(&home.work.join("tools/market"))?;
     home.switch_on(
@@ -576,8 +605,22 @@ async fn a_runs_settings_keep_the_real_cli_from_loading_a_language_server() -> T
             "source": { "source": "directory", "path": "./tools/market" },
         } } }),
     )?;
-    assert_eq!(home.session(&[]).await?.0, 0, "the first session registers");
-    homes.push(home);
+    let planned_unregistered = home.planned_settings()?;
+    assert!(
+        !home.config.join("plugins/known_marketplaces.json").exists(),
+        "nothing is registered when the run is planned"
+    );
+    assert_eq!(home.session(&[]).await?.0, 0, "this session registers");
+    assert_eq!(
+        home.session(&[]).await?,
+        all_three,
+        "repository-marketplace: the control, the real CLI loads the three language servers"
+    );
+    assert_eq!(
+        home.session(&planned_unregistered).await?,
+        (0, Vec::new()),
+        "repository-marketplace: with the settings planned before the registration"
+    );
 
     for home in &homes {
         let layout = home.root.file_name().unwrap_or_default().to_string_lossy();

@@ -1139,5 +1139,19 @@ fn a_superagent_switches_off_the_plugins_it_is_given() -> TestResult {
     assert_eq!(settings["enabledPlugins"], off);
     assert_eq!(settings["disableAllHooks"], json!(true));
     assert_eq!(settings["outputStyle"], json!("Concise"));
+
+    // The most the lookup hands over (256 ids of 200 bytes, of characters JSON does not escape)
+    // stays far below what one argument of a command line may have (128 KiB), so the list cannot
+    // keep a Superagent from starting.
+    let most: Vec<String> = (0..256)
+        .map(|n| format!("{}@{n:03}", "n".repeat(196)))
+        .collect();
+    assert!(most.iter().all(|id| id.len() == 200));
+    let plan = plan_cockpit(&CockpitRequest {
+        disabled_plugins: most,
+        ..global
+    })?;
+    let longest = plan.argv.iter().map(String::len).max().unwrap_or(0);
+    assert!(longest < 64 * 1024, "{longest} bytes in one argument");
     Ok(())
 }
