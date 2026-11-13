@@ -1406,6 +1406,26 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
+Git itself, which the server runs in those folders as the service user, is confined by the
+kernel: every command of the Git adapter is started through `yulius git-confined`
+(`yulius_git::confine`, Landlock), which lets it execute Git's own programs only and read and
+write only the folders the command works in (a sandbox's clone, worktrees and import
+worktrees; what else a command touches is named where it is made). A clone's configuration
+can then make the server's Git run nothing, and a link in the clone leads it nowhere
+outside. Only a transfer between two folders Yulius names may start the shell, with its
+transports pinned to `file`
+([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)).
+
+```mermaid
+flowchart LR
+  SRV["server: Git adapter"] -->|"yulius git-confined --rw <its sandbox's folders> -- git ..."| L["launcher: Landlock on itself, then exec"]
+  L --> G["git: executes git, its exec-path, the loader"]
+  G -->|"read, write"| S["<data>/sandboxes/<id>, <data>/import-worktrees/<id>"]
+  G -->|"read"| SYS["/usr, /lib, /etc"]
+  G -.->|"refused"| X["/bin/sh and other programs, <data> beyond the sandbox, other sandboxes"]
+  G -->|"transfer Yulius names: + /bin/sh, file transport only"| O["<data>/playgrounds/<id>.git, CD mirror"]
+```
+
 ```mermaid
 flowchart LR
     A["anchor: sandbox dir or canonical root"] -->|"openat O_DIRECTORY|O_NOFOLLOW per folder"| F["folder handle"]

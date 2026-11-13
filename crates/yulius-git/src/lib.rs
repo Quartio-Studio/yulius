@@ -233,3 +233,141 @@ impl fmt::Debug for Git {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn confinement(data: &std::path::Path, data_depth: usize) -> Confinement {
+        Confinement {
+            launcher: "yulius".into(),
+            data: data.to_path_buf(),
+            data_depth,
+            shared: Vec::new(),
+            shell: false,
+        }
+    }
+
+    /// ADR-0322: a command working anywhere in a sandbox's folders gets that sandbox's (its
+    /// clone and worktrees, and the worktrees of its imports) and no other sandbox's; one
+    /// working elsewhere gets the folder it names, or the nearest one that exists.
+    #[test]
+    fn a_command_reaches_its_own_sandboxes_folders() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let data = dir.path().canonicalize()?;
+        for folder in [
+            "sandboxes/s1/repo/.git",
+            "sandboxes/s1/worktrees/t1",
+            "sandboxes/s2/repo",
+            "import-worktrees/s1/import-7",
+            "playgrounds/s1.git",
+            "cd/s1",
+        ] {
+            std::fs::create_dir_all(data.join(folder))?;
+        }
+        let server = confinement(&data, 0);
+        let own = vec![data.join("sandboxes/s1"), data.join("import-worktrees/s1")];
+        for inside in [
+            "sandboxes/s1/repo",
+            "sandboxes/s1/worktrees/t1",
+            "sandboxes/s1/worktrees/not-made-yet",
+            "import-worktrees/s1/import-7",
+            "sandboxes/s1",
+        ] {
+            assert_eq!(server.reach(&data.join(inside)), own, "{inside}");
+        }
+        // A sandbox without imports has no folder of them to name.
+        assert_eq!(
+            server.reach(&data.join("sandboxes/s2/repo")),
+            vec![data.join("sandboxes/s2")]
+        );
+        // Outside a sandbox: the folder itself; what is still to be made, where it is made.
+        assert_eq!(
+            server.reach(&data.join("playgrounds/s1.git")),
+            vec![data.join("playgrounds/s1.git")]
+        );
+        assert_eq!(
+            server.reach(&data.join("playgrounds/new.git")),
+            vec![data.join("playgrounds")]
+        );
+        assert_eq!(
+            server.reach(&data.join("sandboxes/s9/repo")),
+            vec![data.join("sandboxes")],
+            "a sandbox that is being made"
+        );
+        assert_eq!(server.reach(&data.join("cd/s1")), vec![data.join("cd/s1")]);
+        // The folder of all sandboxes is no sandbox.
+        assert_eq!(
+            server.reach(&data.join("sandboxes")),
+            vec![data.join("sandboxes")]
+        );
+
+        // Tests: the data folders are the children of a folder.
+        let parent = data.parent().ok_or("parent")?;
+        let tests = confinement(parent, 1);
+        assert_eq!(tests.reach(&data.join("sandboxes/s1/repo")), own);
+        // On a server, a folder that only looks like one is nothing special.
+        assert_eq!(
+            confinement(parent, 0).reach(&data.join("sandboxes/s1/repo")),
+            vec![data.join("sandboxes/s1/repo")]
+        );
+        Ok(())
+    }
+
+    /// Of the folders of this machine, the only origin taken from a clone's configuration is
+    /// the sandbox's own (`<data>/playgrounds/<id>.git`): not another sandbox's, not a clone,
+    /// not a folder of the host, and none for a repository outside the sandboxes.
+    #[test]
+    fn only_a_sandboxes_own_origin_is_a_local_one() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let data = dir.path().canonicalize()?;
+        std::fs::create_dir_all(data.join("sandboxes/s1/worktrees/t1"))?;
+        std::fs::create_dir_all(data.join("import-worktrees/s1/import-7"))?;
+        let server = confinement(&data, 0);
+        let own = data.join("playgrounds/s1.git");
+        let asked = |repo: &str, url: &std::path::Path| {
+            server.local_origin(&data.join(repo), &url.to_string_lossy())
+        };
+        for repo in [
+            "sandboxes/s1/repo",
+            "sandboxes/s1/worktrees/t1",
+            "import-worktrees/s1/import-7",
+        ] {
+            assert_eq!(asked(repo, &own), Some(own.clone()), "{repo}");
+            for other in [
+                data.join("playgrounds/s2.git"),
+                data.join("playgrounds/s1.git/objects"),
+                data.join("playgrounds"),
+                data.join("sandboxes/s2/repo"),
+                data.clone(),
+                std::path::PathBuf::from("/"),
+            ] {
+                assert_eq!(asked(repo, &other), None, "{repo} -> {}", other.display());
+            }
+        }
+        assert_eq!(
+            asked("playgrounds/s1.git", &own),
+            None,
+            "no sandbox's repository"
+        );
+        assert_eq!(asked("cd/s1", &own), None);
+        // An address that is no folder of this machine is none.
+        for url in ["https://github.com/acme/app.git", "origin", "../s1.git", ""] {
+            assert_eq!(
+                server.local_origin(&data.join("sandboxes/s1/repo"), url),
+                None,
+                "{url}"
+            );
+        }
+        // The tests' stand-in for GitHub: any folder.
+        let seam = Confinement {
+            shell: true,
+            ..server.clone()
+        };
+        assert_eq!(
+            seam.local_origin(&data.join("sandboxes/s1/repo"), "/tmp/origin.git"),
+            Some("/tmp/origin.git".into())
+        );
+        Ok(())
+    }
+}

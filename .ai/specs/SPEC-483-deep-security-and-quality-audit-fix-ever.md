@@ -56,7 +56,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
-      changes of their own, taken out of slice 9, which is one concern.
+      changes of their own, taken out of slice 9, which is one concern;
+  19. the connection that carries the server's token in a clone its agents configure (G2,
+      found in slice 10).
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -219,6 +221,31 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (`egress_destination_allowed`, applied to what it resolved itself). Chrome 157 sends
   `localhost` past `--proxy-server` unless `--proxy-bypass-list=<-loopback>` is given
   (measured with a logging proxy, `target/audit/slice9/probe_proxy.py`).
+
+### Slice 10: the host's own Git
+
+- **G1 (critical).** `yulius_git::runner` starts `git` as the service user with three
+  constant options (`protocol.ext.allow=never`, `core.fsmonitor=false`,
+  `core.hooksPath=/dev/null`), in clones and worktrees whose `.git/config` and every other
+  file the agents write. Run against such a clone (`git_confined` tests, the confinement
+  taken out), the adapter's Git executed what the clone named as `filter.<name>.process`,
+  `core.sshCommand` and the remote's `uploadpack` and `receivepack`; a fetch wrote
+  `FETCH_HEAD` through a link over a file outside the sandbox; and with the remote's address
+  changed to another sandbox's origin or clone, the server pushed there and merged from
+  there. By hand: a link at `.git/shallow` made Git print a line of the file behind it
+  ("fatal: bad shallow line: …"). A fetch's environment holds the token
+  (`http.<url>.extraheader`).
+- **Landlock** is what the kernel offers an unprivileged process for "execute these files
+  only, touch these folders only" (ABI 8 on this machine; the `landlock` crate, no `unsafe`
+  of ours). Measured by hand before building on it: a confined `git status`, `log`, a local
+  fetch with the shell allowed and an HTTPS `ls-remote` work; a filter's command fails with
+  "cannot exec 'sh -c …': Permission denied"; Git starts the other side of a transfer between
+  two folders through `/bin/sh` always.
+- **G2 (new, high).** A key for a URL in the clone's configuration
+  (`http.https://github.com/.sslVerify=false`, `.proxy`) beats the server's command line and
+  environment (`git config --get-urlmatch`, `target/audit/slice10/urlmatch-proof.log`): the
+  connection that carries the server's token can be sent through a proxy in the sandbox's
+  own ports without a certificate check. Not fixed by confinement; slice 19.
 
 ## Requirements
 
@@ -402,6 +429,24 @@ no code path reaches; documents, texts shown to agents and people, and code that
   never ask the policy of agent runs, and count toward the share of the proxy's connections
   its sandbox's agent runs have. A plain request's answer is waited for with SPEC-369's
   bound, which restarts with every piece of its body sent on.
+
+- **GCR-001** On Linux every Git command of the server's adapter is started through
+  `<yulius> git-confined`, which restricts its own process with Landlock and then becomes
+  Git: executing is allowed for Git's executable (found by `PATH`), its `exec-path` and the
+  program loader; writing for the folders given and `/dev/null`; reading for those, the
+  system's folders and the service user's Git configuration. Without an enforcing Landlock
+  Git is not started.
+- **GCR-002** The folders given are the command's own: for a path in
+  `<data>/sandboxes/<id>` or `<data>/import-worktrees/<id>` the existing folders of that id;
+  elsewhere the path itself or its nearest existing folder; plus what the command names
+  besides (a destination, a bundle, the other repository of a transfer).
+- **GCR-003** The shell is allowed only for a command that transfers with a folder Yulius
+  names; that command's transports are pinned to `file`, its alternate-refs command is empty
+  and it gets none of the adapter's `GIT_CONFIG_*` environment.
+- **GCR-004** A transfer by a remote's name whose configured address is a folder is made
+  with that folder, named by path, only when it is `<data>/playgrounds/<id>.git` of the
+  command's own sandbox; otherwise it is made by the name, without shell or reach.
+- **GCR-005** `yulius doctor` reports whether Git can be confined on the host.
 
 ## Plan
 
@@ -626,6 +671,32 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   host service, the internal API, `169.254.169.254` and both over HTTPS show none of those
   pages; a page's `fetch`, image and WebSocket to them arrive nowhere while its own server
   answers.
+- **AC-54** In the server's layout and with the adapter as the server builds it: a clone
+  from the sandbox's own origin, a worktree, a commit, the review's changes, a push and the
+  remote's head by the remote's name, a merge of the fetched integration branch and the
+  worktree's discard all work.
+- **AC-55** With the clone's configuration naming a marking command as a filter (clean,
+  smudge, process), a diff driver, text conversion, external diff, merge driver, editor,
+  pager, signing program, `ssh` command, file monitor, credential helper, alternate-refs
+  command, a hook, and the remote's `uploadpack` and `receivepack`, with the remote's address
+  an `ssh:` one and with the origin's folder rewritten to one: the server's status, commit,
+  review, diff, log, push, fetch and merge leave no marker.
+- **AC-56** A link at `FETCH_HEAD` to a file outside leaves that file as it was after a
+  fetch; a link at `.git/shallow` to a file outside does not bring its text into any answer;
+  another sandbox's objects named as an alternate do not make its file readable.
+- **AC-57** With the remote's address set to another sandbox's origin, another sandbox's
+  clone or a folder of the host, a push, a fetch-and-merge and the remote's head all fail,
+  nothing arrives there and nothing is merged from there; with the sandbox's own origin the
+  push arrives.
+- **AC-58** The launcher: `git --version` runs; a Git that is not on `PATH` is refused with
+  the reason (exit 126); the Git it starts runs no shell alias and no other program by path;
+  with `--shell` a shell alias runs and another program still does not.
+- **AC-59** `Confinement::reach` and `local_origin` over a data folder: a sandbox's two
+  folders for every path in either, nothing of another sandbox, the nearest existing folder
+  for what is to be made, the tests' data folders one level down; the own origin for the
+  clone, a worktree and an import worktree, none for any other folder or address.
+- **AC-60** The binary's whole test suite passes with every adapter confined in the
+  server's layout (the tests' stand-ins for GitHub, which are folders, with the shell).
 
 ## Test plan
 
@@ -741,6 +812,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `browser_network::a_real_chromium_reaches_its_sandboxes_ports_and_no_other_local_address`
   (AC-53). The nits left by slice 8's review:
   `instance::tests::an_address_too_long_to_keep_is_kept_by_its_site`.
+- Slice 10: `yulius` `git_confined::a_sandboxes_everyday_git_works_confined` (AC-54),
+  `git_confined::nothing_the_clones_configuration_names_is_run` (AC-55),
+  `git_confined::a_link_in_the_clone_leads_git_nowhere_outside` (AC-56),
+  `git_confined::only_the_sandboxes_own_origin_is_taken_from_its_configuration` (AC-57),
+  `git_confined::the_launcher_starts_git_which_executes_gits_programs_only` (AC-58);
+  `yulius-git` `tests::a_command_reaches_its_own_sandboxes_folders` and
+  `tests::only_a_sandboxes_own_origin_is_a_local_one` (AC-59); every test of `yulius` that
+  uses the real adapter (`support::confined_git`, AC-60). The nits left by slice 9's review:
+  `yulius-egress` `nothing_is_added_to_or_taken_from_a_browsers_requests` (a request without
+  a body). A flaky test of slice 5, fixed with what it found:
+  `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once`.
 
 ## Decisions
 
@@ -794,6 +876,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   each browser behind a proxy of its own, served by the egress proxy with the sandbox's rule;
   no browser without it. Chrome inside the sandbox's namespaces stays the firmer fix and is
   not attempted here: it cannot be proven inside a sandbox.
+- [ADR-0322](../../docs/decisions/0322-the-hosts-own-git-runs-confined.md): the host's own
+  Git is confined by Landlock to Git's programs and its sandbox's folders, through a
+  launcher that is the Yulius binary itself (the workspace forbids `unsafe`, so the
+  restriction is applied by a process to itself before it becomes Git, not in a `pre_exec`).
+  The shell only for transfers Yulius names; a remote's name stands for a folder only when
+  it is the sandbox's own origin. No Landlock, no Git.
+- From the review of slice 9, round 2 (two nits, answered in slice 10): a request without a
+  body goes on without one (a wrapper of the body that keeps its end and length); ADR-0321
+  says that a name can still be answered with an address of the host's private network.
+- Slice 5's `a_message_kept_out_of_a_withheld_screen_flags_the_task_once` failed about one
+  run in five: it typed a prompt, and the fake agent's turn (working, then waiting) replaced
+  the flag before or after the test's own. The agent's states replacing a flag is how flags
+  work (`set_task_activity`); what was wrong in slice 5's code is that the withheld screen
+  was flagged once per run, so a flag replaced that way never came back. It is raised with
+  every message kept out now (a standing flag stays; the terminal is told once), and the
+  test types a key that starts no turn.
 - From the review of slice 8, round 3 (two nits, answered in slice 9): of an announced address
   too long to keep, its site is kept, so a sign-in redirect with a long query to a site the
   secret is for no longer refuses a fill; the report after the keys says what is known ("the
@@ -831,7 +929,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | fixed (slice 2) |
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
-| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 10 |
+| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | fixed (slice 10): what Git executes and the files it touches; the token's connection is G2 |
+| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 19 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |

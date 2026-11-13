@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
+  runs Git as the service user in clones whose every file an agent writes. A clone's
+  configuration could make it run commands on the host (a filter, an `ssh` command, a
+  remote's upload or receive program), a link in the clone made it overwrite a file outside
+  the sandbox or repeat one in an error, and a changed remote address sent a push to another
+  sandbox. Every Git command is now started through `yulius git-confined`, which lets it
+  execute Git's own programs only and touch only its sandbox's folders (Landlock). Hosts
+  need Linux 5.13 or later with Landlock enabled (Ubuntu 22.04+ and Debian 12 have it);
+  `yulius doctor` checks it as "git confinement". Also: a flag for a withheld screen that
+  the agent's own state replaced comes back with the next message kept out.
 - The sandbox browser reaches what its sandbox reaches (SPEC-483 slice 9, task #465,
   ADR-0321). Chrome runs on the host, and connected by itself: through the browser tools an
   agent could open another project's dev server (`localhost:<its port>`), a service on the
