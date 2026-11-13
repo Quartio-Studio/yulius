@@ -2856,10 +2856,16 @@ impl App {
         // Past its pull request's merge a task delivers again only work committed since
         // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002), and one
         // Yulius cannot judge says why to `delivery_merge` (FUP-003).
-        let merged = store
-            .delivery(&task.id)
-            .await?
-            .filter(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen));
+        let record = store.delivery(&task.id).await?;
+        // An open pull request may hold this very head: a part of the plan that `delivery_merge`
+        // delivered with steps still ahead (SPEC-484 PLN-002). Whether the head is delivered is
+        // GitHub's answer, read below; what the plan holds is said after it (`not_ready`), so a
+        // turn that ends on a delivered, armed head leaves no "not delivered" note.
+        let pull_open = record
+            .as_ref()
+            .is_some_and(|r| matches!(r.stage, DeliveryStage::PrOpen));
+        let merged =
+            record.filter(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen));
         let follow_up = match &merged {
             Some(record) => match self
                 .work_after_merge(&task, Path::new(&worktree), record)
@@ -2879,7 +2885,7 @@ impl App {
             },
             None => None,
         };
-        if let Some(reason) = hold {
+        if let Some(reason) = hold.filter(|_| !pull_open) {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }

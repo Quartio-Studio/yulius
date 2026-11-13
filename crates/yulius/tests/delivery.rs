@@ -4413,6 +4413,33 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, slice2, "pushed");
     assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);
 
+    // The turn ends with the part delivered and armed: nothing is "not delivered", so the
+    // `yulius wait` the agent started goes on waiting for the merge.
+    f.h.app.auto_open_pr(&t1).await;
+    let waiting = wait_state(&f, &agent, &slice2).await?;
+    assert_eq!(waiting["push_problem"], Value::Null, "{waiting}");
+    assert_eq!(waiting["merge_armed"], true, "{waiting}");
+    // A commit made meanwhile for the step ahead is not pushed under the armed head, and the
+    // note says why.
+    commit_file(&wt, "slice3.txt", "third, begun", "Slice 3, begun")?;
+    let begun = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, slice2, "not pushed");
+    let note = wait_state(&f, &agent, &begun).await?;
+    assert!(
+        note["push_problem"]
+            .as_str()
+            .is_some_and(|text| text.contains("1 step(s) are still ahead (next: \"Step 2\")")),
+        "{note}"
+    );
+    git(&wt, &["reset", "--quiet", "--hard", &slice2])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        wait_state(&f, &agent, &slice2).await?["push_problem"],
+        Value::Null,
+        "the note of the commit taken back is gone"
+    );
+
     // The agent starts the third slice while the queue tests the second: the armed merge lands.
     set_steps(&f, "t1", &["done", "done", "in_progress"]).await?;
     f.h.github.set_checks(&slice2, ChecksState::Success);

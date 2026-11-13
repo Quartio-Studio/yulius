@@ -7,8 +7,9 @@
 //! An agent acts with the authority of the person who created its task, through the same
 //! delivery paths and machine checks a person's action takes (the delivery profile, the PR's
 //! checks on the exact head, a valid spec, a finished part of the plan (the steps still ahead wait
-//! for a later pull request, SPEC-484), an up-to-date head, environments in order). On top of them an agent's merge needs an independent review of the exact head it
-//! merges (`reviewed_head`, the head commit the fresh-session reviewer approved) and checks that
+//! for a later pull request, SPEC-484), an up-to-date head, environments in order). On top of
+//! them an agent's merge needs an independent review of the exact head it merges
+//! (`reviewed_head`, the head commit the fresh-session reviewer approved) and checks that
 //! passed, never merely "none" when the profile requires checks. An environment that a person
 //! must verify (`verify = "manual"`, or no command) is never confirmed by an agent. Every agent
 //! action is also audited as `task:<number>`.
