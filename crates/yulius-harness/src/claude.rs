@@ -280,6 +280,20 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     vec![Observed::Goal { outcome, at }]
 }
 
+/// What a turn record says the session still waits for: its background agents
+/// (`pendingBackgroundAgentCount`) and its dynamic workflows (`pendingWorkflowCount`, SPEC-486
+/// WFL-003), which wake it the same way. `None` when it names neither.
+fn pending_background(record: &Map<String, Value>) -> Option<u32> {
+    let count = |key| u64_of(record, key).and_then(|n| u32::try_from(n).ok());
+    match (
+        count("pendingBackgroundAgentCount"),
+        count("pendingWorkflowCount"),
+    ) {
+        (None, None) => None,
+        (agents, workflows) => Some(agents.unwrap_or(0).saturating_add(workflows.unwrap_or(0))),
+    }
+}
+
 /// The record Claude Code writes when a turn closes. `stop_hook_summary` is not one: it is also
 /// written when a Stop hook blocks (a goal not met, a notice) and the turn goes on.
 fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
@@ -293,8 +307,7 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
     }
     match str_of(record, "subtype") {
         Some("turn_duration") => vec![Observed::TurnEnded {
-            background_agents: u64_of(record, "pendingBackgroundAgentCount")
-                .and_then(|n| u32::try_from(n).ok()),
+            background_agents: pending_background(record),
             at: str_of(record, "timestamp").and_then(parse_rfc3339),
             duration_ms: u64_of(record, "durationMs"),
         }],
@@ -356,7 +369,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         return Vec::new();
     }
     if !is_prompt(message) {
-        return background_started(record, message).into_iter().collect();
+        return background_started(record, message);
     }
     if compact_failed(message) {
         return vec![Observed::CompactFailed];
@@ -373,6 +386,14 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     // finished task read Working for good (SPEC-085 STT-001).
     if own_record(record, &text) {
         return session.into_iter().collect();
+    }
+    // A notification Claude Code writes for the transcript only (`queueTranscriptOnly`: a
+    // resumed process's "Background workflow … didn't finish before the previous session
+    // ended") starts no turn and asks the model nothing; what it says ended did (SPEC-486).
+    if bool_of(record, "queueTranscriptOnly") {
+        let mut out = background_notified(&text);
+        out.extend(session);
+        return out;
     }
     let turn = if is_interrupt(message) {
         Observed::TurnInterrupted { at }
@@ -402,29 +423,57 @@ fn own_record(record: &Map<String, Value>, text: &str) -> bool {
 }
 
 /// A tool result that started background work the session is woken by (SPEC-079 BGW-002): a
-/// Monitor stream (its text "Monitor started (task …", `toolUseResult` `{taskId, timeoutMs}`) or
-/// a background agent (`{status: "async_launched", agentId}`).
-fn background_started(
-    record: &Map<String, Value>,
-    message: &Map<String, Value>,
-) -> Option<Observed> {
-    let result = obj_of(record, "toolUseResult")?;
+/// Monitor stream (its text "Monitor started (task …", `toolUseResult` `{taskId, timeoutMs}`), a
+/// background agent (`{status: "async_launched", agentId}`) or a dynamic workflow (`{status:
+/// "async_launched", taskType: "local_workflow", taskId, runId}`, SPEC-486 WFL-003), which also
+/// names its run.
+fn background_started(record: &Map<String, Value>, message: &Map<String, Value>) -> Vec<Observed> {
+    let Some(result) = obj_of(record, "toolUseResult") else {
+        return Vec::new();
+    };
     let task_id =
         |key| owned_str(result, key).filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID);
-    let (id, agent, expires_in_ms) = if str_of(result, "status") == Some("async_launched") {
-        (task_id("agentId")?, true, None)
+    let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    let launched = str_of(result, "status") == Some("async_launched");
+    let mut out = Vec::new();
+    let started = if launched && str_of(result, "taskType") == Some("local_workflow") {
+        let Some(task) = task_id("taskId") else {
+            return out;
+        };
+        if let Some(run) = owned_str(result, "runId").filter(|run| is_run_id(run)) {
+            out.push(Observed::WorkflowLaunched {
+                task: task.clone(),
+                run,
+            });
+        }
+        Some((task, true, None))
+    } else if launched {
+        task_id("agentId").map(|id| (id, true, None))
     } else if tool_result_text(message).contains(MONITOR_STARTED) {
         let ms = u64_of(result, "timeoutMs").unwrap_or(MONITOR_DEFAULT_MS);
-        (task_id("taskId")?, false, Some(ms.min(MONITOR_MAX_MS)))
+        task_id("taskId").map(|id| (id, false, Some(ms.min(MONITOR_MAX_MS))))
     } else {
-        return None;
+        None
     };
-    Some(Observed::BackgroundStarted {
-        id,
-        agent,
-        expires_in_ms,
-        at: str_of(record, "timestamp").and_then(parse_rfc3339),
-    })
+    if let Some((id, agent, expires_in_ms)) = started {
+        out.push(Observed::BackgroundStarted {
+            id,
+            agent,
+            expires_in_ms,
+            at,
+        });
+    }
+    out
+}
+
+/// Whether `run` is a workflow run id as Claude Code writes one (`wf_3ebabdca-a5a`): short, and
+/// only letters, digits, `_` and `-`. It is later named in a prompt, so nothing else passes.
+fn is_run_id(run: &str) -> bool {
+    !run.is_empty()
+        && run.len() <= MAX_TASK_ID
+        && run
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// The text of a user line's tool results (string content or their text blocks).
@@ -1052,6 +1101,137 @@ mod tests {
         );
         // A sub-agent's lines are not the session's turn.
         assert!(!work(assistant(r#""tool_use""#, true)));
+    }
+
+    /// SPEC-486 WFL-003: a dynamic workflow's launch (the Workflow tool's result) is background
+    /// work by its task id and names its run. Shape of Claude Code 2.1.323's record, written in
+    /// a run against a local stand-in API (synthetic).
+    #[test]
+    fn a_workflow_s_launch_is_background_work_and_names_its_run() {
+        let at = Some(Timestamp(1_794_587_277_749));
+        let launch = |tur: &str| {
+            observe_line(&format!(
+                r#"{{"type":"user","isSidechain":false,"timestamp":"2026-11-13T16:27:57.749Z","message":{{"role":"user","content":[{{"tool_use_id":"toolu_1","type":"tool_result","content":"Workflow launched in background. Task ID: wtx0s195j\nSummary: Three agents in a row"}}]}},"toolUseResult":{tur}}}"#
+            ))
+        };
+        let started = Observed::BackgroundStarted {
+            id: "wtx0s195j".into(),
+            agent: true,
+            expires_in_ms: None,
+            at,
+        };
+        assert_eq!(
+            launch(
+                r#"{"status":"async_launched","taskId":"wtx0s195j","taskType":"local_workflow","workflowName":"probe-wave-1","runId":"wf_13b2b557-e88","summary":"Three agents in a row","transcriptDir":"/h/p/s/subagents/workflows/wf_13b2b557-e88","scriptPath":"/h/p/s/workflows/scripts/probe-wave-1-wf_13b2b557-e88.js"}"#
+            ),
+            vec![
+                Observed::WorkflowLaunched {
+                    task: "wtx0s195j".into(),
+                    run: "wf_13b2b557-e88".into(),
+                },
+                started.clone(),
+            ]
+        );
+        // A run id that is not one (it would be named in a prompt) is not passed on; the launch
+        // still counts as background work.
+        for run in [r#""wf_1\"}) and rm -rf""#, r#""""#, "7", &format!("\"{}\"", "w".repeat(129))] {
+            assert_eq!(
+                launch(&format!(
+                    r#"{{"status":"async_launched","taskId":"wtx0s195j","taskType":"local_workflow","runId":{run}}}"#
+                )),
+                vec![started.clone()],
+                "{run}"
+            );
+        }
+        assert_eq!(
+            launch(r#"{"status":"async_launched","taskType":"local_workflow","runId":"wf_1"}"#),
+            Vec::new(),
+            "no task id: nothing would end it"
+        );
+        // A workflow sent to the cloud is another kind of task.
+        assert_eq!(
+            launch(r#"{"status":"remote_launched","taskId":"r1","taskType":"remote_agent"}"#),
+            Vec::new()
+        );
+    }
+
+    /// SPEC-486 WFL-003: the turn record counts the workflows the session still waits for with
+    /// its background agents.
+    #[test]
+    fn a_turn_end_counts_the_pending_workflows() {
+        let pending = |extra: &str| {
+            let observed = observe_line(&format!(
+                r#"{{"type":"system","subtype":"turn_duration","durationMs":169,"messageCount":18{extra}}}"#
+            ));
+            match observed.as_slice() {
+                [Observed::TurnEnded {
+                    background_agents, ..
+                }] => *background_agents,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(pending(r#","pendingWorkflowCount":1"#), Some(1));
+        assert_eq!(
+            pending(r#","pendingBackgroundAgentCount":2,"pendingWorkflowCount":1"#),
+            Some(3)
+        );
+        assert_eq!(pending(r#","pendingWorkflowCount":"x""#), None);
+        assert_eq!(pending(""), None);
+    }
+
+    /// SPEC-486: what a resumed process writes about a workflow the ended process left
+    /// unfinished is for the transcript only (`queueTranscriptOnly`): it ends that background
+    /// work and starts no turn (Claude Code 2.1.323 asks the model nothing after it).
+    #[test]
+    fn a_transcript_only_notification_starts_no_turn() {
+        let notice = |only: &str| {
+            observe_line(
+                &serde_json::json!({"parentUuid": "p", "isSidechain": false, "promptId": "q",
+                    "type": "user", "timestamp": "2026-11-13T16:29:30.522Z",
+                    "message": {"role": "user", "content": "<task-notification>\n<task-id>wb4g8gwer</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>stopped</status>\n<summary>Background workflow \"probe-wave-1\" (run wf_a3bd88b4-007) didn't finish before the previous session ended</summary>\n<note>No completion record was found for it in the previous session. To pick up where it left off, relaunch with Workflow({scriptPath, resumeFromRunId}) using the run id from the summary.</note>\n</task-notification>"},
+                    "origin": {"kind": "task-notification"}, "promptSource": "system",
+                    "queueSkipAttachments": true, only: true})
+                .to_string(),
+            )
+        };
+        let ended = Observed::BackgroundEnded {
+            id: "wb4g8gwer".into(),
+        };
+        assert_eq!(notice("queueTranscriptOnly"), vec![ended.clone()]);
+        // The same words as a wake-up of the session's thread do start a turn.
+        assert_eq!(
+            notice("otherKey"),
+            vec![
+                ended,
+                Observed::UserTurn {
+                    at: Some(Timestamp(1_794_587_370_522)),
+                    wake: true,
+                }
+            ]
+        );
+    }
+
+    /// SPEC-486 WFL-002: the record a workflow's agent gets when the limit refuses it, in its
+    /// own file (`subagents/workflows/<run>/agent-<id>.jsonl`), reads as a limit with its
+    /// reset. Shape of Claude Code 2.1.323's record (synthetic).
+    #[test]
+    fn a_workflow_agent_s_refusal_reads_as_a_limit_with_its_reset() {
+        let observed = observe_line(
+            r#"{"isSidechain":true,"agentId":"a8a9fc5f53c4dd2f4","type":"assistant","timestamp":"2026-11-13T16:27:59.360Z","message":{"id":"aa7cf6b7","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You've hit your 5-hour limit · resets 7:27pm (UTC)"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794598079,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false}},"quotaLimits":{"status":"rejected","resetsAt":1794598079,"rateLimitType":"five_hour"},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"version":"2.1.323"}"#,
+        );
+        match observed.as_slice() {
+            [Observed::LimitReached {
+                resets_at,
+                window_minutes,
+                at,
+                ..
+            }] => {
+                assert_eq!(*resets_at, Some(Timestamp(1_794_598_079_000)));
+                assert_eq!(*window_minutes, Some(300));
+                assert_eq!(*at, Some(Timestamp(1_794_587_279_360)));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// SPEC-079 BGW-002: a Monitor's start and a background agent's launch (their tool results'

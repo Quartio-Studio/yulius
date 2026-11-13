@@ -8,6 +8,13 @@
 //! The directory is listed and its files followed with bounds: at most
 //! [`MAX_SUBAGENT_FILES`] files, regular files only (no symbolic links), lines of at most
 //! [`SUBAGENT_LINE_BYTES`].
+//!
+//! The agents of a dynamic workflow (the Workflow tool, Claude Code 2.1.323) write theirs one
+//! level down, to `<session>/subagents/workflows/<run id>/agent-<id>.jsonl`, beside the run's
+//! `journal.jsonl`. They are followed the same way (SPEC-486 WFL-001), with bounds of their own:
+//! the [`MAX_WORKFLOW_RUNS`] run folders changed last, [`MAX_WORKFLOW_FILES`] files. A line says
+//! whether a workflow's agent wrote it ([`SideLine`]): such an agent's usage limit is the
+//! session's, which Claude Code does not write to the session's own transcript.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,6 +29,12 @@ use crate::tail::TranscriptTail;
 /// Most sub-agent transcripts followed for one session.
 pub const MAX_SUBAGENT_FILES: usize = 256;
 
+/// Most workflow run folders listed for one session: the ones changed last.
+pub const MAX_WORKFLOW_RUNS: usize = 64;
+
+/// Most workflow agents' transcripts followed for one session.
+pub const MAX_WORKFLOW_FILES: usize = 512;
+
 /// Longest sub-agent transcript line read; longer ones (large tool output) are skipped.
 pub const SUBAGENT_LINE_BYTES: usize = 1024 * 1024;
 
@@ -29,6 +42,21 @@ pub const SUBAGENT_LINE_BYTES: usize = 1024 * 1024;
 #[must_use]
 pub fn subagent_dir(transcript: &Path) -> PathBuf {
     transcript.with_extension("").join("subagents")
+}
+
+/// `<session>/subagents/workflows`, whose folders are the session's workflow runs.
+#[must_use]
+pub fn workflow_dir(transcript: &Path) -> PathBuf {
+    subagent_dir(transcript).join("workflows")
+}
+
+/// A line of a side transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideLine {
+    /// The line.
+    pub line: String,
+    /// A workflow's agent wrote it, not a sub-agent of the session's own thread.
+    pub workflow: bool,
 }
 
 /// Keeps a transcript's lines from the first one recorded at or after a time: a resumed
@@ -106,6 +134,8 @@ pub struct SubagentTails {
     since: Option<Timestamp>,
     until: Option<Timestamp>,
     tails: BTreeMap<PathBuf, (TranscriptTail, LinesSince)>,
+    /// The workflow agents' files, followed beside the sub-agents' with their own bound.
+    workflow_tails: BTreeMap<PathBuf, (TranscriptTail, LinesSince)>,
 }
 
 impl SubagentTails {
@@ -124,6 +154,7 @@ impl SubagentTails {
             since,
             until,
             tails: BTreeMap::new(),
+            workflow_tails: BTreeMap::new(),
         }
     }
 
@@ -133,12 +164,24 @@ impl SubagentTails {
     /// # Errors
     /// I/O failures other than a missing directory or file.
     pub fn poll(&mut self) -> io::Result<Vec<String>> {
+        Ok(self.poll_sides()?.into_iter().map(|s| s.line).collect())
+    }
+
+    /// [`Self::poll`], each line with whose it is: the sub-agents' first, then the workflow
+    /// agents'.
+    ///
+    /// # Errors
+    /// I/O failures other than a missing directory or file.
+    pub fn poll_sides(&mut self) -> io::Result<Vec<SideLine>> {
         self.discover()?;
+        self.discover_workflows()?;
         let mut lines = Vec::new();
-        for (tail, since) in self.tails.values_mut() {
-            for line in tail.poll()? {
-                if since.keep(&line) {
-                    lines.push(line);
+        for (workflow, tails) in [(false, &mut self.tails), (true, &mut self.workflow_tails)] {
+            for (tail, since) in tails.values_mut() {
+                for line in tail.poll()? {
+                    if since.keep(&line) {
+                        lines.push(SideLine { line, workflow });
+                    }
                 }
             }
         }
@@ -150,13 +193,63 @@ impl SubagentTails {
     pub fn at_end(&self) -> bool {
         self.tails
             .values()
+            .chain(self.workflow_tails.values())
             .all(|(tail, window)| tail.at_end() || window.ended())
     }
 
-    /// Number of sub-agent transcripts followed.
+    /// Number of sub-agent transcripts followed, the workflow agents' included.
     #[must_use]
     pub fn files(&self) -> usize {
-        self.tails.len()
+        self.tails.len() + self.workflow_tails.len()
+    }
+
+    /// Follows the agents' files of the workflow runs changed last (SPEC-486 WFL-001): only
+    /// `agent-*.jsonl` (a run's `journal.jsonl` is Claude Code's own), regular files in real
+    /// folders.
+    fn discover_workflows(&mut self) -> io::Result<()> {
+        if self.workflow_tails.len() >= MAX_WORKFLOW_FILES {
+            return Ok(());
+        }
+        let Some(entries) = list(&self.dir.join("workflows"))? else {
+            return Ok(());
+        };
+        let mut runs = Vec::new();
+        for entry in entries.take(MAX_WORKFLOW_RUNS * 4) {
+            let entry = entry?;
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let changed = entry.metadata().and_then(|m| m.modified()).ok();
+                runs.push((changed, entry.path()));
+            }
+        }
+        runs.sort();
+        let mut found = Vec::new();
+        for (_, run) in runs.into_iter().rev().take(MAX_WORKFLOW_RUNS) {
+            let Some(entries) = list(&run)? else { continue };
+            for entry in entries.take(MAX_WORKFLOW_FILES * 4) {
+                let entry = entry?;
+                let path = entry.path();
+                let agent = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("agent-") && name.ends_with(".jsonl"));
+                if agent
+                    && !self.workflow_tails.contains_key(&path)
+                    && entry.file_type().is_ok_and(|kind| kind.is_file())
+                {
+                    found.push(path);
+                }
+            }
+        }
+        found.sort();
+        for path in found {
+            if self.workflow_tails.len() >= MAX_WORKFLOW_FILES {
+                break;
+            }
+            let tail = TranscriptTail::open(&path, SUBAGENT_LINE_BYTES)?;
+            let window = LinesSince::between(self.since, self.until);
+            self.workflow_tails.insert(path, (tail, window));
+        }
+        Ok(())
     }
 
     fn discover(&mut self) -> io::Result<()> {
@@ -190,6 +283,22 @@ impl SubagentTails {
                 .insert(path, (tail, LinesSince::between(self.since, self.until)));
         }
         Ok(())
+    }
+}
+
+/// The entries of `dir`; `None` when it does not exist (or is no folder).
+fn list(dir: &Path) -> io::Result<Option<fs::ReadDir>> {
+    match fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -320,6 +429,107 @@ mod tests {
         let mut tails = SubagentTails::new(&transcript, None);
         assert!(tails.poll()?.is_empty());
         assert_eq!(tails.files(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_workflow_s_agents_are_followed_and_marked() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        let sub = subagent_dir(&transcript);
+        let run = workflow_dir(&transcript).join("wf_13b2b557-e88");
+        fs::create_dir_all(&run)?;
+        fs::write(
+            sub.join("agent-a.jsonl"),
+            format!("{}\n", line("2026-10-10T05:38:02.000Z", "a1")),
+        )?;
+        fs::write(
+            run.join("agent-w1.jsonl"),
+            format!("{}\n", line("2026-10-10T05:38:03.000Z", "w1")),
+        )?;
+        // Claude Code's own files of a run are not transcripts.
+        fs::write(run.join("journal.jsonl"), "{\"type\":\"launched\"}\n")?;
+        fs::write(run.join("agent-w1.meta.json"), "{}")?;
+        let mut tails = SubagentTails::new(&transcript, None);
+        let lines = tails.poll_sides()?;
+        let marks: Vec<(bool, bool)> = lines
+            .iter()
+            .map(|side| (side.workflow, side.line.contains("\"w1\"")))
+            .collect();
+        assert_eq!(marks, vec![(false, false), (true, true)]);
+        assert_eq!(tails.files(), 2);
+        // A second agent of the run, found at the next poll; each line once.
+        fs::write(
+            run.join("agent-w2.jsonl"),
+            format!("{}\n", line("2026-10-10T05:38:04.000Z", "w2")),
+        )?;
+        let lines = tails.poll_sides()?;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].workflow && lines[0].line.contains("\"w2\""));
+        assert!(tails.poll()?.is_empty());
+        assert!(tails.at_end());
+        Ok(())
+    }
+
+    #[test]
+    fn a_workflow_s_agents_are_read_over_the_run_s_window()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        let run = workflow_dir(&transcript).join("wf_1");
+        fs::create_dir_all(&run)?;
+        fs::write(
+            run.join("agent-w.jsonl"),
+            format!(
+                "{}\n{}\n",
+                line("2026-10-10T05:30:00.000Z", "earlier-run"),
+                line("2026-10-10T05:38:02.000Z", "w1")
+            ),
+        )?;
+        let mut tails = SubagentTails::new(&transcript, Some(Timestamp(1_791_610_681_000)));
+        let lines = tails.poll()?;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("\"w1\""));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_workflow_s_links_are_not_followed() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        let workflows = workflow_dir(&transcript);
+        let run = workflows.join("wf_1");
+        fs::create_dir_all(&run)?;
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside)?;
+        let text = format!("{}\n", line("2026-10-10T05:38:02.000Z", "x"));
+        fs::write(outside.join("agent-x.jsonl"), &text)?;
+        // A linked file in a run's folder, and a linked run folder.
+        std::os::unix::fs::symlink(outside.join("agent-x.jsonl"), run.join("agent-l.jsonl"))?;
+        std::os::unix::fs::symlink(&outside, workflows.join("wf_link"))?;
+        let mut tails = SubagentTails::new(&transcript, None);
+        assert!(tails.poll()?.is_empty());
+        assert_eq!(tails.files(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn the_workflow_bounds_hold() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        let run = workflow_dir(&transcript).join("wf_big");
+        fs::create_dir_all(&run)?;
+        for n in 0..MAX_WORKFLOW_FILES + 3 {
+            fs::write(run.join(format!("agent-{n:04}.jsonl")), "")?;
+        }
+        // A file where a run's folder would be is skipped.
+        fs::write(workflow_dir(&transcript).join("wf_file"), "x")?;
+        let mut tails = SubagentTails::new(&transcript, None);
+        assert!(tails.poll()?.is_empty());
+        assert_eq!(tails.files(), MAX_WORKFLOW_FILES);
+        assert!(tails.poll()?.is_empty());
+        assert_eq!(tails.files(), MAX_WORKFLOW_FILES, "no more at a later poll");
         Ok(())
     }
 }
