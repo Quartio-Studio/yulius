@@ -395,6 +395,10 @@ hosts) travels to `tool_type_secret`, which applies it to the document read with
 held, and Yulius's own navigations wait for that lock; a page that moves on by itself to one
 the secret may not get is reported instead of `filled`
 ([ADR-0319](decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md)).
+The same rule is asked of what else the keys can reach: with the focus in a frame, of every
+frame of another site the page holds, and of the address Chrome announced a navigation of the
+tab to (`Page.frameStartedNavigating`, kept until the frame arrived or stopped loading)
+([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)).
 Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside

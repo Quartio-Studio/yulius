@@ -1964,7 +1964,11 @@ task; other hooks answer as usual.
   (SPEC-405). The page is the one the browser shows when the typing begins, not the one Yulius
   last listed for the tab: a tab that went elsewhere meanwhile gets nothing typed ("nothing was
   typed: this tab shows … now"), and a page that moves on by itself while it is typed to a
-  site the secret is not for answers with where it went instead of `filled` (ADR-0319). Pixels
+  site the secret is not for answers with where it went instead of `filled` (ADR-0319). The
+  keys go to the element with the focus: with the focus in a frame, a page that holds a frame
+  of a site the secret is not for gets nothing typed ("the focus is in a frame of …"; name a
+  field of the page with `selector`, or ask for that host), and so does a tab on its way to
+  such a site after a click ("this tab is on its way to …"), both 403 (ADR-0320). Pixels
   are not redacted, so `browser_screenshot` is a tool error pointing to
   `browser_snapshot` while the page shows an agent secret, cannot be read or frames a site a value
   was filled into, and, after a fill of a value (not a user name or TOTP code) outside a password
