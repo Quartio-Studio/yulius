@@ -63,7 +63,7 @@ pub async fn remote_post(
         Ok(caller) => caller,
         // 401 lets an MCP client say the token is wrong; 403 and 429 carry the reason.
         Err(err) => {
-            let status = crate::error::status_for(&err);
+            let status = crate::error::bare_status(&err);
             let body = serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32001, "message": err.public_message()}});
             let mut response = (status, Json(body)).into_response();
             if status == StatusCode::UNAUTHORIZED {

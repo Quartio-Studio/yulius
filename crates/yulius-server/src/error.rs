@@ -35,6 +35,18 @@ pub fn status_for(err: &AppError) -> StatusCode {
     }
 }
 
+/// The status for `err` on a route that answers an error in its own way (the routes the
+/// agents' own clients call, without a body; the remote MCP endpoint, as JSON-RPC), with a
+/// failure inside Yulius logged as [`ApiError`] logs it: its 500 ends a client's wait, and the
+/// server's log is where the reason is.
+#[must_use]
+pub fn bare_status(err: &AppError) -> StatusCode {
+    if let AppError::Internal(detail) = err {
+        tracing::error!(%detail, "internal error");
+    }
+    status_for(err)
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if let AppError::Internal(detail) = &self.0 {
@@ -80,7 +92,10 @@ mod tests {
 
     /// SPEC-483 QB1: no route keeps a table of its own. The loopback listener had one
     /// (`Invalid` 400, everything else 502) and the remote MCP endpoint another, beside this
-    /// one: the same error had three statuses.
+    /// one: the same error had three statuses. What is looked for is a `match` arm of the
+    /// shape those had, an `AppError` kind and a `StatusCode` on one line; a single kind
+    /// answered differently on purpose and by another construct is no table (a guest link
+    /// that ended is 410, `routes/guests.rs`).
     #[test]
     fn no_route_maps_an_application_error_to_a_status_itself() -> std::io::Result<()> {
         let routes = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes");
@@ -96,7 +111,7 @@ mod tests {
                 let source = std::fs::read_to_string(&path)?;
                 for (number, line) in source.lines().enumerate() {
                     let arm = line.trim_start();
-                    // However the error's type is named there.
+                    // Whether the arm names the type by its path or not.
                     if arm.contains("AppError::") && arm.contains("=> StatusCode::") {
                         own.push(format!("{}:{}: {arm}", path.display(), number + 1));
                     }

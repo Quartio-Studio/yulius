@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A failure inside Yulius no longer reads as an outage to `yulius wait` (SPEC-483 slice 16,
   task #465). The listener the agents' own clients call (hooks, `yulius wait`, the Git
-  credential helper) had its own table of HTTP statuses: every error but four kinds was a
+  credential helper) had its own table of HTTP statuses: every error but five kinds was a
   502, which `yulius wait` waits out as "Yulius cannot be reached", for 90 minutes by
   default. It answers with the statuses of every other route now (a failure of its own is
   500, an invalid request 422, no capacity 429), and so does the remote MCP endpoint: one

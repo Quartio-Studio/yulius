@@ -667,7 +667,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **STS-001** Every route of the server maps an application error to its HTTP status by
   `error::status_for`: 401 unauthenticated, 403 forbidden or a bad CSRF token, 404 not
   found, 409 a conflict or a missing account, 422 invalid, 429 capacity, 502 an upstream
-  failure, 500 an internal one. No file under `src/routes` holds another mapping.
+  failure, 500 an internal one. No file under `src/routes` holds another table; one kind
+  is answered differently on purpose, by its own route: a guest link that ended is 410
+  (SPEC-410). The routes that answer without a body log a failure inside Yulius as the
+  others do (`error::bare_status`).
 
 ## Plan
 
@@ -1063,8 +1066,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-91** The existing tests of armed merges, merge trains and the playground's delivery
   pass with their tasks running (a live run in a fixture is a running task now).
 - **AC-92** `status_for` gives each kind of application error the status of STS-001.
-- **AC-93** No line of a file under `crates/yulius-server/src/routes` maps an `AppError`
-  to a `StatusCode` (the two tables that did are gone).
+- **AC-93** No line of a file under `crates/yulius-server/src/routes` is a `match` arm from
+  an `AppError` kind to a `StatusCode` (the two tables that had such arms are gone).
+- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
+  says the run ended, not that the branch moved. With the armed pull request merged by a
+  person, a commit past the armed head and the task closed: the pass says "merged".
 - **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
   the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
   500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
@@ -1244,7 +1250,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 16: `yulius-server` `error::tests::every_application_error_has_one_status` (AC-92)
   and `error::tests::no_route_maps_an_application_error_to_a_status_itself` (AC-93);
   `yulius` `restart::a_server_failing_every_request_ends_the_wait_after_a_few_tries` and
-  the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94).
+  the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94);
+  `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-95, slice 15's rule).
 
 ## Decisions
 
@@ -1331,8 +1338,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
   is asked before the run's end is said: a person's merge does not clear the armed slot.
-  The agent's own
-  message says what to do; the pull request is not touched.
+  The agent's own   message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1523,6 +1529,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
+| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
 | W7 | web UI | Dead exports and CSS rules | low | slice 15 |
 | D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
 | E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |

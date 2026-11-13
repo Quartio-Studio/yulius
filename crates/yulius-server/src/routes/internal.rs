@@ -11,7 +11,7 @@ use yulius_app::hooks::HookReply;
 use yulius_contracts::hooks::{HookInput, SENT_AT_HEADER, StatusLineInput, events};
 
 use crate::AppState;
-use crate::error::status_for;
+use crate::error::bare_status;
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -46,7 +46,7 @@ pub async fn hook(
                 line,
             )
                 .into_response(),
-            Err(err) => status_for(&err).into_response(),
+            Err(err) => bare_status(&err).into_response(),
         };
     }
     let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
@@ -78,7 +78,7 @@ pub async fn hook(
         Ok(HookReply::Output(output)) => Json(output).into_response(),
         Err(err) => {
             tracing::debug!(error = %err, %harness, %event, "hook refused");
-            status_for(&err).into_response()
+            bare_status(&err).into_response()
         }
     }
 }
@@ -115,7 +115,7 @@ pub async fn agent_wait(
         .await
     {
         Ok(state) => Json(state).into_response(),
-        Err(err) => status_for(&err).into_response(),
+        Err(err) => bare_status(&err).into_response(),
     }
 }
 
@@ -154,7 +154,7 @@ pub async fn git_credential(
         }
         Err(err) => {
             tracing::info!(error = %err, "git credential refused");
-            status_for(&err).into_response()
+            bare_status(&err).into_response()
         }
     }
 }

@@ -4462,7 +4462,9 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         assert!(saved().contains("\"t1\""), "{held:?}: {}", saved());
     }
 
-    // Closed by its person: the armed merge ends, and says why.
+    // Closed by its person: the armed merge ends, and says why. Of an ended run only what
+    // became of its pull request is asked: that its branch moved since is not the reason.
+    commit_file(&t.wt, "landing.txt", "v2", "After the armed head")?;
     becomes(TaskStatus::Closed).await?;
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;
@@ -4470,6 +4472,7 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         outcome.contains("dropped") && outcome.contains("run ended (closed)"),
         "{outcome}"
     );
+    git(&t.wt, &["reset", "--hard", &t.head])?;
     assert!(!saved().contains("\"t1\""), "{}", saved());
     // Its checks pass afterwards: nothing merges, here or in a new server.
     f.h.github.set_checks(&t.head, ChecksState::Success);
@@ -4503,6 +4506,7 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
     assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    commit_file(&t.wt, "landing.txt", "v3", "After the merge")?;
     becomes(TaskStatus::Closed).await?;
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;

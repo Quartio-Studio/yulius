@@ -1913,10 +1913,11 @@ boundary and the client sends the same request again after `Retry-After` seconds
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
 
-Every route of the loopback listener (hooks, `yulius wait`'s `/internal/agent/wait`, the Git
-credential helper, the scrub fingerprints) answers an error with the status the public API gives
-that kind of error, and no body: a failure inside Yulius is `500`, never `502`, which
-`yulius wait` reads as something that cannot be reached and waits out.
+Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
+`/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application
+error with the status the public API gives that kind of error, and no body: a failure inside
+Yulius is `500` (and logged), never `502`, which `yulius wait` reads as something that cannot be
+reached and waits out.
 
 `PreToolUse` reaches the listener only for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (Bash
 is checked in the sandbox). The client sends a trimmed body, `{"hook_event_name", "tool_name",
