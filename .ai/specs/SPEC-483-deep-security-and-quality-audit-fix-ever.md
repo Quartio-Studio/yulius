@@ -2636,3 +2636,28 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   AC-95, and what the test expects of "dropped"), answered in the commit after the merge.
 - **Delivery.** Pull request #1265 merged into `dev` at `93088ebf3`, whose own Yulius CI
   run passed.
+
+### Slice 17 (2026-11-13)
+
+- **Tests failing before the fix** (`target/audit/slice17/before.log`): the three new
+  tests failed on the code as it was: the session was moved with the look unanswered
+  ("running (runs: Killed Some("switched"), Live None)"), and both switches whose old
+  session did not end answered `Ok(())` with a second run started.
+- **Tests failing without their fix** (`target/audit/slice17/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): a look without an answer read as no background work; a
+  host that cannot be terminated taken for ended; the switch's intent left in the task's
+  slot (the session that left by itself never closed its task); the task left switching;
+  no cooldown; the run that had to be killed followed by a new one.
+- **The suites:** `2714 tests run: 2714 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice17/suite1.log`), before the last additions to one test; the gate ran
+  after them.
+- **Gate.** `scripts/dev ci` at `092ff5309`: exit 0; `4283 tests run: 4283 passed, 17 skipped`
+  (`target/audit/slice17/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real session that ignores its end for a minute (the test host drops
+  the request and the wait is 300 ms); a probe that times out by itself (the test host
+  answers "not known" at once); the restart on a newer Claude Code meeting a session that
+  cannot be ended (it shares `switch_timed_out`; only its cooldown differs); the end of a
+  run recorded twice (Decisions).
