@@ -187,6 +187,9 @@ pub(crate) struct Invocation<'a> {
     pub(crate) local: bool,
     /// What the command reads on its standard input; none: it reads nothing.
     pub(crate) input: Option<Vec<u8>>,
+    /// What the command only reads besides its folder: a confined Git reaches these without
+    /// writing there ([`Invocation::local_reading`]).
+    pub(crate) reads: Vec<std::path::PathBuf>,
 }
 
 impl<'a> Invocation<'a> {
@@ -201,7 +204,16 @@ impl<'a> Invocation<'a> {
             touches: Vec::new(),
             local: false,
             input: None,
+            reads: Vec::new(),
         }
+    }
+
+    /// [`Self::local`] for a transfer that only takes from the repository at `path` (a fetch,
+    /// a listing): the command reads that folder and writes nothing there.
+    pub(crate) fn local_reading(mut self, path: impl AsRef<Path>) -> Self {
+        self.local = true;
+        self.reads.push(path.as_ref().to_path_buf());
+        self
     }
 
     /// Gives the command `bytes` on its standard input.
@@ -452,8 +464,19 @@ impl Git {
                     .collect();
                 reach.sort();
                 reach.dedup();
+                let mut reads: Vec<std::path::PathBuf> = invocation
+                    .reads
+                    .iter()
+                    .flat_map(|path| confinement.reach(path))
+                    .filter(|path| !reach.contains(path))
+                    .collect();
+                reads.sort();
+                reads.dedup();
                 for path in reach {
                     command.arg("--rw").arg(path);
+                }
+                for path in reads {
+                    command.arg("--ro").arg(path);
                 }
                 // Never in a sandbox's folder, whose configuration would name what the shell
                 // runs (a transfer between folders there is refused before it gets here).
@@ -1072,6 +1095,29 @@ mod tests {
             "no token near the shell"
         );
         assert!(sets(&command, "OTHER"));
+
+        // A transfer that only takes from the other folder (a fetch, a listing) reads it and
+        // writes nothing there.
+        let takes = words(
+            &git.command(
+                &Invocation::new(&git, "fetch", Some(&courier))
+                    .args(["fetch", "--"])
+                    .arg(&origin)
+                    .touching(&repo)
+                    .local_reading(&origin),
+            ),
+        );
+        let granted = |how: &str, folder: &Path| {
+            takes
+                .windows(2)
+                .any(|pair| pair[0] == how && pair[1] == folder.to_string_lossy())
+        };
+        assert!(
+            granted("--ro", &origin) && !granted("--rw", &origin),
+            "{takes:?}"
+        );
+        assert!(granted("--rw", &courier) && granted("--rw", &data.join("sandboxes/s1")));
+        assert!(takes.iter().any(|word| word == "--shell"), "{takes:?}");
 
         // In a sandbox's folder: refused before anything is started, in the clone and for a
         // new repository there; and no shell for any command, also where every command may

@@ -44,12 +44,25 @@ const TAGS: &str = "refs/tags/";
 
 static MADE: AtomicU64 = AtomicU64::new(0);
 
+/// Which tags a fetch brings along.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tags {
+    /// None (a refresh of the branches alone).
+    None,
+    /// Those that point into the branches fetched, as a fetch by a remote's name brings.
+    Reached,
+    /// Every tag of the remote, as a new clone has.
+    All,
+}
+
 /// A repository of the server's own for one transfer; removed when dropped.
 pub(crate) struct Courier {
     /// The bare repository.
     dir: PathBuf,
-    /// The clone's object store, when the courier works on it.
-    objects: Option<PathBuf>,
+    /// The clone and its object store, when the courier works on its objects: the clone as
+    /// the caller names it (what a command reaches is its sandbox's folders), the objects
+    /// with their links followed.
+    objects: Option<(PathBuf, PathBuf)>,
     /// The other side is a folder of this machine that Yulius may transfer with: the
     /// courier's transfer is one between folders ([`Invocation::local`]).
     folder: bool,
@@ -100,32 +113,38 @@ fn remote_default(listed: &str) -> Option<&str> {
 }
 
 /// What `update-ref --stdin -z` is told so that the clone's refs of the remote become
-/// `now`'s and it gets the tags of `tags` it has none of: a branch that moved or is new is
-/// set, one the remote dropped is deleted, a tag the clone has under any id is left alone
-/// (as a fetch leaves it). `had` and `had_tags` are the clone's before the fetch. The note
-/// of the remote's default branch (`HEAD`) is no branch: never set, never deleted.
+/// `now`'s and it gets the tags of `tags` it has none of, in two parts, as a fetch does it:
+/// first the branches the remote dropped are deleted, then a branch that moved is set and a
+/// new one made (a branch `a/b` can take the place of a dropped `a` only after `a` is gone).
+/// Each change names what the clone had (`had`, `had_tags`: its refs before the fetch), so a
+/// ref that changed meanwhile is not set back. A tag the clone has under any id is left
+/// alone. The note of the remote's default branch (`HEAD`) is no branch: never set, never
+/// deleted.
 fn ref_changes(
     prefix: &str,
     (had, had_tags): (&BTreeMap<String, String>, &BTreeSet<&String>),
     (now, tags): (&BTreeMap<String, String>, &BTreeMap<String, String>),
-) -> Vec<u8> {
-    let mut told = String::new();
-    for (name, id) in now {
-        if name != "HEAD" && had.get(name) != Some(id) {
-            told.push_str(&format!("update {prefix}{name}\0{id}\0\0"));
+) -> (Vec<u8>, Vec<u8>) {
+    let (mut dropped, mut set) = (String::new(), String::new());
+    for (name, old) in had {
+        if name != "HEAD" && !now.contains_key(name) {
+            dropped.push_str(&format!("delete {prefix}{name}\0{old}\0"));
         }
     }
-    for name in had.keys() {
-        if name != "HEAD" && !now.contains_key(name) {
-            told.push_str(&format!("delete {prefix}{name}\0\0"));
+    for (name, id) in now {
+        match had.get(name) {
+            _ if name == "HEAD" => {}
+            Some(old) if old == id => {}
+            Some(old) => set.push_str(&format!("update {prefix}{name}\0{id}\0{old}\0")),
+            None => set.push_str(&format!("create {prefix}{name}\0{id}\0")),
         }
     }
     for (name, id) in tags {
         if !had_tags.contains(name) {
-            told.push_str(&format!("create {TAGS}{name}\0{id}\0"));
+            set.push_str(&format!("create {TAGS}{name}\0{id}\0"));
         }
     }
-    told.into_bytes()
+    (dropped.into_bytes(), set.into_bytes())
 }
 
 impl Git {
@@ -218,6 +237,7 @@ impl Git {
             .then(|| self.objects_of(confinement, repo))
             .transpose()?;
         let (objects, shallow) = borrowed.unzip();
+        let objects = objects.map(|objects| (repo.to_path_buf(), objects));
         let couriers = data.join(COURIERS_FOLDER);
         std::fs::create_dir_all(&couriers).map_err(io("making the couriers' folder"))?;
         sweep(&couriers);
@@ -254,53 +274,53 @@ impl Git {
         Ok(Some(courier))
     }
 
+    /// A command in `courier` on the clone's objects, when the courier works on them: Git is
+    /// told where they are, and reaches the clone's sandbox for them.
+    fn on_the_clones_objects<'a>(courier: &Courier, command: Invocation<'a>) -> Invocation<'a> {
+        match &courier.objects {
+            Some((clone, objects)) => command
+                .env(
+                    "GIT_OBJECT_DIRECTORY",
+                    objects.to_string_lossy().into_owned(),
+                )
+                .touching(clone),
+            None => command,
+        }
+    }
+
     /// A command in `courier` that reaches `url`: on the clone's objects when the courier
     /// works on them, with the adapter's configuration unless the other side is a folder.
-    /// `words` come before the address.
+    /// A folder is only read, unless the command `pushes` there. `words` come before the
+    /// address.
     fn carrying<'a>(
         &self,
         courier: &'a Courier,
-        label: &'static str,
+        (label, pushes): (&'static str, bool),
         words: &[&str],
         url: &str,
     ) -> Invocation<'a> {
-        let mut command = Invocation::new(self, label, Some(&courier.dir))
+        let command = Invocation::new(self, label, Some(&courier.dir))
             .args(words)
             .arg(url)
             .timeout(self.network_timeout);
-        if let Some(objects) = &courier.objects {
-            command = command
-                .env(
-                    "GIT_OBJECT_DIRECTORY",
-                    objects.to_string_lossy().into_owned(),
-                )
-                .touching(objects);
+        let command = Self::on_the_clones_objects(courier, command);
+        match (courier.folder, pushes) {
+            (true, true) => command.local(url),
+            (true, false) => command.local_reading(url),
+            (false, _) => command,
         }
-        if courier.folder {
-            command = command.local(url);
-        }
-        command
     }
 
     /// The refs of the repository in `at` below each of `prefixes`, as `for-each-ref` lists
-    /// them; on `objects` when given (the courier's are the clone's).
-    fn listed_refs(
+    /// them.
+    fn listed_refs<'a>(
         &self,
-        at: &Path,
-        objects: Option<&PathBuf>,
+        list: Invocation<'a>,
         prefixes: [&str; 2],
     ) -> Result<String, GitError> {
-        let mut list = Invocation::new(self, "for-each-ref", Some(at))
+        let list = list
             .args(["for-each-ref", "--format=%(objectname) %(refname)", "--"])
             .args(prefixes);
-        if let Some(objects) = objects {
-            list = list
-                .env(
-                    "GIT_OBJECT_DIRECTORY",
-                    objects.to_string_lossy().into_owned(),
-                )
-                .touching(objects);
-        }
         Ok(self.run_ok(list)?.stdout_text())
     }
 
@@ -314,17 +334,17 @@ impl Git {
     /// 3. the server lists the courier's refs and has the clone's Git set them.
     ///
     /// A clone without a note of the remote's default branch (`refs/remotes/<remote>/HEAD`)
-    /// gets one. No command of these is a transfer made in the clone. Without `tags`, none
-    /// come along.
+    /// gets one. No command of these is a transfer made in the clone.
     pub(crate) fn fetch_through(
         &self,
         courier: &Courier,
         repo: &Path,
-        (remote, tags): (&str, bool),
+        (remote, tags): (&str, Tags),
         url: &str,
     ) -> Result<(), GitError> {
         let prefix = format!("refs/remotes/{remote}/");
-        let listed = self.listed_refs(repo, None, [prefix.as_str(), TAGS])?;
+        let both = [prefix.as_str(), TAGS];
+        let listed = self.listed_refs(Invocation::new(self, "for-each-ref", Some(repo)), both)?;
         let (had, had_tags) = (refs_below(&listed, &prefix), refs_below(&listed, TAGS));
         let has: String = (had.iter().filter(|(name, _)| *name != "HEAD"))
             .map(|(name, id)| format!("{id} {prefix}{name}\n"))
@@ -337,8 +357,7 @@ impl Git {
         std::fs::write(courier.dir.join("packed-refs"), has)
             .map_err(io("telling the courier what the clone has"))?;
         // The objects are the clone's: nothing of them is tidied away by the courier, which
-        // knows only the remote's branches. Tags come along as with any fetch, unless not
-        // wanted.
+        // knows only the remote's branches.
         let mut words = vec![
             "-c",
             "gc.auto=0",
@@ -352,44 +371,52 @@ impl Git {
             "--no-auto-maintenance",
             "--no-recurse-submodules",
         ];
-        if !tags {
-            words.push("--no-tags");
+        match tags {
+            Tags::None => words.push("--no-tags"),
+            Tags::Reached => {}
+            Tags::All => words.push("--tags"),
         }
         words.push("--");
         self.run_ok(
-            self.carrying(courier, "fetch", &words, url)
+            self.carrying(courier, ("fetch", false), &words, url)
                 .arg(format!("+refs/heads/*:{prefix}*")),
         )?;
         let default = if had.contains_key("HEAD") {
             None
         } else {
             let listed = self.run_ok(
-                self.carrying(courier, "ls-remote", &["ls-remote", "--symref", "--"], url)
-                    .arg("HEAD"),
+                self.carrying(
+                    courier,
+                    ("ls-remote", false),
+                    &["ls-remote", "--symref", "--"],
+                    url,
+                )
+                .arg("HEAD"),
             )?;
             remote_default(&listed.stdout_text()).map(str::to_owned)
         };
-        let listed = self.listed_refs(
-            &courier.dir,
-            courier.objects.as_ref(),
-            [prefix.as_str(), TAGS],
-        )?;
-        let new_tags = if tags {
-            refs_below(&listed, TAGS)
-        } else {
-            BTreeMap::new()
+        let in_the_courier = Self::on_the_clones_objects(
+            courier,
+            Invocation::new(self, "for-each-ref", Some(&courier.dir)),
+        );
+        let listed = self.listed_refs(in_the_courier, both)?;
+        let new_tags = match tags {
+            Tags::None => BTreeMap::new(),
+            Tags::Reached | Tags::All => refs_below(&listed, TAGS),
         };
-        let changes = ref_changes(
+        let (dropped, set) = ref_changes(
             &prefix,
             (&had, &had_tags.keys().collect()),
             (&refs_below(&listed, &prefix), &new_tags),
         );
-        if !changes.is_empty() {
-            self.run_ok(
-                Invocation::new(self, "update-ref", Some(repo))
-                    .args(["update-ref", "--no-deref", "--stdin", "-z"])
-                    .input(changes),
-            )?;
+        for changes in [dropped, set] {
+            if !changes.is_empty() {
+                self.run_ok(
+                    Invocation::new(self, "update-ref", Some(repo))
+                        .args(["update-ref", "--no-deref", "--stdin", "-z"])
+                        .input(changes),
+                )?;
+            }
         }
         if let Some(branch) = default {
             self.run_ok(
@@ -412,7 +439,7 @@ impl Git {
         destination: &str,
     ) -> Result<(), GitError> {
         self.run_ok(
-            self.carrying(courier, "push", &["push", "--quiet", "--"], url)
+            self.carrying(courier, ("push", true), &["push", "--quiet", "--"], url)
                 .arg(format!("{sha}:{destination}")),
         )?;
         Ok(())
@@ -427,9 +454,14 @@ impl Git {
         timeout: Duration,
     ) -> Result<String, GitError> {
         let listed = self.run_ok(
-            self.carrying(courier, "ls-remote", &["ls-remote", "--heads", "--"], url)
-                .arg(wanted)
-                .timeout(timeout),
+            self.carrying(
+                courier,
+                ("ls-remote", false),
+                &["ls-remote", "--heads", "--"],
+                url,
+            )
+            .arg(wanted)
+            .timeout(timeout),
         )?;
         Ok(listed.stdout_text())
     }
@@ -438,14 +470,36 @@ impl Git {
     /// sandbox's agents' to write from its first file on, so it is not made by a transfer
     /// (`git clone` connects, and checks files out, in a repository whose configuration it has
     /// already written): it is an empty repository with `url` as its origin's address, filled
-    /// by a fetch through a courier, whose default branch is then checked out by a command in
-    /// the clone like any other. `folder`: `url` is a folder the caller names.
+    /// by a fetch through a courier (every tag with it, as a clone has), whose default branch
+    /// is then checked out by a command in the clone like any other. `folder`: `url` is a
+    /// folder the caller names. As with `git clone`, `dest` is new or empty, and a clone that
+    /// fails leaves nothing of itself.
     pub(crate) fn clone_into_a_sandbox(
         &self,
         url: &str,
         folder: bool,
         dest: &Path,
     ) -> Result<(), GitError> {
+        let was_there = dest.is_dir();
+        let holds_something = std::fs::read_dir(dest).is_ok_and(|mut files| files.next().is_some());
+        if holds_something {
+            return Err(GitError::InvalidInput {
+                what: "clone destination",
+                reason: "it exists and is not empty".into(),
+            });
+        }
+        let made = self.fill_a_new_clone(url, folder, dest);
+        if made.is_err() {
+            // A later clone starts anew: one that kept its `.git` would only be fetched.
+            let _ = std::fs::remove_dir_all(dest);
+            if was_there {
+                let _ = std::fs::create_dir(dest);
+            }
+        }
+        made
+    }
+
+    fn fill_a_new_clone(&self, url: &str, folder: bool, dest: &Path) -> Result<(), GitError> {
         self.init(dest, "main", false)?;
         self.remote_add(dest, "origin", url)?;
         let Some(courier) = self.courier(dest, true, folder)? else {
@@ -454,7 +508,7 @@ impl Git {
                 reason: "no sandbox's folder".into(),
             });
         };
-        self.fetch_through(&courier, dest, ("origin", true), url)?;
+        self.fetch_through(&courier, dest, ("origin", Tags::All), url)?;
         let noted = self.run(Invocation::new(self, "symbolic-ref", Some(dest)).args([
             "symbolic-ref",
             "--quiet",
@@ -533,34 +587,44 @@ mod tests {
         assert!(refs_below("", TAGS).is_empty());
     }
 
-    /// What the clone's Git is told after a fetch: a moved or new branch set, a dropped one
-    /// deleted, an unchanged one and the note of the default branch left alone, and of the
-    /// tags only those the clone has none of.
+    /// What the clone's Git is told after a fetch, in two parts: first a dropped branch
+    /// deleted; then a moved branch set and a new one made, and of the tags only those the
+    /// clone has none of. Each names what the clone had. An unchanged branch and the note of
+    /// the default branch are left alone.
     #[test]
     fn the_clones_refs_follow_the_couriers() {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         let had = map(&[("main", &a), ("same", &a), ("gone", &a), ("HEAD", &a)]);
         let had_tags = map(&[("v1", &a), ("own", &a)]);
-        let now = map(&[("main", &b), ("same", &a), ("new", &b), ("HEAD", &b)]);
+        let now = map(&[
+            ("main", &b),
+            ("same", &a),
+            ("new", &b),
+            ("gone/deeper", &b),
+            ("HEAD", &b),
+        ]);
         let tags = map(&[("v1", &b), ("v2", &b)]);
-        let told = ref_changes(
+        let (dropped, set) = ref_changes(
             "refs/remotes/origin/",
             (&had, &had_tags.keys().collect()),
             (&now, &tags),
         );
         assert_eq!(
-            String::from_utf8_lossy(&told),
+            String::from_utf8_lossy(&dropped),
+            format!("delete refs/remotes/origin/gone\0{a}\0")
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&set),
             format!(
-                "update refs/remotes/origin/main\0{b}\0\0\
-                 update refs/remotes/origin/new\0{b}\0\0\
-                 delete refs/remotes/origin/gone\0\0\
+                "create refs/remotes/origin/gone/deeper\0{b}\0\
+                 update refs/remotes/origin/main\0{b}\0{a}\0\
+                 create refs/remotes/origin/new\0{b}\0\
                  create refs/tags/v2\0{b}\0"
             )
         );
         // Nothing changed: nothing is told.
-        assert!(
-            ref_changes("p/", (&had, &had_tags.keys().collect()), (&had, &had_tags)).is_empty()
-        );
+        let same = ref_changes("p/", (&had, &had_tags.keys().collect()), (&had, &had_tags));
+        assert!(same.0.is_empty() && same.1.is_empty());
     }
 
     /// The remote's default branch is the one its `HEAD` names, when `HEAD` exists there.

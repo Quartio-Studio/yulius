@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use crate::Git;
+use crate::courier::Tags;
 use crate::error::GitError;
 use crate::runner::{Invocation, Route, failure};
 use crate::validate::{
@@ -74,20 +75,22 @@ impl Git {
             "--no-recurse-submodules",
             "--",
         ]);
-        let fetch = if Path::new(remote).is_absolute() {
-            // A folder the caller names itself.
-            fetch.arg(remote).local(remote)
-        } else {
-            match self.remote_route(repo, remote, true)? {
-                Route::Folder(origin) => fetch
-                    .arg(&origin)
-                    .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))
-                    .local(&origin),
-                Route::Courier(courier, url) => {
-                    return self.fetch_through(&courier, repo, (remote, true), &url);
-                }
-                Route::Named => fetch.arg(remote),
+        // A remote's name, or a folder the caller names itself (fetched as it is).
+        let named = !Path::new(remote).is_absolute();
+        let tracking = format!("+refs/heads/*:refs/remotes/{remote}/*");
+        let fetch = match self.remote_route(repo, remote, true)? {
+            Route::Folder(origin) if named => fetch.arg(&origin).arg(tracking).local(&origin),
+            Route::Folder(origin) => fetch.arg(&origin).local(&origin),
+            Route::Courier(courier, url) if named => {
+                return self.fetch_through(&courier, repo, (remote, Tags::Reached), &url);
             }
+            Route::Courier(..) => {
+                return Err(GitError::InvalidInput {
+                    what: "remote",
+                    reason: "a sandbox's clone fetches a folder's branches as its origin's".into(),
+                });
+            }
+            Route::Named => fetch.arg(remote),
         };
         self.run_ok(fetch.timeout(self.network_timeout))?;
         Ok(())
@@ -101,7 +104,7 @@ impl Git {
         // A sandbox's clone: through a courier, as every transfer of one.
         if let Some(courier) = self.courier(repo, true, true)? {
             let source = source.to_string_lossy();
-            return self.fetch_through(&courier, repo, ("origin", false), &source);
+            return self.fetch_through(&courier, repo, ("origin", Tags::None), &source);
         }
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))

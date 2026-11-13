@@ -663,10 +663,31 @@ async fn a_fetch_and_a_push_through_the_servers_own_repository_arrive() -> TestR
     let (repo, wt) = (sandbox.join("repo"), sandbox.join("worktrees/t1"));
     std::fs::create_dir_all(sandbox.join("worktrees"))?;
     git(&origin, &["tag", "v1", "main"])?;
-    // The clone is made in a repository of the server's own and copied: what a clone has, it
-    // has (the checked-out default branch following the remote's, the remote's branches and
-    // tags, the note of its default branch), and its address is the remote's.
+    // A tag of a commit that is on no branch.
+    let lonely = git(&origin, &["commit-tree", "-m", "lonely", "main^{tree}"])?;
+    git(&origin, &["tag", "lonely", &lonely])?;
+    // A clone that fails leaves nothing of itself: the next one starts anew, and is not
+    // taken for a clone to refresh.
+    let nowhere = adapter
+        .sync_clone("https://127.0.0.1:1/acme/app.git", &repo, &token())
+        .await;
+    assert!(nowhere.is_err(), "{nowhere:?}");
+    assert!(!repo.exists(), "a failed clone's folder is gone");
+    // And a folder that holds something is no place for a clone.
+    let occupied = sandbox.join("occupied");
+    std::fs::create_dir_all(&occupied)?;
+    std::fs::write(occupied.join("theirs.txt"), "kept\n")?;
+    let refused = adapter.sync_clone(url, &occupied, &token()).await;
+    assert!(format!("{refused:?}").contains("not empty"), "{refused:?}");
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("theirs.txt"))?,
+        "kept\n"
+    );
+    // The clone is an empty repository filled through a courier: what a clone has, it has
+    // (the checked-out default branch following the remote's, the remote's branches and
+    // every tag, the note of its default branch), and its address is the remote's.
     adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(git(&repo, &["rev-parse", "lonely"])?, lonely);
     assert_eq!(git(&repo, &["config", "remote.origin.url"])?, url);
     assert_eq!(git(&repo, &["config", "branch.main.remote"])?, "origin");
     assert_eq!(
@@ -734,6 +755,29 @@ async fn a_fetch_and_a_push_through_the_servers_own_repository_arrive() -> TestR
         "a branch gone from the remote is pruned"
     );
     assert_eq!(head_note()?, "refs/remotes/origin/main", "the note stays");
+    // A branch that takes the place of another under its name, and back: `a`, then `a/b`
+    // where `a` was, then `a` again. Each fetch leaves what the remote has.
+    let branches = || {
+        git(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/remotes/origin/a",
+            ],
+        )
+    };
+    git(&origin, &["branch", "a", "main"])?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(branches()?, "refs/remotes/origin/a");
+    git(&origin, &["branch", "-D", "a"])?;
+    git(&origin, &["branch", "a/b", "main"])?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(branches()?, "refs/remotes/origin/a/b");
+    git(&origin, &["branch", "-D", "a/b"])?;
+    git(&origin, &["branch", "a", "main"])?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(branches()?, "refs/remotes/origin/a");
     // A clone without the note of the remote's default branch (one made while the remote was
     // empty) gets it with a fetch, as a fetch by the remote's name gives it; a note it has
     // is its own to keep.
@@ -914,12 +958,23 @@ async fn a_clones_transfer_settings_reach_no_transfer() -> TestResult {
 
 /// A repository whose own history ends early (a playground made of a shallow upload) is
 /// cloned and fetched as any other: the clone learns where the history ends (its `shallow`
-/// file, which the courier's is a link to) and is whole.
+/// file, which the courier's is a link to) and is whole. So too when the data folder is
+/// reached through a link. And the clone's `shallow` file is the clone's: a link in its
+/// place makes the server's fetch write nothing in the origin, which a fetch only reads.
 #[tokio::test]
 async fn a_shallow_origin_makes_a_whole_shallow_clone() -> TestResult {
+    struct Link(PathBuf);
+    impl Drop for Link {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
     let dir = tempfile::tempdir()?;
-    let root = dir.path().canonicalize()?;
-    let full = root.join("full");
+    let real = dir.path().canonicalize()?;
+    let name = real.file_name().ok_or("name")?.to_string_lossy();
+    let link = Link(real.with_file_name(format!("{name}-link")));
+    std::os::unix::fs::symlink(&real, &link.0)?;
+    let full = real.join("full");
     std::fs::create_dir_all(&full)?;
     git(&full, &["init", "-q", "-b", "main"])?;
     for n in 1..=3 {
@@ -927,41 +982,60 @@ async fn a_shallow_origin_makes_a_whole_shallow_clone() -> TestResult {
         git(&full, &["add", "-A"])?;
         git(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
     }
-    let origin = root.join("playgrounds/s1.git");
-    std::fs::create_dir_all(root.join("playgrounds"))?;
-    git(
-        &root,
-        &[
-            "clone",
-            "-q",
-            "--bare",
-            "--depth",
-            "2",
-            &format!("file://{}", full.display()),
-            &origin.to_string_lossy(),
-        ],
-    )?;
     let adapter = crate::support::strict_git();
-    let repo = root.join("sandboxes/s1/repo");
-    std::fs::create_dir_all(root.join("sandboxes/s1"))?;
-    adapter
-        .sync_clone(&origin.to_string_lossy(), &repo, &token())
-        .await?;
-    assert_eq!(
-        git(&repo, &["log", "--format=%s"])?
-            .lines()
-            .collect::<Vec<_>>(),
-        vec!["commit 3", "commit 2"]
-    );
-    assert_eq!(
-        std::fs::read_to_string(repo.join(".git/shallow"))?,
-        std::fs::read_to_string(origin.join("shallow"))?
-    );
-    git(&repo, &["fsck", "--connectivity-only"])?;
-    adapter
-        .sync_clone(&origin.to_string_lossy(), &repo, &token())
-        .await?;
-    git(&repo, &["fsck", "--connectivity-only"])?;
+    for (id, root) in [("s1", &real), ("s2", &link.0)] {
+        let origin = root.join(format!("playgrounds/{id}.git"));
+        std::fs::create_dir_all(root.join("playgrounds"))?;
+        git(
+            root,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                "--depth",
+                "2",
+                &format!("file://{}", full.display()),
+                &origin.to_string_lossy(),
+            ],
+        )?;
+        let repo = root.join(format!("sandboxes/{id}/repo"));
+        std::fs::create_dir_all(root.join(format!("sandboxes/{id}")))?;
+        let (address, nobody) = (origin.to_string_lossy().into_owned(), token());
+        let fetch = || adapter.sync_clone(&address, &repo, &nobody);
+        fetch().await?;
+        assert_eq!(
+            git(&repo, &["log", "--format=%s"])?
+                .lines()
+                .collect::<Vec<_>>(),
+            vec!["commit 3", "commit 2"],
+            "{id}"
+        );
+        let shallow = repo.join(".git/shallow");
+        assert_eq!(
+            std::fs::read_to_string(&shallow)?,
+            std::fs::read_to_string(origin.join("shallow"))?
+        );
+        git(&repo, &["fsck", "--connectivity-only"])?;
+        fetch().await?;
+        git(&repo, &["fsck", "--connectivity-only"])?;
+
+        // The agent's link where the clone's `shallow` file was, to a branch the origin does
+        // not have, and nothing left of what the clone had fetched: the next fetch would
+        // write where the history ends through the link.
+        let planted = origin.join("refs/heads/planted");
+        std::fs::remove_file(&shallow)?;
+        std::os::unix::fs::symlink(&planted, &shallow)?;
+        git(&repo, &["update-ref", "-d", "refs/remotes/origin/main"])?;
+        let _ = fetch().await;
+        assert!(
+            !planted.exists() && std::fs::symlink_metadata(&planted).is_err(),
+            "{id}: the fetch wrote into the origin"
+        );
+        assert_eq!(
+            git(&origin, &["for-each-ref", "--format=%(refname)"])?,
+            "refs/heads/main"
+        );
+    }
     Ok(())
 }
 
@@ -1020,8 +1094,8 @@ async fn a_push_goes_into_no_submodule() -> TestResult {
 /// on: a filter added to its configuration while it is being made is not run by the shell
 /// of the transfer that makes it. Its files are checked out by a command of their own, which
 /// may start no shell; they arrive unfiltered. Here the clone is a playground's, from its
-/// origin's folder; a clone through a courier is made by the same two steps (the tests'
-/// stand-in for GitHub allows the shell to every command, so it cannot show this).
+/// origin's folder; a clone from GitHub is made by the same steps (an empty repository, a
+/// fetch through a courier, a checkout in the clone).
 #[tokio::test]
 async fn a_filter_added_to_a_new_clone_is_not_run() -> TestResult {
     let dir = tempfile::tempdir()?;
