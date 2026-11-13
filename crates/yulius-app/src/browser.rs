@@ -153,7 +153,6 @@ impl App {
         Ok(session)
     }
 
-    /// Whether `sandbox` reads as removed ([`reads_removed`]).
     /// The dev-server ports of `sandbox`, which the host relays from its loopback into the
     /// sandbox and which its browser therefore reaches there (ADR-0321); `None` when there is
     /// no such sandbox.
@@ -170,6 +169,7 @@ impl App {
         }))
     }
 
+    /// Whether `sandbox` reads as removed ([`reads_removed`]).
     pub(crate) async fn sandbox_removed(&self, sandbox: &SandboxId) -> bool {
         reads_removed(&self.deps.store.sandbox(sandbox).await)
     }
