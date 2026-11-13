@@ -1492,11 +1492,14 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). No session
-Yulius starts runs a plugin's language server, and none is asked to install one: before each
-launch Yulius reads which plugins installed in the session's config dir bring a language server
-(`lspServers` in the plugin's marketplace entry or manifest, or a `.lsp.json`; read through
-handles that follow no link, never failing the launch) and switches them off in the run's own
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Yulius
+switches plugin language servers off for every session it starts, and none is asked to install
+one: before each
+launch Yulius reads which plugins of the session bring a language server (the installed ones
+and the ones the home's or the worktree's settings switch on; `lspServers` in the plugin's
+marketplace entry or manifest, or a `.lsp.json`; read through handles that follow no link, a
+path the agent wrote only inside the sandbox's folders, within one budget of 16 MiB and 1024
+folders, never failing the launch) and switches them off, whole, in the run's own
 settings (`"enabledPlugins": {"<id>": false}` in a task run's `claude-settings.json` and a
 Superagent's `--settings`), which outrank the home's `settings.json`, a repository's
 `.claude/settings.json` and a worktree's `.claude/settings.local.json`; the same preparation as

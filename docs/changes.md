@@ -14,11 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   server at the first edited file (here 2.6 GiB, 6.2 GiB with its `cargo check` in the
   worktree's `target/`; 20 GB with parallel tasks in October), or, where rustup's proxy found
   no `rust-analyzer` in the toolchain, showed the notice. Now Yulius decides per run: the
-  plugins of the session's config dir that bring a language server are switched off in the
-  run's own settings, which outrank the home's, a repository's and a worktree's, and the offer
-  is switched off (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a
-  sandbox's home needs changing. Checked against the real CLI by an opt-in test that needs no
-  account.
+  session's plugins that bring a language server (installed, or switched on by the home's or
+  the worktree's settings) are switched off in the run's own settings, which outrank the
+  home's, a repository's and a worktree's, and the offer is switched off
+  (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a sandbox's home needs
+  changing. Checked against the real CLI in seven layouts by an opt-in test that needs no
+  account; what the lookup does not read (a marketplace outside the sandbox's folders) is in
+  ADR-0327 and the operations guide.
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no

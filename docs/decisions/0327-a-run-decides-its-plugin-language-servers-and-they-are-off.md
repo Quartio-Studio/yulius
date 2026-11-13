@@ -39,25 +39,36 @@ Measured with Claude Code 2.1.323 run in a terminal against a local stand-in for
 
 ## Decision
 
-- **Yulius decides a run's language servers, per run, and they are off.** No session Yulius
-  starts (task run, Superagent, Global Superagent) runs a plugin's language server.
-- **Off in the run's own settings.** Before each launch Yulius reads which plugins installed in
-  the session's config dir bring a language server (`claude_plugins::language_server_plugins`)
-  and writes `"enabledPlugins": {"<id>": false}` for each into the settings it gives the session
+- **Yulius decides a run's language servers, per run, and they are off.** For every session
+  Yulius starts (task run, Superagent, Global Superagent) it switches off the plugins it finds
+  to bring a language server; Consequences name what it does not look at.
+- **Off in the run's own settings.** Before each launch Yulius reads which plugins of the
+  session bring a language server (`claude_plugins::language_server_plugins`) and writes
+  `"enabledPlugins": {"<id>": false}` for each into the settings it gives the session
   (`claude-settings.json` of a task run, `--settings` of a Superagent; `disabled_plugins` of the
-  launch requests). Those outrank the home's, a repository's and a worktree's settings, so the
-  server is neither loaded nor started nor reported, whatever a file, a `/plugin` or a dialog
-  set. Other plugins stay as they are.
+  launch requests). Those outrank the home's, a repository's and a worktree's settings, so for
+  the plugins found the server is neither loaded nor started nor reported, whatever a file, a
+  `/plugin` or a dialog set. Other plugins stay as they are; a plugin that brings a server and
+  other things (skills, commands) is switched off whole, since Claude Code has no switch for a
+  plugin's language server alone.
+- **Which plugins: as the real tool loads them.** The installed ones
+  (`plugins/installed_plugins.json`) and the ones the home's `settings.json`, the worktree's
+  `.claude/settings.json` or `.claude/settings.local.json` switch on, which Claude Code loads in
+  place from a marketplace that is a folder, with no install record. A marketplace lies where
+  `plugins/known_marketplaces.json` says, else at `plugins/marketplaces/<marketplace>`.
 - **"Brings a language server" is read by presence, from the three places Claude Code reads.**
   `lspServers` other than `null` in the plugin's entry of its marketplace's `marketplace.json`,
-  the same key in the plugin's manifest, or a file `.lsp.json` in one of the plugin's version
-  folders. Their grammar is not mirrored.
-- **The lookup is read-only, follows no link and never fails a launch.** The config dir is the
-  agent's: everything is opened one name at a time with `O_NOFOLLOW` from the folder above the
-  home ([ADR-0174](0174-host-access-to-agent-owned-folders-goes-through-handles.md)), read
-  up to 8 MiB, at most 256 plugins and 16 version folders each. What cannot be read brings
-  nothing: this is tidiness, not a boundary, since a language server runs inside the session's
-  containment like any program the agent starts.
+  the same key in the plugin's manifest, or a file `.lsp.json`, in any of the plugin's folders
+  (its copies in the cache, where an install record says a copy lies, its `source` in the
+  marketplace). Their grammar is not mirrored.
+- **The lookup is read-only, follows no link, has one budget and never fails a launch.** All of
+  it is the agent's: everything is opened one name at a time with `O_NOFOLLOW` from the folder
+  above the home ([ADR-0174](0174-host-access-to-agent-owned-folders-goes-through-handles.md));
+  a path the agent wrote is opened only below the sandbox directory or that folder. The whole
+  lookup reads at most 16 MiB (2 MiB a file) and looks into at most 1024 plugin folders, for
+  at most 256 plugins with ids of at most 200 bytes. What cannot be read brings nothing and is
+  logged with the launch: this is tidiness, not a boundary, since a language server runs
+  inside the session's containment like any program the agent starts.
 - **Nobody is asked to install one.** `ensure_claude_config` sets `"lspRecommendationDisabled":
   true` in the config dir's `.claude.json` at every launch, Claude Code's own switch for that
   dialog.
@@ -89,14 +100,22 @@ Measured with Claude Code 2.1.323 run in a terminal against a local stand-in for
 
 ## Consequences
 
-- A session shows neither the "couldn't start" notice nor the install dialog, in any language.
-  Agents have no go-to-definition from a language server; they read and search code as before.
+- A session shows neither the "couldn't start" notice nor the install dialog, in any language,
+  in the layouts the lookup reads. Agents have no go-to-definition from a language server; they
+  read and search code as before.
+- Not covered, where a server can still start: a marketplace or an installed copy outside the
+  sandbox's folders (the host does not open a path the agent names there); a repository's own
+  marketplace in the session that registers it (Claude Code loads nothing from it then); plugins
+  given on a command line (`--plugin-dir`, which Yulius does not pass). The launch's log line
+  about what was left unread and the operations guide say how to see it.
 - A plugin a person installs by hand in a terminal that brings a language server works until
   that session ends and is off in the next launch. Who wants one for a project asks for the
   alternative above.
 - An existing instance needs the update only. Sessions get the change at their next launch;
   nothing in a sandbox's home has to be changed, and an installed plugin may stay.
 - The opt-in live check (`YULIUS_LIVE_CLAUDE=1`, no account) keeps it true against the installed
-  Claude Code: three plugins bringing a server by the three layouts load their servers with the
-  home's settings and none with a run's. A new way for a plugin to bring a server in a later
-  Claude Code would show there as a loaded server.
+  Claude Code: in seven layouts (cloned and folder marketplaces, with and without install
+  records, switched on by the home, the repository or the worktree) the real CLI loads three
+  plugins' servers with the files alone and none with a run's settings. A later Claude Code
+  that loads a layout differently shows there, as a control that no longer loads or a server
+  that still does.
