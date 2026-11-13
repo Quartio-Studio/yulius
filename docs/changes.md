@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- `browser_fill_secret` types neither into a frame of another site nor into a tab that is
+  leaving (SPEC-483 slice 8, task #465, ADR-0320). The keys go to the element with the focus:
+  with the focus in a document of another site inside a page of the secret's host (an
+  advertisement or a widget in a frame, an object or a closed shadow root), the secret was
+  typed there and answered as `filled`. Unless the focus is in a text field of the page
+  itself, every frame of another site the page holds must now be one the secret is bound to.
+  And a tab Chrome announced a navigation for (a link clicked just before) gets nothing typed
+  when it, or one of its frames, is going to a site the secret is not for. Both answers name
+  the site. The secret's user name and one-time code, which were typed on the address Yulius
+  had last heard of the tab, go only where the secret goes.
 - `browser_fill_secret` types into the page the browser shows when the typing begins
   (SPEC-483 slice 7, task #465, ADR-0319). It checked the tab's address as Yulius had last
   heard it and typed after waiting behind a screenshot: an agent that navigated the tab in

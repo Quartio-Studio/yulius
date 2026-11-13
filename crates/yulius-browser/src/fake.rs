@@ -200,7 +200,13 @@ impl FakeState {
             return json!({"kind": "none"});
         };
         if !password.contains(&page.focused) {
-            return json!({"kind": "other"});
+            // A field a selector focused is a text field; with none focused, something else.
+            let kind = if page.focused.is_empty() {
+                "other"
+            } else {
+                "field"
+            };
+            return json!({"kind": kind});
         }
         let value = page
             .fields
@@ -498,6 +504,29 @@ impl FakeCdpServer {
         };
         for connection in connections {
             let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
+    /// Sends the event `method` with `params` on the sessions of `target_id`, as Chrome does for
+    /// what happens in a page (`Page.frameStartedNavigating` when a link is clicked, say). The
+    /// fake's page does not change; its main frame is `frame-1`, its child frames `child-<n>`.
+    pub async fn emit(&self, target_id: &str, method: &str, params: Value) {
+        let (events, connections) = {
+            let state = lock(&self.shared.state);
+            let events: Vec<Value> = state
+                .sessions
+                .iter()
+                .filter(|(_, target)| target.as_str() == target_id)
+                .map(|(session, _)| {
+                    json!({"method": method, "sessionId": session, "params": params})
+                })
+                .collect();
+            (events, state.connections.clone())
+        };
+        for connection in connections {
+            for event in &events {
+                let _ = connection.outgoing.send(event.to_string()).await;
+            }
         }
     }
 

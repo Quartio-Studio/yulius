@@ -312,6 +312,14 @@ pub trait BrowserSession: Send + Sync {
         params: &TypeParams,
         allowed: &PageRule<'_>,
     ) -> Result<TypeResult, BrowserFailure>;
+    /// `browser_fill_secret`'s typing of a secret's user name or one-time code: where
+    /// `allowed` says, as `tool_type_secret`, without the refusal of screenshots (neither is
+    /// what the redactor hides; SPEC-483 E10).
+    async fn tool_type_beside_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &PageRule<'_>,
+    ) -> Result<TypeResult, BrowserFailure>;
     /// `browser_snapshot`.
     async fn tool_snapshot(
         &self,

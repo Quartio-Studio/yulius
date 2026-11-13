@@ -42,9 +42,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   5. the vault's rules on every path (V3-V5): merged, pull request #1244;
   6. the sandbox browser's own windows: a viewer's real input reaches Chrome's file dialogs,
      DevTools and `file:` pages on the host (E1): merged, pull request #1245;
-  7. the sandbox browser's secret typing (E3);
+  7. the sandbox browser's secret typing (E3): merged, pull request #1247;
   8. what a secret's keys can still reach: a focused frame of another site, a navigation
-     under way (E8, E9);
+     under way, and its user name and one-time code typed without the rule (E8, E9, E10);
   9. the sandbox browser's network (E2, W1b, C4);
   10. the host's own Git in a clone its agents write (G1);
   11. production secrets decided once (V6);
@@ -185,6 +185,24 @@ no code path reaches; documents, texts shown to agents and people, and code that
   host, a navigation of that tab; the secret is typed into the new page and the tool answers
   `filled` with the secret's host.
 
+### Slice 8: what a secret's keys can still reach
+
+- **E8 (high).** The rule of slice 7 is asked of the tab's document. The keys go to the
+  element with the focus (`Input.insertText`), which can be in a frame of another site inside
+  a page of the secret's host: a click into the frame before, or a fill without a selector.
+  `Document::parse` already lists such frames for screenshots (`framed`), but the typing never
+  looked at them. On Google Chrome 157 a page at `127.0.0.2` framing `localhost` had the
+  secret typed into the frame's field and answered `filled`.
+- **E9 (medium).** A navigation asked for before the fill (a clicked link, an Enter) is not
+  one of Yulius's own that wait for the lock. On Chrome 157 `Page.getFrameTree` answers only
+  when the new document is there (measured with servers answering after 1.5 and 4 s, to
+  another site and to the same one), so slice 7's rule refuses the new page there; nothing in
+  the protocol promises that, and `Page.frameStartedNavigating` names the address at once.
+- **E10 (high; found by the review of this slice, on `dev` before it).**
+  `tool_browser_fill_secret` types the fields `username` and `totp` with `browser.tool_type`:
+  only the cached address of `browser.tabs()` is checked (E3's pattern), and none of this
+  slice's checks apply. A one-time code is a credential while it lasts.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -321,6 +339,29 @@ no code path reaches; documents, texts shown to agents and people, and code that
   it, the tool fails naming where the tab went, whatever else the typing ran into, and the
   secret's activity records it; a page
   that cannot be identified afterwards keeps SPEC-450's rule (every screenshot refused).
+- **FSR-004** After focusing the field, with the lock held, the page is read. Unless its
+  focus is in a text field (`input`, `textarea`, editable content) of a document the probe
+  read, every frame of another origin the page holds (in its tree and as targets of their
+  own) must be at an address the rule allows; the focus on a fenced frame is refused whatever
+  the frames are. Otherwise, and when the page or its frames cannot be read, nothing is typed
+  and the error names the frame's site.
+- **FSR-005** The browser keeps the address of a navigation to another document Chrome
+  announced for a frame (`Page.frameStartedNavigating`; `Page.frameRequestedNavigation` for
+  this tab) until the frame arrived, stopped loading or was detached, the tab's session ended
+  or 30 s passed; at most 256 frames per tab; an address over 2048 bytes is kept as none (no
+  secret is for it). A same-document navigation is not kept. Past the bound nothing is known
+  of that tab for 30 s, and when events were skipped, of none.
+- **FSR-006** The refusals reach the application as a page the secret is not for (403), the
+  reports as a secret gone astray (with its activity entry).
+- **FSR-007** Before the keys, after the focus: the document is read again, and one that is
+  not the document the rule was asked of gets nothing typed (named when the rule refuses it).
+  Then, last, a page with a frame (the main one or one in its tree) on its way to an address
+  the rule refuses gets nothing typed and that site is named; when where they are going is
+  not known, nothing is typed either.
+- **FSR-008** After the keys, a focus that is not in a text field of the page, on a page
+  holding a frame the rule refuses (or on a fenced frame), fails the tool naming that site.
+- **FSR-009** A secret's user name and one-time code are typed under FSR-001..008, and are
+  not remembered as typed secrets (finding E10).
 
 ## Plan
 
@@ -333,7 +374,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
-- [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it, reviewed
+- [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
+- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
 
 ## Acceptance criteria
 
@@ -469,6 +511,37 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   names the site, not the value, and a `vault.agent.fill` activity entry names both sites.
 - **AC-41** A `browser_navigate`, a reload and a step back asked for while a secret is typed
   each return only after the typing ended.
+- **AC-42** A fill whose focus is not in a text field of the page (a frame, an element that
+  takes no text, nothing, an unknown or missing answer), on a page holding a frame of a site
+  the rule refuses (in the frame tree, or as a target of its own), types nothing and answers
+  `SecretFrameRefused` with that site; so does one whose frames cannot be listed or told (an
+  error), one whose page cannot be read, and one with the focus on a fenced frame; with the
+  focus in a field of the page, or with every such frame allowed, it types. Through the MCP
+  tool the answer names the frame's site, not the value.
+- **AC-43** A fill on a tab Chrome announced a navigation to another site for types nothing
+  and answers `SecretPageLeaving` with that site: for a link, a step in the tab's history, a
+  requested navigation of this tab, a frame of the page, an announcement that comes while the
+  page is looked at, and an address without a host (named "an unknown site"). After Chrome
+  said the frame arrived, stopped loading or was detached, for a navigation within the
+  secret's sites, a same-document navigation, a navigation requested for another tab and a
+  frame of another page, it types. Through the MCP tool the answer names the site.
+- **AC-44** On a real Chrome (opt-in): a secret is not typed into a field of another site's
+  frame, object or frame inside a closed shadow root, and is typed when that site is allowed
+  or the focus is in the page's own field beside the frame; a fill right after a click on a
+  link to another site types nothing.
+- **AC-45** A document that changed between the look at the page and the keys gets nothing
+  typed (`SecretPageRefused` with the new site, or "try again" within the secret's sites). A
+  focus outside the page's fields after the keys (a frame, something else, a fenced frame),
+  on a page holding a frame of a refused site, answers `SecretFrameAstray` with that site;
+  with only allowed frames, or still in the field, it does not; through the MCP tool a
+  `vault.agent.fill` activity entry names it.
+- **AC-46** The record of announced navigations: an entry counts for 30 s, a settled frame's
+  and an ended session's are gone, past 256 frames of a tab (none older than 30 s) nothing
+  is known of that tab for 30 s while other tabs' are, after lost events of none, and an
+  address over 2048 bytes is kept as none (one that would read as a bound host when cut).
+- **AC-47** Through the MCP tool, the field `username` is typed neither with the focus in
+  another site's frame, nor into a tab on its way to another site, nor into a tab that moved
+  on unheard; it is typed on the bound page, and a frame that took the focus is reported.
 
 ## Test plan
 
@@ -557,6 +630,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays` and
   `browser::a_tab_made_and_closed_while_the_probe_waits_is_no_tab` (the nits left by slice 6's
   review).
+- Slice 8: `yulius-browser` `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for`
+  (AC-42), `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` (AC-43),
+  `instance::a_secret_is_not_typed_into_a_page_that_changed_since_the_look` (AC-45), the unit
+  tests `instance::tests::an_announced_navigation_stands_until_it_settled_or_is_old`,
+  `instance::tests::announcements_are_bounded_and_losing_them_is_not_knowing` and
+  `instance::tests::an_address_too_long_to_keep_is_no_address` (AC-46),
+  `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
+  (AC-42, AC-43, AC-45 and AC-47 through the MCP tool); opt-in, on a real Chrome:
+  `real_chromium::a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium` and
+  `real_chromium::a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` (AC-44).
 
 ## Decisions
 
@@ -599,6 +682,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [ADR-0319](../../docs/decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md):
   the page rule is applied in the browser with the input lock held; Yulius's navigations wait
   for the lock; a page's own move is reported.
+- [ADR-0320](../../docs/decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md): unless
+  the focus is in a text field of the page, every frame of another site the page holds must
+  be one the secret is for; a page with a frame on its way to a page the secret is not for
+  gets nothing typed. The second is asked although Chrome 157 holds its answers during a
+  navigation (measured), because nothing promises that. The secret's user name and one-time
+  code follow the same rules (E10 is fixed in this slice: it is the same typing path and the
+  same rule, and leaving it open would leave the slice's claim false for two of three fields).
+- From the review of slice 8, round 1, not changed and why: the wiring of two lines has no
+  test of its own (the record's `session_ended` on a detached session, and `lose` on skipped
+  events): a detached session's id is never asked again, so the first only frees memory, and
+  a lag of the event channel cannot be made from a test without a hook in the product code;
+  both functions are unit-tested. Frames nested inside an out-of-process frame, in that
+  frame's process, are not asked (ADR-0320 says why that is the allowed site's own page).
+- Slice 8's first gate failed in slice 5's own test
+  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task`: the task was
+  flagged before "Yulius is typing the first message" was cleared, so a message sent on seeing
+  the flag was refused as "still typing" instead of with the withheld screen. The typing now
+  ends first (`supervisor.rs`); nothing was typed either way. Fixed here, not filed: it is
+  this task's code.
 - From the review of slice 6, round 3 (three nits, all answered in slice 7): a tab's later
   announcement held with its first is replayed too; a tab made and closed during the wait is
   no tab; a probe whose tab comes after it gave up closes it.
@@ -635,9 +737,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 9 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 9 |
-| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 7 |
-| E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | slice 8 |
-| E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | slice 8 |
+| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
+| E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | fixed (slice 8) |
+| E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | fixed (slice 8) |
+| E10 | browser | `browser_fill_secret` types the user name and the TOTP code through `tool_type`, with none of the page, frame or navigation checks: a live code can go to another site's frame or a tab that moved on (found by the review of slice 8; on `dev` before it) | high | fixed (slice 8) |
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
@@ -1022,3 +1125,111 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested here.** The race on a real browser (a slow screenshot, a fill and a navigation
   at once): the order is tested on the fake with the lock held by a delayed look at the page.
   A page that redirects by itself while it is typed into, on a real site.
+
+### Slice 8 (2026-11-13)
+
+- **Tests failing without their fix** (`target/audit/slice8/mutate.py`, ten cases, each
+  switched one check off and ran its test): the frames not asked (browser and through the MCP
+  tool), the frames in other processes not asked, frames that cannot be listed typed into:
+  `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for` and
+  `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
+  failed; where the tab is going not asked, a navigation given up still standing (each in the
+  browser and through the MCP tool), only a link's navigation counting, a navigation inside
+  the document counting:
+  `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` and the MCP test
+  failed.
+- **Real browser** (Google Chrome 157, opt-in, `YULIUS_TEST_CHROMIUM`): four tests passed.
+  `a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium`: a page at `127.0.0.2`
+  framing `localhost` with the focus in the frame's field got nothing typed and the answer
+  named `localhost`; with both allowed it was typed. Before the fix the same steps typed the
+  secret into the frame. `a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium`:
+  a fill right after a click on a link to `localhost` (answering after 1.5 s) typed nothing.
+  Measured there with a probe since removed: `Page.getFrameTree` on a new session answered
+  1.52 s after the click with the new address (4.01 s with a 4 s server, also for a link to
+  the same site), so on Chrome 157 the answer is `SecretPageRefused` by slice 7's rule and
+  `SecretPageLeaving` is not reached; the test accepts either and says so.
+- **The gate's first run** at `8d90eacc5` failed in
+  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` (slice 5's test):
+  reproduced with a 300 ms delay before the typing flag was cleared (the same panic), fixed
+  by ending the typing before the task is flagged, passed with the delay in place, delay
+  removed.
+- **Gate.** `scripts/dev ci` at `2f17216be`: exit 0; `4157 tests run: 4157 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run for this slice.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 7, round 2** (head ec5c5c240): approve; merged as pull request #1247.
+- **Not tested here.** `SecretPageLeaving` on a real browser: Chrome 157 holds its answer
+  during a navigation, so only the fake reaches it. A frame nested in another site's frame
+  in a process of its own on a real Chrome (the fake lists such targets; the real test uses
+  one frame). Chromium builds other than Google Chrome 157.
+- **Review of slice 8, round 1** (head a3320e970): request changes. Own code, all answered
+  test-first:
+  1. (major) the frame check hung on a focus test that failed open for `<object>`, `<embed>`,
+     a frame in a closed shadow root and `<fencedframe>`. Now only a text field of a document
+     the probe read is the page's own; anything else asks the frames; a fenced frame is
+     refused. On Chrome 157, with round 1's gate, the secret was typed into `localhost` in an
+     `object` and in a closed shadow root's frame of a `127.0.0.2` page
+     (`target/audit/slice8/real-chrome-mutations.log`); with the fix both are refused.
+  2. (minor) nothing was asked again between the look and the keys: the document is read
+     again after the focus (a changed one gets nothing typed), where the frames are going is
+     asked last, and a frame that has the focus after the keys is reported
+     (`SecretFrameAstray`, with an activity entry).
+  3. (minor) the record of announced navigations had no bound and only the main frame was
+     asked: `Leaving` holds 256 frames, drops a frame's entry when it is detached, counts
+     nothing older than 30 s and says "not known" past its bound; every frame of the page's
+     tree is asked.
+  4. (minor) untested branches: the fake sends any page event (`emit`); the tests cover
+     `Page.frameRequestedNavigation` and its disposition, `Page.frameNavigated`,
+     `Page.frameDetached`, a frame of the page, an announcement during the look, the 30 s,
+     the bound, a session's end, a page that cannot be read, frames that cannot be told, and
+     the order of focus and look. The last step of the leaving test now does what it says.
+  Nits: skipped events lose the record ("try again" for 30 s); the frame error says what is
+  known ("the focus is not in a field of this page itself, and the page holds a frame of
+  …"); an address without a host is "an unknown site"; ADR-0320 names the page that cannot be
+  read, the address of another program, and the frames inside an out-of-process frame that
+  are not asked. Two lines stay without a test of their own (Decisions say why).
+  Pre-existing (major), finding E10: fixed here (`tool_type_beside_secret`).
+- **Tests failing without their fix, after the review** (`target/audit/slice8/mutate.py`, 28
+  cases, `mutations2.log`): each failed its test: the frames not asked (browser, MCP), round
+  1's gate, a fenced frame typed into, frames in other processes not asked, frames that
+  cannot be listed typed into, a page that cannot be read typed into, the page read before
+  the focus, a page that changed since the look typed into, a frame that took the focus not
+  reported (browser, MCP), where the tab is going not asked (browser, MCP) or asked before
+  the look, only the main frame's way asked, a navigation given up, arrived, or of a detached
+  frame still standing, only a link's navigation counting, a same-document one counting,
+  another tab's counting, the requested navigation not kept, an old announcement standing
+  for ever, nothing lost past the bound, a session's end keeping its frames, lost
+  announcements forgotten at once, and the user name typed without the page rule (E10).
+- **Real browser after the review** (Chrome 157): the four opt-in tests passed; the frame
+  test now also covers an `object`, a closed shadow root's frame that takes the focus by
+  itself, the user name's path, and the page's own field beside a frame (typed).
+- **The gate after the review.** At `c323db624` it failed in
+  `superagent_browser::the_global_superagent_drives_a_named_projects_browser`: the fake's
+  new focus kinds called an unnamed focused password field "other", so a screenshot was
+  refused (a fault of the fake, fixed there). `scripts/dev ci` at `b71c09db1`: exit 0; `4160
+  tests run: 4160 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Not tested here, added by the review's answers.** A fenced frame on a real Chrome (the
+  probe names the element; no page with one was built). The loss of announcements on skipped
+  events, end to end (the function is unit-tested).
+- **Review of slice 8, round 2** (head 2c1af3d04): request changes; "All nine round 1
+  findings are answered as the coordinator described, and I checked each in the code." Four
+  new ones in the new code, all answered test-first:
+  1. (minor) an announced address cut to 2048 bytes could read as a host of a wildcard
+     binding (`https://<long>.bank.example@evil.example/`): one too long is kept as no
+     address, which no secret is for.
+  2. (minor) a frame inside a closed shadow root that took the focus during the keys was not
+     reported: after the keys the frames are asked by the rule asked before them (the focus
+     not in a field of the page), and screenshots follow the same condition.
+  3. (nit) an announcement sent a moment before the keys may not have been read: named in
+     ADR-0320 (the report afterwards covers it).
+  4. (nit) more than 256 frames on their way in one tab stopped fills in every tab: the bound
+     and its loss are per tab; skipped events still lose every tab's.
+- **Tests failing without their fix, after round 2** (`mutate.py`, 32 cases,
+  `mutations3.log` and `mutations3b.log`): all 32 failed their tests; new: a cut address
+  kept, one tab's loss not asked, after the keys only a fenced frame reported.
+- **Real browser after round 2** (Chrome 157): the four opt-in tests passed.
+- **The gate after round 2.** `scripts/dev ci` at `20404f5ae`: exit 0; `4161 tests run: 4161
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.

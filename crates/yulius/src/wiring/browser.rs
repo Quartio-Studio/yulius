@@ -30,8 +30,12 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
         BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
         BrowserError::InputLocked => BrowserFailureKind::InputLocked,
-        BrowserError::SecretPageRefused(_) => BrowserFailureKind::SecretPageRefused,
-        BrowserError::SecretAstray(_) => BrowserFailureKind::SecretAstray,
+        BrowserError::SecretPageRefused(_)
+        | BrowserError::SecretPageLeaving(_)
+        | BrowserError::SecretFrameRefused(_) => BrowserFailureKind::SecretPageRefused,
+        BrowserError::SecretAstray(_) | BrowserError::SecretFrameAstray(_) => {
+            BrowserFailureKind::SecretAstray
+        }
         BrowserError::InvalidInput(_)
         | BrowserError::ToolParams(_)
         | BrowserError::InvalidSelector(_)
@@ -309,6 +313,17 @@ impl BrowserSession for Session {
     ) -> Result<TypeResult, BrowserFailure> {
         self.0
             .tool_type_secret(params, allowed)
+            .await
+            .map_err(failure)
+    }
+
+    async fn tool_type_beside_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &yulius_app::ports::browser::PageRule<'_>,
+    ) -> Result<TypeResult, BrowserFailure> {
+        self.0
+            .tool_type_beside_secret(params, allowed)
             .await
             .map_err(failure)
     }

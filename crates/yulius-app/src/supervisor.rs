@@ -1987,7 +1987,7 @@ impl App {
             let (task_id, attempt_id) = (task.id.clone(), attempt_id.clone());
             tokio::spawn(async move {
                 let mut typed_before = 0;
-                match app
+                let ready = app
                     .wait_input_ready(
                         &task_id,
                         &attempt_id,
@@ -1995,15 +1995,9 @@ impl App {
                         false,
                         &mut typed_before,
                     )
-                    .await
-                {
-                    InputReady::Ready => app.type_opening(&task_id, &attempt_id, opening).await,
-                    InputReady::Gone => {}
-                    InputReady::TrustUnanswered => {
-                        app.trust_unanswered(&task_id, ", then type the task's first message.")
-                            .await;
-                    }
-                    InputReady::ScreenWithheld => app.screen_withheld(&task_id).await,
+                    .await;
+                if matches!(ready, InputReady::Ready) {
+                    app.type_opening(&task_id, &attempt_id, opening).await;
                 }
                 // A run that is gone leaves the flag to the task's next start, which sets it
                 // for its own first message (this one may already be that run's).
@@ -2011,6 +2005,17 @@ impl App {
                     app.runtime(&task_id)
                         .typing_opening
                         .store(false, Ordering::SeqCst);
+                }
+                // The typing is over before the task says it was given up: a message sent on
+                // seeing the flag is answered with why nothing is typed, not with "Yulius is
+                // still typing".
+                match ready {
+                    InputReady::Ready | InputReady::Gone => {}
+                    InputReady::TrustUnanswered => {
+                        app.trust_unanswered(&task_id, ", then type the task's first message.")
+                            .await;
+                    }
+                    InputReady::ScreenWithheld => app.screen_withheld(&task_id).await,
                 }
             });
         }

@@ -259,7 +259,8 @@ async fn a_lost_secret_refuses_screenshots_after_a_restart() -> TestResult {
     let tab = first.tabs().first().ok_or("no tab")?.id.clone();
     fake.set_password_field("#pw", true);
     let reads = fake.calls_for("Page.getFrameTree").len();
-    fake.fail_nth("Page.getFrameTree", reads + 2, -32000, "no frame tree");
+    // The read after the typing: two tell the page before the keys.
+    fake.fail_nth("Page.getFrameTree", reads + 3, -32000, "no frame tree");
     first
         .tool_type_secret(
             &TypeParams {

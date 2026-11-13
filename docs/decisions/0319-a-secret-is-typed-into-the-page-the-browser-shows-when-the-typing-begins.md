@@ -57,7 +57,7 @@ there, and the tool answered `filled` on the secret's host, as the audit entry d
 - Two gaps stay, found by this slice's review and listed as findings E8 and E9 of SPEC-483: the
   keys go to the focused element, which can be a frame of another site inside a page of the
   secret's host; and a navigation under way when the typing begins is reported afterwards, not
-  prevented.
+  prevented. Both are closed by [0320](0320-a-secrets-keys-reach-only-sites-it-is-for.md).
 - A fill on a tab that moved on since the agent looked fails with the site it is on; the agent
   navigates back or asks for that host.
 - A sign-in page that navigates by itself while the secret is typed to a host the secret is
