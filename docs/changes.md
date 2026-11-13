@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
+  #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
+  pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and
+  the task sat until its subscription's reset while others were free. Yulius now follows the
+  workflow agents' transcripts and treats their limit as the session's: the task moves to a
+  subscription that can run it, or reads paused with the reset when none can. The relaunched
+  session is told in one prompt to resume the workflow by its run id (finished agents' results
+  are kept, only the others run again), and a prompt typed at a paused workflow is told not to
+  start it again. A workflow counts as background work, and its agents' tokens count in the
+  run's metrics.
 - The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
   task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
   clone, where a key for GitHub's address in the clone's configuration (a proxy, no

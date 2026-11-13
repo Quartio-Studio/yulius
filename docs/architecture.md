@@ -511,6 +511,44 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+### A limit met while a dynamic workflow runs
+
+Claude Code's Workflow tool ("ultracode") runs a script's agents inside the session's process.
+A usage limit that refuses those agents is written to their own transcripts only
+(`<session>/subagents/workflows/<run>/agent-<id>.jsonl`); Claude Code pauses the workflow and
+does not wake the session's thread, whose transcript ends with a finished turn
+([SPEC-486](../.ai/specs/SPEC-486-a-usage-limit-reached-while-a-dynamic-wo.md),
+[decision 0326](decisions/0326-a-workflow-agents-usage-limit-is-the-sessions.md)). The harness
+follows those files (`SubagentTails`, the 64 runs changed last and 512 files at most), and the
+transcript watch reports a limit found there as the session's: once the session's transcript
+is read to its end, once until its thread does something again, and not when the thread did
+something later or its own limit stands. From there it is a limit like any other.
+
+A workflow's launch in the session's transcript is background work by its task id and names
+its run; the turn record's pending workflows count with its pending agents. A process that
+ends takes its workflows with it, and Claude Code resumes none by itself, so any launch that
+resumes a session with unfinished runs opens with a prompt (`dynamic_workflow::resume_prompt`)
+that tells the agent to resume them with `Workflow({scriptPath, resumeFromRunId})`: finished
+agents' results come back from the run's journal and only the others run again. Past a limit
+that prompt replaces the silent continuation for that launch. A prompt that reaches a session
+whose workflow is paused at a limit gets the same advice through the prompt hook.
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow agent
+    participant CC as Claude Code (session)
+    participant Y as Yulius
+    W->>CC: request refused (usage limit), recorded in the agent's file only
+    CC-->>CC: workflow paused, the session's thread not woken
+    Y->>CC: watch reads the agent's file: LimitReached
+    alt a subscription can run the task
+        Y->>CC: end the process, resume the session there with the resume prompt
+        CC->>W: Workflow({scriptPath, resumeFromRunId}): only unfinished agents run
+    else none can
+        Y-->>Y: limit pause until the earliest reset, then the same resume
+    end
+```
+
 ### What a limit binds
 
 A limit Claude reports binds either the subscription or the models of one family
@@ -2925,7 +2963,7 @@ A running task's activity is derived from Claude Code's own records, not guessed
 event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
 is counted from three sources:
 - background shells, from the process probe;
-- background agents, from the turn record;
+- background agents and dynamic workflows, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
 
 The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
@@ -3088,7 +3126,7 @@ flowchart LR
 ## Run metrics
 
 A run's tokens, turns and active time are computed from its own transcript lines and its
-sub-agents' transcripts, by one accumulator (`yulius-harness` `observe`), live while it runs and
+sub-agents' transcripts (those of a dynamic workflow's agents included, SPEC-486), by one accumulator (`yulius-harness` `observe`), live while it runs and
 again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-transcript.md)). Runs
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended

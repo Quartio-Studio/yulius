@@ -74,57 +74,70 @@ reset) only when no subscription can.
 
 - WFL-001 (workflow agents' transcripts are followed). `SubagentTails` follows
   `<session>/subagents/workflows/<run>/agent-*.jsonl` as it follows the sub-agents' files: the
-  run's window, regular files only, bounded (at most `MAX_WORKFLOW_RUNS` run folders listed and
-  `MAX_WORKFLOW_FILES` files followed, beside the sub-agents' bound). Their token usage is the
-  session's (MET-004). `journal.jsonl` and other files there are not read.
+  run's window, regular files in real folders only, bounded beside the sub-agents' bound (the
+  `MAX_WORKFLOW_RUNS` = 64 run folders changed last, `MAX_WORKFLOW_FILES` = 512 files). Their
+  token usage is the session's (MET-004). `journal.jsonl` and other files there are not read.
 - WFL-002 (a workflow agent's limit is the session's). A usage-limit refusal recorded in a
   workflow agent's transcript is reported as the session's `LimitReached`, with its reset,
   window and scope, unless the session's own thread did something (a prompt, agent work, an
-  answer, an interrupt) recorded after it: then it is history, as SPEC-072 LRS-001 says of a
-  limit the session continued past. It is reported only once the session's transcript is read
+  answer, an interrupt) recorded later than it: then it is history, as SPEC-072 LRS-001 says of
+  a limit the session continued past. It is reported only once the session's transcript is read
   to its end, so a replay after a restart judges it against all the session did later; several
-  refusals read together are one report (the latest). A sub-agent's refusal outside a workflow
-  stays unreported: the session's thread is woken and refused itself.
+  refusals are one report (the latest), and nothing more is reported until the thread does
+  something again, nor while the thread's own limit stands (that one was reported). A
+  sub-agent's refusal outside a workflow stays unreported: the session's thread is woken and
+  refused itself.
 - WFL-003 (a workflow is background work). A Workflow launch in the session's transcript is
   `BackgroundStarted` (an agent, by its `taskId`) and names its run (`WorkflowLaunched`);
   its end is the task notification with a status for that `taskId`, as for an agent.
   `pendingWorkflowCount` of a turn record counts with `pendingBackgroundAgentCount`. So a task
   whose session waits for a workflow reads "Working · N background tasks still running", a
-  proactive move waits for it (BGW-004), and Yulius knows a run is unfinished. The unfinished
-  runs are part of a replay's facts, so they are known after a restart.
-- WFL-004 (the move resumes the workflow). A session relaunched past a limit
-  (`RunStart::AfterLimit`: an automatic move, a person's move at a limit, the resume of a
-  `limit` pause) while a workflow of it was unfinished is resumed with one prompt instead of
-  the silent continuation of SPEC-034: it says the session was moved, that the workflow stopped
-  with the old process, and that each unfinished run is to be resumed with
-  `Workflow({scriptPath, resumeFromRunId})` (run ids named) and not started again, then the
-  task continued. The transcript is stepped back over the limit as before; in goal mode the
-  goal is typed after that turn, as after any opening turn. The terminal notice of the move
-  says the workflow is resumed. The relaunch forgets the unfinished runs (they ended with the
-  old process; the resumed run is read from its new launch).
+  proactive move waits for it (BGW-004), and Yulius knows a run is unfinished
+  (`dynamic_workflow::Unfinished`, at most 8 runs). The unfinished runs are part of a replay's
+  facts, so they are known after a restart. A notification Claude Code writes for the
+  transcript only (`queueTranscriptOnly`: a resumed process naming a run the ended one left
+  unfinished) ends the background work it names and starts no turn. A run id passes only as
+  letters, digits, `_` and `-` (it is later named in a prompt).
+- WFL-004 (a relaunch resumes the workflow). A launch that resumes a session while a workflow
+  of it is unfinished opens with one prompt: the session continues in a new process, the
+  workflow stopped with the previous one, each unfinished run (ids named) is to be resumed
+  with the Workflow tool by its script path and run id (`resumeFromRunId`) and not started
+  again, then the task continued. Past a limit (`RunStart::AfterLimit`: an automatic move, a
+  person's move at a limit, the resume of a `limit` pause) that prompt replaces the silent
+  continuation of SPEC-034, and the transcript is stepped back over the limit as before; a
+  launch that has a prompt of its own (a held prompt's resume, a person's move of a working
+  task) keeps it first. In goal mode the goal is typed after that turn, as after any opening
+  turn. The terminal notice of the relaunch says the workflow is resumed. The relaunch forgets
+  the unfinished runs (they ended with the old process; the resumed run is read from its new
+  launch).
 - WFL-005 (waiting). With no subscription that can run the task's model, the limit opens a
   `limit` pause as today: the task reads "Paused: … (resets ~HH:MM)" and resumes at the
   earliest reset by WFL-004. No Needs you unless nothing can run it (SPEC-464 UCL-010).
 - WFL-006 (a prompt at a paused workflow). A prompt that reaches a session whose workflow met
-  a limit and has not been relaunched since (a person's "continue" while the task waits) gets,
-  through the prompt hook's additional context, the instruction of WFL-004: resume the named
-  runs from their run ids, do not start them again. Yulius itself types nothing into a session
-  in a `limit` pause (as before), and nothing here types "continue".
-- WFL-007 (the fake agent). `tools/fake-agent` can write what Claude Code writes: `/workflow`
-  launches a run (the launch records, a turn record with `pendingWorkflowCount`, an agent file
-  with a finished agent); `--workflow-limit` makes the run's second agent write the limit
-  record to its file; a resumed process whose prompt names `resumeFromRunId` writes the
-  relaunch and the run's end. Fixtures are synthetic, shaped as the probe's records.
+  a limit and has not been relaunched or ended since gets, through the prompt hook's additional
+  context, a note: the workflow (run ids named) is paused at a usage limit, it is not to be
+  started again, and it can be resumed by its run id. With no subscription free the hook holds
+  a prompt as before (ROT-010), so this is the case of a session that stays at its limit with
+  another subscription free: a refused move, or the moments before a move. Yulius itself types
+  nothing into a session in a `limit` pause (as before), and nothing here types "continue".
+- WFL-007 (the fake agent). `tools/fake-agent` writes what Claude Code writes
+  (`workflow.rs`): `/workflow` launches a run (the launch records, a turn record with
+  `pendingWorkflowCount`, an agent file with a finished agent); `--workflow-limit` makes the
+  run's second agent write the limit record to its file only; with `--limit-after` reached the
+  session's own turn is cut too; a resumed process names the unfinished runs for the
+  transcript only, and a prompt naming a run and `resumeFromRunId` writes the relaunch, the
+  remaining agents and the run's end. A prompt hook's additional context is printed. Fixtures
+  are synthetic, shaped as the probe's records.
 
 ## Plan
 
 - [x] The cause is reproduced with Claude Code 2.1.323 against a local stand-in API and written here
 - [x] The harness follows workflow agents' transcripts and reads a workflow's launch and pending count
-- [ ] The transcript watch reports a workflow agent's limit as the session's
-- [ ] The fake agent writes a workflow's records and a limit in its agent's transcript
-- [ ] A limit during a workflow moves the task and the relaunch resumes the workflow by its run id
-- [ ] A prompt typed at a workflow paused by a limit tells the agent to resume it
-- [ ] ADR-0326, the architecture, product and contract documents and the changes entry agree
+- [x] The transcript watch reports a workflow agent's limit as the session's
+- [x] The fake agent writes a workflow's records and a limit in its agent's transcript
+- [x] A limit during a workflow moves the task and the relaunch resumes the workflow by its run id
+- [x] A prompt typed at a workflow paused by a limit tells the agent to resume it
+- [x] ADR-0326, the architecture, product and contract documents and the changes entry agree
 - [ ] The gate and the security scan run on the final head and the independent review's findings are answered
 
 ## Acceptance criteria
@@ -135,10 +148,15 @@ reset) only when no subscription can.
 - With one subscription, the same limit opens a `limit` pause with the limit's reset
   (`waiting_capacity`, `resumes_at`), and the task resumes at the reset with the same prompt.
 - Without the change both tests fail: the task stays running on the first subscription.
-- A sub-agent's limit outside a workflow moves nothing; a workflow agent's limit the session
-  worked past moves nothing.
-- A task whose session waits for a workflow has background work (`background_shells` ≥ 1).
-- The probe's records (synthetic) parse as the unit tests' fixtures say.
+- With the session's own turn cut by the same limit, the task moves once, and the relaunch
+  opens with the workflow prompt on a transcript stepped back over the limit.
+- A move a person asks for while a workflow runs (no limit) relaunches the session with the
+  workflow prompt; nothing moves or pauses before that.
+- A sub-agent's limit outside a workflow is not reported; a workflow agent's limit the session
+  worked past is not reported (unit tests of the watch).
+- With a move refused, a typed prompt gets the hook's note naming the run.
+- The real Claude Code's records of the probe runs read as the fixtures say (a replay through
+  the watch).
 
 ## Test plan
 
