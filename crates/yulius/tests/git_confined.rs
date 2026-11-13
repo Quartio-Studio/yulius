@@ -277,6 +277,74 @@ async fn nothing_the_clones_configuration_names_is_run() -> TestResult {
     Ok(())
 }
 
+/// The program loader is among what a confined Git executes (the kernel starts every program
+/// through it), and the loader runs any file it can read: one of the clone's. So nothing the
+/// configuration names may be started with an argument an agent chooses. Here the clone names
+/// the loader as its external diff and text conversion, for a new file in a folder that is a
+/// program (a copy of `touch`, which would leave files named after Git's other arguments), and
+/// as its `ssh` command for an address whose host part is a path; the server's work in that
+/// worktree runs neither.
+#[tokio::test]
+async fn the_loader_is_never_started_with_a_file_of_the_clone() -> TestResult {
+    let Some(loader) = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"]
+        .into_iter()
+        .find(|loader| Path::new(loader).exists())
+    else {
+        eprintln!("skipped: no known program loader on this machine");
+        return Ok(());
+    };
+    let w = world().await?;
+    std::fs::create_dir_all(w.wt.join("sub"))?;
+    std::fs::copy("/usr/bin/touch", w.wt.join("sub/tool.bin"))?;
+    git(&w.wt, &["add", "-N", "sub/tool.bin"])?;
+    std::fs::write(w.repo.join(".git/info/attributes"), "*.bin diff=mine\n")?;
+    for key in [
+        "diff.external",
+        "diff.mine.command",
+        "diff.mine.textconv",
+        "core.sshCommand",
+    ] {
+        git(&w.repo, &["config", key, loader])?;
+    }
+    git(&w.repo, &["config", "log.showSignature", "true"])?;
+    git(&w.repo, &["config", "gpg.program", loader])?;
+
+    let _ = w.adapter.has_changes(&w.wt).await;
+    let _ = w.adapter.review_changes(&w.wt, "origin/main").await;
+    let _ = w.adapter.diff_stat(&w.wt, "origin/main", "HEAD").await;
+    let _ = w.adapter.log(&w.wt, "HEAD", 5).await;
+    let _ = w
+        .adapter
+        .commit_all(&w.wt, "feat: a tool", "Alice", "alice@example.com")
+        .await;
+    let _ = w.adapter.review_changes(&w.wt, "origin/main").await;
+    let _ = w.adapter.diff_stat(&w.wt, "origin/main", "HEAD").await;
+    let _ = w
+        .adapter
+        .review_commits(&w.wt, "origin/main", "HEAD", 5)
+        .await;
+    git(
+        &w.repo,
+        &["config", "remote.origin.url", "ssh://sub/tool.bin"],
+    )?;
+    let _ = w.adapter.merge_integration(&w.wt, "main", &token()).await;
+    let _ = w.adapter.push(&w.wt, "feat/1", "feat/1", &token()).await;
+
+    // `touch` run by the loader would have made files named after Git's other arguments
+    // (modes, object ids, the command for the other side) where it ran.
+    let made: Vec<String> = [&w.wt, &w.repo]
+        .iter()
+        .flat_map(|folder| std::fs::read_dir(folder).into_iter().flatten().flatten())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !["README.md", "sub", ".git", "a.txt"].contains(&name.as_str()))
+        .collect();
+    assert!(
+        made.is_empty(),
+        "the loader ran the clone's program: {made:?}"
+    );
+    Ok(())
+}
+
 /// G1: a link in the clone leads the server's Git nowhere outside the sandbox's folders: a
 /// file of the host it would overwrite stays, one it would read is not repeated in an error,
 /// and another sandbox's objects are not read through an alternate.
@@ -376,6 +444,147 @@ async fn only_the_sandboxes_own_origin_is_taken_from_its_configuration() -> Test
     )?;
     w.adapter.push(&w.wt, "feat/1", "feat/1", &token()).await?;
     assert!(git(&w.origin, &["rev-parse", "--verify", "refs/heads/feat/1"]).is_ok());
+    Ok(())
+}
+
+/// G2 (ADR-0323): a transfer with a remote on the web carries the server's token, and in the
+/// clone it would be shaped by the clone's configuration, where a key for a URL beats the
+/// server's own. Here the clone names a proxy (for every address and for the remote's) and
+/// switches the certificate check off; the remote itself answers nobody. The server's fetch,
+/// push and listing fail, as the remote is not there, and the proxy is never asked: they are
+/// made in a repository of the server's own, which is gone afterwards.
+#[tokio::test]
+async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
+    let w = world().await?;
+    std::fs::write(w.wt.join("a.txt"), "a\n")?;
+    w.adapter
+        .commit_all(&w.wt, "feat: a", "Alice", "alice@example.com")
+        .await?;
+    let proxy = std::net::TcpListener::bind("127.0.0.1:0")?;
+    proxy.set_nonblocking(true)?;
+    let at = format!("http://{}", proxy.local_addr()?);
+    // Nothing listens at the remote's address: a connection there is refused at once.
+    let remote = "https://127.0.0.1:1/acme/app.git";
+    git(&w.repo, &["config", "remote.origin.url", remote])?;
+    for (key, value) in [
+        ("http.proxy", at.as_str()),
+        ("http.https://127.0.0.1:1/.proxy", at.as_str()),
+        ("http.https://127.0.0.1:1/acme/app.git.proxy", at.as_str()),
+        ("http.sslVerify", "false"),
+        ("http.https://127.0.0.1:1/.sslVerify", "false"),
+    ] {
+        git(&w.repo, &["config", key, value])?;
+    }
+    let secret = Secret("the-servers-token-0451".into());
+    let fetched = w.adapter.merge_integration(&w.wt, "main", &secret).await;
+    let pushed = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
+    let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;
+    for answer in [
+        format!("{fetched:?}"),
+        format!("{pushed:?}"),
+        format!("{listed:?}"),
+    ] {
+        assert!(answer.starts_with("Err"), "{answer}");
+        assert!(!answer.contains("the-servers-token-0451"), "{answer}");
+    }
+    assert!(
+        matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "the clone's proxy was asked for the server's connection"
+    );
+    // What the transfers were made in is gone.
+    let couriers = w.sandbox.join("../../git-couriers");
+    let left: Vec<_> = std::fs::read_dir(&couriers)?.flatten().collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // A worktree that names another sandbox's repository as its own: no transfer is made
+    // with that repository's objects (the confined Git cannot even read it).
+    let commondir = w.repo.join(".git/worktrees/t1/commondir");
+    std::fs::write(
+        &commondir,
+        format!("{}\n", w.other_repo.join(".git").display()),
+    )?;
+    let lent = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
+    assert!(lent.is_err(), "{lent:?}");
+    assert!(
+        matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "still not asked"
+    );
+    Ok(())
+}
+
+/// The same transfers when the remote answers: the tests' stand-in for GitHub (a folder that
+/// `https://github.com/` is rewritten to, for the server's own configuration only). A fetch
+/// through the courier brings the remote's new work, a push arrives, the remote's head is
+/// read, a branch gone from the remote goes from the clone, and the clone's own configuration
+/// never saw the rewrite.
+#[tokio::test]
+async fn a_fetch_and_a_push_through_the_servers_own_repository_arrive() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let github = root.join("github");
+    let origin = github.join("acme/app.git");
+    seeded(&origin, "README.md", "# one\n")?;
+    git(&origin, &["branch", "gone"])?;
+    let adapter = crate::support::strict_git().with_github_base(&github);
+    let url = "https://github.com/acme/app.git";
+    let sandbox = root.join("sandboxes/s1");
+    let (repo, wt) = (sandbox.join("repo"), sandbox.join("worktrees/t1"));
+    std::fs::create_dir_all(sandbox.join("worktrees"))?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(git(&repo, &["config", "remote.origin.url"])?, url);
+    let base = git(&repo, &["rev-parse", "HEAD"])?;
+    adapter.add_worktree(&repo, &wt, "feat/1", &base).await?;
+    adapter
+        .set_identity(&wt, "Alice", "alice@example.com")
+        .await?;
+    std::fs::write(wt.join("a.txt"), "a\n")?;
+    adapter
+        .commit_all(&wt, "feat: a", "Alice", "alice@example.com")
+        .await?;
+
+    adapter.push(&wt, "feat/1", "feat/1", &token()).await?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_eq!(git(&origin, &["rev-parse", "feat/1"])?, head);
+    assert_eq!(
+        adapter
+            .remote_branch_head(&wt, "feat/1", &token())
+            .await?
+            .as_deref(),
+        Some(head.as_str())
+    );
+    // A push that would rewind the remote's branch is refused, as before.
+    git(&wt, &["reset", "-q", "--hard", &base])?;
+    assert!(
+        adapter
+            .push(&wt, "feat/1", "feat/1", &token())
+            .await
+            .is_err()
+    );
+    assert_eq!(git(&origin, &["rev-parse", "feat/1"])?, head);
+
+    // The remote moves on and drops a branch.
+    let elsewhere = root.join("elsewhere");
+    git(
+        &root,
+        &["clone", "-q", &origin.to_string_lossy(), "elsewhere"],
+    )?;
+    std::fs::write(elsewhere.join("b.txt"), "b\n")?;
+    git(&elsewhere, &["add", "-A"])?;
+    git(&elsewhere, &["commit", "-q", "-m", "b"])?;
+    git(&elsewhere, &["push", "-q", "origin", "main"])?;
+    git(&elsewhere, &["push", "-q", "origin", "--delete", "gone"])?;
+    assert!(git(&repo, &["rev-parse", "--verify", "--quiet", "origin/gone"]).is_ok());
+    adapter.merge_integration(&wt, "main", &token()).await?;
+    assert!(wt.join("b.txt").is_file(), "the remote's work arrived");
+    assert!(
+        git(&repo, &["rev-parse", "--verify", "--quiet", "origin/gone"]).is_err(),
+        "a branch gone from the remote is pruned"
+    );
+    adapter.sync_clone(url, &repo, &token()).await?;
+    let left: Vec<_> = std::fs::read_dir(root.join("git-couriers"))?
+        .flatten()
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
     Ok(())
 }
 

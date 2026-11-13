@@ -8,7 +8,7 @@ use crate::Git;
 use crate::commit::{Author, MAX_COMMIT_MESSAGE};
 use crate::error::GitError;
 use crate::repo::is_object_id;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{validate_branch_name, validate_remote, validate_revision};
 
 /// What [`Git::squash_land`] lands, and where.
@@ -138,9 +138,13 @@ impl Git {
             });
         }
         let push = Invocation::new(self, "push", Some(worktree)).args(["push", "--quiet", "--"]);
-        let push = match self.local_remote(worktree, remote) {
-            Some(origin) => push.arg(&origin).local(&origin),
-            None => push.arg(remote),
+        let push = match self.remote_route(worktree, remote)? {
+            Route::Folder(origin) => push.arg(&origin).local(&origin),
+            Route::Courier(courier, url) => {
+                self.push_through(&courier, &url, &commit, &format!("refs/heads/{branch}"))?;
+                return Ok(SquashLanding::Landed(commit));
+            }
+            Route::Named => push.arg(remote),
         };
         self.run_ok(
             push.arg(format!("{commit}:refs/heads/{branch}"))

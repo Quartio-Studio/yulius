@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::Git;
 use crate::error::GitError;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{
     require_absolute, validate_branch_name, validate_remote, validate_remote_name,
     validate_remote_url, validate_revision,
@@ -66,12 +66,15 @@ impl Git {
             // A folder the caller names itself.
             fetch.arg(remote).local(remote)
         } else {
-            match self.local_remote(repo, remote) {
-                Some(origin) => fetch
+            match self.remote_route(repo, remote)? {
+                Route::Folder(origin) => fetch
                     .arg(&origin)
                     .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))
                     .local(&origin),
-                None => fetch.arg(remote),
+                Route::Courier(courier, url) => {
+                    return self.fetch_through(&courier, repo, remote, &url);
+                }
+                Route::Named => fetch.arg(remote),
             }
         };
         self.run_ok(fetch.timeout(self.network_timeout))?;
