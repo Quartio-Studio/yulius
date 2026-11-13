@@ -474,11 +474,11 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(replanned["steps"][1]["effort"], 2);
     assert_eq!(replanned["progress"]["percent"], 20, "1 of 5 effort units");
     // Bounds: duplicates, effort, too many steps and blocked without a note are refused.
-    let many: Vec<String> = (0..31).map(|n| format!("Slice {n}")).collect();
+    let many: Vec<String> = (0..61).map(|n| format!("Slice {n}")).collect();
     for (args, why) in [
         (json!({"steps": ["A", "a"]}), "appears twice"),
         (json!({"steps": [{"title": "A", "effort": 5}]}), "effort 5"),
-        (json!({"steps": many}), "at most 30"),
+        (json!({"steps": many}), "at most 60"),
         (
             json!({"steps": [{"title": "A", "status": "blocked"}]}),
             "needs a note",
@@ -674,6 +674,70 @@ async fn step_tools_answer_with_short_text_not_records() -> TestResult {
         "{tasks}"
     );
     assert!(!tasks.contains('{'), "{tasks}");
+    Ok(())
+}
+
+/// SPEC-484 PLN-004, PLN-005: a task of many slices lists them all without being told to merge
+/// them (task #465's 18 slices), and the tick that completes a plan asks whether work the agent
+/// knows of is left out.
+#[tokio::test]
+async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestResult {
+    let (_h, internal) = project().await?;
+    let slices: Vec<String> = (1..=18)
+        .map(|n| format!("Slice {n}: the findings of area {n} fixed and reviewed"))
+        .collect();
+    let planned = agent_text(&internal, "steps_set", json!({"steps": slices})).await?;
+    assert!(
+        planned.starts_with("Plan set: 18 steps.\nProgress: 0/18 steps done, 0% by effort.\n"),
+        "{planned}"
+    );
+    assert!(
+        planned.contains("\n18 [ ] Slice 18: the findings of area 18 fixed and reviewed\n"),
+        "{planned}"
+    );
+    assert!(
+        planned.ends_with(
+            "Nudge: No step is in progress. Mark \"Slice 1: the findings of area 1 fixed and \
+             reviewed\" in_progress when you start it, and done as soon as it is finished."
+        ),
+        "the only nudge is the usual one: {planned}"
+    );
+
+    let short = agent_text(
+        &internal,
+        "steps_set",
+        json!({"steps": [
+            {"title": "Parse the CSV upload", "status": "done"},
+            {"title": "Store rows per tenant", "status": "in_progress"},
+            "Show the import summary",
+        ]}),
+    )
+    .await?;
+    assert!(!short.contains("Every step is finished"), "{short}");
+    let second = agent_text(
+        &internal,
+        "step_update",
+        json!({"ordinal": 2, "status": "done"}),
+    )
+    .await?;
+    assert!(
+        !second.contains("reads 100 %"),
+        "one step is ahead: {second}"
+    );
+    let last = agent_text(
+        &internal,
+        "step_update",
+        json!({"ordinal": 3, "status": "done"}),
+    )
+    .await?;
+    assert!(
+        last.contains(
+            "Every step is finished (3 of 3), so the task reads 100 %. If you know of work that \
+             is not done (a later slice or pull request, the review of a fix), add its steps now \
+             (`steps_set`)."
+        ),
+        "{last}"
+    );
     Ok(())
 }
 

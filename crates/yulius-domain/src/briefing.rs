@@ -682,7 +682,7 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          {changes}\n\n",
         spec = spec_rule(input),
         min = steps::COARSE_BELOW,
-        max = steps::FINE_ABOVE,
+        max = steps::PER_PULL_REQUEST,
         open = steps::MAX_IN_PROGRESS,
         decisions = decisions_rule(layout),
         architecture = code(&layout.architecture, 200),

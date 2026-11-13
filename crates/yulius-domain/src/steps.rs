@@ -1,9 +1,12 @@
 //! Task steps: the rules that keep progress honest (SPEC-001 STP-001..008; SPEC-002 §5, §7.4,
-//! ADR-18).
+//! ADR-19; SPEC-484, ADR-0325).
 //!
-//! A task's plan is a short list of steps of **similar effort**, so that "9 of 10 done" means
-//! about 90 %, and the steps are finished **one after another** as the work happens, so the
-//! progress bar moves steadily instead of jumping from 0 % to 100 % at the end.
+//! A task's plan is a list of steps of **similar effort**, so that "9 of 10 done" means about
+//! 90 %, and the steps are finished **one after another** as the work happens, so the progress
+//! bar moves steadily instead of jumping from 0 % to 100 % at the end. The plan holds **all the
+//! work the agent knows of**, every slice and pull request of a long task included: a pull
+//! request delivers the finished part ([`delivery_hold`]) and the steps still ahead stay open,
+//! so "n of n" is only ever read when nothing known is left.
 //!
 //! The rules are deliberately few:
 //!
@@ -13,10 +16,10 @@
 //! - **Steady completion** ([`check_update`]): at most [`MAX_IN_PROGRESS`] steps in progress at
 //!   once; an agent never reopens a finished step (it adds a follow-up step instead, so
 //!   progress never runs backwards silently); blocking or skipping needs a reason.
-//! - **Nudges** ([`nudges`]): never blocking, always actionable: a plan that is too coarse or
-//!   too fine, titles that name a phase instead of a slice of work ("Implement", "Test"), no
-//!   step started, two steps open at once, a step open far longer than finished ones took, and
-//!   progress that arrived in a burst.
+//! - **Nudges** ([`nudges`]): never blocking, always actionable: a plan that is too coarse,
+//!   titles that name a phase instead of a slice of work ("Implement", "Test"), no step
+//!   started, two steps open at once, a step open far longer than finished ones took, progress
+//!   that arrived in a burst, and a plan that reads complete (is anything known left out?).
 //!
 //! Skipped steps count as done for progress and delivery (STP-005). The functions are pure:
 //! callers pass the steps, the actor and the time.
@@ -25,8 +28,9 @@ use std::fmt;
 
 use crate::time::Timestamp;
 
-/// Most steps in one plan. More than this is no longer a plan of similar slices.
-pub const MAX_STEPS: usize = 30;
+/// Most steps in one plan: room for every slice of a long task that delivers one pull request
+/// per slice (task #465 named 20 and found more on the way).
+pub const MAX_STEPS: usize = 60;
 /// Longest step title, in characters.
 pub const MAX_TITLE_CHARS: usize = 200;
 /// Longest note, in characters.
@@ -37,8 +41,9 @@ pub const MAX_IN_PROGRESS: usize = 2;
 pub const MAX_EFFORT: u8 = 3;
 /// Plans with fewer steps are nudged as coarse (when the task needs a plan of slices).
 pub const COARSE_BELOW: usize = 3;
-/// Plans with more steps are nudged as too fine.
-pub const FINE_ABOVE: usize = 12;
+/// The most steps recommended for one pull request (in the texts only: a task of several pull
+/// requests has more, and no nudge counts them).
+pub const PER_PULL_REQUEST: usize = 12;
 /// A step in progress is never called stale before this long (milliseconds).
 pub const STALE_FLOOR_MS: i64 = 45 * 60 * 1000;
 /// A step in progress is stale after this many times the typical duration of a finished step
@@ -626,11 +631,6 @@ pub enum Nudge {
         /// Steps in the plan.
         count: usize,
     },
-    /// More than [`FINE_ABOVE`] steps.
-    FinePlan {
-        /// Steps in the plan.
-        count: usize,
-    },
     /// Titles that name a phase, not a slice of work.
     PhaseTitles {
         /// Up to three such titles.
@@ -665,6 +665,12 @@ pub enum Nudge {
         /// Share of the plan's effort they carry, in percent.
         percent: u32,
     },
+    /// Every step is finished: the task reads 100 %, which is wrong while work the agent knows
+    /// of is not in the plan (SPEC-484 PLN-005).
+    Complete {
+        /// Steps in the plan.
+        count: usize,
+    },
 }
 
 impl Nudge {
@@ -673,13 +679,13 @@ impl Nudge {
     pub fn key(&self) -> String {
         match self {
             Self::CoarsePlan { .. } => "coarse".to_owned(),
-            Self::FinePlan { .. } => "fine".to_owned(),
             Self::PhaseTitles { titles } => format!("phase:{}", titles.join("|")),
             Self::HeavyPlan { .. } => "heavy".to_owned(),
             Self::NotStarted { next } => format!("not-started:{next}"),
             Self::ManyOpen { titles } => format!("many-open:{}", titles.join("|")),
             Self::Stale { title, .. } => format!("stale:{title}"),
             Self::Burst { .. } => "burst".to_owned(),
+            Self::Complete { .. } => "complete".to_owned(),
         }
     }
 
@@ -696,14 +702,9 @@ impl fmt::Display for Nudge {
         match self {
             Self::CoarsePlan { count } => write!(
                 f,
-                "The plan has {count} step(s). Split the work into {COARSE_BELOW}-{FINE_ABOVE} \
-                 steps of similar effort, each a slice that leaves the project working, so \
-                 progress means something."
-            ),
-            Self::FinePlan { count } => write!(
-                f,
-                "The plan has {count} steps. Merge related steps into {COARSE_BELOW}-{FINE_ABOVE} \
-                 slices of similar effort; tiny steps make the bar jump."
+                "The plan has {count} step(s). Split the work into \
+                 {COARSE_BELOW}-{PER_PULL_REQUEST} steps of similar effort, each a slice that \
+                 leaves the project working, so progress means something."
             ),
             Self::PhaseTitles { titles } => write!(
                 f,
@@ -748,6 +749,12 @@ impl fmt::Display for Nudge {
                  each step done as soon as it is finished, and size steps so progress arrives \
                  steadily instead of jumping at the end."
             ),
+            Self::Complete { count } => write!(
+                f,
+                "Every step is finished ({count} of {count}), so the task reads 100 %. If you \
+                 know of work that is not done (a later slice or pull request, the review of a \
+                 fix), add its steps now (`steps_set`)."
+            ),
         }
     }
 }
@@ -762,9 +769,6 @@ pub fn plan_nudges(plan: &[(&str, u8)], coarse_ok: bool) -> Vec<Nudge> {
     }
     if plan.len() < COARSE_BELOW && !coarse_ok {
         out.push(Nudge::CoarsePlan { count: plan.len() });
-    }
-    if plan.len() > FINE_ABOVE {
-        out.push(Nudge::FinePlan { count: plan.len() });
     }
     let phase: Vec<String> = plan
         .iter()
@@ -860,6 +864,9 @@ pub fn pace_nudges(steps: &[StepState], now: Timestamp) -> Vec<Nudge> {
             percent,
         });
     }
+    if !steps.is_empty() && steps.iter().all(|s| s.status.is_resolved()) {
+        out.push(Nudge::Complete { count: steps.len() });
+    }
     out
 }
 
@@ -935,6 +942,14 @@ mod tests {
                 count: MAX_STEPS + 1
             })
         );
+        // Every slice of a long task fits (SPEC-484 PLN-004): 18 as task #465 had, and 60.
+        assert_eq!(MAX_STEPS, 60);
+        for count in [18, MAX_STEPS] {
+            assert_eq!(
+                validate_plan(&plan(&many[..count]), &[], By::Agent).map(|steps| steps.len()),
+                Ok(count)
+            );
+        }
         assert_eq!(
             validate_plan(&plan(&["A", " \n "]), &[], By::Agent),
             Err(StepError::EmptyTitle { position: 2 })
@@ -1284,12 +1299,13 @@ mod tests {
         );
         // A research task may have one or two steps without being told to split them.
         assert!(plan_nudges(&[("Answer the question", 1)], true).is_empty());
-        let fine: Vec<String> = (0..13).map(|n| format!("Slice {n}")).collect();
-        let fine: Vec<(&str, u8)> = fine.iter().map(|t| (t.as_str(), 1)).collect();
-        assert_eq!(
-            plan_nudges(&fine, false),
-            vec![Nudge::FinePlan { count: 13 }]
-        );
+        // A task of several pull requests lists every slice: no count is "too fine" (SPEC-484
+        // PLN-004; task #465's 18 slices were told to merge into 12).
+        for count in [PER_PULL_REQUEST + 1, 18, MAX_STEPS] {
+            let slices: Vec<String> = (0..count).map(|n| format!("Slice {n}")).collect();
+            let slices: Vec<(&str, u8)> = slices.iter().map(|t| (t.as_str(), 1)).collect();
+            assert_eq!(plan_nudges(&slices, false), vec![], "{count}");
+        }
         let heavy = [("Parser", 3), ("Store", 3), ("API", 1), ("UI", 1)];
         assert_eq!(
             plan_nudges(&heavy, false),
@@ -1398,6 +1414,42 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_plan_asks_for_the_work_still_known() {
+        // SPEC-484 PLN-005: the tick that completes the plan is when a wrong 100 % would appear.
+        let now = Timestamp(1_000 * MIN);
+        let complete = [
+            state("A", StepStatus::Done),
+            state("B", StepStatus::Skipped),
+        ];
+        assert_eq!(
+            pace_nudges(&complete, now),
+            vec![Nudge::Complete { count: 2 }]
+        );
+        assert_eq!(
+            Nudge::Complete { count: 2 }.to_string(),
+            "Every step is finished (2 of 2), so the task reads 100 %. If you know of work that \
+             is not done (a later slice or pull request, the review of a fix), add its steps now \
+             (`steps_set`)."
+        );
+        assert!(!Nudge::Complete { count: 2 }.is_pace());
+        // One step ahead, or no plan: nothing to ask.
+        for open in [
+            StepStatus::Pending,
+            StepStatus::InProgress,
+            StepStatus::Blocked,
+        ] {
+            let ahead = [state("A", StepStatus::Done), state("B", open)];
+            assert!(
+                !pace_nudges(&ahead, now)
+                    .iter()
+                    .any(|n| matches!(n, Nudge::Complete { .. })),
+                "{open}"
+            );
+        }
+        assert_eq!(pace_nudges(&[], now), vec![]);
+    }
+
+    #[test]
     fn untouched_plans_and_nudge_texts() {
         assert!(untouched(&[state("A", StepStatus::Pending)]));
         assert!(!untouched(&[state("A", StepStatus::InProgress)]));
@@ -1405,7 +1457,7 @@ mod tests {
         assert!(!untouched(&[]));
         let all = [
             Nudge::CoarsePlan { count: 1 },
-            Nudge::FinePlan { count: 20 },
+            Nudge::Complete { count: 4 },
             Nudge::PhaseTitles {
                 titles: vec!["Test".to_owned()],
             },
