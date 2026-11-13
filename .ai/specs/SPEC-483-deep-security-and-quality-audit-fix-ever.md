@@ -1230,3 +1230,6 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   `mutations3.log` and `mutations3b.log`): all 32 failed their tests; new: a cut address
   kept, one tab's loss not asked, after the keys only a fenced frame reported.
 - **Real browser after round 2** (Chrome 157): the four opt-in tests passed.
+- **The gate after round 2.** `scripts/dev ci` at `20404f5ae`: exit 0; `4161 tests run: 4161
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
