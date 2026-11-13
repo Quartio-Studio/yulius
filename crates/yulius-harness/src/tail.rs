@@ -33,6 +33,25 @@ pub struct TranscriptTail {
     seen_len: Option<u64>,
 }
 
+/// Opens the transcript at `path`, which is in a home the agent writes: without following a
+/// link at its name and without waiting (a FIFO nobody writes would hold the watcher for good),
+/// and only when it is a regular file (ADR-0174, ADR-0315).
+fn open_regular(path: &Path) -> io::Result<File> {
+    use nix::fcntl::OFlag;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the transcript is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
 impl TranscriptTail {
     /// Starts tailing `path` from its beginning. The file need not exist yet.
     ///
@@ -78,8 +97,8 @@ impl TranscriptTail {
     /// "not found" while reading the file size.
     pub fn open_at_end(path: impl Into<PathBuf>, max_line_bytes: usize) -> io::Result<Self> {
         let path = path.into();
-        let len = match std::fs::metadata(&path) {
-            Ok(meta) => meta.len(),
+        let len = match open_regular(&path) {
+            Ok(file) => file.metadata()?.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
             Err(error) => return Err(error),
         };
@@ -131,7 +150,7 @@ impl TranscriptTail {
     /// # Errors
     /// Returns I/O errors other than "not found" from opening, seeking or reading the file.
     pub fn poll(&mut self) -> io::Result<Vec<String>> {
-        let mut file = match File::open(&self.path) {
+        let mut file = match open_regular(&self.path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.seen_len = Some(0);

@@ -6,9 +6,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
-- An agent can no longer make the server start its program or write a host file through its
-  own folders (SPEC-483 slice 2, task #465, ADR-0314). Three places trusted what an agent can
-  write. A contained run was started as `bwrap` by name with the run's `PATH`, which begins in
+- The server no longer reads a host file, or hangs, because of what an agent put in its own
+  folders (SPEC-483 slice 3, task #465, ADR-0315). Five readers went by path where an agent can
+  write. A session's transcript in the sandbox home: a FIFO there held a server thread for good
+  at every read (enough of them stopped the server's file and Git work for every sandbox), and
+  a link was read as the session's transcript. The sandbox system's `passwd`: a link there to a
+  file of the service user was copied into the `/etc/passwd` of the next shell a person opened.
+  A numbered directory (`record_number`), the disk usage of the quota and an untracked file in a
+  task review followed a link out of the sandbox. All five now go through handles that follow no
+  link, read regular files only and never wait; continuing an imported session copies its
+  files the same way, and the usage walk stops listing below 128 nested folders, so no depth
+  an agent builds uses up the server's file descriptors. Also from the review of slice 2: the
+  pre-push guard refuses a worktree whose Git directory is not the clone's own (compared by
+  device and inode), and a set-user-id bit on a replaced file is not carried over.
+- In three places an agent can no longer make the server start its program or write a host
+  file through its own folders (SPEC-483 slice 2, task #465, ADR-0314; what Git itself writes
+  or runs for the server in an agent-writable clone is still open, ADR-0114's remaining hole,
+  SPEC-483 finding G1). These three trusted what an agent can write. A contained run was started
+  as `bwrap` by name with the run's `PATH`, which begins in
   the sandbox home: a program of that name put there was started instead of bubblewrap, as the
   service user and before any containment; the process host now takes `bwrap` from its own
   `PATH`. The merge attributes Yulius keeps in a clone's `.git/info/attributes` at every task

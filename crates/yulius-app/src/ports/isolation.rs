@@ -51,11 +51,12 @@ pub struct SandboxJoin {
     pub extra_binds: Vec<Bind>,
     /// Directories covered by an empty tmpfs before the run's binds (the data directory).
     pub private_dirs: Vec<PathBuf>,
-    /// Host path of the sandbox system's current `/etc/passwd` (its upper layer's, else the
-    /// base's): users' identity files are built on it.
-    pub system_passwd: Option<PathBuf>,
+    /// The text of the sandbox system's current `/etc/passwd` (its upper layer's, else the
+    /// base's), read by the adapter without following a link: users' identity files are built
+    /// on it.
+    pub system_passwd: Option<String>,
     /// Same for `/etc/group`.
-    pub system_group: Option<PathBuf>,
+    pub system_group: Option<String>,
     /// Run on the host's read-only system instead of the system layer, in the holder's network
     /// (a production CD run in its production holder, SPEC-134, SPEC-279); the resolver file
     /// shown at the host's resolver path.

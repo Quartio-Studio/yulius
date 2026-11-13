@@ -1360,6 +1360,15 @@ clone's Git directories is the worktree's, and the files are read (regular, boun
 started with the `bwrap` of the process host's own `PATH`, never the run's, whose first entries
 are in the sandbox home
 ([decision 0314](decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md)).
+The reads the server still made by path there go the same way
+([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
+a session's transcript is opened from the sandbox directory folder by folder, without following
+a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
+transcript pages, `session_read` and the search index; the run watcher's tail opens it the same
+way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
+most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
+a numbered directory from the sandbox directory down; the quota's disk usage is measured from
+folder handles; and the task review reads an untracked file from the worktree's folder.
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new

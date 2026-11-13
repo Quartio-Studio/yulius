@@ -432,16 +432,11 @@ impl App {
         private_dir(&identity_dir)?;
         let (mut passwd, mut group) = identity_files(&login, &user.display_name, &home);
         if let Some(join) = &join {
-            let read = |path: &Option<PathBuf>| {
-                path.as_ref()
-                    .and_then(|p| std::fs::read_to_string(p).ok())
-                    .filter(|text| text.len() <= 1 << 20)
-            };
-            if let Some(system) = read(&join.system_passwd) {
-                passwd = merged_identity(&passwd, &system, &login);
+            if let Some(system) = &join.system_passwd {
+                passwd = merged_identity(&passwd, system, &login);
             }
-            if let Some(system) = read(&join.system_group) {
-                group = merged_identity(&group, &system, &login);
+            if let Some(system) = &join.system_group {
+                group = merged_identity(&group, system, &login);
             }
         }
         write_file(&identity_dir.join("passwd"), passwd.as_bytes(), 0o644)?;

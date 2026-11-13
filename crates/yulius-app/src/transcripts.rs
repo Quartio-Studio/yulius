@@ -487,16 +487,71 @@ fn page_chars(entry: &TranscriptEntry) -> usize {
         .sum()
 }
 
+/// Opens the transcript at `path` for reading (ADR-0174, ADR-0315). A session's own transcript
+/// is in its sandbox's home, which the agent writes: below `anchor` (the sandbox directory)
+/// every folder on the way is opened from its parent without following a link. The file itself
+/// is opened without following a link and without waiting (a FIFO nobody writes would hold the
+/// thread for good), and must be a regular file. A path that is not below the anchor is a copy
+/// the server keeps in its own folders, opened the same way at its name.
+///
+/// # Errors
+/// `NotFound` when the file or a folder on the way is missing; `InvalidInput` for a link or
+/// anything that is not a regular file ([`unreadable`] tells both); other I/O failures.
+pub fn open(anchor: &Path, path: &Path) -> io::Result<File> {
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::Mode;
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let not_a_file = || io::Error::new(io::ErrorKind::InvalidInput, "not a regular file");
+    let refused = |err: nix::errno::Errno| match err {
+        nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => not_a_file(),
+        other => io::Error::from(other),
+    };
+    let fd = match path.strip_prefix(anchor) {
+        Ok(below) => {
+            if !below
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(not_a_file());
+            }
+            let name = below.file_name().ok_or_else(not_a_file)?;
+            let folders: Vec<&std::ffi::OsStr> = below
+                .parent()
+                .map(|folders| folders.iter().collect())
+                .unwrap_or_default();
+            let dir = crate::files::open_dirs_below(anchor, &folders, false).map_err(refused)?;
+            nix::fcntl::openat(&dir, name, flags, Mode::empty()).map_err(refused)?
+        }
+        Err(_) => nix::fcntl::open(path, flags, Mode::empty()).map_err(refused)?,
+    };
+    let file = File::from(fd);
+    if !file.metadata()?.is_file() {
+        return Err(not_a_file());
+    }
+    Ok(file)
+}
+
+/// Whether `err` of [`open`] says there is no transcript to read: it is missing, or what is in
+/// its place is no regular file (a link or a FIFO an agent put there). A reader shows that as
+/// no transcript, not as a failure of the server.
+#[must_use]
+pub fn unreadable(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::InvalidInput
+    )
+}
+
 /// Reads entries from line `from`: at most `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) and about
 /// `max_chars` of text (≤ [`MAX_PAGE_CHARS`]). Tool calls on earlier lines are scanned too, so
 /// a dotenv file read before the page is still redacted in it.
 ///
 /// # Errors
-/// I/O failures opening or reading the transcript.
-pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::Result<Page> {
+/// I/O failures reading the transcript.
+pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::Result<Page> {
     let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
     let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
-    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut buf = Vec::new();
     let mut env_calls = EnvCalls::default();
     let mut page = Page::default();
@@ -554,11 +609,11 @@ pub fn read_page(path: &Path, from: u64, limit: usize, max_chars: usize) -> io::
 /// redacted in it. `earlier` says entries were left out; `end` is where a reader continues.
 ///
 /// # Errors
-/// I/O failures opening or reading the transcript.
-pub fn read_tail(path: &Path, limit: usize, max_chars: usize) -> io::Result<Page> {
+/// I/O failures reading the transcript.
+pub fn read_tail(file: File, limit: usize, max_chars: usize) -> io::Result<Page> {
     let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
     let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
-    let mut reader = BufReader::with_capacity(256 * 1024, File::open(path)?);
+    let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut buf = Vec::new();
     let mut env_calls = EnvCalls::default();
     let mut tail: VecDeque<(usize, TranscriptEntry)> = VecDeque::new();
@@ -626,13 +681,12 @@ pub struct IndexBatch {
 /// # Errors
 /// I/O failures.
 pub fn read_for_index(
-    path: &Path,
+    mut file: File,
     from_byte: u64,
     from_line: u64,
     max_bytes: u64,
     max_chars: usize,
 ) -> io::Result<IndexBatch> {
-    let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(from_byte))?;
     let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut buf = Vec::new();
@@ -753,6 +807,56 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// ADR-0315: a session's transcript is in its sandbox's home, which the agent writes. It
+    /// is opened from the sandbox directory without following a link at its name or on the way,
+    /// a FIFO in its place is refused at once, and a copy outside the sandbox is the server's.
+    #[test]
+    fn a_transcript_is_opened_without_following_links_or_waiting() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let sandbox = dir.path().join("sandbox");
+        let folder = sandbox.join("home/.claude/projects/slug");
+        std::fs::create_dir_all(&folder)?;
+        let real = folder.join("s1.jsonl");
+        std::fs::write(&real, "{}\n")?;
+        assert_eq!(read_page(open(&sandbox, &real)?, 0, 10, 1000)?.end, 1);
+
+        let host = dir.path().join("host.jsonl");
+        std::fs::write(&host, "{}\n")?;
+        let refused = |path: &Path| open(&sandbox, path).map(|_| ()).map_err(|e| e.kind());
+        // A link at the name.
+        let link = folder.join("link.jsonl");
+        symlink(&host, &link)?;
+        assert_eq!(refused(&link), Err(io::ErrorKind::InvalidInput));
+        // A FIFO nobody writes.
+        let fifo = folder.join("fifo.jsonl");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(refused(&fifo), Err(io::ErrorKind::InvalidInput));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        // A folder on the way that is a link out of the sandbox.
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("s2.jsonl"), "{}\n")?;
+        symlink(&outside, sandbox.join("home/.claude/projects/linked"))?;
+        assert_eq!(
+            refused(&sandbox.join("home/.claude/projects/linked/s2.jsonl")),
+            Err(io::ErrorKind::InvalidInput)
+        );
+        // Missing, and the server's own copy outside the sandbox.
+        assert_eq!(
+            refused(&folder.join("gone.jsonl")),
+            Err(io::ErrorKind::NotFound)
+        );
+        assert_eq!(read_page(open(&sandbox, &host)?, 0, 10, 1000)?.end, 1);
+        Ok(())
+    }
+
     fn fake_token() -> String {
         format!("ghp_{}", "aB3dE".repeat(8))
     }
@@ -794,7 +898,7 @@ mod tests {
     fn lines_become_entries_with_tool_calls_diffs_and_redactions() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let page = read_page(&path, 0, 100, MAX_PAGE_CHARS)?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
         assert_eq!(page.next, None, "an unfinished last line is not returned");
         let roles: Vec<(u64, &str)> = page
             .entries
@@ -846,10 +950,10 @@ mod tests {
     fn pages_continue_where_they_stopped_and_keep_env_tracking() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let first = read_page(&path, 0, 2, MAX_PAGE_CHARS)?;
+        let first = read_page(File::open(&path)?, 0, 2, MAX_PAGE_CHARS)?;
         assert_eq!(first.entries.len(), 2);
         assert_eq!(first.next, Some(3));
-        let second = read_page(&path, 3, 1, MAX_PAGE_CHARS)?;
+        let second = read_page(File::open(&path)?, 3, 1, MAX_PAGE_CHARS)?;
         let TranscriptBlock::ToolResult { text, .. } = &second.entries[0].blocks[0] else {
             return Err("tool result".into());
         };
@@ -861,14 +965,14 @@ mod tests {
     fn a_page_ends_before_a_line_still_being_written_and_reads_it_once_complete() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let page = read_page(&path, 0, 100, MAX_PAGE_CHARS)?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
         assert_eq!(page.end, 7, "the unfinished line is left for later");
-        let full = read_page(&path, 0, 2, MAX_PAGE_CHARS)?;
+        let full = read_page(File::open(&path)?, 0, 2, MAX_PAGE_CHARS)?;
         assert_eq!(full.end, 3, "a full page ends where the next one starts");
         let mut text = std::fs::read_to_string(&path)?;
         text.push_str(" cart\"}}\n");
         std::fs::write(&path, text)?;
-        let rest = read_page(&path, page.end, 100, MAX_PAGE_CHARS)?;
+        let rest = read_page(File::open(&path)?, page.end, 100, MAX_PAGE_CHARS)?;
         assert_eq!(
             rest.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
             vec![7]
@@ -881,7 +985,7 @@ mod tests {
     fn the_tail_holds_the_last_entries_with_env_tracking_from_the_start() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let tail = read_tail(&path, 4, MAX_PAGE_CHARS)?;
+        let tail = read_tail(File::open(&path)?, 4, MAX_PAGE_CHARS)?;
         let lines: Vec<u64> = tail.entries.iter().map(|e| e.line).collect();
         assert_eq!(lines, vec![3, 4, 5, 6]);
         assert!(tail.earlier, "lines 1 and 2 were left out");
@@ -893,10 +997,10 @@ mod tests {
             text.contains("[REDACTED:"),
             "the .env read before the tail: {text}"
         );
-        let all = read_tail(&path, 100, MAX_PAGE_CHARS)?;
+        let all = read_tail(File::open(&path)?, 100, MAX_PAGE_CHARS)?;
         assert_eq!(all.entries.len(), 6);
         assert!(!all.earlier);
-        let bounded = read_tail(&path, 100, 1)?;
+        let bounded = read_tail(File::open(&path)?, 100, 1)?;
         assert_eq!(
             bounded.entries.len(),
             1,
@@ -910,10 +1014,16 @@ mod tests {
     fn index_batches_resume_at_byte_offsets() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let first = read_for_index(&path, 0, 0, 1, usize::MAX)?;
+        let first = read_for_index(File::open(&path)?, 0, 0, 1, usize::MAX)?;
         assert_eq!(first.end_line, 1, "one line per budget step");
         assert!(first.chunks.is_empty(), "the snapshot line has no passage");
-        let rest = read_for_index(&path, first.end_byte, first.end_line, u64::MAX, usize::MAX)?;
+        let rest = read_for_index(
+            File::open(&path)?,
+            first.end_byte,
+            first.end_line,
+            u64::MAX,
+            usize::MAX,
+        )?;
         assert!(rest.eof);
         assert_eq!(rest.end_line, 7, "the unfinished line is left for later");
         let roles: Vec<&str> = rest.chunks.iter().map(|c| c.role.as_str()).collect();
@@ -931,7 +1041,7 @@ mod tests {
     fn rendering_for_agents_is_bounded() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = write_transcript(dir.path())?;
-        let page = read_page(&path, 0, 100, MAX_PAGE_CHARS)?;
+        let page = read_page(File::open(&path)?, 0, 100, MAX_PAGE_CHARS)?;
         let (text, next) = render_text(&page.entries, 100_000);
         assert!(text.contains("[line 1] user · 2026-10-01T10:00:00.000Z\nAdd a cart"));
         assert!(text.contains("→ Read /repo/.env"));

@@ -280,7 +280,7 @@ impl App {
     fn task_transcript_path(&self, task: &TaskRecord, entry: &ProviderSessionRecord) -> PathBuf {
         let native = self.native_transcript(task, entry.harness, &entry.session_id);
         match &entry.transcript_ref {
-            Some(stored) if !native.exists() => PathBuf::from(stored),
+            Some(stored) if !is_regular_file(&native) => PathBuf::from(stored),
             _ => native,
         }
     }
@@ -334,7 +334,7 @@ impl App {
                 continue;
             };
             let native = self.native_transcript(&task, doc.harness, &doc.session_id);
-            if native.exists() {
+            if is_regular_file(&native) {
                 let path = native.to_string_lossy().into_owned();
                 self.deps.store.set_session_doc_path(&doc.id, &path).await?;
                 doc.transcript_path = path;
@@ -364,10 +364,15 @@ impl App {
             .iter()
             .map(|doc| PathBuf::from(&doc.transcript_path))
             .collect();
+        let anchor = self.sandbox_dir(sandbox);
+        // The size of what would be read: a transcript that is no regular file has none.
         let sizes: Vec<Option<u64>> = blocking(move || {
             Ok(paths
                 .iter()
-                .map(|path| fs::metadata(path).ok().map(|meta| meta.len()))
+                .map(|path| {
+                    let file = transcripts::open(&anchor, path).ok()?;
+                    file.metadata().ok().map(|meta| meta.len())
+                })
                 .collect())
         })
         .await?;
@@ -406,9 +411,13 @@ impl App {
                 continue;
             }
             let path = PathBuf::from(&doc.transcript_path);
+            let anchor = self.sandbox_dir(&doc.sandbox_id);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
-                transcripts::read_for_index(&path, from_byte, from_line, allowed, usize::MAX)
+                transcripts::open(&anchor, &path)
+                    .and_then(|file| {
+                        transcripts::read_for_index(file, from_byte, from_line, allowed, usize::MAX)
+                    })
                     .map_err(AppError::internal)
             })
             .await
@@ -703,16 +712,18 @@ impl App {
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
             .await;
         let path = PathBuf::from(&doc.transcript_path);
-        let page =
-            blocking(
-                move || match transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS) {
-                    Ok(page) => Ok(Some(page)),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(err) => Err(AppError::internal(err)),
-                },
-            )
-            .await?
-            .unwrap_or_default();
+        let anchor = self.sandbox_dir(&doc.sandbox_id);
+        let page = blocking(move || {
+            let read = transcripts::open(&anchor, &path)
+                .and_then(|file| transcripts::read_page(file, from, limit, MAX_PAGE_CHARS));
+            match read {
+                Ok(page) => Ok(Some(page)),
+                Err(err) if transcripts::unreadable(&err) => Ok(None),
+                Err(err) => Err(AppError::internal(err)),
+            }
+        })
+        .await?
+        .unwrap_or_default();
         let mut entries = page.entries;
         self.redact_page_secrets(&doc.sandbox_id, &mut entries)
             .await;
@@ -750,18 +761,20 @@ impl App {
             .seen
             .filter(|_| from.is_some() && read.session.as_deref() == Some(session_id.as_str()));
         let limit = read.limit;
+        let anchor = self.sandbox_dir(&task.sandbox_id);
         let found = blocking(move || {
-            let bytes = match fs::metadata(&path) {
-                Ok(meta) => meta.len(),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            let file = match transcripts::open(&anchor, &path) {
+                Ok(file) => file,
+                Err(err) if transcripts::unreadable(&err) => return Ok(None),
                 Err(err) => return Err(AppError::internal(err)),
             };
+            let bytes = file.metadata().map_err(AppError::internal)?.len();
             if unchanged == Some(bytes) {
                 return Ok(Some((bytes, None)));
             }
             let page = match from {
-                Some(from) => transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS),
-                None => transcripts::read_tail(&path, limit, MAX_PAGE_CHARS),
+                Some(from) => transcripts::read_page(file, from, limit, MAX_PAGE_CHARS),
+                None => transcripts::read_tail(file, limit, MAX_PAGE_CHARS),
             };
             match page {
                 Ok(page) => Ok(Some((bytes, Some(page)))),
@@ -938,12 +951,19 @@ impl App {
         let aux_src = source.with_extension("");
         let aux_dest = staging.join(&doc.session_id);
         let stage_dir = staging.clone();
+        let anchor = self.sandbox_dir(&doc.sandbox_id);
         blocking(move || {
-            copy_immutable(&source, &main_dest)?;
-            if aux_src.is_dir() {
-                copy_dir(&aux_src, &aux_dest)?;
-            }
-            Ok(())
+            // An imported session's files are in the sandbox directory, the agents' to write:
+            // read through handles, as every transcript is (ADR-0315).
+            let mut transcript = transcripts::open(&anchor, &source).map_err(|err| {
+                if transcripts::unreadable(&err) {
+                    AppError::Invalid("this session's transcript is not on the server".into())
+                } else {
+                    AppError::internal(err)
+                }
+            })?;
+            crate::imports::copy_immutable_from(&mut transcript, &main_dest)?;
+            copy_dir_below(&anchor, &aux_src, &aux_dest)
         })
         .await
         .inspect_err(|_| {
@@ -1337,14 +1357,17 @@ impl App {
             })
             .clamp(1_000, READ_CHARS_MAX);
         let path = PathBuf::from(&doc.transcript_path);
+        let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
-            transcripts::read_page(&path, from, limit, max_chars * 2).map_err(|err| {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    AppError::Invalid("this session's transcript is not on the server".into())
-                } else {
-                    AppError::internal(err)
-                }
-            })
+            transcripts::open(&anchor, &path)
+                .and_then(|file| transcripts::read_page(file, from, limit, max_chars * 2))
+                .map_err(|err| {
+                    if transcripts::unreadable(&err) {
+                        AppError::Invalid("this session's transcript is not on the server".into())
+                    } else {
+                        AppError::internal(err)
+                    }
+                })
         })
         .await?;
         let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
@@ -1390,16 +1413,72 @@ fn block_texts(block: &mut TranscriptBlock) -> Vec<&mut String> {
 }
 
 /// Copies a directory tree (regular files only, links skipped).
-fn copy_dir(src: &Path, dest: &Path) -> AppResult<()> {
+/// Whether `path` is a regular file itself (a link there is not: what it points at is not asked).
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Folders an imported session's side files nest at most (sub-agent transcripts are two deep).
+const MAX_AUX_DEPTH: usize = 8;
+/// Entries of an imported session's side files copied at most.
+const MAX_AUX_ENTRIES: usize = 10_000;
+
+/// Copies the folder `src` (side files of an imported session: sub-agent transcripts) to
+/// `dest` as read-only files; nothing when there is none. `src` is below `anchor`, a sandbox
+/// directory the agents write, so it is walked through handles (ADR-0315): no link is followed
+/// at any name, only regular files are copied and none is waited on, within
+/// [`MAX_AUX_DEPTH`] and [`MAX_AUX_ENTRIES`].
+fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path) -> AppResult<()> {
+    use nix::errno::Errno;
+    let Ok(below) = src.strip_prefix(anchor) else {
+        return Err(AppError::Internal(
+            "an imported session's files are outside its sandbox".into(),
+        ));
+    };
+    let parts: Vec<&std::ffi::OsStr> = below.iter().collect();
+    let folder = match crate::files::open_dirs_below(anchor, &parts, false) {
+        Ok(folder) => folder,
+        // None, or something else in its place: the session has no side files to copy.
+        Err(Errno::ENOENT | Errno::ELOOP | Errno::ENOTDIR) => return Ok(()),
+        Err(err) => return Err(AppError::internal(std::io::Error::from(err))),
+    };
+    let mut budget = MAX_AUX_ENTRIES;
+    copy_folder(&folder, dest, 0, &mut budget)
+}
+
+fn copy_folder(
+    folder: &std::os::fd::OwnedFd,
+    dest: &Path,
+    depth: usize,
+    budget: &mut usize,
+) -> AppResult<()> {
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::{Mode, SFlag};
+    let io = |err: nix::errno::Errno| AppError::internal(std::io::Error::from(err));
     fs::create_dir_all(dest).map_err(AppError::internal)?;
-    for entry in fs::read_dir(src).map_err(AppError::internal)? {
-        let entry = entry.map_err(AppError::internal)?;
-        let kind = entry.file_type().map_err(AppError::internal)?;
-        let target = dest.join(entry.file_name());
-        if kind.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else if kind.is_file() {
-            copy_immutable(&entry.path(), &target)?;
+    for name in crate::files::names_in(folder, *budget).map_err(io)? {
+        *budget = budget.saturating_sub(1);
+        let target = dest.join(&name);
+        match crate::files::kind_at(folder, &name).map(|(kind, _)| kind) {
+            Ok(SFlag::S_IFDIR) if depth < MAX_AUX_DEPTH => {
+                if let Ok(inner) = crate::files::open_dir_at(folder, &name, false) {
+                    copy_folder(&inner, &target, depth + 1, budget)?;
+                }
+            }
+            Ok(SFlag::S_IFREG) => {
+                let flags =
+                    OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+                let Ok(fd) = nix::fcntl::openat(folder, name.as_os_str(), flags, Mode::empty())
+                else {
+                    continue;
+                };
+                let mut file = fs::File::from(fd);
+                if file.metadata().is_ok_and(|meta| meta.is_file()) {
+                    crate::imports::copy_immutable_from(&mut file, &target)?;
+                }
+            }
+            // A link, a FIFO, a deeper folder: not copied.
+            _ => {}
         }
     }
     Ok(())
@@ -1424,6 +1503,58 @@ fn make_writable(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0315: an imported session's side files are in the sandbox directory. They are
+    /// copied through handles: a link (to a file or a folder of the host) and a FIFO are left
+    /// out, a missing or linked source copies nothing, and the copies are read-only.
+    #[test]
+    fn side_files_are_copied_without_following_a_link() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+        let dir = tempfile::tempdir()?;
+        let sandbox = dir.path().join("sandbox");
+        let src = sandbox.join("sessions/doc/s1");
+        std::fs::create_dir_all(src.join("subagents"))?;
+        std::fs::write(src.join("subagents/agent-1.jsonl"), "{}\n")?;
+        std::fs::write(src.join("notes.txt"), "kept")?;
+        let host = dir.path().join("host");
+        std::fs::create_dir_all(&host)?;
+        std::fs::write(host.join("secret.jsonl"), "a file of the host")?;
+        symlink(host.join("secret.jsonl"), src.join("linked.jsonl"))?;
+        symlink(&host, src.join("linked-folder"))?;
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(src.join("fifo"))
+                .status()?
+                .success()
+        );
+        let dest = dir.path().join("dest");
+        copy_dir_below(&sandbox, &src, &dest)?;
+        let mut copied: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(&dest)? {
+            copied.push(entry?.file_name().to_string_lossy().into_owned());
+        }
+        copied.sort();
+        assert_eq!(copied, ["notes.txt", "subagents"]);
+        let inner = dest.join("subagents/agent-1.jsonl");
+        assert_eq!(std::fs::read_to_string(&inner)?, "{}\n");
+        assert_eq!(
+            std::fs::metadata(&inner)?.permissions().mode() & 0o777,
+            0o444
+        );
+
+        // No side files, or a link in their place: nothing is copied, nothing fails.
+        for (name, linked) in [("none", false), ("swapped", true)] {
+            let source = sandbox.join("sessions/doc").join(name);
+            if linked {
+                symlink(&host, &source)?;
+            }
+            let dest = dir.path().join(name);
+            copy_dir_below(&sandbox, &source, &dest)?;
+            assert!(!dest.exists(), "{name}");
+        }
+        assert!(copy_dir_below(&sandbox, &host, &dir.path().join("out")).is_err());
+        Ok(())
+    }
 
     #[test]
     fn queries_become_quoted_prefix_terms() {
