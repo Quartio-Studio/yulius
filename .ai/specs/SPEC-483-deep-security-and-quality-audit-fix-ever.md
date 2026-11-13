@@ -48,7 +48,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
      merged, pull request #1248;
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
-  11. production secrets decided once (V6);
+  11. production secrets decided once (V6): slice 12 of the Plan;
   12. delivery and CI decided once (D4-D6, QB1);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
@@ -301,6 +301,20 @@ no code path reaches; documents, texts shown to agents and people, and code that
   and listing (slice 10), and the clone's fetch from a courier and a new clone's copy (this
   slice). Closed here by a rule instead of a list: no such command may start the shell.
 
+### Slice 12: a production secret that some runs still got
+
+- **V6 (low).** `EgressClient::may_use` answered `true` for an agent run whatever `cd_prod`
+  was, and `!cd_prod` for a Superagent and a CI job. A production secret has no hosts since
+  SPEC-134, so the difference showed only for a row made a production secret before that,
+  which kept its hosts: the proxy sent it there for an agent's run, while
+  `browser_fill_secret`, `secret_copy_to_env`, a `${secret:NAME}` reference, the Superagent
+  and CI refused it and `secrets_list` said "agents never use it, not through hosts".
+  SPEC-308 put the state into the Edit dialog ("agents' requests to them still get it").
+  The store's insert of a whole row did not check the pair.
+- **From the review of slice 11 (a nit, pre-existing):** a CD mirror's fetch from a
+  sandbox's clone, the copy of an upload's refs and a refresh of branches outside a sandbox
+  got write access to the folder they only read.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -547,6 +561,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   none and writes into one) may start the shell, also where the tests' stand-in for GitHub
   gives the shell to every other command; a transfer between folders there is refused
   before anything is started.
+- **PSR-001** `EgressClient::may_use` is `false` for a production secret for every caller.
+- **PSR-002** Migration 0055 sets `hosts` to `[]` for every row with `cd_prod = 1` and hosts,
+  and writes one `audit_log` row per such secret (`vault.agent.hosts_cleared`, actor
+  `yulius`, target the secret's id, detail with its name, sandbox and the hosts it had, time
+  in milliseconds); other rows are unchanged.
+- **PSR-003** The store refuses to insert a secret with `cd_prod` and hosts.
+- **PSR-004** The Edit dialog of a production secret has no Hosts input and no choice about
+  hosts; the web mock holds no production secret with hosts.
+- **PSR-005** A fetch, a listing and a clone between two folders reach the folder they take
+  from read-only (`Invocation::local_reading`); a push reaches its destination read-write.
 
 ## Plan
 
@@ -564,6 +588,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
+- [ ] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
 
 ## Acceptance criteria
 
@@ -870,6 +895,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the data folder reached through a link. With a link to a missing branch file of the
   origin where the clone's `shallow` file was, and the clone's remote branch deleted, the
   server's fetch creates nothing in the origin.
+- **AC-72** For an agent run, a Superagent and a CI job granted the name: `may_use` is true
+  for a secret that is no production secret and false for one that is; a CI job has no
+  secret it was not granted.
+- **AC-73** A database at schema version 54 with a production secret that has two hosts, a
+  production secret without hosts and an agents' secret with a host: after opening, the
+  first has none, the others are unchanged, and the audit log has one
+  `vault.agent.hosts_cleared` row, of `yulius`, for the first secret, with its name and both
+  hosts; the schema version is 55.
+- **AC-74** Inserting a production secret with hosts is refused ("no hosts"); without them it
+  is taken. With such a secret in a project: `browser_fill_secret` refuses it, a Superagent's
+  and a CI job's requests do not get it, as before.
+- **AC-75** The Edit dialog of a production secret shows "None. This is a production secret:
+  …" and no Hosts input; the e2e test of the secrets page passes without the old rows.
+- **AC-76** The runner: `local_reading_if_path` makes a transfer with a folder a local one
+  that reads it and touches nothing; with an address elsewhere it changes nothing.
 
 ## Test plan
 
@@ -1019,6 +1059,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `courier::tests::the_remotes_head_names_its_default_branch` (TKR-002). Every test of
   `yulius` that uses the real adapter with a playground or the stand-in for GitHub now
   makes its transfers through a courier (AC-60).
+- Slice 12: `yulius-app` `ports::egress::tests::a_production_secret_applies_to_no_client`
+  (AC-72); `yulius-store` `tests::a_production_secrets_old_hosts_are_removed` (AC-73);
+  `yulius` tests with `support::production_secret` (`browser`, `cockpit`, `secrets`,
+  `local_ci`: AC-74, the helper asserts the refusal); `e2e/tests/secrets.e2e.ts` "a
+  production secret’s Edit dialog offers no hosts and says why" (AC-75); `yulius-git`
+  `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` (AC-76).
 
 ## Decisions
 
@@ -1082,6 +1128,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- [ADR-0324](../../docs/decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md):
+  one rule for a production secret at the egress proxy (no client gets it), the hosts old
+  rows kept removed by a migration with an audit line, the pair refused at insert; the
+  dialog's choice for such rows removed with them. Chosen over keeping the hosts as text
+  and over leaving the rule to the rows alone.
 - From the review of slice 11, round 1 (two major, five minor, seven nits; all answered in
   the slice): a remote without an address is refused instead of named to Git, and no
   program is asked for a password; a new clone and the first commit of an empty repository
@@ -1211,7 +1262,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 11 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 12 |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 12 |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
