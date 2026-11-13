@@ -68,7 +68,7 @@ impl GitPort for UnavailableGit {
     async fn has_changes(&self, _: &Path) -> AppResult<bool> {
         unavailable("git")
     }
-    async fn install_push_guard(&self, _: &Path, _: &[String]) -> AppResult<()> {
+    async fn install_push_guard(&self, _: &Path, _: &Path, _: &[String]) -> AppResult<()> {
         unavailable("git")
     }
     async fn set_identity(&self, _: &Path, _: &str, _: &str) -> AppResult<()> {

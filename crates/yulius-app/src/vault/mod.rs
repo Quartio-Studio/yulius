@@ -457,10 +457,14 @@ impl App {
 
     /// The redaction matcher of `sandbox` for runs of `holder` (`None`: for every run), cached
     /// until an agent secret changes. A run's own fingerprint file is made from its holder's, so
-    /// it never holds hashes of another person's values (ADR-0186).
+    /// it never holds hashes of another person's values (ADR-0186), and from what can be in its
+    /// sandbox only (ADR-0313): no two-factor seed, which Yulius never hands out (it types the
+    /// code), and in a playground a guest joined no agent secret, as its runs get none (SPEC-410
+    /// GST-004), only its MCP servers' own values.
     ///
     /// # Errors
-    /// Store or decryption failures.
+    /// Store or decryption failures; for a run's matcher also when the store cannot say whether
+    /// a guest joined (an empty matcher would redact nothing).
     pub(crate) async fn matcher_for(
         &self,
         sandbox: &SandboxId,
@@ -478,7 +482,12 @@ impl App {
         {
             return Ok(matcher.clone());
         }
-        let records = self.redacted_agent_secrets(sandbox, holder).await?;
+        let for_a_run = holder.is_some();
+        let records = if for_a_run && self.deps.store.playground_has_guests(sandbox).await? {
+            Vec::new()
+        } else {
+            self.redacted_agent_secrets(sandbox, holder).await?
+        };
         let mut secrets = Vec::with_capacity(records.len());
         for record in &records {
             let Some(payload) = self.agent_payload(record)? else {
@@ -489,7 +498,7 @@ impl App {
             for line in yulius_domain::vault::dotenv::key_lines(&payload.value) {
                 forms.extend(needles(&line));
             }
-            if let Some(seed) = &payload.totp {
+            if let Some(seed) = payload.totp.as_ref().filter(|_| !for_a_run) {
                 forms.extend(needles(seed));
             }
             secrets.push((record.name.clone(), forms));

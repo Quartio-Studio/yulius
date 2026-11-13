@@ -104,7 +104,8 @@ impl App {
     }
 
     /// Commits `README.md` on `branch` in a scratch clone of the sandbox's empty repository and
-    /// pushes it without forcing; the scratch clone is removed on every path.
+    /// pushes it without forcing; the scratch clone is removed on every path. It is the
+    /// server's own ([`App::scratch`]): what the commit holds is not the sandbox's to add to.
     async fn push_first_commit(
         &self,
         record: &SandboxRecord,
@@ -119,8 +120,9 @@ impl App {
         };
         let (author, email) = commit_identity(author.as_ref());
         let name = &record.repo_name;
-        let scratch = self.sandbox_dir(&record.id).join("seed");
-        remove_tree(scratch.clone()).await;
+        let scratch = self
+            .scratch(&format!("seed-{}", record.id.as_str()))
+            .await?;
         let pushed = async {
             self.deps
                 .git

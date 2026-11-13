@@ -131,8 +131,15 @@ impl App {
                 &format!("{MANIFEST_STATE_PREFIX}{owner_kind}:{owner_login}"),
                 now,
                 now.plus_millis(MANIFEST_STATE_TTL_MS),
+                crate::auth::MAX_OAUTH_STATES,
             )
-            .await?;
+            .await?
+            .then_some(())
+            .ok_or_else(|| {
+                AppError::Capacity(
+                    "too many sign-ins are waiting; try again in a few minutes".into(),
+                )
+            })?;
         let post_url = self
             .deps
             .github

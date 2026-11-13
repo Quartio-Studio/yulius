@@ -432,16 +432,11 @@ impl App {
         private_dir(&identity_dir)?;
         let (mut passwd, mut group) = identity_files(&login, &user.display_name, &home);
         if let Some(join) = &join {
-            let read = |path: &Option<PathBuf>| {
-                path.as_ref()
-                    .and_then(|p| std::fs::read_to_string(p).ok())
-                    .filter(|text| text.len() <= 1 << 20)
-            };
-            if let Some(system) = read(&join.system_passwd) {
-                passwd = merged_identity(&passwd, &system, &login);
+            if let Some(system) = &join.system_passwd {
+                passwd = merged_identity(&passwd, system, &login);
             }
-            if let Some(system) = read(&join.system_group) {
-                group = merged_identity(&group, &system, &login);
+            if let Some(system) = &join.system_group {
+                group = merged_identity(&group, system, &login);
             }
         }
         write_file(&identity_dir.join("passwd"), passwd.as_bytes(), 0o644)?;
@@ -518,10 +513,11 @@ impl App {
         })
     }
 
-    /// The workspace token secret: read from the data directory, created there on first use. When
+    /// The workspace secret, from which workspace tokens and the salt of a sandbox's redaction
+    /// fingerprints are derived: read from the data directory, created there on first use. When
     /// the file cannot be read or written, a secret for this server's lifetime (tokens then end
     /// with it, as before).
-    fn workspace_secret(&self) -> &str {
+    pub(crate) fn workspace_secret(&self) -> &str {
         self.workspace_grants.secret.get_or_init(|| {
             let path = self.config.data_dir.join(WORKSPACE_SECRET_FILE);
             if let Ok(text) = std::fs::read_to_string(&path) {

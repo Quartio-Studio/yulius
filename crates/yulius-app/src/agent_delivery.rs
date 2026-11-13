@@ -296,6 +296,15 @@ impl App {
         // A merge the branch policy refuses is never armed (SPEC-069 BPL-004). The view has no
         // fork flag; `dlv_merge` checks again with GitHub's before it merges.
         if let Some(pull) = before.pr.as_ref() {
+            // Nor one that does not go into the integration branch (SPEC-483 D3), whatever the
+            // branch policy says.
+            if pull.base != profile.integration_branch {
+                return Err(AppError::Conflict(format!(
+                    "pull request #{} goes into `{}`, not `{}`: a task's change merges into \
+                     `{}` only; point the pull request back at it",
+                    pull.number, pull.base, profile.integration_branch, profile.integration_branch
+                )));
+            }
             let facts = yulius_domain::branch_policy::PullFacts {
                 title: &pull.title,
                 head: &pull.head,
@@ -453,7 +462,10 @@ impl App {
                 &auth,
                 sandbox.id.as_str(),
                 name,
-                &RunEnvironment { confirm: true },
+                &RunEnvironment {
+                    confirm: true,
+                    slug: None,
+                },
                 Some(&ctx.task),
             )
             .await?;

@@ -35,7 +35,7 @@ use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::mcp::{STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors};
 use crate::model::SandboxRecord;
-use crate::vault::{Holder, SecretUser};
+use crate::vault::{Holder, Revealed, SecretUser};
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
 pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
@@ -378,7 +378,7 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "secret_update",
-            "Change an agent secret's bound hosts or description (never its value: values are set on the Secrets page or with `yulius secrets import`). Changing hosts of a secret agents set up needs expect_hosts, the hosts secrets_list showed.",
+            "Change an agent secret's bound hosts or description (never its value: values are set on the Secrets page or with `yulius secrets import`). Changing hosts of a secret agents set up (auto_allow) needs expect_hosts, the hosts secrets_list showed. A new host of a secret its person allows use by use is refused: they bind it on the Secrets page, after their two-factor code.",
             json!({
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
                 "hosts": {"type": "array", "items": {"type": "string"}, "description": "The hosts it is sent to, e.g. api.example.com, *.example.com"},
@@ -389,7 +389,7 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "secret_hosts_answer",
-            "Allow or dismiss the hosts an agent asked a secret to be bound to (requested_hosts in secrets_list), as on the Secrets page.",
+            "Dismiss the hosts an agent asked a secret to be bound to (requested_hosts in secrets_list), or allow them for a secret agents set up (auto_allow). For a secret its person allows use by use, allowing is theirs: on the Secrets page, after their two-factor code.",
             json!({
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
                 "allow": {"type": "boolean"},
@@ -1019,7 +1019,7 @@ impl App {
                     .ok_or_else(|| {
                         AppError::Invalid(format!("the project has no agent secret {secret}"))
                     })?;
-                let view = if name == "secret_update" {
+                let outcome = if name == "secret_update" {
                     let patch = AgentSecretPatch {
                         description: args
                             .get("description")
@@ -1038,6 +1038,13 @@ impl App {
                     let hosts = strings_arg(args, "hosts")?.unwrap_or_default();
                     self.answer_host_request(ctx, &id, &HostRequestAnswer { allow, hosts })
                         .await?
+                };
+                // A token never holds the two-factor unlock: it was refused above with where
+                // the person does this (ADR-0317).
+                let Revealed::Values(view) = outcome else {
+                    return Err(AppError::Forbidden(
+                        "this needs your two-factor code: do it on the Secrets page".into(),
+                    ));
                 };
                 Ok(json!({"secret": {
                     "name": view.name,

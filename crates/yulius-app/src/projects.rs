@@ -943,6 +943,9 @@ impl App {
             profile,
             user,
         } = *scaffold;
+        // In the folder of the sandbox that is being made: it has no record yet, so nothing
+        // of it runs that could write here (a later scratch clone is the server's own,
+        // `App::scratch`). A playground's origin is taken as one only from there.
         let scratch = self.sandbox_dir(id).join("scaffold");
         if let Some(parent) = scratch.parent() {
             let parent = parent.to_path_buf();
@@ -1000,7 +1003,7 @@ impl App {
     /// `NotFound` without access, `Forbidden` without admin.
     pub async fn delete_sandbox(self: &Arc<Self>, ctx: &AuthContext, sid: &str) -> AppResult<()> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let (record, _) = self.require_for(ctx, &id, Action::Administer).await?;
         let store = &self.deps.store;
         let mut tasks = store.tasks(&id, false).await?;
         tasks.extend(store.tasks(&id, true).await?);

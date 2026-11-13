@@ -98,6 +98,14 @@ pub fn exec_bwrap_with(argv: &[OsString], profile: crate::seccomp::Profile) -> i
     let Some((program, rest)) = argv.split_first() else {
         return io::Error::new(io::ErrorKind::InvalidInput, "nothing to run");
     };
+    // The environment here is the run's, whose `PATH` begins in the sandbox home: a bare name
+    // would be looked up there, after the holder's namespaces were joined (ADR-0314).
+    if !std::path::Path::new(program).is_absolute() {
+        return io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bubblewrap must be named by its absolute path",
+        );
+    }
     let mut command = std::process::Command::new(program);
     // Kept open until exec replaces this process.
     let mut filter = None;
@@ -121,4 +129,25 @@ pub fn exec_bwrap_with(argv: &[OsString], profile: crate::seccomp::Profile) -> i
     let error = command.exec();
     drop(filter);
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR-0314: `sandbox-exec` runs with the run's environment after it joined the sandbox's
+    /// namespaces, so a program named without its path is refused instead of looked up.
+    #[test]
+    fn a_bare_program_name_is_refused_before_anything_is_started() {
+        // Names nothing answers to: were they looked up after all, the exec would fail too,
+        // with another error, instead of replacing this test's process.
+        for argv in [
+            vec![OsString::from("yulius-no-such-bwrap")],
+            vec!["./yulius-no-such-dir/bwrap".into(), "--version".into()],
+        ] {
+            let error = exec_bwrap_with(&argv, crate::seccomp::Profile::Run);
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("absolute path"), "{error}");
+        }
+    }
 }

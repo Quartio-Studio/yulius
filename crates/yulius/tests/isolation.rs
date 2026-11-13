@@ -39,7 +39,6 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::sandbox::{Egress, IsolationArgs, NamespaceIsolation, resolve};
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::model::{AccountRecord, AccountStatus, SandboxRecord};
@@ -175,7 +174,7 @@ async fn fixture(
     let dir = tempfile::Builder::new().prefix("yiso").tempdir_in(tmp)?;
     let yulius_exe = exe.clone();
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Some(Arc::new(FakeAgentHarness::new(
             exe.clone(),

@@ -13,7 +13,6 @@ use serde_json::json;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig, Deps};
@@ -358,7 +357,7 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
                     ..FakeAgentOptions::default()
                 },
             )),
-            git: Arc::new(GitAdapter::new("git")),
+            git: Arc::new(crate::support::confined_git()),
             system: Arc::new(support::FixedSystem),
             browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
             usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),

@@ -881,12 +881,8 @@ impl App {
         declared: Option<u64>,
     ) -> AppResult<Upload> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(
-            &ctx.user,
-            &sandbox_id,
-            yulius_domain::permission::Action::Work,
-        )
-        .await?;
+        self.require_for(ctx, &sandbox_id, yulius_domain::permission::Action::Work)
+            .await?;
         if ctx.user.disabled_at.is_some() {
             return Err(AppError::Forbidden("this account is disabled".into()));
         }

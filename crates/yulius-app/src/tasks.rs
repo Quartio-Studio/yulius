@@ -417,7 +417,7 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
-        self.require(&ctx.user, &task.sandbox_id, action).await?;
+        self.require_for(ctx, &task.sandbox_id, action).await?;
         if action != Action::View {
             self.require_owner(ctx, &task).await?;
         }
@@ -454,7 +454,7 @@ impl App {
         archived: bool,
     ) -> AppResult<Vec<TaskSummary>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let mut out = Vec::new();
         for task in self.deps.store.tasks(&sid, archived).await? {
             out.push(self.task_summary(&task).await?);
@@ -546,6 +546,13 @@ impl App {
             .clone()
             .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned());
         let effort = claude_effort(&model, task.effort.as_deref()).map(str::to_owned);
+        // The model its live run was launched with, when the pool placed it with the fallback
+        // (SPEC-482 FBK-009).
+        let fallback_model = store
+            .live_attempt(&task.id)
+            .await?
+            .and_then(|run| run.model)
+            .filter(|launched| *launched != model);
         let mut metrics = sum_metrics(&store.task_metrics(&task.id).await?);
         metrics.wall_ms = u64::try_from(wall_ms).unwrap_or(0);
         let switches: Vec<SwitchView> = store
@@ -588,6 +595,7 @@ impl App {
             started,
             model,
             model_default: task.model.is_none(),
+            fallback_model,
             effort,
             cli_version,
             cli_moves_to,

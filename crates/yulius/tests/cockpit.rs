@@ -132,7 +132,7 @@ async fn fixture_full(
     ));
     let h = harness_with(HarnessOptions {
         // Real Git: the Superagent's `.env` copies ask whether Git ignores the file (SPEC-186).
-        git: Some(Arc::new(yulius::wiring::git::GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         harness: Some(harness),
         browser,
@@ -1497,6 +1497,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         config_dir_host: dir.path().join(home),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: yulius_app::model::Secret(TOKEN.into()),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -2347,6 +2348,137 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 V4 (review of slice 5), the real path: while an agent secret of the sandbox cannot
+/// be opened, a Superagent's terminal says its screen is withheld and shows none of its output
+/// (it is dropped, not kept); once the secrets can be read again, output flows.
+#[tokio::test]
+async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+
+    // Its sealed payload no longer opens (a key-encryption key nobody has), and a change of a
+    // secret makes the terminal load them anew.
+    let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+    let seen =
+        f.h.store
+            .vault_agent_in(&sandbox)
+            .await?
+            .into_iter()
+            .find(|r| r.name == "APIFY_KEY")
+            .ok_or("no secret")?;
+    let mut broken = seen.clone();
+    broken.envelope.kek_id = 9_999;
+    assert!(f.h.store.vault_update(&broken, &seen).await?);
+    let more = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "LATER_KEY", "value": "later-value-0123456"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(more.status, StatusCode::CREATED, "{:?}", more.body);
+
+    let say = |text: String| Message::text(json!({"type": "input", "data": text}).to_string());
+    let marker = f.data.join("ran-while-withheld");
+    socket
+        .send(say(format!(
+            "echo shown-$((40+2)); touch {}\r",
+            marker.display()
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, "the screen is withheld").await?;
+    wait_for("the command ran", || marker.exists()).await?;
+
+    // The secret that does not open is deleted: the next output is shown.
+    let deleted = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/agent-secrets/{}", seen.id),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
+    socket.send(say("echo back-$((40+2))\r".into())).await?;
+    read_until(&mut socket, &mut screen, "back-42").await?;
+    assert!(!screen.contains("shown-42"), "{screen:?}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// ADR-0313: a Superagent that was running across the update keeps its old wrapper, which reads
+/// only the fingerprint file format from before version 2. A starting server rewrites its file
+/// in that format without what told too much, and the old wrapper's request (it cannot read the
+/// answer) brings the file up to date, so a secret added since is redacted there too.
+#[tokio::test]
+async fn a_superagent_from_before_version_2_keeps_redacting_from_its_file() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let workspace = printed(&screen, "workspace")?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join("shells")
+            .join(&id)
+            .join(yulius_app::vault::FINGERPRINTS_FILE);
+    let launched: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(launched["version"], 2);
+    assert_eq!(launched["names"], json!(["APIFY_KEY"]));
+    // The file as an older Yulius wrote it.
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&json!({
+            "version": 1, "base": 912_367, "salt": "00", "names": ["APIFY_KEY"],
+            "needles": [{"secret": 0, "len": SECRET_VALUE.len(), "rolling": 77, "digest": "00"}],
+        }))?,
+    )?;
+
+    f.h.app.refresh_fingerprint_files().await;
+
+    let rewritten = std::fs::read(&file)?;
+    let legacy: Value = serde_json::from_slice(&rewritten)?;
+    assert_eq!(
+        (&legacy["version"], &legacy["base"]),
+        (&json!(1), &json!(0))
+    );
+    assert_eq!(
+        support::old_wrapper_redacts(&rewritten, &format!("key {SECRET_VALUE}")).as_deref(),
+        Some("key [secret:APIFY_KEY]")
+    );
+
+    let resp = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "LATER_KEY", "hosts": ["api.later.test"], "value": "later-synthetic-5Hq2Wm8Zc1"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::CREATED, "{:?}", resp.body);
+    let answered = scrub(&f, &workspace, "fingerprints", json!({})).await?;
+    assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
+    assert_eq!(answered.body["version"], 2);
+    assert_eq!(
+        support::old_wrapper_redacts(&std::fs::read(&file)?, "later-synthetic-5Hq2Wm8Zc1 x")
+            .as_deref(),
+        Some("[secret:LATER_KEY] x")
+    );
+    Ok(())
+}
+
 /// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
 /// workspace token, which its environment already holds: answered while the person may work in
 /// the sandbox, refused once they cannot, and a redaction is audited with their login.
@@ -2742,6 +2874,117 @@ async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> Te
     );
     assert_eq!(usage["secondary"]["used_percent"], 5.0, "{usage}");
     assert_eq!(usage["limit_reached"], false, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// The record of Claude Code 2.1.322 for a model refused for its usage credits, whose allowance
+/// resets at `resets` (seconds).
+fn credits_refusal(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
+    transcript_record(
+        "assistant",
+        uuid,
+        Some(parent),
+        secs,
+        &json!({"isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected",
+                "resetsAt": resets, "rateLimitType": "seven_day_overage_included",
+                "overageStatus": "rejected", "overageDisabledReason": "out_of_credits",
+                "isUsingOverage": false}},
+            "message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+    )
+}
+
+/// SPEC-482 FBK-011: the only subscription refuses the Superagent Fable for its usage credits.
+/// Before, it stayed at the refusal ("No other subscription has capacity"); now it starts again
+/// on the same subscription with Opus 5.5 and continues the turn, its viewers are told why, and
+/// its record keeps the model. A limit it hits there is Opus's, not Fable's: with neither model
+/// left it stays, as before.
+#[tokio::test]
+async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--model claude-fable-5-2 --effort high]"
+    );
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            prompt_record("u1", None, 5),
+            credits_refusal("refused", "u1", 6, 1_791_400_000),
+        ]
+        .concat(),
+    )?;
+
+    let notice = read_message(&mut socket, "notice").await?;
+    assert_eq!(
+        notice["text"],
+        "Fable 5.2 is used up on every subscription: this session runs on Opus 5.5."
+    );
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation on the fallback, nothing typed"
+    );
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    assert_eq!(printed(&screen, "token")?, TOKEN, "the same subscription");
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(
+        !stepped.contains("refused") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert!(usage["weekly_opus"].is_null(), "{usage}");
+    let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
+    assert!(record.contains("\"model\":\"claude-opus-5-5\""), "{record}");
+
+    // Refused on the fallback too: the limit is Opus's, and nothing else can take the session.
+    let mut more = std::fs::OpenOptions::new().append(true).open(&transcript)?;
+    std::io::Write::write_all(
+        &mut more,
+        [
+            prompt_record("u2", Some("u1"), 20),
+            credits_refusal("refused-again", "u2", 21, 1_791_500_000),
+        ]
+        .concat()
+        .as_bytes(),
+    )?;
+    drop(more);
+    let notice = read_message(&mut socket, "notice").await?;
+    assert!(
+        notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("No other subscription has capacity")),
+        "{notice}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(
+        usage["weekly_opus"]["resets_at"], 1_791_500_000_000_i64,
+        "{usage}"
+    );
+    assert_eq!(
+        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        "Fable's window is as it was: {usage}"
+    );
+    assert_eq!(cockpit_id(&f, &f.alice).await?, again, "the same session");
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -3624,7 +3867,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
@@ -3740,7 +3983,7 @@ async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestRes
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
@@ -3834,7 +4077,9 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     )
     .await?;
     assert_eq!(deploy.status, StatusCode::CREATED, "{:?}", deploy.body);
-    // A production secret bound to a host (kept from before it was one): never used.
+    // A production secret: never used. It lost its host when it became one (ADR-0324), so the
+    // requests below show a host no secret is bound to; the proxy's own rule is held by
+    // `ports::egress::tests`.
     let prod = call(
         &f.h.router,
         Method::POST,
@@ -3847,8 +4092,7 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     )
     .await?;
     assert_eq!(prod.status, StatusCode::CREATED, "{:?}", prod.body);
-    crate::support::legacy_production_secret(&f.h.store, prod.body["id"].as_str().ok_or("id")?)
-        .await?;
+    crate::support::production_secret(&f.h.store, prod.body["id"].as_str().ok_or("id")?).await?;
 
     let served = serve(f.h.router.clone()).await?;
     let id = cockpit_id(&f, &f.alice).await?;

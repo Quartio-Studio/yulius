@@ -1027,7 +1027,7 @@ pub(crate) async fn admit_again(
         Method::GET,
         &format!("/api/auth/github/callback?code={code}&state={state}"),
         None,
-        &Creds::default(),
+        &support::started(&state),
     )
     .await?;
     let cookie = support::session_from(&callback.set_cookie).ok_or("cookie")?;
@@ -1101,8 +1101,19 @@ async fn get_as(
     call(&w.h.router, Method::GET, path, None, creds).await
 }
 
+/// A browser session of `user` with two-factor set up and the vault unlocked: what a person
+/// needs to let the value of a secret allowed use by use go somewhere new (ADR-0317).
+pub(crate) async fn unlocked(
+    h: &support::Harness,
+    user: &str,
+) -> Result<Creds, Box<dyn std::error::Error>> {
+    let session = browser_session(h, user).await?;
+    enroll(h, &session).await?;
+    Ok(session)
+}
+
 /// A browser session for a seeded user (signed in now).
-async fn browser_session(
+pub(crate) async fn browser_session(
     h: &support::Harness,
     user: &str,
 ) -> Result<Creds, Box<dyn std::error::Error>> {
@@ -1124,6 +1135,7 @@ async fn browser_session(
         cookie: Some(cookie),
         csrf: Some(format!("csrf-of-{user}")),
         bearer: None,
+        oauth: None,
     })
 }
 
@@ -1313,6 +1325,23 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
     assert_eq!(
         shown.body["notes"],
         format!("User name: docs-admin\nTwo-factor seed: {SEED}\n\nDocs admin login")
+    );
+    // ADR-0313: a run's fingerprints hold the value and not the seed, which never enters a
+    // sandbox (Yulius types the code); Yulius' own redaction of the project covers both.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let set =
+        w.h.app
+            .scrub_fingerprints_for(&s1, yulius_app::vault::Holder::Nobody)
+            .await?;
+    let matcher = yulius_harness::scrub_client::matcher(&set).ok_or("matcher")?;
+    let text = format!("pass docs-pass-7731-xyz seed {SEED}");
+    assert_eq!(
+        redact_text(&matcher, &text).0,
+        format!("pass [secret:DOCS_LOGIN] seed {SEED}")
+    );
+    assert_eq!(
+        w.h.app.redact_for_sandbox(&s1, &text).await,
+        "pass [secret:DOCS_LOGIN] seed [secret:DOCS_LOGIN]"
     );
     Ok(())
 }
@@ -1944,7 +1973,7 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     ));
 
     // Responses are redacted of every in-scope value and encoding.
-    let matcher = app.egress_redactor(&s1).await;
+    let matcher = app.egress_redactor(&s1).await.ok_or("matcher")?;
     let (redacted, names) = redact_text(
         matcher.as_ref(),
         &format!(
@@ -1957,7 +1986,7 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
         "echo: Bearer [secret:STRIPE_KEY] hex [secret:STRIPE_KEY]"
     );
     assert_eq!(names, vec!["STRIPE_KEY".to_owned()]);
-    assert!(app.egress_redactor(&s2).await.is_empty());
+    assert!(app.egress_redactor(&s2).await.is_some_and(|m| m.is_empty()));
 
     // Uses are audited by name.
     let activity = call(
@@ -2007,9 +2036,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         if created.body["name"] == "PROD_KEY" {
-            // Bound to a host, as a production secret could be before SPEC-134 M-B.
+            // Made a production secret: its host goes with that (ADR-0324).
             let id = created.body["id"].as_str().ok_or("id")?;
-            crate::support::legacy_production_secret(&w.h.store, id).await?;
+            crate::support::production_secret(&w.h.store, id).await?;
         }
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
@@ -2027,7 +2056,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         !app.egress_intercepts(&ci, "eu.hdr.test", 443).await,
         "a host bound only to a secret the job was not granted is a plain tunnel"
     );
-    // A production-deploy secret is never a CI job's, even when its name is granted.
+    // A production-deploy secret is never a CI job's, even when its name is granted. It has no
+    // host either (ADR-0324), so nothing here is intercepted for it whatever the proxy's rule
+    // is: the rule itself is held by `ports::egress::tests`.
     assert!(!app.egress_intercepts(&ci, "prod.test", 443).await);
     let named = app
         .egress_apply(
@@ -2719,6 +2750,213 @@ async fn agent_secret_of(w: &World, name: &str) -> Result<Value, Box<dyn std::er
         .ok_or(name.to_owned())?)
 }
 
+/// SPEC-483 V5 (ADR-0317): sending a value to a server of one's choice reads it. For a secret
+/// people allow use by use, a host it is not bound to and `.env` copies need what a reveal
+/// needs: a browser session with the two-factor unlock; an API token is refused. What sends it
+/// nowhere new (a description, fewer hosts, a dismissal, a revocation) needs neither, and a
+/// secret agents set up is unchanged: they bind its hosts without a person.
+#[tokio::test]
+async fn a_use_by_use_secret_goes_somewhere_new_only_after_two_factor() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "DEPLOY_KEY", "value": "deploy-value-0123456", "hosts": ["api.deploy.test"], "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let path = format!("/api/agent-secrets/{id}");
+    let patch = |body: Value, creds: Creds| {
+        let (router, path) = (w.h.router.clone(), path.clone());
+        async move { call(&router, Method::PATCH, &path, Some(body), &creds).await }
+    };
+    let env = |allow: bool, seen: &'static str, creds: Creds| {
+        let (router, path) = (w.h.router.clone(), format!("{path}/env"));
+        async move {
+            call(
+                &router,
+                Method::POST,
+                &path,
+                Some(json!({"allow": allow, "env_files": seen, "env_requested_by": "#1"})),
+                &creds,
+            )
+            .await
+        }
+    };
+    let hosts = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            agent_secret_of(&w, "DEPLOY_KEY").await?["hosts"].clone(),
+        )
+    };
+    let person = browser_session(&w.h, "u-alice").await?;
+    let new_host = json!({"hosts": ["api.deploy.test", "evil.test"]});
+
+    // A new host: a token is told where a person does it, a session is asked for the code.
+    let token = patch(new_host.clone(), w.writer.clone()).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert_eq!(token.body["error"]["code"], "forbidden");
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Secrets page") && m.contains("two-factor")),
+        "{}",
+        token.body
+    );
+    let locked = patch(new_host.clone(), person.clone()).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(locked.cache_control.as_deref(), Some("no-store"));
+    assert_eq!(hosts().await?, json!(["api.deploy.test"]));
+
+    // `.env` copies an agent asked for: the same.
+    assert!(
+        w.h.store
+            .vault_set_env_files(
+                &id,
+                (EnvFiles::No, None),
+                (EnvFiles::Asked, Some("#1")),
+                None
+            )
+            .await?
+    );
+    let token = env(true, "asked", w.writer.clone()).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert_eq!(token.body["error"]["code"], "forbidden");
+    let locked = env(true, "asked", person.clone()).await?;
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(
+        agent_secret_of(&w, "DEPLOY_KEY").await?["env_files"],
+        "asked"
+    );
+
+    // Nothing new: its description, the same hosts in another case, fewer hosts.
+    for body in [
+        json!({"description": "Deploys the shop"}),
+        json!({"hosts": ["API.deploy.test"]}),
+        json!({"hosts": []}),
+    ] {
+        let kept = patch(body.clone(), w.writer.clone()).await?;
+        assert_eq!(kept.status, StatusCode::OK, "{body}: {}", kept.body);
+    }
+    assert_eq!(hosts().await?, json!([]));
+    // The host just removed is new again.
+    let back = patch(json!({"hosts": ["api.deploy.test"]}), w.writer.clone()).await?;
+    assert_eq!(back.status, StatusCode::FORBIDDEN, "{}", back.body);
+
+    // With the unlock both go through, and are audited as the person.
+    enroll(&w.h, &person).await?;
+    let bound = patch(new_host, person.clone()).await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert_eq!(hosts().await?, json!(["api.deploy.test", "evil.test"]));
+    let allowed = env(true, "asked", person.clone()).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.body["env_files"], "allowed");
+    // Revoking sends it nowhere new: a token may.
+    let revoked = call(
+        &w.h.router,
+        Method::POST,
+        &format!("{path}/env"),
+        Some(json!({"allow": false, "env_files": "allowed", "env_requested_by": null})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+
+    // Ten minutes later the unlock is over.
+    w.h.clock.0.fetch_add(minutes(11), Ordering::SeqCst);
+    let stale = patch(
+        json!({"hosts": ["api.deploy.test", "evil.test", "more.test"]}),
+        person,
+    )
+    .await?;
+    assert_eq!(stale.body["error"]["code"], "reauth_required");
+
+    // A secret agents set up: they bind its hosts themselves, so a person's token may too.
+    let open = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "OPEN_KEY", "value": "open-value-01234567"}),
+    )
+    .await?;
+    assert_eq!(open.body["auto_allow"], true, "{}", open.body);
+    let open_path = format!(
+        "/api/agent-secrets/{}",
+        open.body["id"].as_str().ok_or("id")?
+    );
+    let bound = call(
+        &w.h.router,
+        Method::PATCH,
+        &open_path,
+        Some(json!({"hosts": ["api.open.test"], "expect_hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    Ok(())
+}
+
+/// SPEC-483 V4 (review of slice 5), the app's own answer to the proxy: while an agent secret of
+/// the sandbox cannot be opened there is nothing to redact with (the proxy then sends nothing),
+/// not an empty set that would let every value through; another sandbox is not touched.
+#[tokio::test]
+async fn the_proxy_gets_nothing_to_redact_with_while_a_secret_cannot_be_opened() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    for (sandbox, name) in [("s1", "STRIPE_KEY"), ("s2", "OTHER_KEY")] {
+        let created = add_agent_secret(
+            &w,
+            &w.writer,
+            sandbox,
+            json!({"name": name, "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    let s2 = app.egress_client(TOKEN_S2).await.ok_or("s2 client")?;
+    assert!(
+        app.egress_redactor(&s1)
+            .await
+            .is_some_and(|m| !m.is_empty())
+    );
+
+    // Its sealed payload no longer opens (a key-encryption key nobody has).
+    let records =
+        w.h.store
+            .vault_agent_in(&yulius_domain::ids::SandboxId::parse("s1")?)
+            .await?;
+    let seen = records
+        .iter()
+        .find(|r| r.name == "STRIPE_KEY")
+        .ok_or("no secret")?
+        .clone();
+    let mut broken = seen.clone();
+    broken.envelope.kek_id = 9_999;
+    assert!(w.h.store.vault_update(&broken, &seen).await?);
+    // A change of a secret drops the set built before.
+    let more = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "LATER_KEY", "value": "later-value-0123456"}),
+    )
+    .await?;
+    assert_eq!(more.status, StatusCode::CREATED, "{}", more.body);
+
+    assert!(app.egress_redactor(&s1).await.is_none());
+    assert!(
+        app.egress_redactor(&s2)
+            .await
+            .is_some_and(|m| !m.is_empty())
+    );
+    Ok(())
+}
+
 async fn answer_request(
     w: &World,
     creds: &Creds,
@@ -2844,7 +3082,26 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
     let outsider = answer_request(&w, &w.outsider, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
-    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    // SPEC-483 V5: allowing sends the value somewhere new, which reads it: an API token is
+    // refused, a browser session needs the two-factor unlock first; neither binds anything.
+    let token = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("allowed use by use") && m.contains("two-factor")),
+        "{}",
+        token.body
+    );
+    let person = browser_session(&w.h, "u-alice").await?;
+    let locked = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!([]));
+    assert_eq!(secret["requested_hosts"], json!(["api.vidoc.test"]));
+    enroll(&w.h, &person).await?;
+    let allowed = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["hosts"], json!(["api.vidoc.test"]));
     assert_eq!(allowed.body["requested_hosts"], json!([]));
@@ -3047,7 +3304,8 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     .await?;
 
     // On again: a host that waited is bound when an agent asks for it; the others keep waiting.
-    let on = call(
+    // Agents then send it where they choose, so switching it on needs the unlock (SPEC-483 V5).
+    let token = call(
         &w.h.router,
         Method::PATCH,
         &path,
@@ -3055,6 +3313,25 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
         &w.writer,
     )
     .await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    let person = browser_session(&w.h, "u-alice").await?;
+    let on = |creds: Creds| {
+        let (router, path) = (w.h.router.clone(), path.clone());
+        async move {
+            call(
+                &router,
+                Method::PATCH,
+                &path,
+                Some(json!({"auto_allow": true})),
+                &creds,
+            )
+            .await
+        }
+    };
+    let locked = on(person.clone()).await?;
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    enroll(&w.h, &person).await?;
+    let on = on(person).await?;
     assert_eq!(on.status, StatusCode::OK, "{}", on.body);
     let bound = tool_text(
         &mcp_tool(
@@ -3245,7 +3522,8 @@ async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
     );
 
     // The project's is answered: the flag stays for the other, and opens its tab.
-    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    let person = unlocked(&w.h, "u-alice").await?;
+    let allowed = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     let why = support::attention(&w.h.app, "t1").await?;
     assert_eq!(why["action"], "Answer it on the Secrets page.", "{why}");
@@ -3255,7 +3533,11 @@ async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
     );
 
     // The last one answered: the flag and its reason go.
-    let allowed = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    let superadmin = yulius_app::ports::store::UserStore::superadmin(&w.h.store)
+        .await?
+        .ok_or("superadmin")?;
+    let admin = unlocked(&w.h, superadmin.id.as_str()).await?;
+    let allowed = answer_request(&w, &admin, &global_id, true, &["global.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert!(support::attention(&w.h.app, "t1").await?.is_null());
     Ok(())
@@ -3300,8 +3582,8 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
     let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
     assert!(!app.egress_intercepts(&s1, "evil.test", 443).await);
     // What the page shows after a reload answers it (any order, any case).
-    let allowed =
-        answer_request(&w, &w.writer, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
+    let person = unlocked(&w.h, "u-alice").await?;
+    let allowed = answer_request(&w, &person, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(
         allowed.body["hosts"],
@@ -3315,7 +3597,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
         Some(json!({"hosts": many[..15]})),
-        &w.writer,
+        &person,
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
@@ -3325,11 +3607,11 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
         Some(json!({"hosts": many})),
-        &w.writer,
+        &person,
     )
     .await?;
     assert_eq!(full.status, StatusCode::OK, "{}", full.body);
-    let over = answer_request(&w, &w.writer, &id, true, &["new.vidoc.test"]).await?;
+    let over = answer_request(&w, &person, &id, true, &["new.vidoc.test"]).await?;
     assert_eq!(
         over.status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -3372,7 +3654,11 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         "{}",
         by_writer.body
     );
-    let by_admin = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    let superadmin = yulius_app::ports::store::UserStore::superadmin(&w.h.store)
+        .await?
+        .ok_or("superadmin")?;
+    let admin = unlocked(&w.h, superadmin.id.as_str()).await?;
+    let by_admin = answer_request(&w, &admin, &global_id, true, &["global.test"]).await?;
     assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }
@@ -3500,5 +3786,92 @@ async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult
         "{headers:?}"
     );
     assert!(used.is_empty(), "{used:?}");
+    Ok(())
+}
+
+/// ADR-0313: asking for the fingerprints again tells a run nothing more. The set is the same on
+/// every request (a set that changed its hash base each time gave a value away to as many
+/// requests as it has bytes), and all it says about a value besides its length and salted digest
+/// is a tag of a few bits.
+#[tokio::test]
+async fn repeated_fingerprint_requests_answer_the_same_set() -> TestResult {
+    use yulius_domain::vault::redact::tag_bits;
+    let w = world().await?;
+    let created = add_agent_secret(&w, &w.writer, "s1", json!({"name": "STRIPE_KEY", "description": "Stripe test key", "hosts": ["api.stripe.test"], "value": STRIPE})).await?;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let mut answers = Vec::new();
+    for _ in 0..3 {
+        let got = call(
+            &w.h.internal,
+            Method::POST,
+            "/internal/scrub/fingerprints",
+            Some(json!({})),
+            &Creds {
+                bearer: Some(TOKEN_S1.into()),
+                ..Creds::default()
+            },
+        )
+        .await?;
+        assert_eq!(got.status, StatusCode::OK);
+        answers.push(got.body);
+    }
+    assert_eq!(answers[0], answers[1]);
+    assert_eq!(answers[1], answers[2]);
+    let set = &answers[0];
+    let mut fields: Vec<&str> = set
+        .as_object()
+        .ok_or("set")?
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert_eq!(fields, ["names", "needles", "salt", "version"]);
+    let needles = set["needles"].as_array().ok_or("needles")?;
+    assert_eq!(needles[0]["len"], STRIPE.len(), "the value comes first");
+    for needle in needles {
+        let mut fields: Vec<&str> = needle
+            .as_object()
+            .ok_or("needle")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["digest", "len", "secret", "tag"]);
+        let len = usize::try_from(needle["len"].as_u64().ok_or("len")?)?;
+        let tag = needle["tag"].as_u64().ok_or("tag")?;
+        assert!(tag < 1 << tag_bits(len), "{needle}");
+    }
+    assert_eq!(tag_bits(STRIPE.len()), 4, "a value of 28 bytes says 4 bits");
+    // Another sandbox salts its digests differently.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let s2 = yulius_domain::ids::SandboxId::parse("s2")?;
+    let nobody = yulius_app::vault::Holder::Nobody;
+    let first = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    let other = w.h.app.scrub_fingerprints_for(&s2, nobody).await?;
+    assert_ne!(first.salt, other.salt);
+    // The salt is kept with the data directory: a server started again answers the same set.
+    let data_dir = w.h.app.config.data_dir.clone();
+    let again = support::harness_with(support::HarnessOptions {
+        configure: Some(Box::new(move |c| c.data_dir = data_dir)),
+        ..support::HarnessOptions::default()
+    })?;
+    assert_eq!(
+        again.app.scrub_fingerprints_for(&s1, nobody).await?.salt,
+        first.salt
+    );
+    // A changed value changes its fingerprints, and nothing else does.
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let changed = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": concat!("sk_test_", "51NzQ9otherValue9c4b")})),
+        &w.writer,
+    )
+    .await?;
+    assert!(changed.status.is_success(), "{}", changed.body);
+    let after = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    assert_eq!(after.salt, first.salt);
+    assert_ne!(after.needles[0].digest, first.needles[0].digest);
     Ok(())
 }

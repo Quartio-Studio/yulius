@@ -12,9 +12,11 @@ been performed or verified** as part of the implementation work.
 | --- | --- | --- |
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
+| Landlock in the kernel (Linux ≥ 5.13, `landlock` in `/sys/kernel/security/lsm`) | the server's own Git, which runs confined to Git's programs and its sandbox's folders (ADR-0322) | Ubuntu 22.04 and later and Debian 12 have it. Without it the server runs no Git (clones, worktrees, fetches and merges fail with that reason); `yulius doctor` checks it as "git confinement". |
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
+| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). It applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
@@ -98,7 +100,9 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     daemon-reload`) are loaded, and a sessions unit that does not run is started. `yulius host
     check` only reports this item, in each of these cases.
 12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
-    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
+    write `/etc/modules-load.d`, `/etc/needrestart/conf.d` and Chrome's managed policy
+    directories (§8). A unit or drop-in from before the browser policy lacks those
+    directories: the setup writes the drop-in anew.
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
@@ -587,7 +591,27 @@ local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells
 Xvfb, Chrome and ffmpeg are children of the service and share its `/tmp`, so `PrivateTmp=yes` in
 the unit works too.
 
-Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
+Real input also reaches Chrome's own windows (the file chooser of a page's upload button, Save
+as, printing to a file, the developer tools), and that Chrome runs on the host. So a browser on
+a virtual display takes viewers' clicks and keys only while it answers that the host's managed
+policy is in force (`yulius host setup` writes it; ADR-0318): the policy switches those windows
+off for every tab. Until then the browser shows, scrolls and serves the agents' tools, and the
+panel says what to run. After an update that changes the policy, the update's host check
+rewrites the files; on a host that never ran the setup with this version, run
+`sudo yulius host setup` once.
+
+Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab, and the browser
+policy.
+
+Chrome is also on the host's network, not its sandbox's. Each browser therefore runs behind a
+proxy of its own on the loopback (an ephemeral port, open while the browser runs), served by
+Yulius's egress proxy: it reaches the internet and the host's network as the sandbox's own
+processes do, and of local addresses only its sandbox's dev-server ports and the welcome page
+(ADR-0321). Nothing is configured for it. A page that should load and answers "the sandbox
+browser does not load …" names a local address outside the sandbox's port range, or a name
+that only points at one: serve it on one of the sandbox's ports and open it as
+`localhost:<port>`. Do not set a proxy in a managed Chrome policy on the host (`ProxyMode`,
+`ProxySettings`): a policy wins over what Yulius starts Chrome with.
 
 ### Sandbox isolation
 
@@ -866,6 +890,41 @@ SPEC-461), with no root step and no sign-in again:
   `yulius doctor --contained` reads the channel in effect from it and warns about a refused
   release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
   again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
+
+### Language servers and Claude Code plugins
+
+Yulius switches the language servers of Claude Code plugins (rust-analyzer, pyright, gopls and
+the like) off in every session it starts, and Claude Code does not ask in a session whether to
+install one
+([ADR-0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md),
+SPEC-485). Before this, one Enter on Claude Code's "LSP plugin recommendation" dialog installed
+such a plugin into the sandbox's home for every session; each session then started its own
+server at the first edited file (gigabytes each, and checks in the worktree's build directory),
+or showed `Language server "plugin:…" couldn't start. The Errors tab in /plugin may have the
+reason.` in the terminal.
+
+- Nothing to set up and nothing to clean: a plugin installed in a sandbox's home
+  (`<data>/sandboxes/<id>/home/.claude/plugins`) may stay. Every launch switches the plugins
+  that bring a language server off in the run's own settings, whatever the home's
+  `settings.json`, the repository's `.claude/settings.json` or a `/plugin` in a terminal says.
+  Other plugins (skills, commands) are left as they are; a plugin that brings a language server
+  and other things is switched off whole (Claude Code has no finer switch).
+- Sessions get it at their next launch; a session running across the update keeps what it
+  started with until it is started again.
+- To see what a session got: `enabledPlugins` in the run's `claude-settings.json`
+  (`<data>/runs/<attempt>/`), and the server's log line of the launch, "switching off the
+  plugins that bring a language server for this run" with their ids. `claude plugin list` run in a sandbox shows the home's own state,
+  which a run's settings outrank; `claude --settings <that file> plugin list` shows the run's.
+- The notice in a session that was started after the update means a plugin brings a language
+  server where Yulius does not look. The launch's warning in the server's log, "could not read
+  everything about this session's plugins", names what it left unread (a link, a file that is
+  not JSON, a bound, a marketplace whose folder it could not open). Not read by decision: a
+  marketplace or an installed copy outside the sandbox's folders (for a contained Superagent
+  also one in the person's own home, which its Claude Code names by the path it sees there),
+  and a plugin installed or switched on while the session ran (off from the next launch).
+  Anything else: report it. The opt-in check `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main
+  live_claude::a_run -- --ignored` asks the installed Claude Code in eight layouts (no account
+  needed).
 
 ### Messages Yulius types into a session
 
@@ -1186,7 +1245,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. A usage reading does not end that limit. After buying credits, press **Refresh**
+   run on it. When Fable is used up on every subscription, tasks of a Fable model and the
+   Superagents go on with Opus 5.5 instead of waiting (SPEC-482, ADR-0312): the Capacity card
+   and the Status line say "Fable 5.2 is used up on every subscription: tasks run on Opus 5.5
+   until it can run again", a task's details name the model its session runs on, and each
+   session runs Fable again at its next start once a subscription can. A task waits, or asks a
+   person, only when neither model can run. A usage reading does not end that limit. After buying credits, press **Refresh**
    on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
    when the model answers the limit ends at once and the tasks that wait for it go on
    (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed
@@ -2408,9 +2472,11 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
-# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list
-# and the needrestart rule.
+# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list,
+# the needrestart rule and Chrome's managed policy for the sandbox browsers (ADR-0318; the
+# directories are made by `yulius host setup`).
 ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
+ReadWritePaths=-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed -/etc/chromium-browser/policies/managed
 UMask=0022
 ```
 
@@ -2576,6 +2642,16 @@ move is continued or aborted from there, or with the command.
 
 ### Notes for specific upgrades
 
+- Upgrading to fixed redaction fingerprints (SPEC-483, ADR-0313, 2026-11-13). Nothing to do
+  before the update. Sessions that are running across it keep the wrapper they started with (a
+  contained session binds the binary), which reads only the old fingerprint format: Yulius keeps
+  their `scrub.json` in that format, without the rolling hash that gave values away, and they
+  redact from it until they end. **Once those sessions have ended** (Tasks: none started before
+  the update is still running; a Superagent is started again), **rotate the agent secrets that
+  code you do not trust could have reached** (a prompt-injected agent, a dependency's install
+  script): before the update any process with a run's token could compute their values, and a
+  session from before it still holds a file that says more than a new one (ADR-0313). Make
+  agent secrets 20 random letters and digits or 32 hexadecimal digits, or longer.
 - Upgrading to flags that say why (SPEC-472, ADR-0306, 2026-11-12): migration 0053 adds
   `tasks.attention`. Nothing to do. A task that was flagged "Needs your action" before the update
   has no reason kept: its bar reads "The agent needs your attention. Look at its terminal below."

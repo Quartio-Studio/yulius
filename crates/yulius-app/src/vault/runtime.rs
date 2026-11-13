@@ -11,10 +11,13 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
-use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
+use yulius_contracts::scrub::{
+    FINGERPRINT_VERSION, Fingerprint, FingerprintSet, LEGACY_FINGERPRINT_VERSION,
+    LegacyFingerprint, LegacyFingerprintSet, RedactionReport,
+};
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
-use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
+use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, needle_tag};
 use yulius_domain::vault::{
     Injection, PLACEHOLDER_PREFIX, SecretName, placeholder, substitute_placeholders,
 };
@@ -24,6 +27,7 @@ use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::ports::browser::BrowserFailureKind;
 use crate::ports::egress::{
     EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
 };
@@ -338,8 +342,10 @@ impl App {
         .await;
     }
 
-    /// The fingerprints of every agent secret that can reach runs of `holder` in `sandbox`
-    /// (never another person's: SPEC-245, ADR-0186), with a fresh salt and rolling-hash base.
+    /// The fingerprints of what redaction looks for in runs of `holder` in `sandbox`
+    /// (`matcher_for`: never another person's, SPEC-245, ADR-0186). The salt is the
+    /// sandbox's and a tag depends on its needle alone, so the set changes only when a secret
+    /// does: asking again tells a run nothing more (ADR-0313).
     ///
     /// # Errors
     /// Store or decryption failures.
@@ -349,32 +355,74 @@ impl App {
         holder: super::Holder<'_>,
     ) -> AppResult<FingerprintSet> {
         let matcher = self.matcher_for(sandbox, Some(holder)).await?;
-        let random = self.deps.crypto.random_bytes();
-        let mut base_bytes = [0u8; 8];
-        base_bytes.copy_from_slice(&random[..8]);
-        let base = (u64::from_le_bytes(base_bytes) % ((1 << 61) - 1 - 512)) + 512;
-        let salt = &random[8..24];
-        let needles = matcher
-            .needles()
-            .map(|(needle, secret)| {
-                let mut salted = Vec::with_capacity(salt.len() + needle.len());
-                salted.extend_from_slice(salt);
-                salted.extend_from_slice(needle);
-                Fingerprint {
-                    secret,
-                    len: needle.len(),
-                    rolling: rolling_hash(base, needle),
-                    digest: self.deps.crypto.sha256_hex(&salted),
-                }
-            })
-            .collect();
+        let salt = self.scrub_salt(sandbox)?;
         Ok(FingerprintSet {
             version: FINGERPRINT_VERSION,
-            base,
-            salt: crate::auth::hex_token(salt),
+            salt: crate::auth::hex_token(&salt),
             names: matcher.names().to_vec(),
-            needles,
+            needles: matcher
+                .needles()
+                .filter_map(|(needle, secret)| {
+                    Some(Fingerprint {
+                        secret,
+                        len: needle.len(),
+                        tag: needle_tag(needle)?,
+                        digest: self.salted_digest(&salt, needle),
+                    })
+                })
+                .collect(),
         })
+    }
+
+    /// [`Self::scrub_fingerprints_for`] in the format a wrapper from before version 2 reads, for
+    /// the fingerprint file of a session an older Yulius launched (ADR-0313): the old rolling
+    /// hash at base 0, which is a needle's last byte plus one.
+    async fn legacy_fingerprints_for(
+        &self,
+        sandbox: &SandboxId,
+        holder: super::Holder<'_>,
+    ) -> AppResult<LegacyFingerprintSet> {
+        let matcher = self.matcher_for(sandbox, Some(holder)).await?;
+        let salt = self.scrub_salt(sandbox)?;
+        Ok(LegacyFingerprintSet {
+            version: LEGACY_FINGERPRINT_VERSION,
+            base: 0,
+            salt: crate::auth::hex_token(&salt),
+            names: matcher.names().to_vec(),
+            needles: matcher
+                .needles()
+                .filter_map(|(needle, secret)| {
+                    Some(LegacyFingerprint {
+                        secret,
+                        len: needle.len(),
+                        rolling: u64::from(*needle.last()?) + 1,
+                        digest: self.salted_digest(&salt, needle),
+                    })
+                })
+                .collect(),
+        })
+    }
+
+    fn salted_digest(&self, salt: &[u8], needle: &[u8]) -> String {
+        let mut salted = Vec::with_capacity(salt.len() + needle.len());
+        salted.extend_from_slice(salt);
+        salted.extend_from_slice(needle);
+        self.deps.crypto.sha256_hex(&salted)
+    }
+
+    /// The salt of `sandbox`'s fingerprint digests: derived from the server's workspace secret,
+    /// so it is the same on every request and after a restart, and no other sandbox's.
+    fn scrub_salt(&self, sandbox: &SandboxId) -> AppResult<Vec<u8>> {
+        let material = format!(
+            "yulius-scrub-salt\n{}\n{}",
+            self.workspace_secret(),
+            sandbox.as_str()
+        );
+        let digest = self.deps.crypto.sha256_hex(material.as_bytes());
+        digest
+            .get(..32)
+            .and_then(crate::shells::hex_decode)
+            .ok_or_else(|| AppError::Internal("the fingerprint salt could not be derived".into()))
     }
 
     /// Whose redaction calls with `token`: a live run's attempt (`task:<n>`), or a person's
@@ -402,17 +450,57 @@ impl App {
     }
 
     /// `POST /internal/scrub/fingerprints`: the caller's run's fingerprints, or those of a
-    /// person's workspace (SPEC-147 SAM-003).
+    /// person's workspace (SPEC-147 SAM-003). `wrapper` is the format the asking wrapper reads:
+    /// one from before this server's (a session an older Yulius launched, ADR-0313) cannot read
+    /// the answer and falls back on its fingerprint file, which is brought up to date first.
     ///
     /// # Errors
     /// `Unauthenticated` for unknown or ended runs and for people who may no longer work in the
     /// workspace's sandbox; store failures.
-    pub async fn scrub_fingerprints(&self, token: &str) -> AppResult<FingerprintSet> {
+    pub async fn scrub_fingerprints(
+        &self,
+        token: &str,
+        wrapper: Option<u32>,
+    ) -> AppResult<FingerprintSet> {
         let (sandbox, _, _, person) = self.scrub_caller(token).await?;
         let holder = person
             .as_ref()
             .map_or(super::Holder::Nobody, super::Holder::Person);
+        if wrapper != Some(FINGERPRINT_VERSION) {
+            self.rewrite_callers_fingerprints(token, &sandbox, person.as_ref())
+                .await?;
+        }
         self.scrub_fingerprints_for(&sandbox, holder).await
+    }
+
+    /// Rewrites the fingerprint file of the session that asks with `token`: a task run's, or
+    /// the Superagent's of `person` in `sandbox`.
+    async fn rewrite_callers_fingerprints(
+        &self,
+        token: &str,
+        sandbox: &SandboxId,
+        person: Option<&UserId>,
+    ) -> AppResult<()> {
+        match self.agent_context(token).await {
+            Ok(ctx) => return self.rewrite_run_fingerprints(&ctx.task.id).await,
+            Err(AppError::Unauthenticated) => {}
+            Err(err) => return Err(err),
+        }
+        let Some(person) = person else {
+            return Ok(());
+        };
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        for cockpit in self.live_cockpits() {
+            if !cockpit.global && cockpit.sandbox() == sandbox && cockpit.creator() == person {
+                self.rewrite_fingerprint_file(
+                    &cockpit.run_dir,
+                    sandbox,
+                    super::Holder::Person(person),
+                )
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     /// `POST /internal/scrub/report`: a sandbox process redacted these secrets (audited once
@@ -498,8 +586,6 @@ impl App {
     /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
     /// file (opened without following a link or blocking, checked on the handle).
     pub async fn rewrite_run_fingerprints(&self, task: &TaskId) -> AppResult<()> {
-        use nix::fcntl::OFlag;
-        use std::os::unix::fs::OpenOptionsExt as _;
         let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
         let Some(task) = self.deps.store.task(task).await? else {
             return Ok(());
@@ -507,27 +593,125 @@ impl App {
         let Some(attempt) = self.deps.store.live_attempt(&task.id).await? else {
             return Ok(());
         };
-        let file = Path::new(&attempt.run_dir).join(FINGERPRINTS_FILE);
-        let mut out = match std::fs::OpenOptions::new()
+        self.rewrite_fingerprint_file(
+            Path::new(&attempt.run_dir),
+            &task.sandbox_id,
+            super::Holder::of_task(&task),
+        )
+        .await
+    }
+
+    /// Writes `holder`'s fingerprints of `sandbox` into the fingerprint file of `run_dir`, in
+    /// place and only when they differ; a run directory without one is left alone. A file in the
+    /// format from before version 2 belongs to a session an older Yulius launched, whose wrapper
+    /// reads only that format: it is written in it (ADR-0313). When its fingerprints cannot be
+    /// made, a file this server wrote stays as it is, and one an older server wrote, which says
+    /// too much about a value, becomes a bare `{"version":1}`: that wrapper runs nothing with
+    /// it, and the next rewrite still knows the format.
+    async fn rewrite_fingerprint_file(
+        &self,
+        run_dir: &Path,
+        sandbox: &SandboxId,
+        holder: super::Holder<'_>,
+    ) -> AppResult<()> {
+        use nix::fcntl::OFlag;
+        use std::io::{Read as _, Seek as _, Write as _};
+        use std::os::unix::fs::OpenOptionsExt as _;
+        /// What tells the formats apart; `base` is 0 in an old-format file this server wrote.
+        #[derive(serde::Deserialize)]
+        struct Format {
+            version: u32,
+            base: Option<u64>,
+        }
+        /// More than any set: 200 secrets of 16 KiB in every form stay far below.
+        const MAX_FILE_BYTES: u64 = 256 << 20;
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
-            .open(&file)
+            .open(run_dir.join(FINGERPRINTS_FILE))
         {
-            Ok(out) => out,
+            Ok(file) => file,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(err) => return Err(AppError::internal(err)),
         };
-        if !out.metadata().map_err(AppError::internal)?.is_file() {
+        if !file.metadata().map_err(AppError::internal)?.is_file() {
             return Err(AppError::Internal(
                 "the run's fingerprint file is no regular file".into(),
             ));
         }
-        let set = self
-            .scrub_fingerprints_for(&task.sandbox_id, super::Holder::of_task(&task))
-            .await?;
-        let bytes = serde_json::to_vec(&set).map_err(AppError::internal)?;
-        out.set_len(0).map_err(AppError::internal)?;
-        std::io::Write::write_all(&mut out, &bytes).map_err(AppError::internal)
+        let mut current = Vec::new();
+        (&file)
+            .take(MAX_FILE_BYTES)
+            .read_to_end(&mut current)
+            .map_err(AppError::internal)?;
+        let format = serde_json::from_slice::<Format>(&current).ok();
+        let legacy = format
+            .as_ref()
+            .is_some_and(|format| format.version == LEGACY_FINGERPRINT_VERSION);
+        let of_an_older_server = legacy && format.is_some_and(|format| format.base != Some(0));
+        let made = if legacy {
+            self.legacy_fingerprints_for(sandbox, holder)
+                .await
+                .and_then(|set| serde_json::to_vec(&set).map_err(AppError::internal))
+        } else {
+            self.scrub_fingerprints_for(sandbox, holder)
+                .await
+                .and_then(|set| serde_json::to_vec(&set).map_err(AppError::internal))
+        };
+        let bytes = match made {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if of_an_older_server {
+                    let marker = format!("{{\"version\":{LEGACY_FINGERPRINT_VERSION}}}");
+                    let _ = file
+                        .set_len(0)
+                        .and_then(|()| file.rewind())
+                        .and_then(|()| file.write_all(marker.as_bytes()));
+                }
+                return Err(err);
+            }
+        };
+        if bytes == current {
+            return Ok(());
+        }
+        file.set_len(0).map_err(AppError::internal)?;
+        file.rewind().map_err(AppError::internal)?;
+        file.write_all(&bytes).map_err(AppError::internal)
+    }
+
+    /// Rewrites the fingerprint file of every live task run and of every Superagent, as this
+    /// server makes it (ADR-0313). At startup, after the shells were adopted: a session that was
+    /// running across an update holds the file an older server wrote. When a guest joins a
+    /// playground: its sessions' files drop the agent secrets. Failures are logged, and one
+    /// session's does not stop the others.
+    pub async fn refresh_fingerprint_files(&self) {
+        let attempts = match self.deps.store.live_attempts().await {
+            Ok(attempts) => attempts,
+            Err(err) => {
+                tracing::warn!(error = %err, "live runs' fingerprint files not refreshed");
+                return;
+            }
+        };
+        for attempt in attempts {
+            if let Err(err) = self.rewrite_run_fingerprints(&attempt.task_id).await {
+                tracing::warn!(task = %attempt.task_id, error = %err, "run's fingerprint file not rewritten");
+            }
+        }
+        let _one_at_a_time = self.vault.fingerprint_rewrites.lock().await;
+        // A Global Superagent has none (its shell runs no project's commands).
+        for cockpit in self.live_cockpits().iter().filter(|c| !c.global) {
+            if let Err(err) = self
+                .rewrite_fingerprint_file(
+                    &cockpit.run_dir,
+                    cockpit.sandbox(),
+                    super::Holder::Person(cockpit.creator()),
+                )
+                .await
+            {
+                tracing::warn!(shell = %cockpit.id(), error = %err, "Superagent's fingerprint file not rewritten");
+            }
+        }
     }
 
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer
@@ -659,18 +843,15 @@ impl App {
     }
 
     /// A streaming redactor of the task terminal for `sandbox` (`None` without agent secrets).
+    ///
+    /// # Errors
+    /// The agent secrets cannot be read: the terminal then withholds its output.
     pub(crate) async fn terminal_redactor(
         &self,
         sandbox: &SandboxId,
-    ) -> Option<StreamRedactor<Arc<PlainMatcher>>> {
-        match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) if !matcher.is_empty() => Some(super::terminal::screen_redactor(matcher)),
-            Ok(_) => None,
-            Err(err) => {
-                tracing::error!(error = %err, "agent secrets could not be loaded for the terminal");
-                None
-            }
-        }
+    ) -> AppResult<Option<StreamRedactor<Arc<PlainMatcher>>>> {
+        let matcher = self.agent_secret_matcher(sandbox).await?;
+        Ok((!matcher.is_empty()).then(|| super::terminal::screen_redactor(matcher)))
     }
 
     /// The vault's generation (terminal redactors reload when it changes).
@@ -806,8 +987,7 @@ impl App {
                 super::PERSONAL_SECRET_BROWSER
             )));
         }
-        // A page is in the agent's hands, unlike a request the proxy completes: not even the
-        // hosts a production secret kept from before it became exclusive (SPEC-405 VEV-001).
+        // A production secret is no agent's, by any way (ADR-0324).
         if record.cd_prod {
             return Err(AppError::Forbidden(format!(
                 "{}: {}",
@@ -865,12 +1045,33 @@ impl App {
             text: text.to_string(),
             selector: args.selector.clone(),
         };
-        if matches!(field, "username" | "totp") {
-            // Not what the redactor hides: a user name is in the description and a code expires.
-            browser.tool_type(&params).await?;
+        // The tab's page is asked again where the typing begins: what `tabs()` said above may
+        // be from before a navigation (SPEC-483 E3).
+        let on_bound_host =
+            |address: &str| page_host(address).is_some_and(|(h, p)| bound_to(&record, &h, p));
+        let typed = if matches!(field, "username" | "totp") {
+            // Not what the redactor hides (a user name is in the description and a code
+            // expires), so screenshots stay; but a code signs in while it lasts, and both go
+            // only where the secret goes (SPEC-483 E10).
+            browser
+                .tool_type_beside_secret(&params, &on_bound_host)
+                .await
         } else {
             // Screenshots that may show it are refused from now on (SPEC-450).
-            browser.tool_type_secret(&params).await?;
+            browser.tool_type_secret(&params, &on_bound_host).await
+        };
+        if let Err(failure) = typed {
+            if failure.kind == BrowserFailureKind::SecretAstray {
+                // Part of it may be in a page it was not for: its people read where.
+                self.note_agent_use(
+                    (&user.run(), &user.actor()),
+                    &record,
+                    "vault.agent.fill",
+                    &format!("{field} on {host}; {}", failure.message),
+                )
+                .await;
+            }
+            return Err(failure.into());
         }
         browser.agent_activity(&args.tab_id, None, "type", &user.label());
         self.note_agent_use(
@@ -1213,13 +1414,13 @@ impl EgressPolicy for App {
         }
     }
 
-    async fn egress_redactor(&self, client: &EgressClient) -> Arc<PlainMatcher> {
+    async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
         self.agent_secret_matcher(&client.sandbox_id)
             .await
-            .unwrap_or_else(|err| {
+            .inspect_err(|err| {
                 tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-                Arc::new(PlainMatcher::default())
             })
+            .ok()
     }
 }
 
@@ -1318,7 +1519,6 @@ mod tests {
     {
         let set = FingerprintSet {
             version: FINGERPRINT_VERSION,
-            base: 7,
             salt: "00".into(),
             names: vec!["APIFY_KEY".into()],
             needles: Vec::new(),

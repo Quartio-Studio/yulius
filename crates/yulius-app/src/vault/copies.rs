@@ -187,7 +187,7 @@ impl App {
         answer: &CopyRequestAnswer,
     ) -> AppResult<Revealed<AgentSecretView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, &record.scope()).await?;
         let store = &self.deps.store;
@@ -210,7 +210,7 @@ impl App {
         }
         // Either answer settles a request of the project (CPY-004): write access to it, as
         // adding a project secret on the Secrets page.
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         let actor = Self::vault_actor(ctx);
         let detail = format!(
             "{} → {} on {} (asked by {})",

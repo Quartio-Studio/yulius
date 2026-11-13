@@ -529,9 +529,7 @@ async fn control_passes_only_to_someone_who_may_work() -> TestResult {
 #[tokio::test]
 async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     let h = crate::support::harness_with(crate::support::HarnessOptions {
-        git: Some(std::sync::Arc::new(yulius::wiring::git::GitAdapter::new(
-            "git",
-        ))),
+        git: Some(std::sync::Arc::new(crate::support::confined_git())),
         ..crate::support::HarnessOptions::default()
     })?;
     let alice = seed_github_user(&h, "u-a", "alice").await?;

@@ -50,7 +50,7 @@ impl App {
         name: &str,
     ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let (record, _) = self.require_for(ctx, &id, Action::Administer).await?;
         refuse_github_sandbox(&record)?;
         let (owner, _) = self.instance_owner().await.map_err(|err| match err {
             AppError::Conflict(_) => AppError::Conflict(

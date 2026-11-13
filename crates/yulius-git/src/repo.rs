@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use crate::Git;
+use crate::courier::Tags;
 use crate::error::GitError;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{
     require_absolute, validate_branch_name, validate_remote, validate_remote_name,
     validate_remote_url, validate_revision,
@@ -22,11 +23,12 @@ impl Git {
         if bare {
             invocation = invocation.arg("--bare");
         }
-        self.run_ok(invocation.arg("--").arg(path))?;
+        self.run_ok(invocation.arg("--").arg(path).touching(path))?;
         Ok(())
     }
 
-    /// Adds a remote `name` pointing at `url` (https/http/ssh/git/file URL or absolute path).
+    /// Adds a remote `name` pointing at `url` (an https, http or file URL or an absolute path; an
+    /// ssh or git URL is taken as an address, but the server makes no transfer with one).
     pub fn remote_add(&self, repo: &Path, name: &str, url: &str) -> Result<(), GitError> {
         validate_remote_name(name)?;
         validate_remote_url(url)?;
@@ -38,13 +40,26 @@ impl Git {
     }
 
     /// Clones `url` into the absolute `dest` (network timeout applies).
+    ///
+    /// Into a sandbox's folder, a new repository is the sandbox's agents' to write from its
+    /// first file on, so it is made without a transfer in it (`clone_into_a_sandbox`,
+    /// ADR-0323).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
+        let a_sandboxes = self
+            .confinement
+            .as_ref()
+            .and_then(|confinement| confinement.sandbox_of_path(dest));
+        if a_sandboxes.is_some() {
+            return self.clone_into_a_sandbox(url, Path::new(url).is_absolute(), dest);
+        }
         self.run_ok(
             Invocation::new(self, "clone", None)
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
                 .arg(dest)
+                .touching(dest)
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -53,18 +68,33 @@ impl Git {
     /// Fetches `remote` (a configured name or URL) with pruning (network timeout applies).
     pub fn fetch(&self, repo: &Path, remote: &str) -> Result<(), GitError> {
         validate_remote(remote)?;
-        self.run_ok(
-            Invocation::new(self, "fetch", Some(repo))
-                .args([
-                    "fetch",
-                    "--quiet",
-                    "--prune",
-                    "--no-recurse-submodules",
-                    "--",
-                    remote,
-                ])
-                .timeout(self.network_timeout),
-        )?;
+        let fetch = Invocation::new(self, "fetch", Some(repo)).args([
+            "fetch",
+            "--quiet",
+            "--prune",
+            "--no-recurse-submodules",
+            "--",
+        ]);
+        // A remote's name, or a folder the caller names itself (fetched as it is).
+        let named = !Path::new(remote).is_absolute();
+        let tracking = format!("+refs/heads/*:refs/remotes/{remote}/*");
+        let fetch = match self.remote_route(repo, remote, true)? {
+            Route::Folder(origin) if named => {
+                fetch.arg(&origin).arg(tracking).local_reading(&origin)
+            }
+            Route::Folder(origin) => fetch.arg(&origin).local_reading(&origin),
+            Route::Courier(courier, url) if named => {
+                return self.fetch_through(&courier, repo, (remote, Tags::Reached), &url);
+            }
+            Route::Courier(..) => {
+                return Err(GitError::InvalidInput {
+                    what: "remote",
+                    reason: "a sandbox's clone fetches a folder's branches as its origin's".into(),
+                });
+            }
+            Route::Named => fetch.arg(remote),
+        };
+        self.run_ok(fetch.timeout(self.network_timeout))?;
         Ok(())
     }
 
@@ -73,6 +103,11 @@ impl Git {
     /// URL in `repo`'s configuration, which a sandbox may rewrite (a playground, SPEC-099).
     pub fn fetch_branches_from(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
         require_absolute("source repository", source)?;
+        // A sandbox's clone: through a courier, as every transfer of one.
+        if let Some(courier) = self.courier(repo, true, true)? {
+            let source = source.to_string_lossy();
+            return self.fetch_through(&courier, repo, ("origin", Tags::None), &source);
+        }
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
                 .args([
@@ -85,6 +120,7 @@ impl Git {
                 ])
                 .arg(source)
                 .arg("+refs/heads/*:refs/remotes/origin/*")
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -116,6 +152,7 @@ impl Git {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ])
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout)
                 .watch_size(&[repo], limit),
         )?;
@@ -171,6 +208,7 @@ impl Git {
                 ])
                 .arg(source)
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .local_reading(source)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -194,6 +232,7 @@ impl Git {
             self.run_ok(
                 Invocation::new(self, "push", Some(repo))
                     .args(["push", "--quiet", "--", url, &refspec])
+                    .local_if_path(url)
                     .timeout(self.network_timeout),
             )?;
         }
@@ -201,6 +240,7 @@ impl Git {
             Invocation::new(self, "push", Some(repo))
                 .args(["push", "--quiet", "--atomic", "--", url])
                 .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .local_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -214,6 +254,7 @@ impl Git {
         let listed = self.run_ok(
             Invocation::new(self, "ls-remote", Some(repo))
                 .args(["ls-remote", "--refs", "--heads", "--tags", "--", url])
+                .local_reading_if_path(url)
                 .timeout(self.network_timeout),
         )?;
         let mut refs: Vec<(String, String)> = listed

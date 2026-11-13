@@ -85,7 +85,8 @@ impl Git {
             Invocation::new(self, "worktree add", Some(repo))
                 .args(["worktree", "add", "--quiet", "-b", new_branch, "--"])
                 .arg(path)
-                .arg(&base_sha),
+                .arg(&base_sha)
+                .touching(path),
         )?;
         Ok(base_sha)
     }
@@ -114,7 +115,8 @@ impl Git {
             Invocation::new(self, "worktree add", Some(repo))
                 .args(["worktree", "add", "--quiet", "--"])
                 .arg(path)
-                .arg(branch),
+                .arg(branch)
+                .touching(path),
         )?;
         self.rev_parse(path, "HEAD")
     }
@@ -212,7 +214,8 @@ impl Git {
             self.run_ok(
                 Invocation::new(self, "worktree remove", Some(repo))
                     .args(["worktree", "remove", "--"])
-                    .arg(&target),
+                    .arg(&target)
+                    .touching(&target),
             )?;
             return Ok(WorktreeRemoval::Removed);
         };
@@ -309,7 +312,8 @@ impl Git {
                 self.run_ok(
                     Invocation::new(self, "worktree remove", Some(repo))
                         .args(["worktree", "remove", "--force", "--force", "--"])
-                        .arg(&target),
+                        .arg(&target)
+                        .touching(&target),
                 )?;
             } else {
                 std::fs::remove_dir_all(&target).map_err(|source| GitError::Io {

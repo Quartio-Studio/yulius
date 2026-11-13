@@ -5,15 +5,15 @@
 //! worktree: the commit is made in a fresh clone of GitHub's repository (agents can write into
 //! the sandbox's clone, so its objects and refs are never pushed), removed on every path.
 
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
-use yulius_domain::ci::{GateResult, gate_checks};
+use yulius_domain::ci::GateResult;
 use yulius_domain::delivery::ChecksState;
 
 use crate::auth::AuthContext;
 use crate::context::App;
-use crate::delivery::{delivery_profile, domain_checks};
+use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::github::NewPull;
@@ -133,6 +133,26 @@ pub(crate) fn private_dir(dir: &Path) -> AppResult<()> {
             .map_err(AppError::internal)?;
     }
     Ok(())
+}
+
+impl App {
+    /// Where the scratch repository `name` is: a private directory of the server, outside
+    /// every sandbox. Agents can write anywhere under their sandbox, which would let them
+    /// change a clone's configuration (where a push sends a token) or the files between
+    /// writing and committing: nothing the server itself commits and pushes is made there.
+    pub(crate) fn scratch_place(&self, name: &str) -> PathBuf {
+        self.config.data_dir.join("changes").join(name)
+    }
+
+    /// [`Self::scratch_place`] for a new scratch repository: its private parent is made, and
+    /// what an earlier one of that name left is removed. The caller removes it when done.
+    pub(crate) async fn scratch(&self, name: &str) -> AppResult<PathBuf> {
+        let scratch = self.scratch_place(name);
+        let root = self.config.data_dir.join("changes");
+        blocking(move || private_dir(&root)).await?;
+        remove_tree(scratch.clone()).await;
+        Ok(scratch)
+    }
 }
 
 /// The branch name part made of a change's title.
@@ -351,11 +371,7 @@ impl App {
             s if s.is_empty() => format!("{CHANGE_BRANCH_PREFIX}{id}"),
             s => format!("{CHANGE_BRANCH_PREFIX}{id}-{s}"),
         };
-        // A private directory of the server, outside every sandbox: agents can write anywhere
-        // under their sandbox, which would let them change the clone's configuration (where the
-        // push sends the person's token) or the files between writing and committing.
-        let root = self.config.data_dir.join("changes");
-        let scratch = root.join(&id);
+        let scratch = self.scratch_place(&id);
         let (clone, work) = (scratch.join("repo"), scratch.join("work"));
         let (name, email) = commit_identity(Some(&ctx.user));
         let token = self.dlv_author_token(&ctx.user, sandbox).await?;
@@ -365,7 +381,7 @@ impl App {
                 "{MAX_CONCURRENT_CHANGES} changes are being made right now; try again in a moment"
             ))
         })?;
-        blocking(move || private_dir(&root)).await?;
+        self.scratch(&id).await?;
         let made = async {
             self.deps
                 .git
@@ -549,38 +565,31 @@ impl App {
         // What the integration branch and the pull request say now, not a cached view.
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
-        let mut gate = self.ci_gate_result(sandbox, &pull.head_sha).await;
         // As the scheduler decides (`ci_sync_sandbox`): a pull request that brings Yulius CI is
-        // tested with it before it merges; one whose configuration Yulius CI cannot read, or any
-        // while the integration branch's is unusable (then nothing is tested), never merges here.
-        if gate == GateResult::NotConfigured && self.config.ci.enabled {
+        // tested with it before it merges (`dlv_checks_at` says pending until then); one whose
+        // configuration Yulius CI cannot read, or any while the integration branch's is unusable
+        // (then nothing is tested), never merges here.
+        if self.ci_gate_result(sandbox, &pull.head_sha).await == GateResult::NotConfigured
+            && self.config.ci.enabled
+        {
             if let Some(problem) = self.ci_gate(sandbox).await.problem {
                 return Err(AppError::Conflict(format!(
                     "Yulius CI tests nothing while the integration branch's yulius.toml is unusable ({problem}); merge this fix on GitHub, or have a task fix it"
                 )));
             }
-            match self
+            if let Err(why) = self
                 .ci_jobs_at(&self.sandbox_repo(&sandbox.id), &pull.head_sha)
                 .await
             {
-                Ok(jobs) if !jobs.is_empty() => gate = GateResult::Run(None),
-                Ok(_) => {}
-                Err(why) => {
-                    return Err(AppError::Conflict(format!(
-                        "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"
-                    )));
-                }
+                return Err(AppError::Conflict(format!(
+                    "Yulius CI cannot read the pull request's yulius.toml ({why}); fix it with another project_change"
+                )));
             }
         }
-        let state = match gate {
-            GateResult::NotConfigured => domain_checks(
-                github
-                    .checks(&token, owner, name, &pull.head_sha)
-                    .await?
-                    .state,
-            ),
-            gate => gate_checks(ChecksState::None, gate),
-        };
+        let state = self
+            .dlv_checks_at(sandbox, &token, &pull.head_sha)
+            .await?
+            .state;
         if !matches!(state, ChecksState::Success | ChecksState::None) {
             return Err(AppError::Conflict(format!(
                 "the checks at {} are {}: merge once they passed (ci_runs, ci_run)",

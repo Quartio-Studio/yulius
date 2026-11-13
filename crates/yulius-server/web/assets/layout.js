@@ -3,7 +3,8 @@
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
-import { limitsNow, percentNow } from './usage.js';
+import { limitsNow, percentNow, placingModel } from './usage.js';
+import { PROVIDERS, fallbackLine, modelLabel } from './models.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
@@ -451,6 +452,12 @@ export function renderStatus(data) {
   // Every subscription at a limit: tasks wait for the first window reset (ROT-010). A limit may
   // be the default model's alone (SPEC-464), so the line does not say that nothing runs.
   if (accounts.length && accounts.every((a) => stateNow.get(a) === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'Every subscription is at a usage limit: tasks continue when a window resets' };
+  // No subscription can take a task of the default model while one takes its fallback: tasks go
+  // on with that (SPEC-482). Judged at the pool's threshold, as the server and the Capacity
+  // panel do, so it is also said before every window reads used up.
+  const defaultModel = PROVIDERS[0].models[0].id;
+  const placed = accounts.length ? placingModel(accounts, defaultModel) : defaultModel;
+  if (placed !== defaultModel) health = { tone: 'warn', icon: 'clock', text: fallbackLine(defaultModel, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
   const facts = [
@@ -898,10 +905,14 @@ export function capacityPanel(view) {
   const line = [v.recommendation || 'Capacity not known yet', paused ? `${paused} ${paused === 1 ? 'task' : 'tasks'} paused${reset ? ` · ${reset.toLowerCase()}` : ''}` : null].filter(Boolean).join(' · ');
   const leftTone = (p) => (!Number.isFinite(p) ? 'unknown' : p <= 10 ? 'danger' : p <= 30 ? 'warn' : 'ok');
   const hours = Number.isFinite(v.paused_hours_7d) ? v.paused_hours_7d : 0;
+  // While no subscription can run the default model, tasks run its fallback (SPEC-482): the
+  // panel says so, and "Available now" counts the subscriptions that run the fallback.
+  const fallback = v.fallback_model || null;
   return h('div', { class: 'stack capacity-panel' },
     h('div', { class: ['status-health', `health-${add > 0 ? 'warn' : 'ok'}`], role: 'status' }, icon(add > 0 ? 'warn' : 'check', { size: 16 }), h('span', null, line)),
+    fallback ? h('div', { class: ['status-health', 'health-warn', 'capacity-fallback'], role: 'status' }, icon('clock', { size: 16 }), h('span', null, fallbackLine(PROVIDERS[0].models[0].id, fallback))) : null,
     h('div', { class: 'stat-tiles' },
-      capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, `below ${threshold}% in every window`, v.available ? 'ok' : 'danger'),
+      capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, fallback ? `for ${modelLabel(fallback)}, below ${threshold}% in every window` : `below ${threshold}% in every window`, v.available ? 'ok' : 'danger'),
       capacityTile('clock', 'Left this week', Number.isFinite(weekly) ? `${Math.round(weekly)}%` : '—', Number.isFinite(session) ? `5-hour windows: ${Math.round(session)}% left` : 'of the pool before it pauses', leftTone(weekly)),
       capacityTile('zap', 'Burn rate', burn24 === null ? '—' : `${burn24.toFixed(1)} / week`, burn24 === null ? 'not enough readings yet' : `subscriptions' weekly limits, last 24 h${burn7 === null ? '' : ` (7 d: ${burn7.toFixed(1)})`}`, 'ok',
         weekChart('Burn rate', (v.burn_per_day || []).map(perWeek), (x) => `${x.toFixed(1)} / week`)),

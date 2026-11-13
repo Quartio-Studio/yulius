@@ -108,6 +108,13 @@ struct FakeState {
     screenshot_base64_len: usize,
     ax_nodes: Value,
     emit_load_events: bool,
+    /// Whether the host's managed policy is in force: the policy probe's navigation is
+    /// blocked by the administrator (ADR-0318).
+    browser_policy: bool,
+    /// A page target Chrome makes by itself, opened by no page, announced just before the
+    /// next `Target.createTarget` is answered: the addresses it goes through, and whether it
+    /// is closed again before that answer.
+    alongside: Option<(Vec<String>, bool)>,
     selection: String,
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
@@ -122,6 +129,9 @@ struct FakeState {
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
+    /// The address the next mid-call navigation ([`FakeCdpServer::navigate_during_nth`]) goes
+    /// to; `None`: another document at the same address.
+    navigating_to: Option<String>,
     going_back_after: HashMap<String, usize>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
@@ -190,7 +200,13 @@ impl FakeState {
             return json!({"kind": "none"});
         };
         if !password.contains(&page.focused) {
-            return json!({"kind": "other"});
+            // A field a selector focused is a text field; with none focused, something else.
+            let kind = if page.focused.is_empty() {
+                "other"
+            } else {
+                "field"
+            };
+            return json!({"kind": kind});
         }
         let value = page
             .fields
@@ -304,6 +320,8 @@ impl FakeCdpServer {
                 screenshot_base64_len: 0,
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
+                browser_policy: true,
+                alongside: None,
                 selection: String::new(),
                 pages: HashMap::new(),
                 password_fields: HashSet::new(),
@@ -318,6 +336,7 @@ impl FakeCdpServer {
                 enter_submits: false,
                 failing_after: HashMap::new(),
                 navigating_after: HashMap::new(),
+                navigating_to: None,
                 going_back_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
@@ -462,6 +481,71 @@ impl FakeCdpServer {
         lock(&self.shared.state).emit_load_events = emit;
     }
 
+    /// Makes a page target, opened by no page, appear just before the next
+    /// `Target.createTarget` is answered (a tab made while a caller waits for its own): created
+    /// at the first of `urls`, then navigated to each later one, and with `closed` closed again,
+    /// all before the answer.
+    pub fn create_alongside_next_target(&self, urls: &[&str], closed: bool) {
+        lock(&self.shared.state).alongside =
+            Some((urls.iter().map(|&url| url.to_owned()).collect(), closed));
+    }
+
+    /// Changes a target's address and notifies connected clients (`Target.targetInfoChanged`):
+    /// a navigation Yulius did not start.
+    pub async fn set_target_url(&self, target_id: &str, url: &str) {
+        let (event, connections) = {
+            let mut state = lock(&self.shared.state);
+            let Some(target) = state.targets.iter_mut().find(|t| t.id == target_id) else {
+                return;
+            };
+            url.clone_into(&mut target.url);
+            let event = target_event("Target.targetInfoChanged", target);
+            (event, state.connections.clone())
+        };
+        for connection in connections {
+            let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
+    /// Sends the event `method` with `params` on the sessions of `target_id`, as Chrome does for
+    /// what happens in a page (`Page.frameStartedNavigating` when a link is clicked, say). The
+    /// fake's page does not change; its main frame is `frame-1`, its child frames `child-<n>`.
+    pub async fn emit(&self, target_id: &str, method: &str, params: Value) {
+        let (events, connections) = {
+            let state = lock(&self.shared.state);
+            let events: Vec<Value> = state
+                .sessions
+                .iter()
+                .filter(|(_, target)| target.as_str() == target_id)
+                .map(|(session, _)| {
+                    json!({"method": method, "sessionId": session, "params": params})
+                })
+                .collect();
+            (events, state.connections.clone())
+        };
+        for connection in connections {
+            for event in &events {
+                let _ = connection.outgoing.send(event.to_string()).await;
+            }
+        }
+    }
+
+    /// Moves a target to another address without telling connected clients yet: a navigation
+    /// that committed in the browser and that the client has not heard of.
+    pub fn move_target_unannounced(&self, target_id: &str, url: &str) {
+        let mut state = lock(&self.shared.state);
+        if let Some(target) = state.targets.iter_mut().find(|t| t.id == target_id) {
+            url.clone_into(&mut target.url);
+        }
+    }
+
+    /// Whether the host's managed browser policy is in force (default true): the navigation to
+    /// its marker address fails as blocked by the administrator, or as a name that does not
+    /// resolve.
+    pub fn set_browser_policy(&self, in_force: bool) {
+        lock(&self.shared.state).browser_policy = in_force;
+    }
+
     /// The text pages report as the user's selection (the copy expression's result).
     pub fn set_selection(&self, text: &str) {
         text.clone_into(&mut lock(&self.shared.state).selection);
@@ -545,6 +629,14 @@ impl FakeCdpServer {
         lock(&self.shared.state)
             .navigating_after
             .insert(method.to_owned(), nth);
+    }
+
+    /// As [`Self::navigate_during_nth`], and the document the page moves to is at `url` (the
+    /// page went on to another site by itself; clients are not told).
+    pub fn navigate_to_during_nth(&self, method: &str, nth: usize, url: &str) {
+        let mut state = lock(&self.shared.state);
+        state.navigating_after.insert(method.to_owned(), nth);
+        state.navigating_to = Some(url.to_owned());
     }
 
     /// While the `nth` request of `method` runs, the page of its session goes back to the document
@@ -818,6 +910,20 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             if let Some(page) = state.page(session_id.as_deref()) {
                 page.move_to(loader);
             }
+            // To another address when one was named: the page went to another site.
+            if let Some(url) = state.navigating_to.take() {
+                let target_id = session_id
+                    .as_deref()
+                    .and_then(|s| state.sessions.get(s))
+                    .cloned();
+                if let Some(target) = state
+                    .targets
+                    .iter_mut()
+                    .find(|t| Some(&t.id) == target_id.as_ref())
+                {
+                    target.url = url;
+                }
+            }
         }
         if state.going_back_after.get(&method) == Some(&seen)
             && let Some(page) = state.page(session_id.as_deref())
@@ -949,6 +1055,29 @@ fn respond(
             before.push(target_event("Target.targetCreated", &target));
             let id = target.id.clone();
             state.targets.push(target);
+            if let Some((urls, closed)) = state.alongside.take() {
+                let mut beside = FakeTarget {
+                    id: fake_target_id(state.next_target),
+                    url: String::new(),
+                    title: String::new(),
+                };
+                state.next_target += 1;
+                for (step, url) in urls.into_iter().enumerate() {
+                    beside.url = url;
+                    let method = if step == 0 {
+                        "Target.targetCreated"
+                    } else {
+                        "Target.targetInfoChanged"
+                    };
+                    before.push(target_event(method, &beside));
+                }
+                if closed {
+                    before.push(json!({"method": "Target.targetDestroyed",
+                        "params": {"targetId": beside.id}}));
+                } else {
+                    state.targets.push(beside);
+                }
+            }
             Ok(json!({"targetId": id}))
         }
         "Target.closeTarget" | "Target.activateTarget" => {
@@ -986,6 +1115,14 @@ fn respond(
                 return Ok(
                     json!({"frameId": "frame-1", "errorText": "net::ERR_NAME_NOT_RESOLVED"}),
                 );
+            }
+            if url.contains("yulius-browser-policy-v") {
+                let error = if state.browser_policy {
+                    "net::ERR_BLOCKED_BY_ADMINISTRATOR"
+                } else {
+                    "net::ERR_NAME_NOT_RESOLVED"
+                };
+                return Ok(json!({"frameId": "frame-1", "errorText": error}));
             }
             let target_id = session_id.and_then(|s| state.sessions.get(s)).cloned();
             if let Some(target) = state

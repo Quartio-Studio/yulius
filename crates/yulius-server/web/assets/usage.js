@@ -5,7 +5,7 @@
 // and how old the reading is. The card, the Status panel and "Run #N on…" all ask here.
 
 import { relLong, resetLabel } from './format.js';
-import { PROVIDERS } from './models.js';
+import { PROVIDERS, fallbackOf } from './models.js';
 
 /**
  * A reading older than this may be out of date: the background round reads an idle subscription
@@ -66,6 +66,29 @@ export function limitInEffect(usage, now = Date.now()) {
 function when(iso, now) {
   const label = iso ? resetLabel(iso, now) : '';
   return label ? `${label[0].toLowerCase()}${label.slice(1)}` : 'Claude did not say when it resets';
+}
+
+/** The pool places no task on a subscription at this many percent of a window that binds it. */
+const POOL_THRESHOLD = 98;
+
+/** Whether the pool can place a task of `model` on a subscription at `now`, as the server judges it. */
+function runsNow(account, model, now) {
+  if (account.status && account.status !== 'ok' && account.status !== 'limited') return false;
+  const usage = account.usage || {};
+  if (limitInEffect(usage, now)) return false;
+  return [usage.primary, usage.secondary, modelWindow(usage, model)].every((w) => !((percentNow(w, now) ?? 0) >= POOL_THRESHOLD));
+}
+
+/**
+ * The model the pool places a task of `model` with at `now` (the default model without one), as
+ * on the server (SPEC-482): its own while a subscription can run it, else its fallback (Opus 5.5
+ * for a Fable model) while one can run that, else its own (the task waits).
+ */
+export function placingModel(accounts, model, now = Date.now()) {
+  const own = model || DEFAULT_MODEL;
+  const fallback = fallbackOf(own);
+  const runs = (m) => accounts.some((a) => runsNow(a, m, now));
+  return fallback && !runs(own) && runs(fallback) ? fallback : own;
 }
 
 /**

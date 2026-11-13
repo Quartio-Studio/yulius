@@ -826,7 +826,7 @@ async fn a_completed_github_sign_in_proves_the_callback() -> TestResult {
         Method::GET,
         &format!("/api/auth/github/callback?code=not-a-code&state={state}"),
         None,
-        &Creds::default(),
+        &crate::support::started(state),
     )
     .await?;
     assert_eq!(refused.location.as_deref(), Some("/signin?error=failed"));

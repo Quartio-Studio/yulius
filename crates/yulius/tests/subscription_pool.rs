@@ -95,6 +95,18 @@ async fn running_task_in(
     account: &AccountId,
     run_dir: &str,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    running_task_of(h, mode, account, run_dir, None).await
+}
+
+/// [`running_task_in`] whose run was launched with `model` (`None`: a run recorded before the
+/// launch model was, read as the task's own).
+async fn running_task_of(
+    h: &Harness,
+    mode: TaskMode,
+    account: &AccountId,
+    run_dir: &str,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let created = now(h);
     let task = h
         .store
@@ -137,6 +149,7 @@ async fn running_task_in(
             account_id: Some(account.clone()),
             provider_session_id: Some("session-1".into()),
             launch_kind: LaunchKind::New,
+            model: model.map(str::to_owned),
             state: AttemptState::Live,
             run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
@@ -482,6 +495,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             account_id: Some(a.clone()),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/nonexistent".into(),
             token_hash: "x".into(),
@@ -617,24 +631,73 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     Ok(())
 }
 
+/// SPEC-482 FBK-004 (AC-4, review round 1): at its turn boundary a run stays while its
+/// subscription can run the model the run was launched with. One on the fallback is on a
+/// subscription that is out of Fable; once another subscription runs Fable again it is not
+/// restarted for that. A run of the task's own model there (or one recorded before the launch
+/// model was) cannot stay and moves, as before.
+#[tokio::test]
+async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again() -> TestResult {
+    for (launched, stays) in [(Some("claude-opus-5-5"), true), (None, false)] {
+        let h = harness()?;
+        seed(&h).await?;
+        let t0 = now(&h);
+        let out_of_fable = json!({
+            "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": t0.plus_millis(2 * HOUR).0},
+            "secondary": {"used_percent": 20.0, "window_minutes": 10080, "resets_at": t0.plus_millis(100 * HOUR).0},
+            "weekly_fable": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": t0.plus_millis(40 * HOUR).0},
+        });
+        let out = add_account(&h, "acc-out", Some(out_of_fable.to_string())).await?;
+        let room = usage(
+            10.0,
+            t0.plus_millis(2 * HOUR),
+            20.0,
+            t0.plus_millis(100 * HOUR),
+        );
+        add_account(&h, "acc-room", Some(room)).await?;
+        let task = running_task_of(&h, TaskMode::Goal, &out, "/nonexistent/run", launched).await?;
+
+        let (code, retry_after, body) =
+            hook(&h.internal, "Stop", json!({"session_id": "s"})).await?;
+        if stays {
+            assert_eq!(code, 200, "the run on the fallback stays: {body}");
+            assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+            assert!(h.store.switches(&task).await?.is_empty());
+        } else {
+            assert_eq!(
+                code, 202,
+                "a Fable run there is held while it moves: {body}"
+            );
+            assert_eq!(retry_after.as_deref(), Some("10"));
+        }
+    }
+    Ok(())
+}
+
 /// SPEC-464 UCL-005: the capacity view counts for the default model. A subscription whose
 /// window of that model is used up is not available, though its 5-hour and weekly windows have
-/// room; and once none is left, the pool resumes at the first such window's reset.
+/// room. Once no subscription runs that model, tasks are placed with its fallback (SPEC-482
+/// FBK-010): the view names it and counts the subscriptions that run it. With neither model
+/// left, nothing is available and the pool resumes at the first reset of either.
 #[tokio::test]
 async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     let t0 = now(&h);
     let at = |hours: i64| t0.plus_millis(hours * HOUR);
-    let out_of_fable = |resets: Timestamp| {
-        json!({
+    let out_of = |fable: Timestamp, opus: Option<Timestamp>| {
+        let full = |resets: Timestamp| json!({"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0});
+        let mut usage = json!({
             "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": at(2).0},
             "secondary": {"used_percent": 20.0, "window_minutes": 10080, "resets_at": at(100).0},
-            "weekly_fable": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0},
-        })
-        .to_string()
+            "weekly_fable": full(fable),
+        });
+        if let Some(opus) = opus {
+            usage["weekly_opus"] = full(opus);
+        }
+        usage.to_string()
     };
-    add_account(&h, "acc-out", Some(out_of_fable(at(40)))).await?;
+    let out = add_account(&h, "acc-out", Some(out_of(at(40), None))).await?;
     let room = add_account(&h, "acc-room", Some(usage(10.0, at(2), 20.0, at(100)))).await?;
 
     let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
@@ -648,26 +711,58 @@ async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
     };
     assert_eq!(view.body["subscriptions"], 2, "{}", view.body);
     assert_eq!(view.body["available"], 1, "{}", view.body);
-    let out = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
-    assert_eq!(out["available"], false, "{out}");
-    assert_eq!(out["usage"]["weekly_fable"]["used_percent"], 100.0, "{out}");
-    assert_eq!(out["usage"]["secondary"]["used_percent"], 20.0, "{out}");
+    assert!(view.body["fallback_model"].is_null(), "{}", view.body);
+    let limited = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
+    assert_eq!(limited["available"], false, "{limited}");
+    assert_eq!(
+        limited["usage"]["weekly_fable"]["used_percent"], 100.0,
+        "{limited}"
+    );
+    assert_eq!(
+        limited["usage"]["secondary"]["used_percent"], 20.0,
+        "{limited}"
+    );
     let free = account(&view.body, "Claude acc-room").ok_or("acc-room")?;
     assert_eq!(free["available"], true, "{free}");
     assert!(view.body["resumes_at"].is_null(), "{}", view.body);
 
-    // The other one runs out of that model too: nothing is available until the first reset.
-    h.store
-        .set_account_state(
-            &room,
-            AccountStatus::Ok,
-            Some(&out_of_fable(at(20))),
-            None,
-            t0,
-        )
-        .await?;
+    // The other one runs out of that model too: tasks are placed with the fallback, which both
+    // run.
+    let store = |id: &AccountId, usage: String| {
+        let store = h.store.clone();
+        let id = id.clone();
+        async move {
+            store
+                .set_account_state(&id, AccountStatus::Ok, Some(&usage), None, t0)
+                .await
+        }
+    };
+    store(&room, out_of(at(20), None)).await?;
+    let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
+    assert_eq!(
+        view.body["fallback_model"], "claude-opus-5-5",
+        "{}",
+        view.body
+    );
+    assert_eq!(view.body["available"], 2, "{}", view.body);
+    for label in ["Claude acc-out", "Claude acc-room"] {
+        let one = account(&view.body, label).ok_or("account")?;
+        assert_eq!(one["available"], true, "{one}");
+    }
+    assert!(view.body["resumes_at"].is_null(), "{}", view.body);
+
+    // One is out of the fallback as well: it is not available, the other still is.
+    store(&out, out_of(at(40), Some(at(30)))).await?;
+    let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
+    assert_eq!(view.body["available"], 1, "{}", view.body);
+    let limited = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
+    assert_eq!(limited["available"], false, "{limited}");
+
+    // Neither model is left anywhere: nothing is available until the first reset of either.
+    store(&room, out_of(at(20), Some(at(50)))).await?;
     let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
     assert_eq!(view.body["available"], 0, "{}", view.body);
+    assert!(view.body["fallback_model"].is_null(), "{}", view.body);
     assert_eq!(
         view.body["resumes_at"],
         yulius_app::auth::rfc3339(at(20)),

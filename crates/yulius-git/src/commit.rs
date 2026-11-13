@@ -4,10 +4,10 @@ use std::path::Path;
 
 use crate::Git;
 use crate::error::GitError;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{
-    validate_branch_name, validate_identity_part, validate_push_refspec, validate_remote,
-    validate_revision,
+    require_absolute, validate_branch_name, validate_identity_part, validate_push_refspec,
+    validate_remote, validate_revision,
 };
 
 /// Longest accepted commit message in bytes.
@@ -173,9 +173,42 @@ impl Git {
     pub fn push(&self, repo: &Path, remote: &str, refspec: &str) -> Result<(), GitError> {
         validate_remote(remote)?;
         validate_push_refspec(refspec)?;
+        let push = Invocation::new(self, "push", Some(repo)).args(["push", "--quiet", "--"]);
+        let push = match self.remote_route(repo, remote, true)? {
+            Route::Folder(origin) => push.arg(&origin).local(&origin),
+            Route::Courier(courier, url) => {
+                let (source, destination) = refspec.split_once(':').unwrap_or((refspec, refspec));
+                let sha = self.rev_parse(repo, source)?;
+                return self.push_through(&courier, &url, &sha, destination);
+            }
+            Route::Named => push.arg(remote),
+        };
+        self.run_ok(push.arg(refspec).timeout(self.network_timeout))?;
+        Ok(())
+    }
+
+    /// [`Self::push`] to the repository in the folder `origin` of this machine, named by the
+    /// caller: `repo`'s configuration is not asked where to push.
+    pub fn push_to_folder(
+        &self,
+        repo: &Path,
+        origin: &Path,
+        refspec: &str,
+    ) -> Result<(), GitError> {
+        require_absolute("origin", origin)?;
+        validate_push_refspec(refspec)?;
+        // A sandbox's clone: through a courier, as every transfer of one.
+        if let Some(courier) = self.courier(repo, true, true)? {
+            let (source, destination) = refspec.split_once(':').unwrap_or((refspec, refspec));
+            let sha = self.rev_parse(repo, source)?;
+            return self.push_through(&courier, &origin.to_string_lossy(), &sha, destination);
+        }
         self.run_ok(
             Invocation::new(self, "push", Some(repo))
-                .args(["push", "--quiet", "--", remote, refspec])
+                .args(["push", "--quiet", "--"])
+                .arg(origin)
+                .arg(refspec)
+                .local(origin)
                 .timeout(self.network_timeout),
         )?;
         Ok(())
@@ -183,7 +216,8 @@ impl Git {
 
     /// The commit `branch` points at on `remote`, as the remote answers now (`git ls-remote`),
     /// not as a remote-tracking ref last saw it; `None` when the remote has no such branch.
-    /// Bounded by [`REMOTE_HEAD_TIMEOUT`] (or the network deadline when shorter).
+    /// The listing is bounded by [`REMOTE_HEAD_TIMEOUT`] (or the network deadline when
+    /// shorter); finding where to ask, by the usual deadline of a command.
     ///
     /// # Errors
     /// Invalid names, a timeout, or the remote cannot be read.
@@ -196,13 +230,26 @@ impl Git {
         validate_remote(remote)?;
         validate_branch_name(branch)?;
         let wanted = format!("refs/heads/{branch}");
-        let listed = self.run_ok(
-            Invocation::new(self, "ls-remote", Some(repo))
-                .args(["ls-remote", "--heads", "--", remote])
-                .arg(&wanted)
-                .timeout(self.network_timeout.min(REMOTE_HEAD_TIMEOUT)),
-        )?;
-        Ok(listed.stdout_trimmed().lines().find_map(|line| {
+        let timeout = self.network_timeout.min(REMOTE_HEAD_TIMEOUT);
+        let list =
+            Invocation::new(self, "ls-remote", Some(repo)).args(["ls-remote", "--heads", "--"]);
+        // A listing needs no objects: its courier borrows none.
+        let listed = match self.remote_route(repo, remote, false)? {
+            // In the courier: the listing carries the token too.
+            Route::Courier(courier, url) => self.list_through(&courier, &url, &wanted, timeout)?,
+            Route::Folder(origin) => self
+                .run_ok(
+                    list.arg(&origin)
+                        .local_reading(&origin)
+                        .arg(&wanted)
+                        .timeout(timeout),
+                )?
+                .stdout_text(),
+            Route::Named => self
+                .run_ok(list.arg(remote).arg(&wanted).timeout(timeout))?
+                .stdout_text(),
+        };
+        Ok(listed.lines().find_map(|line| {
             let (sha, name) = line.split_once('\t')?;
             (name == wanted).then(|| sha.to_owned())
         }))

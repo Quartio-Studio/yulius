@@ -708,8 +708,8 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     // Longer than Yulius's own branch names may be, but Git's: still in the bundle, so counted.
     let long = format!("{}x", "long/".repeat(60));
     git(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
-    let adapter = yulius::wiring::git::GitAdapter::new("git")
-        .with_github_base(&w.scratch.path().join("remotes"));
+    let adapter =
+        crate::support::confined_git().with_github_base(&w.scratch.path().join("remotes"));
     let token = yulius_app::model::Secret("token-alice".into());
     let out = w.scratch.path().join("out");
     std::fs::create_dir_all(&out)?;

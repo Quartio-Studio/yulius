@@ -7,7 +7,7 @@
 //! get JPEG frames and CDP input. All operations are bounded by the CDP call timeout; input
 //! events are serialized per browser so their order is preserved.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -148,21 +148,27 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
     if (!top) return;
     for (const child of top.children) if (String(child.localName).toLowerCase() !== 'head') add(shown, textOf.call(child));
   };
-  // Where typed text goes: the focused element, through open shadow roots and same-origin frames.
+  // Where typed text goes: the focused element, through open shadow roots and same-origin
+  // frames. `field` and `password` are text fields of a document read here; `frame` is an
+  // element holding a document that cannot be read (a frame, an object or an embed of another
+  // site); `sealed` one no frame list names (a fenced frame); anything else is `other` (also
+  // the host of a closed shadow root, whatever has the focus inside it).
   const focus = () => {
     let el = document.activeElement;
     for (;;) {
       if (!el) return { kind: 'none' };
       if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
       const name = String(el.localName).toLowerCase();
-      if (name === 'iframe' || name === 'frame') {
+      if (name === 'fencedframe') return { kind: 'sealed' };
+      if (name === 'iframe' || name === 'frame' || name === 'object' || name === 'embed') {
         let inner = null;
-        try { inner = el.contentDocument; } catch (_) {}
+        try { inner = el.contentDocument || (el.getSVGDocument ? el.getSVGDocument() : null); } catch (_) {}
         if (!inner) return { kind: 'frame' };
         el = inner.activeElement;
         continue;
       }
       if (name === 'input' && String(el.type).toLowerCase() === 'password') return { kind: 'password', value: String(el.value) };
+      if (name === 'input' || name === 'textarea' || el.isContentEditable === true) return { kind: 'field' };
       return { kind: 'other' };
     }
   };
@@ -597,6 +603,8 @@ const PDF_VIEWER: &str = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
 struct Document {
     frame: String,
     loader: String,
+    /// The main frame's address.
+    address: String,
     /// Its host; `None` for an opaque origin.
     host: Option<String>,
     /// Hosts of its frames the probe cannot read: those of another origin in the frame tree,
@@ -604,6 +612,9 @@ struct Document {
     /// the tree may list without their address or not at all, and its own host when the probe
     /// did not read every frame of its own origin ([`Document::add_unread_frames`]).
     framed: Vec<String>,
+    /// The addresses of the frames of another origin and of the out-of-process frames (empty
+    /// for one whose address is not said): where keys go when the focus is in such a frame.
+    framed_addresses: Vec<String>,
     /// Its frames at addresses of its own origin, those holding a PDF apart (no page text). The
     /// frame tree says the origin of a frame's address, sandboxed or not, so only the probe tells
     /// whether it read them.
@@ -630,6 +641,7 @@ impl Document {
         let own = host(main);
         let own_origin = origin(main);
         let mut framed = Vec::new();
+        let mut framed_addresses = Vec::new();
         let mut own_frames = 0;
         let mut frames = Vec::new();
         let mut stack: Vec<&Value> = tree
@@ -646,10 +658,19 @@ impl Document {
                 let pdf = child.pointer("/frame/mimeType").and_then(Value::as_str)
                     == Some("application/pdf");
                 own_frames += usize::from(!pdf);
-            } else if let Some(child_host) = child.get("frame").and_then(host)
-                && !framed.contains(&child_host)
-            {
-                framed.push(child_host);
+            } else {
+                framed_addresses.push(
+                    child
+                        .pointer("/frame/url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                if let Some(child_host) = child.get("frame").and_then(host)
+                    && !framed.contains(&child_host)
+                {
+                    framed.push(child_host);
+                }
             }
             if let Some(children) = child.get("childFrames").and_then(Value::as_array) {
                 stack.extend(children);
@@ -660,8 +681,14 @@ impl Document {
         Some(Self {
             frame,
             loader: main.get("loaderId")?.as_str()?.to_owned(),
+            address: main
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             host: own,
             framed,
+            framed_addresses,
             own_frames,
             frames,
         })
@@ -728,6 +755,7 @@ impl Document {
                 if parent.is_some_and(|parent| viewers.contains(&parent)) {
                     continue;
                 }
+                self.framed_addresses.push(url.to_owned());
                 if let Some(host) = host_of(url)
                     && !self.framed.contains(&host)
                 {
@@ -856,11 +884,14 @@ struct PageText {
     shown: Vec<Zeroizing<String>>,
     /// The values of password fields (drawn as dots).
     masked: Vec<Zeroizing<String>>,
-    /// The value of the focused element when it is a password field (`None`: it is not, or it
-    /// is a frame the probe cannot read).
+    /// The value of the focused element when it is a password field (`None`: it is not).
     focused_password: Option<Zeroizing<String>>,
-    /// The focused element is a frame the probe cannot read.
-    focused_frame: bool,
+    /// The focused element is one no list of the page's frames names (a fenced frame).
+    focus_sealed: bool,
+    /// The focus is in a text field of a document the probe read: the page's own, or a frame's
+    /// of its origin. Anything else (a frame, an element that takes no text, the host of a
+    /// closed shadow root, nothing, a kind this code does not know) is not.
+    focus_in_page: bool,
     /// The frame documents at addresses of the page's own origin it read; none when not said.
     frames: usize,
 }
@@ -883,10 +914,11 @@ impl PageText {
             .filter(|focus| focus.get("kind").and_then(Value::as_str) == Some("password"))
             .and_then(|focus| focus.get("value").and_then(Value::as_str))
             .map(|text| Zeroizing::new(text.to_owned()));
-        let focused_frame = focus
+        let kind = focus
             .and_then(|focus| focus.get("kind"))
-            .and_then(Value::as_str)
-            == Some("frame");
+            .and_then(Value::as_str);
+        let focus_sealed = kind == Some("sealed");
+        let focus_in_page = matches!(kind, Some("field" | "password"));
         let frames = value
             .get("frames")
             .and_then(Value::as_u64)
@@ -895,7 +927,8 @@ impl PageText {
             shown: strings("shown")?,
             masked: strings("masked")?,
             focused_password,
-            focused_frame,
+            focus_sealed,
+            focus_in_page,
             frames,
         })
     }
@@ -919,6 +952,109 @@ impl PageText {
     }
 }
 
+/// Navigations to another document that Chrome announced and has not finished (SPEC-483 E9):
+/// a secret typed meanwhile would land in the page that arrives.
+#[derive(Default)]
+struct Leaving {
+    /// By session (a tab's).
+    sessions: HashMap<String, LeavingFrames>,
+    /// Announcements of every session were lost (events skipped): for [`LEAVING_STANDS`] from
+    /// then, where a frame is going is not known.
+    lost: Option<Instant>,
+}
+
+/// One session's frames on their way.
+#[derive(Default)]
+struct LeavingFrames {
+    /// By frame: where it is going, and since when. At most [`LEAVING_MAX`]; one older than
+    /// [`LEAVING_STANDS`] no longer counts. Of an address too long to keep, its site is kept,
+    /// or none (the empty one, which no secret is for).
+    going: HashMap<String, (String, Instant)>,
+    /// More frames were on their way than are kept: for [`LEAVING_STANDS`] from then, where
+    /// this session's frames are going is not known.
+    lost: Option<Instant>,
+}
+
+/// Where the frames of a page are going ([`Leaving::going`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Going {
+    /// To these addresses (none: nowhere).
+    To(Vec<String>),
+    /// Not known: announcements were lost.
+    Unknown,
+}
+
+impl Leaving {
+    /// Chrome announced that `frame` of `session` set out for `url`.
+    fn announce(&mut self, session: &str, frame: &str, url: &str, now: Instant) {
+        let frames = self.sessions.entry(session.to_owned()).or_default();
+        if !frames.going.contains_key(frame) && frames.going.len() >= LEAVING_MAX {
+            frames
+                .going
+                .retain(|_, (_, since)| now.duration_since(*since) < LEAVING_STANDS);
+        }
+        if !frames.going.contains_key(frame) && frames.going.len() >= LEAVING_MAX {
+            // More than are kept, in this tab: none of its frames is known from here.
+            frames.going.clear();
+            frames.lost = Some(now);
+            return;
+        }
+        // A cut address can read as another site's (its end as the host, when what comes
+        // before the host is long): of one too long its site is kept (sign-in redirects carry
+        // long queries), and no address at all when that is too long as well.
+        let kept = if url.len() > LEAVING_ADDRESS_MAX {
+            origin_of(url)
+                .filter(|origin| origin.len() < LEAVING_ADDRESS_MAX)
+                .map(|origin| format!("{origin}/"))
+                .unwrap_or_default()
+        } else {
+            url.to_owned()
+        };
+        frames.going.insert(frame.to_owned(), (kept, now));
+    }
+
+    /// `frame` of `session` arrived, stopped loading or is gone.
+    fn settled(&mut self, session: &str, frame: &str) {
+        if let Some(frames) = self.sessions.get_mut(session) {
+            frames.going.remove(frame);
+        }
+    }
+
+    fn session_ended(&mut self, session: &str) {
+        self.sessions.remove(session);
+    }
+
+    /// Announcements were lost: nothing kept says where a frame is going now.
+    fn lose(&mut self, now: Instant) {
+        self.sessions.clear();
+        self.lost = Some(now);
+    }
+
+    /// Where `frames` of `session` are going.
+    fn going(&self, session: &str, frames: &[String], now: Instant) -> Going {
+        let recent =
+            |at: Option<Instant>| at.is_some_and(|at| now.duration_since(at) < LEAVING_STANDS);
+        let Some(of) = self.sessions.get(session) else {
+            return if recent(self.lost) {
+                Going::Unknown
+            } else {
+                Going::To(Vec::new())
+            };
+        };
+        if recent(self.lost) || recent(of.lost) {
+            return Going::Unknown;
+        }
+        Going::To(
+            frames
+                .iter()
+                .filter_map(|frame| of.going.get(frame))
+                .filter(|(_, since)| now.duration_since(*since) < LEAVING_STANDS)
+                .map(|(url, _)| url.clone())
+                .collect(),
+        )
+    }
+}
+
 struct State {
     tabs: Vec<TabEntry>,
     active: Option<TabId>,
@@ -927,6 +1063,15 @@ struct State {
     screencasts: HashMap<TabId, Screencast>,
     viewport: (u32, u32),
     pointer: Pointer,
+    /// Where frames are going (SPEC-483 E9).
+    leaving: Leaving,
+    /// The policy probe's own tabs (ADR-0318), by the ids Chrome gave them: never listed.
+    probe_tabs: HashSet<TabId>,
+    /// A policy probe asked Chrome for its tab and has no id for it yet: what is announced
+    /// meanwhile of a page no page opened (the probe's own tab is one, however Chrome first
+    /// names it) waits here until the id says whether it is the probe's.
+    probing: bool,
+    probe_held: Vec<CdpEvent>,
 }
 
 impl State {
@@ -1014,6 +1159,8 @@ pub struct BrowserInstance {
     input_lock: tokio::sync::Mutex<()>,
     last_used: Mutex<Instant>,
     process: OnceLock<Supervised>,
+    /// What keeps the browser's way out open (its proxy, ADR-0321); let go when it ended.
+    network: Mutex<Option<Box<dyn std::any::Any + Send + Sync>>>,
     event_task: Mutex<Option<JoinHandle<()>>>,
     /// The virtual display the browser runs on (headful), when it has one.
     display: Option<VirtualDisplay>,
@@ -1022,7 +1169,77 @@ pub struct BrowserInstance {
     new_tab_url: Mutex<Option<String>>,
     /// Addresses this browser never loads: Yulius itself (BRW-008).
     deny: Mutex<UrlDenyList>,
+    /// Whether the host's managed policy is in force in this browser, as it last answered
+    /// (ADR-0318).
+    policy: Mutex<PolicyCheck>,
+    /// One probe at a time.
+    policy_lock: tokio::sync::Mutex<()>,
 }
+
+/// A policy probe's wait for the id of its tab. Dropping it ends the wait: the id (when Chrome
+/// gave one) marks the probe's tab, which is taken off the tab list should it be on it, and
+/// what was announced meanwhile is listed, unless it is the probe's own or listed already by a
+/// newer event.
+struct ProbeWait<'a> {
+    browser: &'a BrowserInstance,
+    target: Option<TabId>,
+}
+
+impl Drop for ProbeWait<'_> {
+    fn drop(&mut self) {
+        // What a newer event listed while the others waited: a held announcement of it is
+        // older than what is shown. What the replay itself lists takes its later ones too.
+        let (held, listed) = {
+            let mut state = lock(&self.browser.state);
+            state.probing = false;
+            if let Some(target) = &self.target {
+                state.probe_tabs.insert(target.clone());
+            }
+            let listed: HashSet<TabId> = state.tabs.iter().map(|tab| tab.id.clone()).collect();
+            (std::mem::take(&mut state.probe_held), listed)
+        };
+        if let Some(target) = &self.target {
+            self.browser.forget_tab(target);
+        }
+        for event in held {
+            let id = event
+                .params
+                .get("targetInfo")
+                .and_then(page_entry)
+                .map(|(id, _, _)| id);
+            if !id.is_some_and(|id| listed.contains(&id)) {
+                self.browser.on_event(&event);
+            }
+        }
+    }
+}
+
+/// What the browser last answered about the host's managed policy, and when.
+#[derive(Debug, Default, Clone, Copy)]
+struct PolicyCheck {
+    in_force: bool,
+    asked: Option<Instant>,
+}
+
+/// How long a navigation Chrome announced and never finished keeps a secret from being typed
+/// into its frame.
+const LEAVING_STANDS: Duration = Duration::from_secs(30);
+/// Frames on their way that are kept at once per tab; past it none of the tab's is known for
+/// [`LEAVING_STANDS`].
+const LEAVING_MAX: usize = 256;
+/// The longest announced address that is kept, in bytes.
+const LEAVING_ADDRESS_MAX: usize = 2048;
+/// The site named when an address has no host (`about:srcdoc`, `data:`).
+const UNKNOWN_SITE: &str = "an unknown site";
+
+/// How long a "not in force" answer stands before a refused input asks again (the policy
+/// appears while the browser runs when an administrator runs host setup: Chrome reloads it).
+const POLICY_RECHECK: Duration = Duration::from_secs(5);
+/// How long a "in force" answer stands before the next press asks again: the files can be
+/// taken away under a running browser.
+const POLICY_CONFIRM: Duration = Duration::from_secs(300);
+/// The longest the probe's navigation is waited for: a viewer's connection waits with it.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl std::fmt::Debug for BrowserInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1065,6 +1282,26 @@ fn page_entry(info: &Value) -> Option<(TabId, String, String)> {
             .to_owned()
     };
     Some((id, text("title"), text("url")))
+}
+
+/// Whether a page at an address may get a secret typed into it
+/// ([`BrowserInstance::tool_type_secret`]).
+pub type PageRule<'r> = dyn for<'a> Fn(&'a str) -> bool + Send + Sync + 'r;
+
+/// A document as an error names it: its host, or its address when it has none.
+fn shown_as(document: &Document) -> String {
+    document
+        .host
+        .clone()
+        .unwrap_or_else(|| document.address.clone())
+}
+
+/// Whether an address is a page of Chrome itself: a target created at one is no tab for
+/// viewers and tools (Chrome 157 reports its address bar's popup,
+/// `chrome://omnibox-popup.top-chrome/`, as a page). Nobody navigates to such an address
+/// through Yulius either ([`normalize_url`]).
+fn chromes_own(url: &str) -> bool {
+    url.starts_with("chrome://") || url.starts_with("chrome-untrusted://")
 }
 
 fn metrics(width: u32, height: u32) -> Value {
@@ -1186,6 +1423,10 @@ impl BrowserInstance {
                 screencasts: HashMap::new(),
                 viewport,
                 pointer: Pointer::default(),
+                leaving: Leaving::default(),
+                probe_tabs: HashSet::new(),
+                probing: false,
+                probe_held: Vec::new(),
             }),
             tabs_tx: watch::channel(Vec::new()).0,
             events_tx,
@@ -1196,12 +1437,15 @@ impl BrowserInstance {
             input_lock: tokio::sync::Mutex::new(()),
             last_used: Mutex::new(Instant::now()),
             process: OnceLock::new(),
+            network: Mutex::new(None),
             event_task: Mutex::new(None),
             display,
             keyboard: Mutex::new(Keyboard::default()),
             secrets,
             new_tab_url: Mutex::new(None),
             deny: Mutex::new(UrlDenyList::default()),
+            policy: Mutex::new(PolicyCheck::default()),
+            policy_lock: tokio::sync::Mutex::new(()),
         });
         if let Err(error) = instance.resync().await {
             if let Some(display) = &instance.display {
@@ -1226,6 +1470,11 @@ impl BrowserInstance {
                 "browser instance already owns a process"
             );
         }
+    }
+
+    /// Keeps `hold` (what serves the browser's proxy) until the browser is terminated.
+    pub(crate) fn hold_network(&self, hold: Box<dyn std::any::Any + Send + Sync>) {
+        *lock(&self.network) = Some(hold);
     }
 
     /// The owning sandbox.
@@ -1355,6 +1604,13 @@ impl BrowserInstance {
         let mut gone_sessions = Vec::new();
         {
             let mut state = lock(&self.state);
+            // The probe's own tabs and pages of Chrome's that are no tabs yet stay unlisted.
+            let pages: Vec<_> = pages
+                .into_iter()
+                .filter(|(id, _, url)| {
+                    !state.probe_tabs.contains(id) && (state.has(id) || !chromes_own(url))
+                })
+                .collect();
             let gone: Vec<TabId> = state
                 .tabs
                 .iter()
@@ -1379,6 +1635,30 @@ impl BrowserInstance {
         match event.method.as_str() {
             "Target.targetCreated" | "Target.targetInfoChanged" => {
                 let info = event.params.get("targetInfo");
+                if let Some((id, _, url)) = info.and_then(page_entry) {
+                    let opened_by_a_page = info
+                        .and_then(|info| info.get("openerId"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|opener| !opener.is_empty());
+                    let mut state = lock(&self.state);
+                    // The policy probe's own tab, known by the id Chrome gave it (never by its
+                    // address, which a page can copy), is nobody's tab.
+                    if state.probe_tabs.contains(&id) {
+                        return;
+                    }
+                    let known = state.has(&id);
+                    // The probe's tab may be announced before Chrome answers with its id, under
+                    // whatever address: a new page no page opened waits for the id.
+                    if !known && state.probing && !opened_by_a_page {
+                        state.probe_held.push(event.clone());
+                        return;
+                    }
+                    // A page of Chrome's own never becomes a tab; a tab that went to one stays
+                    // a tab (Chrome still shows it).
+                    if !known && chromes_own(&url) {
+                        return;
+                    }
+                }
                 if let Some((id, title, url)) = info.and_then(page_entry) {
                     // A page a page opened (a link to a new tab, a popup) comes to the front on
                     // the display: it is the shown tab now.
@@ -1404,16 +1684,62 @@ impl BrowserInstance {
                     .and_then(Value::as_str)
                     .and_then(|id| TabId::parse(id).ok());
                 if let Some(tab) = tab {
+                    {
+                        let mut state = lock(&self.state);
+                        state.probe_tabs.remove(&tab);
+                        // A page made and closed while a probe waits is no tab afterwards.
+                        state.probe_held.retain(|held| {
+                            held.params
+                                .get("targetInfo")
+                                .and_then(page_entry)
+                                .is_none_or(|(id, _, _)| id != tab)
+                        });
+                    }
                     self.forget_tab(&tab);
                 }
             }
             "Fetch.requestPaused" if event.session_id.is_none() => self.on_request_paused(event),
+            // A frame set out for another document (a clicked link, a form, a script): until
+            // Chrome says it arrived or gave up, a secret's typing may land in either.
+            "Page.frameStartedNavigating" | "Page.frameRequestedNavigation" => {
+                let same_document = event
+                    .params
+                    .get("navigationType")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.ends_with("ameDocument"));
+                let elsewhere = event
+                    .params
+                    .get("disposition")
+                    .and_then(Value::as_str)
+                    .is_some_and(|tab| tab != "currentTab");
+                if let (Some(session), Some(frame), Some(url), false) = (
+                    event.session_id.as_deref(),
+                    event.params.get("frameId").and_then(Value::as_str),
+                    event.params.get("url").and_then(Value::as_str),
+                    same_document || elsewhere,
+                ) {
+                    lock(&self.state)
+                        .leaving
+                        .announce(session, frame, url, Instant::now());
+                }
+            }
+            "Page.frameNavigated" | "Page.frameStoppedLoading" | "Page.frameDetached" => {
+                let frame = event
+                    .params
+                    .pointer("/frame/id")
+                    .or_else(|| event.params.get("frameId"))
+                    .and_then(Value::as_str);
+                if let (Some(session), Some(frame)) = (event.session_id.as_deref(), frame) {
+                    lock(&self.state).leaving.settled(session, frame);
+                }
+            }
             "Target.detachedFromTarget" => {
                 if let Some(session) = event.params.get("sessionId").and_then(Value::as_str) {
                     {
                         let mut state = lock(&self.state);
                         state.sessions.retain(|_, s| s != session);
                         state.screencasts.retain(|_, cast| cast.session != session);
+                        state.leaving.session_ended(session);
                     }
                     self.cdp.remove_frame_sink(session);
                 }
@@ -1613,6 +1939,9 @@ impl BrowserInstance {
         session: &str,
         url: &str,
     ) -> Result<(), BrowserError> {
+        // Never under a secret being typed, or between a screenshot's look and its capture:
+        // those hold this lock from their look at the page to their end (SPEC-483 E3).
+        let _input = self.input_lock.lock().await;
         let result = self
             .cdp
             .call_session(session, "Page.navigate", json!({"url": url}))
@@ -1710,6 +2039,8 @@ impl BrowserInstance {
             .get("id")
             .and_then(Value::as_i64)
             .ok_or_else(|| malformed("Page.getNavigationHistory", "entry without id"))?;
+        // As every navigation of Yulius's: never under a secret being typed.
+        let _input = self.input_lock.lock().await;
         self.cdp
             .call_session(
                 &session,
@@ -1727,6 +2058,8 @@ impl BrowserInstance {
     pub async fn reload(&self, tab: &TabId) -> Result<(), BrowserError> {
         self.touch();
         let session = self.session(tab).await?;
+        // As every navigation of Yulius's: never under a secret being typed.
+        let _input = self.input_lock.lock().await;
         self.cdp
             .call_session(&session, "Page.reload", json!({}))
             .await?;
@@ -2016,6 +2349,138 @@ impl BrowserInstance {
         Ok(())
     }
 
+    /// Whether a viewer's clicks and keys may reach this browser: always without a virtual
+    /// display (a headless browser shows no window of its own), else only while the host's
+    /// managed policy is in force (ADR-0318). A "no" is asked again after `POLICY_RECHECK`, a
+    /// "yes" after `POLICY_CONFIRM` (Chrome reloads its policy files while it runs).
+    pub async fn viewer_input_allowed(&self) -> bool {
+        if self.display.is_none() {
+            return true;
+        }
+        let fresh = |check: PolicyCheck| {
+            let stands = if check.in_force {
+                POLICY_CONFIRM
+            } else {
+                POLICY_RECHECK
+            };
+            check.asked.is_some_and(|at| at.elapsed() < stands)
+        };
+        let known = *lock(&self.policy);
+        if fresh(known) {
+            return known.in_force;
+        }
+        let _one = self.policy_lock.lock().await;
+        let known = *lock(&self.policy);
+        if fresh(known) {
+            return known.in_force;
+        }
+        let in_force = match self.probe_policy().await {
+            Ok(in_force) => in_force,
+            Err(error) => {
+                warn!(sandbox = %self.sandbox, %error, "the browser's policy could not be asked");
+                false
+            }
+        };
+        if !in_force {
+            warn!(sandbox = %self.sandbox, "the host's browser policy is not in force: viewers' clicks and keys are refused (run `yulius host setup`)");
+        }
+        *lock(&self.policy) = PolicyCheck {
+            in_force,
+            asked: Some(Instant::now()),
+        };
+        in_force
+    }
+
+    /// Asks the browser whether it loaded the host's managed policy: a hidden tab is sent to
+    /// the address the policy blocks, and the navigation fails as blocked, or otherwise.
+    async fn probe_policy(&self) -> Result<bool, BrowserError> {
+        lock(&self.state).probing = true;
+        // Ends the wait for the tab's id however this future ends, a drop included (it runs in
+        // a viewer's connection).
+        let mut wait = ProbeWait {
+            browser: self,
+            target: None,
+        };
+        // The call lives in its own task, which closes the tab Chrome made unless this probe
+        // takes its answer: after the probe gave up on it, or was dropped (it runs in a
+        // viewer's connection), nobody else would.
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let cdp = self.cdp.clone();
+        tokio::spawn(async move {
+            let created = cdp
+                .call(
+                    "Target.createTarget",
+                    json!({"url": crate::policy::PROBE_BLANK, "background": true}),
+                )
+                .await;
+            if let Err(Ok(unclaimed)) = answer.send(created)
+                && let Some(target) = unclaimed.get("targetId").and_then(Value::as_str)
+            {
+                let _ = cdp
+                    .call("Target.closeTarget", json!({"targetId": target}))
+                    .await;
+            }
+        });
+        let created = match tokio::time::timeout(PROBE_TIMEOUT, answered).await {
+            Ok(Ok(created)) => created.map_err(BrowserError::from),
+            Ok(Err(_)) => Err(BrowserError::NavigationFailed(
+                "the policy probe's tab could not be asked for".into(),
+            )),
+            Err(_) => Err(BrowserError::NavigationFailed(
+                "the policy probe got no tab in time".into(),
+            )),
+        }
+        .and_then(|created| {
+            created
+                .get("targetId")
+                .and_then(Value::as_str)
+                .and_then(|id| TabId::parse(id).ok())
+                .ok_or_else(|| malformed("Target.createTarget", "missing targetId"))
+        });
+        wait.target = created.as_ref().ok().cloned();
+        drop(wait);
+        let target = created?;
+        let asked = async {
+            let attached = self
+                .cdp
+                .call(
+                    "Target.attachToTarget",
+                    json!({"targetId": target.as_str(), "flatten": true}),
+                )
+                .await?;
+            let session = attached
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| malformed("Target.attachToTarget", "missing sessionId"))?;
+            let answer = self
+                .cdp
+                .call_session(
+                    session,
+                    "Page.navigate",
+                    json!({"url": crate::policy::probe_url()}),
+                )
+                .await?;
+            Ok::<_, BrowserError>(
+                answer
+                    .get("errorText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains(crate::policy::BLOCKED)),
+            )
+        };
+        // No answer in time is a "no": the tab is closed either way.
+        let asked = tokio::time::timeout(PROBE_TIMEOUT, asked)
+            .await
+            .unwrap_or(Ok(false));
+        if let Err(error) = self
+            .cdp
+            .call("Target.closeTarget", json!({"targetId": target.as_str()}))
+            .await
+        {
+            debug!(%error, "the policy probe's tab could not be closed");
+        }
+        asked
+    }
+
     /// Dispatches pointer input to a tab. Presses at the same spot within 500 ms count as
     /// double/triple clicks.
     ///
@@ -2032,6 +2497,12 @@ impl BrowserInstance {
             check_coordinate(name, value)?;
         }
         if let Some(display) = &self.display {
+            // A press is real X input wherever the pointer is, Chrome's own windows included
+            // (ADR-0318); moving and scrolling open none, and a release always passes, as a
+            // key's does.
+            if input.event == MouseEventKind::Down && !self.viewer_input_allowed().await {
+                return Err(BrowserError::InputLocked);
+            }
             return self.display_mouse(display, input).await;
         }
         let session = self.session(tab).await?;
@@ -2276,6 +2747,10 @@ impl BrowserInstance {
             ));
         }
         if let Some(display) = &self.display {
+            // A release always passes: a key held when the answer changed must not stay down.
+            if input.event != KeyEventKind::Up && !self.viewer_input_allowed().await {
+                return Err(BrowserError::InputLocked);
+            }
             return self.display_key(display, input).await;
         }
         let bit = match input.key.as_deref() {
@@ -2604,49 +3079,164 @@ impl BrowserInstance {
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
     pub async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
-        self.type_text(params, false).await
+        self.type_text(params, None).await
     }
 
-    /// `browser_fill_secret`'s typing: as [`Self::tool_type`], and the browser remembers the
-    /// text and the document it went into, so that a screenshot that may show it is refused
-    /// (SPEC-450).
+    /// `browser_fill_secret`'s typing of the secret's value: as [`Self::tool_type`], only into
+    /// what `allowed` says the secret may be typed into (the tab's page as read with the input
+    /// lock held, the frames it holds when the focus is not in a field of the page, and where
+    /// its frames are going), and the browser remembers the text and the document it went into,
+    /// so that a screenshot that may show it is refused (SPEC-450).
     ///
     /// # Errors
-    /// As [`Self::tool_type`]; [`BrowserError::InvalidInput`] when the tab's document cannot be
-    /// told or the browser remembers too many secrets or documents already (nothing is typed).
-    pub async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
-        self.type_text(params, true).await
+    /// As [`Self::tool_type`]; [`BrowserError::SecretPageRefused`],
+    /// [`BrowserError::SecretFrameRefused`] and [`BrowserError::SecretPageLeaving`] when
+    /// `allowed` refuses, and [`BrowserError::InvalidInput`] when the tab's page cannot be told
+    /// or read or the browser remembers too many secrets or documents already (nothing is
+    /// typed in any of these); [`BrowserError::SecretAstray`] and
+    /// [`BrowserError::SecretFrameAstray`] when the page or the focus moved to where it may not
+    /// go while it was typed.
+    pub async fn tool_type_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &PageRule<'_>,
+    ) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, Some((allowed, true))).await
     }
 
+    /// `browser_fill_secret`'s typing of what belongs to a secret and is not hidden (its user
+    /// name, a one-time code): under the page rule of [`Self::tool_type_secret`], and not
+    /// remembered for screenshots.
+    ///
+    /// # Errors
+    /// As [`Self::tool_type_secret`], without the bound on remembered secrets.
+    pub async fn tool_type_beside_secret(
+        &self,
+        params: &TypeParams,
+        allowed: &PageRule<'_>,
+    ) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, Some((allowed, false))).await
+    }
+
+    /// Types `params`. With a `rule` (the page rule and whether the text is remembered as a
+    /// typed secret), only where the rule allows.
     async fn type_text(
         &self,
         params: &TypeParams,
-        secret: bool,
+        rule: Option<(&PageRule<'_>, bool)>,
     ) -> Result<TypeResult, BrowserError> {
         self.touch();
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
-        if let Some(selector) = &params.selector {
-            let value = self
-                .call_on_document(&session, FOCUS_FUNCTION, selector)
-                .await?;
-            if value.get("found").and_then(Value::as_bool) != Some(true) {
-                return Err(BrowserError::ElementNotFound);
+        let focus = || async {
+            if let Some(selector) = &params.selector {
+                let value = self
+                    .call_on_document(&session, FOCUS_FUNCTION, selector)
+                    .await?;
+                if value.get("found").and_then(Value::as_bool) != Some(true) {
+                    return Err(BrowserError::ElementNotFound);
+                }
             }
-        }
-        // Screenshots hold the same lock from their look at the page to the capture.
-        let _input = self.input_lock.lock().await;
-        if !secret {
+            Ok(())
+        };
+        let Some((allowed, remember)) = rule else {
+            focus().await?;
+            // Screenshots hold the same lock from their look at the page to the capture.
+            let _input = self.input_lock.lock().await;
             let watched = self.watched_values(&session).await;
             return self.type_lines(&session, params, watched.as_ref()).await;
-        }
+        };
+        let unknown = || UNKNOWN_SITE.to_owned();
+        // A secret's field is focused with the lock held too: nothing of Yulius's moves the
+        // focus between that and the keys.
+        let _input = self.input_lock.lock().await;
         let Some(before) = self.document(&session).await else {
             return Err(BrowserError::InvalidInput(
                 "the tab's page cannot be identified, so the secret was not typed; try again"
                     .into(),
             ));
         };
-        {
+        // The page as it is now, with the lock held: what the caller saw of the tab may be
+        // from before a navigation, and Yulius's own navigations wait for this lock
+        // (SPEC-483 E3).
+        if !allowed(&before.address) {
+            return Err(BrowserError::SecretPageRefused(shown_as(&before)));
+        }
+        focus().await?;
+        // The keys go to the element with the focus, which need not be in this page: where
+        // the focus is, is read after the field was focused (SPEC-483 E8).
+        let Some(look) = self.read_page(&session, &before.frame).await else {
+            return Err(BrowserError::InvalidInput(
+                "the tab's page cannot be read right now, so the secret was not typed; try again"
+                    .into(),
+            ));
+        };
+        // The document once more: its frames as they are now, and whether it still is the one
+        // that was asked (a navigation may have arrived while the field was focused).
+        let Some(mut framing) = self.document(&session).await else {
+            return Err(BrowserError::InvalidInput(
+                "the tab's frames cannot be identified, so the secret was not typed; try again"
+                    .into(),
+            ));
+        };
+        if framing.loader != before.loader || framing.frame != before.frame {
+            return Err(if allowed(&framing.address) {
+                BrowserError::InvalidInput(
+                    "the tab's page changed while its field was focused, so the secret was not typed; try again"
+                        .into(),
+                )
+            } else {
+                BrowserError::SecretPageRefused(shown_as(&framing))
+            });
+        }
+        if look.focus_sealed {
+            return Err(BrowserError::SecretFrameRefused(unknown()));
+        }
+        // Only a text field of a document the probe read is the page's own. Anything else can
+        // be a document of another site (a frame, an object, an embed, a frame inside a closed
+        // shadow root), and which one the page cannot say: every frame of another site the
+        // page holds must then be one the secret may go to as well.
+        if !look.focus_in_page {
+            let targets = self.cdp.call("Target.getTargets", json!({})).await?;
+            framing.add_frame_targets(&params.tab_id, &targets);
+            if let Some(other) = framing
+                .framed_addresses
+                .iter()
+                .find(|address| !allowed(address))
+            {
+                return Err(BrowserError::SecretFrameRefused(
+                    host_of(other).unwrap_or_else(unknown),
+                ));
+            }
+        }
+        // As other typing, what is not remembered may edit a secret typed before.
+        let watched = if remember {
+            None
+        } else {
+            self.watched_values(&session).await
+        };
+        // A navigation under way would put its page under the keys: where the page's frames
+        // are going is asked too, last, as the announcement can come at any time (SPEC-483
+        // E9). One Chrome never finished is forgotten after a while.
+        let going = lock(&self.state)
+            .leaving
+            .going(&session, &framing.frames, Instant::now());
+        match going {
+            Going::Unknown => {
+                return Err(BrowserError::InvalidInput(
+                    "the browser lost track of where its tabs are going, so the secret was not typed; try again in half a minute"
+                        .into(),
+                ));
+            }
+            Going::To(addresses) => {
+                if let Some(url) = addresses.iter().find(|url| !allowed(url)) {
+                    return Err(BrowserError::SecretPageLeaving(
+                        host_of(url).unwrap_or_else(unknown),
+                    ));
+                }
+            }
+        }
+        if remember {
             let mut typed = self.secrets.lock();
             if !typed.room_for(&params.text) {
                 return Err(BrowserError::InvalidInput(format!(
@@ -2655,14 +3245,15 @@ impl BrowserInstance {
             }
             typed.record(Some(&before), &params.text);
         }
-        let typed = self.type_lines(&session, params, None).await;
+        let typed = self.type_lines(&session, params, watched.as_ref()).await;
         let mut after = self.document(&session).await;
         let page = match &after {
             Some(document) => self.read_page(&session, &document.frame).await,
             None => None,
         };
-        // Typed into a frame the probe cannot read: the frames' hosts are where it went.
-        let into_frame = page.as_ref().is_some_and(|page| page.focused_frame);
+        // The focus is not in a field of the page now (a frame took it, or it left the field):
+        // as before the keys, the frames the page holds are where the text may have gone.
+        let into_frame = page.as_ref().is_some_and(|page| !page.focus_in_page);
         let mut frames_known = true;
         if into_frame && let Some(document) = after.as_mut() {
             match self.cdp.call("Target.getTargets", json!({})).await {
@@ -2670,32 +3261,62 @@ impl BrowserInstance {
                 Err(_) => frames_known = false,
             }
         }
-        let mut secrets = self.secrets.lock();
-        // A navigation meanwhile may have put it into the next document.
-        if after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str()) {
-            secrets.record(after.as_ref(), &params.text);
-        }
-        // Only a password field keeps it out of the pixels: anywhere else exposes the site,
-        // the one it was typed into and the one shown since.
-        if !page
+        // A navigation meanwhile (the page's own) may have put it into the next document.
+        let moved = after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str());
+        // The page it moved to is asked too. One that cannot be identified is not called a
+        // page it went astray to: every screenshot is refused from here on instead (below).
+        let astray = after
             .as_ref()
-            .is_some_and(|page| page.received(&params.text))
-        {
-            let after_host = after.as_ref().and_then(|d| d.host.as_ref());
-            let framed: &[String] = match (&after, into_frame) {
-                (Some(document), true) => &document.framed,
-                _ => &[],
-            };
-            let mut exposed = false;
-            for host in before.host.iter().chain(after_host).chain(framed) {
-                secrets.expose(Some(host));
-                exposed = true;
+            .filter(|document| moved && !allowed(&document.address))
+            .map(|document| BrowserError::SecretAstray(shown_as(document)));
+        // So are the frames, by the rule asked before the keys: then the focus was in a field
+        // of the page or every frame was allowed, so a frame of another site took the focus
+        // since (its script, as the page's field got it), or came since.
+        let astray = astray.or_else(|| {
+            let document = after.as_ref().filter(|_| into_frame)?;
+            let sealed = page.as_ref().is_some_and(|page| page.focus_sealed);
+            let frame = document
+                .framed_addresses
+                .iter()
+                .find(|address| !allowed(address));
+            match (frame, sealed) {
+                (Some(address), _) => Some(host_of(address).unwrap_or_else(unknown)),
+                (None, true) => Some(unknown()),
+                (None, false) => None,
             }
-            if page.is_none() || !exposed || !frames_known {
-                secrets.expose(None);
+            .map(BrowserError::SecretFrameAstray)
+        });
+        if remember {
+            let mut secrets = self.secrets.lock();
+            if moved {
+                secrets.record(after.as_ref(), &params.text);
+            }
+            // Only a password field keeps it out of the pixels: anywhere else exposes the
+            // site, the one it was typed into and the one shown since.
+            if !page
+                .as_ref()
+                .is_some_and(|page| page.received(&params.text))
+            {
+                let after_host = after.as_ref().and_then(|d| d.host.as_ref());
+                let framed: &[String] = match (&after, into_frame) {
+                    (Some(document), true) => &document.framed,
+                    _ => &[],
+                };
+                let mut exposed = false;
+                for host in before.host.iter().chain(after_host).chain(framed) {
+                    secrets.expose(Some(host));
+                    exposed = true;
+                }
+                if page.is_none() || !exposed || !frames_known {
+                    secrets.expose(None);
+                }
             }
         }
-        typed
+        // Where it went is said whatever else the typing ran into.
+        match astray {
+            Some(astray) => Err(astray),
+            None => typed,
+        }
     }
 
     /// Before other typing (`browser_type`, a user name): the secrets typed into this document
@@ -3144,6 +3765,8 @@ impl BrowserInstance {
             }
             None => Ok(()),
         };
+        // Its way out closes with it: nothing else is to use that proxy.
+        drop(lock(&self.network).take());
         // The display goes after the browser that draws on it (encoder and X server reaped).
         let display = match &self.display {
             Some(display) => display.stop(timeouts).await,
@@ -3176,6 +3799,8 @@ async fn event_loop(
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "browser events lagged; resynchronizing targets");
+                        // An announced navigation may be among them (SPEC-483 E9).
+                        lock(&instance.state).leaving.lose(Instant::now());
                         if let Err(error) = instance.resync().await {
                             warn!(%error, "target resynchronization failed");
                         }
@@ -3197,5 +3822,183 @@ async fn event_loop(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frames(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    fn kept(leaving: &Leaving) -> usize {
+        leaving.sessions.values().map(|of| of.going.len()).sum()
+    }
+
+    /// SPEC-483 E9: what Chrome announced stands until the frame settled, its session ended
+    /// or [`LEAVING_STANDS`] passed, and only for the frames asked about.
+    #[test]
+    fn an_announced_navigation_stands_until_it_settled_or_is_old() {
+        let now = Instant::now();
+        let mut leaving = Leaving::default();
+        leaving.announce("s1", "main", "https://evil.example/a", now);
+        leaving.announce("s1", "child", "https://bank.example/b", now);
+        leaving.announce("s2", "main", "https://other.example/c", now);
+        let both = Going::To(vec![
+            "https://evil.example/a".to_owned(),
+            "https://bank.example/b".to_owned(),
+        ]);
+        assert_eq!(leaving.going("s1", &frames(&["main", "child"]), now), both);
+        assert_eq!(
+            leaving.going("s1", &frames(&["child"]), now),
+            Going::To(vec!["https://bank.example/b".to_owned()])
+        );
+        // Just before the time is up it stands; at it, it does not.
+        let late = now + LEAVING_STANDS;
+        assert_eq!(
+            leaving.going(
+                "s1",
+                &frames(&["main", "child"]),
+                late - Duration::from_millis(1)
+            ),
+            both
+        );
+        assert_eq!(
+            leaving.going("s1", &frames(&["main", "child"]), late),
+            Going::To(Vec::new())
+        );
+        leaving.settled("s1", "main");
+        assert_eq!(
+            leaving.going("s1", &frames(&["main"]), now),
+            Going::To(Vec::new())
+        );
+        leaving.session_ended("s2");
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), now),
+            Going::To(Vec::new())
+        );
+        assert_eq!(kept(&leaving), 1, "only s1's child is kept");
+    }
+
+    /// Bounded per tab: past [`LEAVING_MAX`] frames on their way, old ones go first; when none
+    /// is old, nothing of that tab is known for [`LEAVING_STANDS`] (a fill is refused, not
+    /// typed blind) while other tabs are. Skipped events lose every tab's.
+    #[test]
+    fn announcements_are_bounded_and_losing_them_is_not_knowing() {
+        let start = Instant::now();
+        let mut leaving = Leaving::default();
+        for n in 0..LEAVING_MAX {
+            leaving.announce("s1", &format!("f{n}"), "https://a.example/", start);
+        }
+        leaving.announce("s2", "main", "https://d.example/", start);
+        // An announcement for a frame already kept replaces it at the bound.
+        leaving.announce("s1", "f0", "https://b.example/", start);
+        assert_eq!(
+            leaving.going("s1", &frames(&["f0"]), start),
+            Going::To(vec!["https://b.example/".to_owned()])
+        );
+        // The old ones make room.
+        let later = start + LEAVING_STANDS;
+        leaving.announce("s1", "new", "https://c.example/", later);
+        assert_eq!(kept(&leaving), 2, "s1's new one and s2's");
+        assert_eq!(
+            leaving.going("s1", &frames(&["new"]), later),
+            Going::To(vec!["https://c.example/".to_owned()])
+        );
+        // None is old: one more than are kept loses the tab's, and only that tab's.
+        leaving.announce("s2", "main", "https://d.example/", later);
+        for n in 0..LEAVING_MAX {
+            leaving.announce("s1", &format!("g{n}"), "https://a.example/", later);
+        }
+        assert_eq!(kept(&leaving), 1, "s2's");
+        assert_eq!(
+            leaving.going("s1", &frames(&["new"]), later),
+            Going::Unknown
+        );
+        assert_eq!(
+            leaving.going(
+                "s1",
+                &frames(&["x"]),
+                later + LEAVING_STANDS - Duration::from_millis(1)
+            ),
+            Going::Unknown
+        );
+        assert_eq!(
+            leaving.going("s1", &frames(&["new"]), later + LEAVING_STANDS),
+            Going::To(Vec::new())
+        );
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), later),
+            Going::To(vec!["https://d.example/".to_owned()])
+        );
+        assert_eq!(
+            leaving.going("s3", &frames(&["main"]), later),
+            Going::To(Vec::new())
+        );
+
+        // Skipped events: no tab's is known, one heard of or not.
+        leaving.lose(later);
+        assert_eq!(kept(&leaving), 0);
+        for session in ["s1", "s2", "s3"] {
+            assert_eq!(
+                leaving.going(session, &frames(&["main"]), later),
+                Going::Unknown
+            );
+        }
+        leaving.announce("s2", "main", "https://d.example/", later);
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), later),
+            Going::Unknown
+        );
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), later + LEAVING_STANDS),
+            Going::To(Vec::new())
+        );
+    }
+
+    /// An address is never kept cut: its end could read as the host. A link to
+    /// `https://<long>.bank.example@evil.example/` cut inside what comes before the host would
+    /// be an address of `*.bank.example`. Of one too long the site is kept (so a sign-in
+    /// redirect with a long query to a site the secret is for does not refuse the fill), and
+    /// no address when the site is too long as well: no secret is for that.
+    #[test]
+    fn an_address_too_long_to_keep_is_kept_by_its_site() {
+        let now = Instant::now();
+        let going = |url: &str| {
+            let mut leaving = Leaving::default();
+            leaving.announce("s1", "main", url, now);
+            match leaving.going("s1", &frames(&["main"]), now) {
+                Going::To(kept) => kept,
+                Going::Unknown => panic!("known"),
+            }
+        };
+        let filler = "a".repeat(LEAVING_ADDRESS_MAX - "https://.bank.example".len());
+        let cut_reads_as_the_bank = format!("https://{filler}.bank.example@evil.example/");
+        assert_eq!(
+            host_of(&cut_reads_as_the_bank[..LEAVING_ADDRESS_MAX]),
+            Some(format!("{filler}.bank.example")),
+            "the cut address names a host of the bank"
+        );
+        assert_eq!(going(&cut_reads_as_the_bank), ["https://evil.example/"]);
+        // A long query: the site stands for the address.
+        let redirect = format!(
+            "https://id.bank.example:8443/authorize?request={}",
+            "a".repeat(LEAVING_ADDRESS_MAX)
+        );
+        assert_eq!(going(&redirect), ["https://id.bank.example:8443/"]);
+        // The site itself too long, or none (`data:`): no address.
+        let long_site = format!("https://{}.example/", "a".repeat(LEAVING_ADDRESS_MAX));
+        assert_eq!(going(&long_site), [""]);
+        let data = format!("data:text/html,{}", "a".repeat(LEAVING_ADDRESS_MAX));
+        assert_eq!(going(&data), [""]);
+        // One that fits is kept whole.
+        let fits = format!(
+            "https://evil.example/{}",
+            "a".repeat(LEAVING_ADDRESS_MAX - 21)
+        );
+        assert_eq!(fits.len(), LEAVING_ADDRESS_MAX);
+        assert_eq!(going(&fits), std::slice::from_ref(&fits));
     }
 }

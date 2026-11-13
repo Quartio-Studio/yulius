@@ -135,8 +135,15 @@ pub trait GitPort: Send + Sync {
     async fn ignored_entries(&self, _worktree: &Path) -> AppResult<Option<Vec<String>>> {
         Ok(None)
     }
-    /// Installs the pre-push guard rejecting pushes to `protected` branches.
-    async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()>;
+    /// Installs the pre-push guard rejecting pushes to `protected` branches in `worktree`, a
+    /// worktree of the clone `repo` (or the clone itself). The clone is named by the caller,
+    /// never asked of the worktree, whose Git files the agent writes (ADR-0314).
+    async fn install_push_guard(
+        &self,
+        repo: &Path,
+        worktree: &Path,
+        protected: &[String],
+    ) -> AppResult<()>;
     /// Sets the commit identity of a worktree.
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()>;
     /// Diff statistics between two revisions.
@@ -223,8 +230,9 @@ pub trait GitPort: Send + Sync {
         let _ = (worktree, reviewed, head, integration, limit);
         unsupported("comparing a head with its review")
     }
-    /// Keeps Yulius's block of merge attributes in `repo`'s `info/attributes`, read by all its
-    /// worktrees, at exactly `lines` (SPEC-083 MRG-001). Returns whether the file changed.
+    /// Keeps Yulius's block of merge attributes in the `info/attributes` of the clone `repo`
+    /// (the clone itself, not a worktree of it), read by all its worktrees, at exactly `lines`
+    /// (SPEC-083 MRG-001). Returns whether the file changed.
     async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
         let _ = (repo, lines);
         unsupported("setting merge attributes")
@@ -237,6 +245,20 @@ pub trait GitPort: Send + Sync {
         remote_branch: &str,
         token: &Secret,
     ) -> AppResult<()>;
+    /// Pushes `local_branch` of `repo` to `remote_branch` of the repository in the folder
+    /// `origin` of this machine (a playground's, which Yulius names itself: the address in
+    /// `repo`'s configuration is not asked, and no token is used).
+    async fn push_to_folder(
+        &self,
+        repo: &Path,
+        origin: &Path,
+        local_branch: &str,
+        remote_branch: &str,
+    ) -> AppResult<()> {
+        let _ = origin;
+        self.push(repo, local_branch, remote_branch, &Secret(String::new()))
+            .await
+    }
     /// The commit `branch` points at on origin, as origin answers now with `token` (not a
     /// remote-tracking ref); `None` when origin has no such branch (SPEC-139).
     async fn remote_branch_head(

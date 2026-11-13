@@ -87,12 +87,8 @@ impl App {
             ));
         }
         if let Some(record) = self.own_playground(&ctx.user, &repo.name).await? {
-            self.require(
-                &ctx.user,
-                &record.id,
-                yulius_domain::permission::Action::Work,
-            )
-            .await?;
+            self.require_for(ctx, &record.id, yulius_domain::permission::Action::Work)
+                .await?;
             return Ok(UploadTarget::Into(record.id));
         }
         self.new_playground_branch(manifest)?;
@@ -263,7 +259,7 @@ impl App {
                     )
                     .await?;
                 if committed {
-                    git.push(&work, branch, branch, &no_token()).await?;
+                    git.push_to_folder(&work, &origin, branch, branch).await?;
                 }
                 Some(AppliedSnapshot {
                     sha256: file.sha256.clone(),
@@ -278,7 +274,7 @@ impl App {
             }
             None => None,
         };
-        let profile = self.seed_profile(&work, branch).await?;
+        let profile = self.seed_profile(&work, &origin, branch).await?;
         self.clone_playground(id, &origin).await?;
         Ok((profile, snapshot))
     }

@@ -359,14 +359,20 @@ pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+/// What a commit asked about in [`App::ci_gate_for_head`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Head {
+    /// A pull request's head: a proposal for the integration branch.
+    Proposed,
+    /// The integration branch with a change merged into it (a merge train's commit, a
+    /// playground task's merge): what the branch would be.
+    Merged,
+}
+
 /// Whether a pull request is tested with its own jobs (`own`) instead of the integration branch's:
 /// only when it changed them itself, against what it branched off (`at_base`, unknown: assumed
 /// changed), and they differ from the integration branch's.
-pub(crate) fn own_jobs_apply<J: PartialEq>(
-    own: &[J],
-    at_base: Option<&[J]>,
-    integration: &[J],
-) -> bool {
+fn own_jobs_apply<J: PartialEq>(own: &[J], at_base: Option<&[J]>, integration: &[J]) -> bool {
     own != integration && at_base.is_none_or(|base| own != base)
 }
 
@@ -713,8 +719,8 @@ impl App {
     }
 
     /// The CI's verdict at `sha` for the merge gate: the latest run of that commit when there
-    /// is one, else pending when the sandbox has CI, else not configured (also when CI is off
-    /// on this instance).
+    /// is one, else pending when Yulius CI will test it, else not configured (also when CI is
+    /// off on this instance).
     pub async fn ci_gate_result(&self, sandbox: &SandboxRecord, sha: &str) -> GateResult {
         if !self.config.ci.enabled {
             return GateResult::NotConfigured;
@@ -724,7 +730,16 @@ impl App {
         {
             return GateResult::Run(Some(latest.state));
         }
-        if self.ci_gate(sandbox).await.gate.is_some() {
+        // No run yet: one will come when Yulius CI tests this commit, with the integration
+        // branch's jobs or, for a commit that brings CI to a branch without any, with its own
+        // (the scheduler's own answer, `ci_gate_for_head`).
+        let view = self.ci_gate(sandbox).await;
+        if view.gate.is_some()
+            || self
+                .ci_gate_for_head(sandbox, &view, (sha, Head::Proposed))
+                .await
+                .is_some()
+        {
             GateResult::Run(None)
         } else {
             GateResult::NotConfigured
@@ -847,7 +862,6 @@ impl App {
                 }
             }
         }
-        let scans = self.ci_scans(sandbox).await;
         let pulls = match &token {
             Some(token) => {
                 self.deps
@@ -872,58 +886,9 @@ impl App {
             ) {
                 continue;
             }
-            let own = match self.ci_jobs_at(&repo, &pull.head_sha).await {
-                Ok(jobs) if !jobs.is_empty() => Some(jobs),
-                _ => None,
-            };
-            // What the pull request branched off: its own jobs count only when it changed them
-            // there, not when the integration branch moved on since (F 2026-10-13: stale branches
-            // kept running an apt step `dev` had removed).
-            let at_base = match self
-                .deps
-                .git
-                .merge_base(
-                    &repo,
-                    &pull.head_sha,
-                    &format!("origin/{}", profile.integration_branch),
-                )
-                .await
-            {
-                Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
-                _ => None,
-            };
-            let gate = match &view.gate {
-                // A pull request that changes the CI (an agent scoping a monorepo's jobs to
-                // its project, F 2026-10-12) is tested with its own jobs; one that removes them
-                // all is still tested with the integration branch's.
-                // Either way it keeps the trusted security job (SPEC-217 VDP-001).
-                Some(gate) => Some(match own {
-                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
-                        let own = Gate {
-                            jobs,
-                            source: GateSource::PullRequest,
-                        };
-                        dom::keep_security_jobs(own, Some(gate), scans)
-                    }
-                    _ => gate.clone(),
-                }),
-                // Bootstrap: the integration branch has no CI yet; the pull request that adds
-                // it is tested with its own configuration.
-                None if view.problem.is_none() => {
-                    match self.ci_jobs_at(&repo, &pull.head_sha).await {
-                        Ok(jobs) if !jobs.is_empty() => Some(dom::keep_security_jobs(
-                            Gate {
-                                jobs,
-                                source: GateSource::PullRequest,
-                            },
-                            None,
-                            scans,
-                        )),
-                        _ => None,
-                    }
-                }
-                None => None,
-            };
+            let gate = self
+                .ci_gate_for_head(sandbox, &view, (&pull.head_sha, Head::Proposed))
+                .await;
             if let Some(gate) = gate {
                 targets.push((
                     Target {
@@ -1446,7 +1411,7 @@ impl App {
         action: Action,
     ) -> AppResult<(SandboxRecord, AccessLevel)> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, action).await
+        self.require_for(ctx, &sid, action).await
     }
 
     async fn ci_run_of(&self, sandbox: &SandboxRecord, run_id: &str) -> AppResult<CiRunRecord> {
@@ -1541,6 +1506,66 @@ impl App {
         Ok(run_view(&run, &jobs, false))
     }
 
+    /// The jobs that test `head`, a commit on its way into the integration branch (a pull
+    /// request's head, a merge train's, a playground task's merge), given the integration
+    /// branch's CI (`view`). One rule for whoever asks: the scheduler, a merge train, a
+    /// playground's delivery, a run again and a change from the remote control.
+    ///
+    /// - The integration branch has CI: its jobs, or the commit's own when the commit changed
+    ///   them since it branched off (CI-110: not when the integration branch moved on since)
+    ///   and they can be read; own jobs keep the trusted security job (SPEC-217 VDP-001).
+    /// - It has none: the commit's own, when it brings some (the change that adds CI is
+    ///   tested with it). While the integration branch's configuration is broken, that holds
+    ///   only for a commit that is the branch with a change merged ([`Head::Merged`]: what is
+    ///   tested is what the branch would be, repaired); a pull request's head is a proposal
+    ///   beside a branch nobody can test, and is not given a verdict.
+    /// - Otherwise none: nothing tests the commit.
+    pub(crate) async fn ci_gate_for_head(
+        &self,
+        sandbox: &SandboxRecord,
+        view: &GateView,
+        (head, what): (&str, Head),
+    ) -> Option<Gate> {
+        if view.gate.is_none() && view.problem.is_some() && what == Head::Proposed {
+            return None;
+        }
+        let repo = self.sandbox_repo(&sandbox.id);
+        let own = match self.ci_jobs_at(&repo, head).await {
+            Ok(jobs) if !jobs.is_empty() => Some(jobs),
+            _ => None,
+        };
+        let pull_requests = |jobs| Gate {
+            jobs,
+            source: GateSource::PullRequest,
+        };
+        match (&view.gate, own) {
+            (Some(gate), Some(jobs)) => {
+                let integration =
+                    format!("origin/{}", delivery_profile(sandbox).integration_branch);
+                let at_base = match self.deps.git.merge_base(&repo, head, &integration).await {
+                    Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
+                    _ => None,
+                };
+                if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) {
+                    let scans = self.ci_scans(sandbox).await;
+                    Some(dom::keep_security_jobs(
+                        pull_requests(jobs),
+                        Some(gate),
+                        scans,
+                    ))
+                } else {
+                    Some(gate.clone())
+                }
+            }
+            (Some(gate), None) => Some(gate.clone()),
+            (None, Some(jobs)) => {
+                let scans = self.ci_scans(sandbox).await;
+                Some(dom::keep_security_jobs(pull_requests(jobs), None, scans))
+            }
+            (None, None) => None,
+        }
+    }
+
     /// Queues the commit of `run_id` again with the CI in force now.
     ///
     /// # Errors
@@ -1570,31 +1595,37 @@ impl App {
         }
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
-        let gate = match view.gate {
-            Some(gate) => gate,
-            None if run.source == GateSource::PullRequest => {
-                let repo = self.sandbox_repo(&sandbox.id);
-                let jobs = self
-                    .ci_jobs_at(&repo, &run.sha)
+        // The jobs the scheduler would give this commit now: a branch's are the integration
+        // branch's, a commit on its way there may have its own (`ci_gate_for_head`).
+        let what = match &run.reference {
+            CiRef::Branch(_) => None,
+            CiRef::PullRequest(_) => Some(Head::Proposed),
+            // (A train's run never gets here: it was refused above.)
+            CiRef::Train(_) | CiRef::Task(_) => Some(Head::Merged),
+        };
+        let gate = match what {
+            None => view.gate.clone(),
+            Some(what) => {
+                self.ci_gate_for_head(sandbox, &view, (&run.sha, what))
                     .await
-                    .map_err(AppError::Conflict)?;
-                if jobs.is_empty() {
-                    return Err(AppError::Conflict(
-                        "this commit has no CI configured".into(),
-                    ));
+            }
+        };
+        let Some(gate) = gate else {
+            // Why nothing tests it: the integration branch's configuration, the commit's own
+            // that cannot be read, or none anywhere.
+            let own = match what {
+                Some(_) => {
+                    self.ci_jobs_at(&self.sandbox_repo(&sandbox.id), &run.sha)
+                        .await
                 }
-                let own = Gate {
-                    jobs,
-                    source: GateSource::PullRequest,
-                };
-                dom::keep_security_jobs(own, None, self.ci_scans(sandbox).await)
-            }
-            None => {
-                return Err(AppError::Conflict(
-                    view.problem
-                        .unwrap_or_else(|| "this sandbox has no CI configured".into()),
-                ));
-            }
+                None => Ok(Vec::new()),
+            };
+            return Err(AppError::Conflict(match (view.problem, own, what) {
+                (Some(problem), ..) => problem,
+                (None, Err(unreadable), _) => unreadable,
+                (None, Ok(_), None) => "this sandbox has no CI configured".into(),
+                (None, Ok(_), Some(_)) => "this commit has no CI configured".into(),
+            }));
         };
         self.ci_queue(sandbox, run.reference.clone(), &run.sha, &gate, by)
             .await

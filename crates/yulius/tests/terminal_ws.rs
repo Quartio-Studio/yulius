@@ -18,7 +18,6 @@ use support::{
     ws_connect,
 };
 use tokio_tungstenite::tungstenite::Message;
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::model::{AccountRecord, AccountStatus};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
@@ -112,7 +111,7 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Some(Arc::new(FakeAgentHarness::new(exe, fake, options))),
         dir: Some(dir),

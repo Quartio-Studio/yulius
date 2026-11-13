@@ -106,6 +106,7 @@ fn attempt(id: &str, task: &TaskId, seq: u32) -> Result<AttemptRecord, Box<dyn s
         account_id: None,
         provider_session_id: None,
         launch_kind: LaunchKind::New,
+        model: None,
         state: AttemptState::Spawning,
         run_dir: format!("/tmp/{id}"),
         token_hash: format!("hash-{id}"),
@@ -1209,12 +1210,31 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
 #[tokio::test]
 async fn oauth_state_single_use_and_expiry() -> R {
     let store = SqliteStore::open_in_memory()?;
-    store
-        .insert_oauth_state("h1", "/next", Timestamp(1), Timestamp(100))
-        .await?;
-    store
-        .insert_oauth_state("h2", "/late", Timestamp(1), Timestamp(5))
-        .await?;
+    assert!(
+        store
+            .insert_oauth_state("h1", "/next", Timestamp(1), Timestamp(100), 2)
+            .await?
+    );
+    assert!(
+        store
+            .insert_oauth_state("h2", "/late", Timestamp(1), Timestamp(5), 2)
+            .await?
+    );
+    // SPEC-483 A4: a start needs no sign-in, so the table is bounded. Past the bound nothing
+    // is stored and nothing kept is evicted; an expired state makes room.
+    assert!(
+        !store
+            .insert_oauth_state("h3", "/more", Timestamp(2), Timestamp(100), 2)
+            .await?,
+        "two live states are the bound"
+    );
+    assert_eq!(store.take_oauth_state("h3", Timestamp(3)).await?, None);
+    assert!(
+        store
+            .insert_oauth_state("h4", "/room", Timestamp(6), Timestamp(100), 2)
+            .await?,
+        "h2 expired"
+    );
     assert_eq!(
         store.take_oauth_state("h1", Timestamp(50)).await?,
         Some("/next".into())
@@ -1976,6 +1996,12 @@ async fn writes_that_change_access_grow_the_access_epoch() -> R {
         "revoking a user's credentials",
         store.access_epoch(),
     )?;
+    // A revoked API token ends typing on the sockets it opened at the next key, as a logout
+    // does (SPEC-247 RMT-001 "refused at once"; SPEC-483 A3).
+    store
+        .revoke_api_token(&bob, "no-such-token", Timestamp(33))
+        .await?;
+    grew(&mut last, "an API token revocation", store.access_epoch())?;
 
     assert!(store.delete_task(&t.id).await?);
     grew(&mut last, "deleting a task", store.access_epoch())?;

@@ -618,6 +618,94 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
                 .is_some_and(|t| t.contains("may only be typed into pages of docs.example"))
         );
         assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+
+        // SPEC-483 E3: the tab went on to another site and Yulius has not heard of it yet (it
+        // still lists the bound host's page). The page is asked where the typing begins:
+        // nothing is typed, and the answer names where the tab is.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://docs.example/login"}),
+        )
+        .await?;
+        f.fake
+            .move_target_unannounced(&tab, "https://evil.example/collect");
+        let listed = tool_text(&mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?);
+        assert!(
+            listed.to_string().contains("https://docs.example/login"),
+            "Yulius still lists the page it knew: {listed}"
+        );
+        let moved = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(moved["isError"], true, "{moved}");
+        assert!(
+            tool_text(&moved).as_str().is_some_and(|t| {
+                t.contains("nothing was typed") && t.contains("evil.example") && !t.contains(VALUE)
+            }),
+            "{moved}"
+        );
+        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+
+        // The page goes on to another site by itself while the secret is typed: the tool says
+        // where it went instead of `filled`, without the value, and the secret's activity
+        // keeps it for its people.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://docs.example/login"}),
+        )
+        .await?;
+        f.fake.navigate_to_during_nth(
+            "Input.insertText",
+            before + 1,
+            "https://evil.example/collect",
+        );
+        let astray = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(astray["isError"], true, "{astray}");
+        assert!(
+            tool_text(&astray).as_str().is_some_and(|t| {
+                t.contains("went to evil.example while the secret was typed") && !t.contains(VALUE)
+            }),
+            "{astray}"
+        );
+        let activity = support::call(
+            &f.h.router,
+            axum::http::Method::GET,
+            "/api/secrets/activity",
+            None,
+            &f.writer,
+        )
+        .await?;
+        let recorded = activity.body.as_array().is_some_and(|entries| {
+            entries.iter().any(|e| {
+                e["action"] == "vault.agent.fill"
+                    && e["detail"].as_str().is_some_and(|d| {
+                        d.contains("docs.example") && d.contains("evil.example") && !d.contains(VALUE)
+                    })
+            })
+        });
+        assert!(recorded, "{}", activity.body);
+        let before = f.fake.calls_for("Input.insertText").len();
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://evil.example/login"}),
+        )
+        .await?;
         // A secret bound to no host yet (SPEC-121) is typed nowhere; the agent learns to ask.
         let unbound = support::call(
             &f.h.router,
@@ -651,6 +739,201 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
         )
         .await?;
         assert_eq!(unknown["isError"], true);
+        Ok(())
+    })
+    .await
+}
+
+/// SPEC-483 E8 and E9: the page rule also covers where the keys can end up besides the tab's
+/// own document: a frame of another site with the focus, and the page a navigation under way
+/// is bringing. Both answer as a page the secret is not for, naming the site, with no key sent.
+/// E10: so for the secret's user name (and its one-time code, typed the same way), which was
+/// typed on what Yulius had last heard of the tab.
+#[tokio::test]
+async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving() -> TestResult
+{
+    const VALUE: &str = "docs-pass-8842-qrs";
+    const USER: &str = "alice-docs-8842";
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(
+                json!({"name": "DOCS_LOGIN", "hosts": ["docs.example"], "injection": "basic",
+                "username": USER, "value": VALUE}),
+            ),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/login"}),
+        )
+        .await?;
+        let tab = tool_text(&opened)["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let fill = |field: &'static str| {
+            mcp_tool(
+                &f.h,
+                TOKEN,
+                "browser_fill_secret",
+                json!({"tab_id": tab, "secret": "DOCS_LOGIN", "field": field}),
+            )
+        };
+        let typed = || f.fake.calls_for("Input.insertText").len();
+        let before = typed();
+        // Events arrive in order: once a title set after an announcement is listed, Yulius
+        // heard the announcement.
+        let heard = |title: &'static str| {
+            let (f, tab) = (&f, &tab);
+            async move {
+                f.fake.set_target_title(tab, title).await;
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        let tabs = mcp_tool(&f.h, TOKEN, "browser_tabs", json!({})).await?;
+                        if tool_text(&tabs).to_string().contains(title) {
+                            return Ok::<_, Box<dyn std::error::Error>>(());
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?
+            }
+        };
+
+        // The focus is in a frame of a site the secret is not bound to.
+        f.fake.set_child_frames(&["https://evil.example/collect"]);
+        f.fake
+            .set_secret_probe(Some(json!({"shown": ["Fake page text"], "masked": [],
+            "over": false, "focus": {"kind": "frame"}})));
+        for field in ["value", "username"] {
+            let framed = fill(field).await?;
+            assert_eq!(framed["isError"], true, "{field}: {framed}");
+            assert!(
+                tool_text(&framed).as_str().is_some_and(|t| {
+                    t.contains("nothing was typed")
+                        && t.contains("a frame of evil.example")
+                        && !t.contains(VALUE)
+                        && !t.contains(USER)
+                }),
+                "{field}: {framed}"
+            );
+        }
+        assert_eq!(typed(), before);
+
+        // The tab set out for such a site (a link clicked just before) and has not arrived.
+        f.fake.set_child_frames(&[]);
+        f.fake.set_secret_probe(None);
+        f.fake
+            .emit(
+                &tab,
+                "Page.frameStartedNavigating",
+                json!({"frameId": "frame-1", "loaderId": "loader-next",
+                    "navigationType": "differentDocument", "url": "https://evil.example/next"}),
+            )
+            .await;
+        heard("leaving").await?;
+        for field in ["value", "username"] {
+            let leaving = fill(field).await?;
+            assert_eq!(leaving["isError"], true, "{field}: {leaving}");
+            assert!(
+                tool_text(&leaving).as_str().is_some_and(|t| {
+                    t.contains("nothing was typed")
+                        && t.contains("on its way to evil.example")
+                        && !t.contains(VALUE)
+                }),
+                "{field}: {leaving}"
+            );
+        }
+        assert_eq!(typed(), before);
+
+        // Chrome gave the navigation up (the server never answered): the page is the bound
+        // one again, and the secret and its user name are typed.
+        f.fake
+            .emit(
+                &tab,
+                "Page.frameStoppedLoading",
+                json!({"frameId": "frame-1"}),
+            )
+            .await;
+        heard("stayed").await?;
+        for field in ["value", "username"] {
+            let filled = fill(field).await?;
+            assert_ne!(filled["isError"], true, "{field}: {filled}");
+        }
+        let texts: Vec<String> = f
+            .fake
+            .calls_for("Input.insertText")
+            .iter()
+            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(texts[before..], [VALUE.to_owned(), USER.to_owned()]);
+
+        // The focus went into another site's frame while the user name was typed: said, and
+        // kept in the secret's activity, as for the secret itself.
+        let probe = |kind: &str| {
+            json!({"shown": ["Fake page text"], "masked": [], "over": false,
+                "focus": {"kind": kind}})
+        };
+        f.fake.set_child_frames(&["https://evil.example/collect"]);
+        // Three looks: where the focus is, what the typing may edit, where the focus ended.
+        f.fake
+            .queue_secret_probes(vec![probe("field"), probe("field"), probe("frame")]);
+        let astray = fill("username").await?;
+        assert_eq!(astray["isError"], true, "{astray}");
+        assert!(
+            tool_text(&astray).as_str().is_some_and(|t| {
+                t.contains("after the secret was typed the focus is not in a field of this page")
+                    && t.contains("a frame of evil.example")
+                    && !t.contains(USER)
+            }),
+            "{astray}"
+        );
+        let activity = support::call(
+            &f.h.router,
+            axum::http::Method::GET,
+            "/api/secrets/activity",
+            None,
+            &f.writer,
+        )
+        .await?;
+        let recorded = activity.body.as_array().is_some_and(|entries| {
+            entries.iter().any(|e| {
+                e["action"] == "vault.agent.fill"
+                    && e["detail"].as_str().is_some_and(|d| {
+                        d.contains("username on docs.example")
+                            && d.contains("a frame of evil.example")
+                    })
+            })
+        });
+        assert!(recorded, "{}", activity.body);
+        f.fake.set_child_frames(&[]);
+
+        // The tab went on to another site and Yulius has not heard of it yet (it still lists
+        // the bound host's page): the user name is not typed there either.
+        let typed_so_far = typed();
+        f.fake
+            .move_target_unannounced(&tab, "https://evil.example/collect");
+        let moved = fill("username").await?;
+        assert_eq!(moved["isError"], true, "{moved}");
+        assert!(
+            tool_text(&moved).as_str().is_some_and(|t| {
+                t.contains("nothing was typed") && t.contains("evil.example") && !t.contains(USER)
+            }),
+            "{moved}"
+        );
+        assert_eq!(typed(), typed_so_far);
         Ok(())
     })
     .await
@@ -878,8 +1161,8 @@ async fn a_screenshot_is_refused_when_the_secrets_cannot_be_checked() -> TestRes
     .await
 }
 
-/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page, not even
-/// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
+/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page: the
+/// refusal is for what it is, before any host is looked at (it has none, ADR-0324).
 #[tokio::test]
 async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
     const VALUE: &str = "prod-pass-5512-qrs";
@@ -902,7 +1185,7 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             created.body
         );
         let id = created.body["id"].as_str().ok_or("id")?;
-        support::legacy_production_secret(&f.h.store, id).await?;
+        support::production_secret(&f.h.store, id).await?;
 
         let opened = mcp_tool(
             &f.h,
@@ -1225,6 +1508,87 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
     .await
 }
 
+/// SPEC-483 E1 (ADR-0318): on a virtual display a viewer's clicks and keys are real input that
+/// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
+/// refused (a button press, a key press, typed text), with what an administrator runs, until
+/// the browser itself answers that the host's managed policy is in force; moving the pointer
+/// and releases pass; the probe's tab is nobody's tab; and once the policy appears input is
+/// taken without a restart.
+#[tokio::test]
+async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
+        // Typed text (an IME, a paste) is input too.
+        let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
+
+        for refused in [&down, &key, &text] {
+            send(&mut socket, refused.clone()).await?;
+            let error = loop {
+                let message = next_json(&mut socket).await?;
+                assert!(
+                    message["tabs"].as_array().is_none_or(|tabs| tabs.len() == 1),
+                    "the probe's tab was listed: {message}"
+                );
+                if message["type"] == "error" {
+                    break message;
+                }
+            };
+            assert_eq!(error["code"], "input_locked", "{error}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("sudo yulius host setup")),
+                "{error}"
+            );
+        }
+        // Releases pass (nothing may stay held), and so does moving the pointer.
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "up", "key": "a", "code": "KeyA"})).await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": 30, "y": 40})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Motion { x: 30, y: 40 }, WAIT).await);
+        assert!(
+            !display.inputs().iter().any(|i| matches!(
+                i,
+                DisplayInput::Button { press: true, .. } | DisplayInput::Key { press: true, .. }
+            )),
+            "{:?}",
+            display.inputs()
+        );
+        assert!(
+            display
+                .inputs()
+                .contains(&DisplayInput::Button { button: 1, press: false }),
+            "{:?}",
+            display.inputs()
+        );
+        // One probe for the three refusals (the answer stands for a moment), its tab closed.
+        assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
+        assert_eq!(f.fake.target_ids().len(), 1);
+
+        // An administrator ran host setup: the running browser takes input.
+        f.fake.set_browser_policy(true);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            if display.wait_for_input(pressed, Duration::from_millis(500)).await {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "input stayed off");
+        }
+        Ok(())
+    })
+    .await
+}
+
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.
@@ -1305,6 +1669,153 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
         drop(socket);
         assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6): the policy probe's tab is known by the id Chrome gave it, never
+/// by its address. A page that opens a window at the probe's address gets an ordinary tab: it
+/// is listed and, on the display, becomes the shown tab, so the panel never shows one tab's
+/// address over another window's picture.
+#[tokio::test]
+async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // A probe ran (a click asked for it); then a page opens its look-alike.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+        let popup = f
+            .fake
+            .open_from_page(&first, "about:blank#yulius-browser-policy")
+            .await;
+        let shown = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == popup.as_str() && t["active"] == true)
+                })
+        })
+        .await?;
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6, round 2): what Chrome announces while a probe waits for the id
+/// of its own tab is listed once the id is known, unless it is the probe's; and a tab that
+/// goes to a page of Chrome's own stays a tab (Chrome still shows it).
+#[tokio::test]
+async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays() -> TestResult
+{
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // The other tab is made and goes on to a second address while the probe waits: it is
+        // listed where it went, not where it started.
+        f.fake.create_alongside_next_target(
+            &["https://beside.example/", "https://beside.example/moved"],
+            false,
+        );
+        // A press asks for the probe, whose tab and the other are announced before its id.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        let listed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["url"] == "https://beside.example/moved")
+                })
+        })
+        .await?;
+        let urls: Vec<&str> = listed["tabs"]
+            .as_array()
+            .map(|tabs| tabs.iter().filter_map(|t| t["url"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(urls.len(), 2, "the probe's tab was listed: {urls:?}");
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+
+        f.fake.set_target_url(&first, "chrome://settings/").await;
+        let stayed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == first.as_str() && t["url"] == "chrome://settings/")
+                })
+        })
+        .await?;
+        assert_eq!(stayed["tabs"].as_array().map(Vec::len), Some(2), "{stayed}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6, round 3): a page made and closed again while a probe waits for
+/// the id of its own tab is no tab afterwards.
+#[tokio::test]
+async fn a_tab_made_and_closed_while_the_probe_waits_is_no_tab() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake
+            .create_alongside_next_target(&["https://gone.example/"], true);
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        // The press arrives once the probe is over, its tab closed.
+        assert!(display_of(&f)?.wait_for_input(|i| *i == DisplayInput::Button { button: 1, press: true }, WAIT).await);
+        let mut again =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let now = next_json(&mut again).await?;
+        assert_eq!(now["tabs"].as_array().map(Vec::len), Some(1), "{now}");
+        assert_eq!(now["tabs"][0]["id"], first.as_str(), "{now}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318: a page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
+/// `chrome://omnibox-popup.top-chrome/`, as a page): viewers are never shown it, and it never
+/// becomes the shown tab; the page opened after it is.
+#[tokio::test]
+async fn chromes_own_pages_are_no_tabs() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake
+            .open_from_page(&first, "chrome://omnibox-popup.top-chrome/")
+            .await;
+        let popup = f
+            .fake
+            .open_from_page(&first, "https://accounts.example/oauth")
+            .await;
+        // Every tab list on the way to the real popup's has no page of Chrome's.
+        let shown = loop {
+            let message = next_json(&mut socket).await?;
+            let Some(tabs) = message["tabs"].as_array() else {
+                continue;
+            };
+            assert!(
+                tabs.iter()
+                    .all(|t| !t["url"].as_str().unwrap_or_default().starts_with("chrome:")),
+                "{message}"
+            );
+            if tabs.iter().any(|t| t["id"] == popup.as_str()) {
+                break message;
+            }
+        };
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
         Ok(())
     })
     .await

@@ -1,5 +1,6 @@
 //! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 structures).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ use yulius_app::ports::harness::{
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{LimitScope, ModelFamily};
 use yulius_harness::launch::{
     self, Credential, LaunchMode, LaunchRequest, McpServerSpec, McpTransport,
 };
@@ -102,6 +104,29 @@ fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)
     (servers, secrets)
 }
 
+/// The plugins a session with the config dir `config_dir`, started in `worktree`, would load a
+/// language server from, which its run switches off (SPEC-485 LSP-003). Said in the log, with
+/// what the lookup could not read: a plugin behind that is not known to bring none.
+fn language_server_plugins(config_dir: &Path, sandbox_dir: &Path, worktree: &Path) -> Vec<String> {
+    let found =
+        yulius_harness::claude_plugins::language_server_plugins(config_dir, sandbox_dir, worktree);
+    if !found.plugins.is_empty() {
+        tracing::info!(
+            config_dir = %config_dir.display(),
+            plugins = ?found.plugins,
+            "switching off the plugins that bring a language server for this run"
+        );
+    }
+    if !found.unread.is_empty() {
+        tracing::warn!(
+            config_dir = %config_dir.display(),
+            unread = ?found.unread,
+            "could not read everything about this session's plugins; a language server may still start"
+        );
+    }
+    found.plugins
+}
+
 impl HarnessPort for HarnessAdapter {
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let (mcp_servers, extra_secrets) = mcp_specs(&l.mcp);
@@ -138,6 +163,17 @@ impl HarnessPort for HarnessAdapter {
             yulius_url: self.yulius_url.clone(),
             mcp_servers,
             credential,
+            // A run's language servers are Yulius's to decide, and they are off: the plugins of
+            // the sandbox home that bring one are switched off in the run's own settings, which
+            // outrank the files a session, a `/plugin` or Claude Code's install dialog writes
+            // (SPEC-485 LSP-003, ADR-0327).
+            disabled_plugins: match l.harness {
+                Harness::ClaudeCode => language_server_plugins(
+                    &l.sandbox_home.join(".claude"),
+                    l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
+                    &l.worktree,
+                ),
+            },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         if l.harness == Harness::ClaudeCode {
@@ -182,6 +218,7 @@ impl HarnessPort for HarnessAdapter {
             config_dir: l.config_dir.clone(),
             resume: l.resume.clone(),
             continue_interrupted: l.continue_interrupted,
+            model: l.model.clone(),
             credential: Credential::ClaudeOauthToken(HSecret::new(
                 l.credential.expose().to_owned(),
             )),
@@ -196,6 +233,8 @@ impl HarnessPort for HarnessAdapter {
             redaction_exe: l.only_yulius.is_none().then(|| self.yulius_exe.clone()),
             bypass_permissions: l.contained,
             only_yulius: l.only_yulius.clone(),
+            // As a task run: no plugin's language server (SPEC-485 LSP-003).
+            disabled_plugins: language_server_plugins(&l.config_dir_host, &l.sandbox_dir, &l.cwd),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
@@ -277,6 +316,7 @@ impl HarnessPort for HarnessAdapter {
             since: LinesSince::new(since),
             subagents: SubagentTails::new(path, since),
             acc: UsageAccumulator::new(),
+            limits: WorkflowLimits::default(),
         }))
     }
 
@@ -369,24 +409,259 @@ struct Watch {
     /// Its sub-agents' transcripts: their tokens are the session's too (MET-004).
     subagents: SubagentTails,
     acc: UsageAccumulator,
+    /// What the session's own thread and its workflows' agents last said of a usage limit.
+    limits: WorkflowLimits,
+}
+
+/// A usage limit met by a dynamic workflow's agent is the session's (SPEC-486 WFL-002): Claude
+/// Code writes it to that agent's transcript only, pauses the workflow and does not wake the
+/// session's thread. It is reported once the session's own transcript is read to its end, and
+/// only while it is news:
+/// - not when a prompt recorded later than it was worked on by the session's thread (the
+///   model answered after the refusal: a limit the session went on past is history, SPEC-072
+///   LRS-001); an answer that was under way when the agent was refused belongs to an earlier
+///   prompt and changes nothing;
+/// - not while the thread's own limit stands (that one was reported);
+/// - not when its reset has passed (Claude Code continues the workflow by itself then);
+/// - once, until a prompt reaches the thread again.
+#[derive(Debug, Default)]
+struct WorkflowLimits {
+    /// The latest limit a workflow's agent met that is not reported yet.
+    held: Option<HeldLimit>,
+    /// When the thread's last prompt was recorded.
+    prompt_at: Option<Timestamp>,
+    /// When the last prompt the thread worked on was recorded.
+    answered_at: Option<Timestamp>,
+    /// The thread's own limit stands, or a workflow agent's was reported: nothing more to say
+    /// until a prompt reaches the thread.
+    said: bool,
+    /// The models the workflows' agents run.
+    agents: WorkflowAgents,
+}
+
+/// A workflow agent's limit and what decides whether it is news.
+#[derive(Debug)]
+struct HeldLimit {
+    at: Option<Timestamp>,
+    resets_at: Option<Timestamp>,
+    limit: Observation,
+}
+
+impl WorkflowLimits {
+    /// A line of the workflow agent's transcript `agent` said `observed`.
+    fn side(&mut self, agent: &Path, observed: Observed) {
+        let (resets_at, message, window_minutes, scope, at) = match observed {
+            Observed::LimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => (resets_at, message, window_minutes, scope, at),
+            Observed::AssistantMessage {
+                model: Some(model), ..
+            } => return self.agents.answered(agent, &model),
+            _ => return,
+        };
+        if self.held.as_ref().is_some_and(|held| held.at > at) {
+            return;
+        }
+        // A limit of "the model that runs" is that agent's model's (WFL-002).
+        let Some(scope) = self.agents.scope(agent, scope) else {
+            return;
+        };
+        self.held = Some(HeldLimit {
+            at,
+            resets_at,
+            limit: Observation::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            },
+        });
+    }
+
+    /// The session's own thread said `observation`.
+    fn thread(&mut self, observation: &Observation) {
+        match observation {
+            Observation::LimitReached { .. } | Observation::AccessLost { .. } => self.said = true,
+            Observation::UserTurn { at: Some(at), .. } => {
+                self.prompt_at = self.prompt_at.max(Some(*at));
+                self.said = false;
+            }
+            // A sub-agent's turn end (no time) is not the thread's.
+            Observation::AgentWork { at: Some(_) } | Observation::TurnComplete { at: Some(_) } => {
+                self.answered_at = self.answered_at.max(self.prompt_at);
+            }
+            _ => {}
+        }
+    }
+
+    /// The held limit, at `now`, when it is news and the session's transcript is read to its
+    /// end.
+    fn report(&mut self, caught_up: bool, now: Timestamp) -> Option<Observation> {
+        if !caught_up {
+            return None;
+        }
+        let held = self.held.take()?;
+        let answered_since = held
+            .at
+            .is_some_and(|at| self.answered_at.is_some_and(|answered| answered > at));
+        let reset = held.resets_at.is_some_and(|resets| resets <= now);
+        if self.said || answered_since || reset {
+            return None;
+        }
+        self.said = true;
+        Some(held.limit)
+    }
+}
+
+/// Longest `agent-<id>.meta.json` read.
+const AGENT_META_BYTES: u64 = 64 * 1024;
+
+/// What an agent's `agent-<id>.meta.json` says of the model it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentMeta {
+    /// The model the workflow's script gave the agent (`model`, an id or an alias).
+    model: Option<String>,
+    /// The agent is of the workflow's default type (`agentType: "workflow-subagent"`), which
+    /// has no model of its own; another agent type may name one in its definition, which the
+    /// meta file does not repeat.
+    default_type: bool,
+}
+
+/// The meta file beside the workflow agent's transcript `agent`; `None` when it cannot be read
+/// as one (the folder is the agent's to write: a link is not followed).
+fn read_agent_meta(agent: &Path) -> Option<AgentMeta> {
+    let file = tail::open_regular(&agent.with_extension("meta.json")).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, AGENT_META_BYTES), &mut text)
+        .ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let model = match meta.get("model") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(model) => Some(model.as_str()?.to_owned()),
+    };
+    Some(AgentMeta {
+        model,
+        default_type: meta.get("agentType").and_then(serde_json::Value::as_str)
+            == Some("workflow-subagent"),
+    })
+}
+
+/// The models a session's workflow agents run, as far as their files say (SPEC-486 WFL-002).
+/// A limit of "the model that runs" (`LimitScope::Model(None)`, a model's usage credits) met by
+/// a workflow's agent is of that agent's model, which is not always the session's: the script
+/// may give an agent a model, an agent type may have one, and the environment may give every
+/// workflow agent one (`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL`). Claude Code 2.1.323 writes the
+/// first to the agent's meta file and none of the others anywhere but in the records the model
+/// answered. Bounded by the workflow agents' files followed.
+#[derive(Debug, Default)]
+struct WorkflowAgents {
+    /// Each agent's meta file, read once.
+    metas: BTreeMap<PathBuf, Option<AgentMeta>>,
+    /// The model each agent's own answered records name.
+    answered: BTreeMap<PathBuf, String>,
+    /// For each run's folder, the model an agent of the default type with no model of its own
+    /// was answered by: what such an agent of that run runs.
+    defaults: BTreeMap<PathBuf, String>,
+}
+
+impl WorkflowAgents {
+    fn meta(&mut self, agent: &Path) -> Option<AgentMeta> {
+        self.metas
+            .entry(agent.to_path_buf())
+            .or_insert_with(|| read_agent_meta(agent))
+            .clone()
+    }
+
+    /// A record of `agent`'s transcript says `model` answered it.
+    fn answered(&mut self, agent: &Path, model: &str) {
+        if self.answered.get(agent).map(String::as_str) == Some(model) {
+            return;
+        }
+        self.answered.insert(agent.to_path_buf(), model.to_owned());
+        let plain = self
+            .meta(agent)
+            .is_some_and(|meta| meta.default_type && meta.model.is_none());
+        if let (true, Some(run)) = (plain, agent.parent()) {
+            self.defaults.insert(run.to_path_buf(), model.to_owned());
+        }
+    }
+
+    /// What a limit of scope `scope`, met by the workflow agent whose transcript is `agent`,
+    /// binds. A limit of the subscription or of a named family is what it says. A limit of
+    /// "the model that runs" is of the family of the agent's model: the one its script gave
+    /// it, else the one that answered it before, else, for an agent of the default type, the
+    /// one that answered such agents of its run. With none of these such an agent runs the
+    /// session's model (`Model(None)`). `None` when the model cannot be told (no meta file, an
+    /// agent type of its own that was never answered) or is of no family with a limit of its
+    /// own: such a limit is not reported.
+    fn scope(&mut self, agent: &Path, scope: LimitScope) -> Option<LimitScope> {
+        if scope != LimitScope::Model(None) {
+            return Some(scope);
+        }
+        let meta = self.meta(agent)?;
+        let known = meta
+            .model
+            .as_ref()
+            .or_else(|| self.answered.get(agent))
+            .or_else(|| {
+                let run = agent.parent().filter(|_| meta.default_type)?;
+                self.defaults.get(run)
+            });
+        match known {
+            Some(model) => match ModelFamily::of(Some(model)) {
+                ModelFamily::Any => None,
+                family => Some(LimitScope::Model(Some(family))),
+            },
+            None => meta.default_type.then_some(LimitScope::Model(None)),
+        }
+    }
+}
+
+/// A limit record of the session's own thread as the application hears it.
+fn limit_observation(observed: Observed) -> Option<Observation> {
+    match observed {
+        Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            scope,
+            at,
+        } => Some(Observation::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            scope,
+            at,
+        }),
+        _ => None,
+    }
 }
 
 impl TranscriptWatch for Watch {
     fn poll(&mut self) -> AppResult<Vec<Observation>> {
         let lines = self.tail.poll().map_err(io)?;
-        // Only usage counts from a sub-agent's lines; one that cannot be read leaves the
-        // session's own observations alone.
-        match self.subagents.poll() {
+        // Usage counts from a sub-agent's lines, and from a workflow agent's its usage limit
+        // too (SPEC-486); one that cannot be read leaves the session's own observations alone.
+        match self.subagents.poll_sides() {
             Ok(side) => {
-                for line in side {
-                    for observed in claude::observe_line(&line) {
+                for side in side {
+                    for observed in claude::observe_line(&side.line) {
                         self.acc.observe_side(&observed);
+                        if let Some(agent) = &side.agent {
+                            self.limits.side(agent, observed);
+                        }
                     }
                 }
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
         }
-        let mut out = Vec::new();
+        let mut out: Vec<Observation> = Vec::new();
+        let mut heard = 0;
         for line in lines {
             if !self.since.keep(&line) {
                 continue;
@@ -449,26 +724,32 @@ impl TranscriptWatch for Watch {
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),
                     Observed::Queue { change, at } => out.push(Observation::Queue(change, at)),
-                    Observed::LimitReached {
-                        resets_at,
-                        message,
-                        window_minutes,
-                        scope,
-                        at,
-                    } => out.push(Observation::LimitReached {
-                        resets_at,
-                        message,
-                        window_minutes,
-                        scope,
-                        at,
-                    }),
+                    Observed::WorkflowLaunched { task, run } => {
+                        out.push(Observation::WorkflowLaunched { task, run });
+                    }
+                    limit @ Observed::LimitReached { .. } => {
+                        out.extend(limit_observation(limit));
+                    }
                     Observed::AccessLost { message, at } => {
                         out.push(Observation::AccessLost { message, at });
                     }
                     Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }
             }
+            for observation in &out[heard..] {
+                self.limits.thread(observation);
+            }
+            heard = out.len();
         }
+        let now = Timestamp(
+            i64::try_from(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_millis()),
+            )
+            .unwrap_or(i64::MAX),
+        );
+        out.extend(self.limits.report(self.tail.at_end(), now));
         Ok(out)
     }
 
@@ -512,6 +793,7 @@ mod tests {
                 }),
                 subagents: SubagentTails::new(&path, None),
                 acc: UsageAccumulator::new(),
+                limits: WorkflowLimits::default(),
             };
             let seen = watch.poll().map_err(|err| err.to_string())?;
             let added =
@@ -520,6 +802,336 @@ mod tests {
         };
         assert_eq!(queued(WatchFrom::Start)?, 2);
         assert_eq!(queued(WatchFrom::Since(resumed_at))?, 1);
+        Ok(())
+    }
+
+    /// The limit record of a workflow's agent, as Claude Code 2.1.323 writes it (synthetic), with
+    /// a reset far ahead (one that has passed is not news).
+    fn refusal(at: &str) -> String {
+        format!(
+            r#"{{"isSidechain":true,"agentId":"a8a9","type":"assistant","timestamp":"{at}","message":{{"id":"e-{at}","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}},"content":[{{"type":"text","text":"You've hit your 5-hour limit"}}]}},"apiError":"usage_limit_reached","apiErrorParams":{{"rate_limit_info":{{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}}}},"error":"rate_limit","isApiErrorMessage":true}}"#
+        )
+    }
+
+    fn watch_of(path: &Path) -> Result<Watch, Box<dyn std::error::Error>> {
+        Ok(Watch {
+            harness: Harness::ClaudeCode,
+            tail: tail::TranscriptTail::open(path, tail::DEFAULT_MAX_LINE_BYTES)?,
+            since: LinesSince::new(None),
+            subagents: SubagentTails::new(path, None),
+            acc: UsageAccumulator::new(),
+            limits: WorkflowLimits::default(),
+        })
+    }
+
+    /// The limits in `seen`: the thread's own, and those of a workflow's agents.
+    fn limits_in(seen: &[Observation]) -> (usize, usize) {
+        let count = |own: bool| {
+            seen.iter()
+                .filter(|one| match one {
+                    Observation::LimitReached { .. } => own,
+                    Observation::WorkflowLimitReached { .. } => !own,
+                    _ => false,
+                })
+                .count()
+        };
+        (count(true), count(false))
+    }
+
+    /// SPEC-486 WFL-002: the limit a workflow's agent met is written to that agent's file only,
+    /// and is the session's: reported once, with its reset, after the session's own lines. The
+    /// same record in a sub-agent's file outside a workflow is not (the session's thread is
+    /// woken and refused itself).
+    #[test]
+    fn a_workflow_agent_s_limit_is_reported_as_the_session_s_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s1.jsonl");
+        let lines = [
+            r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-13T16:27:57.672Z","sessionId":"s1","promptSource":"typed","message":{"role":"user","content":"go"}}"#,
+            r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-13T16:27:57.749Z","message":{"role":"user","content":[{"tool_use_id":"t","type":"tool_result","content":"Workflow launched in background."}]},"toolUseResult":{"status":"async_launched","taskId":"wtx0s195j","taskType":"local_workflow","runId":"wf_13b2b557-e88"}}"#,
+            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-11-13T16:27:57.804Z","message":{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"I wait."}],"stop_reason":"end_turn"}}"#,
+            r#"{"type":"system","subtype":"turn_duration","isSidechain":false,"timestamp":"2026-11-13T16:27:57.833Z","durationMs":169,"messageCount":18,"pendingWorkflowCount":1}"#,
+        ];
+        std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+        let sub = yulius_harness::subagents::subagent_dir(&path);
+        let run = yulius_harness::subagents::workflow_dir(&path).join("wf_13b2b557-e88");
+        std::fs::create_dir_all(&run)?;
+        let agent = run.join("agent-a8a9.jsonl");
+        std::fs::write(&agent, format!("{}\n", refusal("2026-11-13T16:27:59.360Z")))?;
+        let mut watch = watch_of(&path)?;
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        assert!(
+            matches!(
+                seen.last(),
+                Some(Observation::WorkflowLimitReached {
+                    resets_at: Some(Timestamp(4_102_444_800_000)),
+                    at: Some(Timestamp(1_794_587_279_360)),
+                    scope: LimitScope::Account,
+                    ..
+                })
+            ),
+            "{seen:?}"
+        );
+        assert_eq!(
+            limits_in(&seen),
+            (0, 1),
+            "as the agents', not the thread's own"
+        );
+        assert!(seen.contains(&Observation::WorkflowLaunched {
+            task: "wtx0s195j".into(),
+            run: "wf_13b2b557-e88".into(),
+        }));
+        assert!(seen.iter().any(|one| matches!(
+            one,
+            Observation::TurnEnded {
+                background_agents: Some(1),
+                ..
+            }
+        )));
+        // The run's other agents are refused too: said once, until the thread does something.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
+        writeln!(file, "{}", refusal("2026-11-13T16:28:01.000Z"))?;
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        assert_eq!(limits_in(&seen), (0, 0), "{seen:?}");
+
+        // A sub-agent's own refusal, outside a workflow, is not reported.
+        let plain = dir.path().join("s2.jsonl");
+        std::fs::write(&plain, format!("{}\n", lines[0]))?;
+        let sub2 = yulius_harness::subagents::subagent_dir(&plain);
+        std::fs::create_dir_all(&sub2)?;
+        std::fs::write(
+            sub2.join("agent-a1.jsonl"),
+            format!("{}\n", refusal("2026-11-13T16:27:59.360Z")),
+        )?;
+        let seen = watch_of(&plain)?.poll().map_err(|err| err.to_string())?;
+        assert_eq!(limits_in(&seen), (0, 0), "{seen:?}");
+        assert!(sub.exists());
+        Ok(())
+    }
+
+    /// SPEC-486 WFL-002: a workflow agent's limit is news only while no prompt recorded later
+    /// than it was worked on, while the thread's own limit does not stand, before its reset,
+    /// and once the session's transcript is read to its end (a replay judges it against all
+    /// that came later).
+    #[test]
+    fn a_workflow_agent_s_limit_is_reported_only_while_it_is_news() {
+        let agent = Path::new("/nowhere/agent-a.jsonl");
+        let side_until = |ms: i64, resets: Option<i64>| Observed::LimitReached {
+            resets_at: resets.map(Timestamp),
+            message: "limit".into(),
+            window_minutes: None,
+            scope: LimitScope::Account,
+            at: Some(Timestamp(ms)),
+        };
+        let side = |ms: i64| side_until(ms, None);
+        let own = Observation::LimitReached {
+            resets_at: None,
+            message: "limit".into(),
+            window_minutes: None,
+            scope: LimitScope::Account,
+            at: Some(Timestamp(5)),
+        };
+        let work = |ms: i64| Observation::AgentWork {
+            at: Some(Timestamp(ms)),
+        };
+        let prompt = |ms: i64| Observation::UserTurn {
+            at: Some(Timestamp(ms)),
+            wake: false,
+        };
+        let now = Timestamp(100);
+        // Held while the transcript is being caught up on, then said; the latest one.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side(10));
+        limits.side(agent, side(12));
+        limits.side(agent, side(11));
+        assert_eq!(limits.report(false, now), None);
+        assert!(matches!(
+            limits.report(true, now),
+            Some(Observation::WorkflowLimitReached {
+                at: Some(Timestamp(12)),
+                ..
+            })
+        ));
+        assert_eq!(limits.report(true, now), None, "once");
+        // More refusals of the same pause say nothing, also after the launch turn's answer
+        // (which was under way) is read; a prompt that reaches the thread makes one news again.
+        limits.side(agent, side(13));
+        limits.thread(&work(14));
+        assert_eq!(limits.report(true, now), None);
+        limits.thread(&prompt(20));
+        limits.side(agent, side(30));
+        assert!(limits.report(true, now).is_some());
+
+        // A prompt recorded later than the refusal and worked on: the model answered, history.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
+        limits.thread(&work(12));
+        assert_eq!(limits.report(true, now), None);
+        // That prompt refused (no work after it), or not worked on yet: still news.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
+        assert!(limits.report(true, now).is_some());
+        // The answer of the turn that launched the workflow, written after the refusal: its
+        // prompt is older than the refusal, so it changes nothing.
+        let mut limits = WorkflowLimits::default();
+        limits.thread(&prompt(5));
+        limits.side(agent, side(10));
+        limits.thread(&Observation::TurnComplete {
+            at: Some(Timestamp(11)),
+        });
+        assert!(limits.report(true, now).is_some());
+        // A sub-agent's turn end (no time) is not the thread's.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
+        limits.thread(&Observation::TurnComplete { at: None });
+        assert!(limits.report(true, now).is_some());
+        // The thread's own limit stands: that one was reported.
+        let mut limits = WorkflowLimits::default();
+        limits.thread(&own);
+        limits.side(agent, side(10));
+        assert_eq!(limits.report(true, now), None);
+        // Its reset has passed (Claude Code continues the workflow by itself): not news.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side_until(10, Some(100)));
+        assert_eq!(limits.report(true, now), None);
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side_until(10, Some(101)));
+        assert!(limits.report(true, now).is_some());
+        // Something else in a workflow agent's file is nothing to report.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, Observed::AgentWork { at: None });
+        assert_eq!(limits.report(true, now), None);
+    }
+
+    /// SPEC-486 WFL-002: a limit of "the model that runs", met by a workflow's agent, is of that
+    /// agent's model, told from what its files say. The meta files are shaped as Claude Code
+    /// 2.1.323 writes them (probe runs): `model` only when the script gave the agent one; an
+    /// agent type with a model of its own, and a session whose environment gives every workflow
+    /// agent a model, leave no trace there, only in the records the model answered.
+    #[test]
+    fn a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let unnamed = LimitScope::Model(None);
+        let family = |family| Some(LimitScope::Model(Some(family)));
+        // An agent's transcript path in run folder `run`, with its meta file when `meta` is one.
+        let agent = |run: &str, name: &str, meta: Option<&str>| -> std::io::Result<PathBuf> {
+            let folder = dir.path().join(run);
+            std::fs::create_dir_all(&folder)?;
+            if let Some(meta) = meta {
+                std::fs::write(folder.join(format!("agent-{name}.meta.json")), meta)?;
+            }
+            Ok(folder.join(format!("agent-{name}.jsonl")))
+        };
+        const PLAIN: &str = r#"{"agentType":"workflow-subagent","isBuiltIn":true,"description":"alpha","workflowPhase":"Wave","spawnDepth":1,"pickedEffortModel":"claude-sonnet-4-5"}"#;
+        const PINNED: &str = r#"{"agentType":"pinned","isBuiltIn":false,"description":"beta","workflowPhase":"Wave","spawnDepth":1,"pickedEffortModel":"claude-sonnet-4-5"}"#;
+
+        // The default type, nothing else known: the session's model.
+        let mut agents = WorkflowAgents::default();
+        let plain = agent("wf_1", "a", Some(PLAIN))?;
+        assert_eq!(agents.scope(&plain, unnamed), Some(unnamed));
+        // A model the script gave it, as an id and as an alias (`pickedEffortModel` is the
+        // session's either way).
+        let opus = agent(
+            "wf_1",
+            "b",
+            Some(
+                r#"{"agentType":"workflow-subagent","model":"claude-opus-4-5","pickedEffortModel":"claude-sonnet-4-5"}"#,
+            ),
+        )?;
+        assert_eq!(agents.scope(&opus, unnamed), family(ModelFamily::Opus));
+        let alias = agent(
+            "wf_1",
+            "c",
+            Some(r#"{"agentType":"pinned","model":"sonnet"}"#),
+        )?;
+        assert_eq!(agents.scope(&alias, unnamed), family(ModelFamily::Sonnet));
+        // An agent type of its own: its definition may name a model, which the meta file does
+        // not repeat. Never answered: cannot be told. Answered before: that model's family.
+        let pinned = agent("wf_1", "d", Some(PINNED))?;
+        assert_eq!(agents.scope(&pinned, unnamed), None);
+        agents.answered(&pinned, "claude-opus-5-5");
+        assert_eq!(agents.scope(&pinned, unnamed), family(ModelFamily::Opus));
+        // Its answers say nothing of the default type's agents.
+        assert_eq!(agents.scope(&plain, unnamed), Some(unnamed));
+        // The default type's agents of a run answered by another model than the session's (the
+        // environment gives workflow agents one): a later agent of that run, refused at its
+        // first request, runs that model. Another run's agents are not told by it.
+        let mut agents = WorkflowAgents::default();
+        let first = agent("wf_2", "a", Some(PLAIN))?;
+        let later = agent("wf_2", "b", Some(PLAIN))?;
+        agents.answered(&first, "claude-opus-5-5");
+        assert_eq!(agents.scope(&later, unnamed), family(ModelFamily::Opus));
+        assert_eq!(agents.scope(&first, unnamed), family(ModelFamily::Opus));
+        let elsewhere = agent("wf_3", "a", Some(PLAIN))?;
+        assert_eq!(agents.scope(&elsewhere, unnamed), Some(unnamed));
+        // A model of no family with a limit of its own: nothing to report.
+        agents.answered(&elsewhere, "claude-haiku-5-5");
+        assert_eq!(agents.scope(&elsewhere, unnamed), None);
+        let haiku = agent(
+            "wf_4",
+            "a",
+            Some(r#"{"agentType":"workflow-subagent","model":"haiku"}"#),
+        )?;
+        assert_eq!(agents.scope(&haiku, unnamed), None);
+        // No meta file, one that is not one, a model that is no text, a link: cannot be told.
+        let mut agents = WorkflowAgents::default();
+        for (name, meta) in [("e", None), ("f", Some("[")), ("g", Some(r#"{"model":7}"#))] {
+            assert_eq!(
+                agents.scope(&agent("wf_5", name, meta)?, unnamed),
+                None,
+                "{name}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let linked = agent("wf_5", "h", None)?;
+            std::os::unix::fs::symlink(
+                dir.path().join("wf_1").join("agent-a.meta.json"),
+                dir.path().join("wf_5").join("agent-h.meta.json"),
+            )?;
+            assert_eq!(agents.scope(&linked, unnamed), None, "a link is not read");
+        }
+        // What the record itself says is kept, whatever the files say.
+        let named = LimitScope::Model(Some(ModelFamily::Fable));
+        for scope in [LimitScope::Account, named] {
+            assert_eq!(agents.scope(&agent("wf_5", "e", None)?, scope), Some(scope));
+            assert_eq!(agents.scope(&opus, scope), Some(scope));
+        }
+        // Through the watch's rules: an agent's answers are heard from its lines, and a limit
+        // whose model cannot be told is not held.
+        let credits = |ms: i64| Observed::LimitReached {
+            resets_at: None,
+            message: "out of usage credits".into(),
+            window_minutes: None,
+            scope: unnamed,
+            at: Some(Timestamp(ms)),
+        };
+        let mut limits = WorkflowLimits::default();
+        let pinned = agent("wf_6", "d", Some(PINNED))?;
+        limits.side(&pinned, credits(10));
+        assert_eq!(limits.report(true, Timestamp(100)), None);
+        limits.side(
+            &pinned,
+            Observed::AssistantMessage {
+                message_id: "m1".into(),
+                model: Some("claude-opus-5-5".into()),
+                usage: yulius_domain::usage::TokenUsage::UNKNOWN,
+            },
+        );
+        limits.side(&pinned, credits(20));
+        assert!(matches!(
+            limits.report(true, Timestamp(100)),
+            Some(Observation::WorkflowLimitReached {
+                scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                ..
+            })
+        ));
         Ok(())
     }
 
@@ -601,8 +1213,124 @@ mod tests {
             yulius_url: "http://127.0.0.1:1".into(),
             mcp_servers: servers,
             credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+            disabled_plugins: Vec::new(),
         };
         launch::plan_launch(&request)?;
+        Ok(())
+    }
+
+    /// SPEC-485 LSP-003 (ADR-0327): a task run and a Superagent switch off, in their own settings,
+    /// the plugins of their config dir that bring a language server, though the home's
+    /// `settings.json` switches them on; another plugin is left as the home has it.
+    #[test]
+    fn every_claude_code_launch_switches_its_language_server_plugins_off()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Secret;
+        // A home as Claude Code's install dialog leaves it: the plugin installed, its language
+        // server named in the marketplace's entry, and switched on for every session.
+        let seed = |config: &Path| -> std::io::Result<()> {
+            let plugins = config.join("plugins");
+            let catalog = plugins.join("marketplaces/official/.claude-plugin");
+            std::fs::create_dir_all(&catalog)?;
+            std::fs::write(
+                catalog.join("marketplace.json"),
+                r#"{"name":"official","plugins":[
+                    {"name":"x-lsp","lspServers":{"x":{"command":"x-language-server"}}},
+                    {"name":"skills"}]}"#,
+            )?;
+            std::fs::write(
+                plugins.join("installed_plugins.json"),
+                r#"{"version":2,"plugins":{"x-lsp@official":[{"scope":"user"}],"skills@official":[{"scope":"user"}]}}"#,
+            )?;
+            std::fs::write(
+                config.join("settings.json"),
+                r#"{"enabledPlugins":{"x-lsp@official":true,"skills@official":true}}"#,
+            )
+        };
+        // A plugin only the repository switches on, from a marketplace that is a folder of the
+        // repository: found only when the lookup is given the session's own working directory
+        // and the sandbox directory that folder lies in.
+        let repository = |config: &Path, work: &Path| -> std::io::Result<()> {
+            let market = work.join("market");
+            std::fs::create_dir_all(market.join(".claude-plugin"))?;
+            std::fs::write(
+                market.join(".claude-plugin/marketplace.json"),
+                r#"{"name":"folder","plugins":[{"name":"y-lsp","lspServers":{"y":{"command":"y-language-server"}}}]}"#,
+            )?;
+            std::fs::write(
+                config.join("plugins/known_marketplaces.json"),
+                serde_json::json!({ "folder": { "installLocation": market } }).to_string(),
+            )?;
+            std::fs::create_dir_all(work.join(".claude"))?;
+            std::fs::write(
+                work.join(".claude/settings.json"),
+                r#"{"enabledPlugins":{"y-lsp@folder":true}}"#,
+            )
+        };
+        let off = serde_json::json!({ "x-lsp@official": false, "y-lsp@folder": false });
+        let dir = tempfile::tempdir()?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let home = dir.path().join("home");
+        seed(&home.join(".claude"))?;
+        let worktree = dir.path().join("worktrees").join("t1");
+        repository(&home.join(".claude"), &worktree)?;
+        let planned = adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: worktree.clone(),
+            sandbox_home: home.clone(),
+            run_dir: dir.path().join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("token".into()),
+        })?;
+        let settings = planned
+            .plan
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("claude-settings.json"))
+            .ok_or("the run's settings file")?;
+        let settings: serde_json::Value = serde_json::from_slice(&settings.contents)?;
+        assert_eq!(settings["enabledPlugins"], off);
+        // The home's file is the person's and Claude Code's: it stays as it was.
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            home.join(".claude/settings.json"),
+        )?)?;
+        assert_eq!(kept["enabledPlugins"]["x-lsp@official"], true);
+
+        // A Superagent: its config dir in the person's own folder, its working directory the
+        // sandbox's repository, in another folder.
+        let config = dir.path().join("users").join("u1").join(".claude");
+        seed(&config)?;
+        let sandbox = dir.path().join("sandboxes").join("s1");
+        repository(&config, &sandbox.join("repo"))?;
+        let plan = adapter.plan_cockpit(&CockpitLaunch {
+            cwd: sandbox.join("repo"),
+            sandbox_dir: sandbox,
+            config_dir: PathBuf::from("/home/person/.claude"),
+            config_dir_host: config,
+            resume: None,
+            continue_interrupted: false,
+            model: None,
+            credential: Secret("token".into()),
+            yulius: None,
+            project_mcp_servers: Vec::new(),
+            mcp: Vec::new(),
+            contained: false,
+            only_yulius: None,
+        })?;
+        let settings = plan
+            .argv
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .ok_or("the Superagent's --settings")?;
+        let settings: serde_json::Value = serde_json::from_str(&settings[1])?;
+        assert_eq!(settings["enabledPlugins"], off);
         Ok(())
     }
 
@@ -643,6 +1371,7 @@ mod tests {
             config_dir_host: config.clone(),
             resume: None,
             continue_interrupted: false,
+            model: None,
             credential: Secret("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),

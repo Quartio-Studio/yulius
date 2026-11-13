@@ -8,7 +8,7 @@ import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
-import { limitInEffect, limitsNow, modelWindow, usedUp } from './usage.js';
+import { limitInEffect, limitsNow, modelWindow, placingModel, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
@@ -175,16 +175,19 @@ export function continueTask(ctx, task) {
 
 /**
  * Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. What binds
- * the task's model decides, as on the server: a limit Claude reported for the whole subscription
- * (`usage.limit_reached`) and the 5-hour, weekly and the model's own window. A subscription also
- * reads "limited" while only the default model's own window is used up, and a task of another
- * model still runs on it (SPEC-464). A task whose model is not known is not let through on that.
+ * the model the task would run decides, as on the server: a limit Claude reported for the whole
+ * subscription (`usage.limit_reached`) and the 5-hour, weekly and the model's own window. That
+ * model is the task's own, or with `accounts` (the pool) its fallback while none of them can run
+ * its own (SPEC-482). A subscription also reads "limited" while only the default model's own
+ * window is used up, and a task of another model still runs on it (SPEC-464). A task whose model
+ * is not known is not let through on that.
  */
-export function cannotTake(account, task) {
+export function cannotTake(account, task, accounts = null) {
   if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
   const usage = account.usage || {};
   const known = Boolean(task && task.model);
-  const own = known ? modelWindow(usage, task.model) : null;
+  const model = known && accounts ? placingModel(accounts, task.model) : known ? task.model : null;
+  const own = known ? modelWindow(usage, model) : null;
   if (limitInEffect(usage) || [usage.primary, usage.secondary, own].some((w) => usedUp(w))) return 'At its usage limit';
   // Limited now with nothing that binds this task: the default model's own window is the one
   // used up. What the windows say now decides, not the status stored at the last reading (SPEC-473).
@@ -229,7 +232,7 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
     { header: moving ? `Run #${task.number} on…` : `Continue #${task.number} on…` },
     ...accounts.map((account) => {
       const current = task.account_id ? account.id === task.account_id : account.label === task.account_label;
-      const why = cannotTake(account, judged);
+      const why = cannotTake(account, judged, accounts);
       // A running task is on it already; a waiting one may start on it all the same (MOV-002).
       const here = current && task.status === 'running';
       return {

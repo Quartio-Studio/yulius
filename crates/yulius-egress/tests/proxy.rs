@@ -45,6 +45,8 @@ impl EgressPolicy for Policy {
             "good-token" => ("a1", "s1"),
             "sibling-token" => ("a2", "s1"),
             "other-sandbox-token" => ("b1", "s2"),
+            // A run whose agent secrets cannot be read.
+            "blind-token" => ("c1", "s1"),
             _ => return None,
         };
         Some(EgressClient {
@@ -83,8 +85,10 @@ impl EgressPolicy for Policy {
         }
     }
 
-    async fn egress_redactor(&self, _: &EgressClient) -> Arc<PlainMatcher> {
-        self.matcher.clone()
+    async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
+        let blind =
+            matches!(&client.caller, EgressCaller::Agent { attempt_id, .. } if attempt_id == "c1");
+        (!blind).then(|| self.matcher.clone())
     }
 }
 
@@ -370,6 +374,29 @@ async fn refusals() -> TestResult {
     assert_eq!(local.status(), 403);
     let metadata = client.get("http://169.254.169.254/latest").send().await?;
     assert_eq!(metadata.status(), 403);
+    assert!(setup.seen.lock().map_err(|_| "lock")?.is_empty());
+    Ok(())
+}
+
+/// SPEC-483 V4: when the values to redact cannot be read, a request is refused before
+/// anything is sent (an answer could not be checked for them), to a bound host and to a plain
+/// one alike.
+#[tokio::test]
+async fn a_request_whose_answer_cannot_be_checked_for_secrets_is_not_sent() -> TestResult {
+    let setup = setup().await?;
+    let client = agent(&setup, "blind-token")?;
+    for url in [
+        format!("https://{BOUND}/v1/charges?key=yulius-secret-API_KEY"),
+        format!("http://{OTHER}/x"),
+    ] {
+        let refused = client.get(&url).send().await?;
+        assert_eq!(refused.status(), 503, "{url}");
+        let text = refused.text().await?;
+        assert!(
+            text.contains("agent secrets cannot be read") && text.contains("nothing was sent"),
+            "{text}"
+        );
+    }
     assert!(setup.seen.lock().map_err(|_| "lock")?.is_empty());
     Ok(())
 }

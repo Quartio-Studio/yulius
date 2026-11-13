@@ -508,6 +508,10 @@ pub struct TaskDetail {
     /// Whether that is Yulius's default, the task naming none.
     #[serde(default)]
     pub model_default: bool,
+    /// The model its live run was launched with when that is not `model`: the fallback, while
+    /// no subscription could run `model` at that launch (SPEC-482). Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_model: Option<String>,
     /// The effort it asks for (`--effort`): its own, else the default; absent for a model that
     /// takes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]

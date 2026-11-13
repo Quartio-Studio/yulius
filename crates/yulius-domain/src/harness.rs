@@ -18,6 +18,38 @@ pub const OFFERED_CLAUDE_MODELS: [&str; 5] = [
     "claude-haiku-4-5",
 ];
 
+/// The model a run falls back to while no subscription can run its Fable model (SPEC-482,
+/// "add fallback for opus 5.5 if fable is done everywhere", 2026-11-12): Opus 5.5 by its full id,
+/// like the default. One of [`OFFERED_CLAUDE_MODELS`], so a Claude Code release is read for it.
+pub const FALLBACK_CLAUDE_MODEL: &str = "claude-opus-5-5";
+
+/// The model a run of `model` is launched with instead while no subscription can run `model`:
+/// [`FALLBACK_CLAUDE_MODEL`] for a Fable model, whose weekly allowance of usage credits can be
+/// used up on every subscription while their other windows have room. `None` for any other
+/// model: its task waits.
+#[must_use]
+pub fn fallback_model(model: &str) -> Option<&'static str> {
+    (crate::usage::ModelFamily::of(Some(model)) == crate::usage::ModelFamily::Fable)
+        .then_some(FALLBACK_CLAUDE_MODEL)
+}
+
+/// A Claude model id as people say it: "Opus 5.5" for `claude-opus-5-5`.
+#[must_use]
+pub fn claude_model_name(id: &str) -> String {
+    let rest = id.strip_prefix("claude-").unwrap_or(id);
+    let (family, version) = rest.split_once('-').unwrap_or((rest, ""));
+    let mut letters = family.chars();
+    let family: String = letters
+        .next()
+        .map(|first| first.to_uppercase().chain(letters).collect())
+        .unwrap_or_default();
+    if version.is_empty() {
+        family
+    } else {
+        format!("{family} {}", version.replace('-', "."))
+    }
+}
+
 /// The effort of a task that names none, sent so Claude Code never picks its own: high (the
 /// person's decision of 2026-11-11, SPEC-462: "Not max, not xhigh"; max for one day before it,
 /// high from task #21 until then).
@@ -159,6 +191,49 @@ pub fn valid_session_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-482 FBK-001: a Fable model falls back to Opus 5.5, which is offered (so every Claude
+    /// Code release is read for it); no other model falls back, nor does the fallback itself.
+    #[test]
+    fn a_fable_model_falls_back_to_opus_5_5() {
+        assert_eq!(FALLBACK_CLAUDE_MODEL, "claude-opus-5-5");
+        assert!(OFFERED_CLAUDE_MODELS.contains(&FALLBACK_CLAUDE_MODEL));
+        for fable in [
+            DEFAULT_CLAUDE_MODEL,
+            "claude-fable-5-1",
+            "claude-fable-5-2[1m]",
+        ] {
+            assert_eq!(
+                fallback_model(fable),
+                Some(FALLBACK_CLAUDE_MODEL),
+                "{fable}"
+            );
+        }
+        for other in [
+            FALLBACK_CLAUDE_MODEL,
+            "claude-opus-4-8",
+            "claude-sonnet-5-5",
+            "claude-haiku-4-5",
+            "",
+        ] {
+            assert_eq!(fallback_model(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_model_id_as_people_say_it() {
+        for (id, name) in [
+            ("claude-fable-5-2", "Fable 5.2"),
+            ("claude-fable-5-1", "Fable 5.1"),
+            ("claude-opus-5-5", "Opus 5.5"),
+            ("claude-haiku-4-5", "Haiku 4.5"),
+            ("claude-opus-4", "Opus 4"),
+            ("sonnet", "Sonnet"),
+            ("", ""),
+        ] {
+            assert_eq!(claude_model_name(id), name, "{id}");
+        }
+    }
 
     /// SPEC-085 STT-005: the compaction command as typed, not a prompt that mentions it.
     #[test]

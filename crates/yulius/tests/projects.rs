@@ -484,6 +484,7 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Exited,
             run_dir: "/tmp/none".into(),
             token_hash: "x".into(),
@@ -730,6 +731,7 @@ async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> Te
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Exited,
             run_dir: "/tmp/none".into(),
             token_hash: "x".into(),
@@ -1276,6 +1278,7 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/tmp/none".into(),
             token_hash: "x".into(),
@@ -1646,10 +1649,20 @@ async fn a_refused_first_commit_leaves_onboarding_pending() -> TestResult {
     assert_eq!(remote_heads(&remote)?, "");
 
     git(&remote, &["config", "--unset", "receive.maxInputSize"])?;
+    // The first commit is made in a folder of the server's own (SPEC-483 TKR-006): what the
+    // sandbox holds where it once was made is nothing to it, and nothing is left of it.
+    let sandbox_dir = w.data_dir().join("sandboxes").join(text(&fresh.body["id"]));
+    std::fs::write(sandbox_dir.join("seed"), "the sandbox's own file")?;
     let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
     assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
     assert_eq!(started.body["onboarding"], "preparing");
     assert_eq!(remote_heads(&remote)?.trim(), "main");
+    assert_eq!(
+        git(&remote, &["ls-tree", "-r", "--name-only", "main"])?.trim(),
+        "README.md"
+    );
+    assert!(sandbox_dir.join("seed").is_file());
+    assert_eq!(std::fs::read_dir(w.data_dir().join("changes"))?.count(), 0);
     Ok(())
 }
 

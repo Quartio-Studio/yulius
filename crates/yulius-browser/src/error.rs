@@ -116,10 +116,52 @@ pub enum BrowserError {
     /// The virtual display could not start or stopped (SPEC-002 ADR-15).
     #[error("virtual display: {0}")]
     Display(String),
+    /// The browser's way out (its proxy, ADR-0321) could not be opened: it was not started,
+    /// as it would reach the host's own addresses without it.
+    #[error("the sandbox browser's network could not be set up, so it was not started: {0}")]
+    Network(#[source] std::io::Error),
     /// Discrete input (a click, a key, text) backed up because the display's X server stopped
     /// taking input; it was not delivered. Moves never do (they are coalesced).
     #[error("the sandbox browser is not taking input right now; that input was not delivered")]
     InputBacklog,
+    /// A viewer's click or key on a virtual display while Chrome's own windows are not locked
+    /// by the host's managed policy (ADR-0318): not delivered.
+    #[error(
+        "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host"
+    )]
+    InputLocked,
+    /// The tab's page, read with the input lock held, is not one the secret may be typed into
+    /// (the tab went elsewhere since the caller looked): nothing was typed (SPEC-483 E3).
+    #[error(
+        "nothing was typed: this tab shows {0} now, which is not a page this secret may be typed into"
+    )]
+    SecretPageRefused(String),
+    /// The tab is on its way to another page (a link was clicked, a form sent) that the secret
+    /// may not be typed into, and would arrive under the keys: nothing was typed (SPEC-483 E9).
+    #[error(
+        "nothing was typed: this tab is on its way to {0}, which is not a page this secret may be typed into"
+    )]
+    SecretPageLeaving(String),
+    /// The focus is not in a text field of the tab's page (it can be in a frame of another
+    /// site), and the page holds a frame of a site the secret may not be typed into: nothing
+    /// was typed (SPEC-483 E8).
+    #[error(
+        "nothing was typed: the focus is not in a field of this page itself, and the page holds a frame of {0}, which is not a site this secret may be typed into"
+    )]
+    SecretFrameRefused(String),
+    /// After a secret was typed the focus is not in a text field of the page, and the page
+    /// holds a frame of a site the secret may not be typed into (it took the focus, or came,
+    /// while the keys were sent): part of the secret may be in that frame.
+    #[error(
+        "after the secret was typed the focus is not in a field of this page, and the page holds a frame of {0}, which is not a site this secret may be typed into: part of the secret may be in that frame. Tell the secret's person, who may want to replace it"
+    )]
+    SecretFrameAstray(String),
+    /// The tab's document changed while a secret was typed, to a page it may not be typed
+    /// into: part of the secret may be in that page.
+    #[error(
+        "the tab went to {0} while the secret was typed, so part of it may be in that page: tell the secret's person, who may want to replace it"
+    )]
+    SecretAstray(String),
     /// The page may show a secret (typed with [`crate::BrowserInstance::tool_type_secret`] or
     /// one Yulius hides), or cannot be read to tell, so no screenshot is taken (SPEC-450).
     #[error(
@@ -142,11 +184,17 @@ impl BrowserError {
             Self::UrlRefused(_) => ViewerErrorCode::UrlRefused,
             Self::TabNotFound(_) => ViewerErrorCode::NotFound,
             Self::TooManyTabs(_) | Self::InputBacklog => ViewerErrorCode::Capacity,
+            Self::InputLocked => ViewerErrorCode::InputLocked,
             Self::InvalidInput(_)
             | Self::ToolParams(_)
             | Self::InvalidSelector(_)
             | Self::ElementNotFound
             | Self::ElementNotVisible
+            | Self::SecretPageRefused(_)
+            | Self::SecretPageLeaving(_)
+            | Self::SecretFrameRefused(_)
+            | Self::SecretFrameAstray(_)
+            | Self::SecretAstray(_)
             | Self::SecretOnPage => ViewerErrorCode::Invalid,
             Self::Cdp(_)
             | Self::NavigationFailed(_)
@@ -155,7 +203,8 @@ impl BrowserError {
             | Self::Spawn(_)
             | Self::StartupTimeout { .. }
             | Self::ExitedEarly { .. }
-            | Self::Display(_) => ViewerErrorCode::Upstream,
+            | Self::Display(_)
+            | Self::Network(_) => ViewerErrorCode::Upstream,
             Self::Profile(_) | Self::NotReaped { .. } => ViewerErrorCode::Internal,
         }
     }

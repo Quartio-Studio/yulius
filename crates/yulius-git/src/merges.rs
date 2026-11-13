@@ -2,13 +2,13 @@
 //! commits gives, whether a branch moved past a reviewed head only through clean merges of the
 //! integration branch, and the merge attributes Yulius keeps in a repository's `info/attributes`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::Git;
 use crate::commit::{Author, MAX_COMMIT_MESSAGE};
 use crate::error::GitError;
 use crate::repo::is_object_id;
-use crate::runner::{Invocation, failure};
+use crate::runner::{Invocation, Route, failure};
 use crate::validate::{validate_branch_name, validate_remote, validate_revision};
 
 /// What [`Git::squash_land`] lands, and where.
@@ -137,10 +137,17 @@ impl Git {
                 detail: format!("not a commit id: {commit:?}"),
             });
         }
+        let push = Invocation::new(self, "push", Some(worktree)).args(["push", "--quiet", "--"]);
+        let push = match self.remote_route(worktree, remote, true)? {
+            Route::Folder(origin) => push.arg(&origin).local(&origin),
+            Route::Courier(courier, url) => {
+                self.push_through(&courier, &url, &commit, &format!("refs/heads/{branch}"))?;
+                return Ok(SquashLanding::Landed(commit));
+            }
+            Route::Named => push.arg(remote),
+        };
         self.run_ok(
-            Invocation::new(self, "push", Some(worktree))
-                .args(["push", "--quiet", "--", remote])
-                .arg(format!("{commit}:refs/heads/{branch}"))
+            push.arg(format!("{commit}:refs/heads/{branch}"))
                 .timeout(self.network_timeout),
         )?;
         Ok(SquashLanding::Landed(commit))
@@ -285,29 +292,19 @@ impl Git {
         Ok(false)
     }
 
-    /// The repository's common Git directory (shared by all its worktrees), absolute.
+    /// Keeps Yulius's block in `info/attributes` of the clone `repo` (read by every worktree of
+    /// the repository) at exactly `lines`; the rest of the file is kept as it is. `repo` is the
+    /// clone itself, with its own `.git` directory, never one of its worktrees: the file is
+    /// reached from there through handles that follow no link (ADR-0314), read only when it is a
+    /// regular file of at most 256 KiB, and replaced whole, only when it
+    /// changes. Returns whether it changed.
     ///
     /// # Errors
-    /// Git failures.
-    pub fn common_dir(&self, repo: &Path) -> Result<PathBuf, GitError> {
-        let output = self.run_ok(
-            Invocation::new(self, "rev-parse", Some(repo)).args(["rev-parse", "--git-common-dir"]),
-        )?;
-        let dir = PathBuf::from(output.stdout_trimmed());
-        Ok(if dir.is_absolute() {
-            dir
-        } else {
-            repo.join(dir)
-        })
-    }
-
-    /// Keeps Yulius's block in the repository's `info/attributes` (read by every worktree of the
-    /// repository) at exactly `lines`; the rest of the file is kept as it is. The file is written
-    /// whole and renamed into place, only when it changes. Returns whether it changed.
-    ///
-    /// # Errors
-    /// A line with a line break or control character; Git or file failures.
+    /// A line with a line break or control character; a link, a FIFO or a larger file where the
+    /// attributes or their folder are; file failures.
+    #[cfg(unix)]
     pub fn set_managed_attributes(&self, repo: &Path, lines: &[String]) -> Result<bool, GitError> {
+        use crate::handles::{open_dir_in, open_git_dir, read_in, replace_in};
         if let Some(bad) = lines
             .iter()
             .find(|line| line.trim().is_empty() || line.chars().any(char::is_control))
@@ -317,30 +314,45 @@ impl Git {
                 reason: crate::error::truncate_for_error(bad),
             });
         }
-        let info = self.common_dir(repo)?.join("info");
-        let path = info.join("attributes");
-        let current = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(source) => {
-                return Err(GitError::Io {
-                    context: "reading info/attributes",
-                    source,
-                });
-            }
+        let git_dir = open_git_dir(repo)?;
+        let Some(info) = open_dir_in(&git_dir, "info", !lines.is_empty())? else {
+            return Ok(false);
+        };
+        let what = "info/attributes";
+        let (current, mode) = match read_in(&info, "attributes", MAX_ATTRIBUTES_BYTES, what)? {
+            Some((bytes, mode)) => (
+                String::from_utf8(bytes).map_err(|_| GitError::InvalidInput {
+                    what,
+                    reason: "it is not text".to_owned(),
+                })?,
+                mode,
+            ),
+            None => (
+                String::new(),
+                nix::sys::stat::Mode::from_bits_truncate(0o644),
+            ),
         };
         let next = with_managed_block(&current, lines);
         if next == current {
             return Ok(false);
         }
-        let io = |context: &'static str| move |source| GitError::Io { context, source };
-        std::fs::create_dir_all(&info).map_err(io("creating the info directory"))?;
-        let tmp = info.join("attributes.yulius-tmp");
-        std::fs::write(&tmp, next).map_err(io("writing info/attributes"))?;
-        std::fs::rename(&tmp, &path).map_err(io("replacing info/attributes"))?;
+        replace_in(&info, "attributes", next.as_bytes(), mode)?;
         Ok(true)
     }
+
+    /// Off Unix there are no no-follow handles, and no contained agents.
+    #[cfg(not(unix))]
+    pub fn set_managed_attributes(&self, _: &Path, _: &[String]) -> Result<bool, GitError> {
+        Err(GitError::InvalidInput {
+            what: "attributes",
+            reason: "merge attributes need a Unix host".to_owned(),
+        })
+    }
 }
+
+/// An `info/attributes` larger than this is refused rather than read.
+#[cfg(unix)]
+const MAX_ATTRIBUTES_BYTES: u64 = 256 * 1024;
 
 /// `text` with Yulius's block replaced by `lines` (removed when there are none; appended when it
 /// was missing).

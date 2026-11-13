@@ -74,6 +74,8 @@ export function createStreamView(ctx, sandbox, hooks) {
   let expectNew = 0;
   let knownIds = new Set();
   let lastError = null;
+  // When the viewer was last told that clicks and keys are off (ADR-0318).
+  let inputLockedToldAt = 0;
   let mode = 'video'; // what this view asks for
   let streamMode = null; // what the server sends: 'video' | 'pixels'
   let streamReason = null;
@@ -677,6 +679,15 @@ export function createStreamView(ctx, sandbox, hooks) {
         if (hooks.onActionRequested) hooks.onActionRequested(message);
         break;
       case 'error':
+        // Clicks and keys are off until the host's browser policy is in force (ADR-0318): every
+        // refused click and key is answered, the viewer is told once a minute at most.
+        if (message.code === 'input_locked') {
+          if (Date.now() - inputLockedToldAt > 60000) {
+            inputLockedToldAt = Date.now();
+            toast(message.message || 'Clicks and keys are off in this browser.', { kind: 'error' });
+          }
+          break;
+        }
         lastError = { code: message.code, message: message.message || '' };
         // `upstream` precedes a 1011 close when Chromium is missing or the browser stopped (the
         // overlay explains it); a tab that vanished is replaced by the next tab list.

@@ -377,12 +377,40 @@ DevTools socket, and a contained run (isolated or the fallback bubblewrap, each 
 namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
 running as Yulius's user on the host, including an agent run without containment (host mode), or
 root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
-tools, viewers through the viewer WebSocket. The two Superagents drive it with the same tools: the
+tools, viewers through the viewer WebSocket. On a virtual display a viewer's input is real X
+input, which reaches Chrome's own windows too (a file chooser, Save as, the developer tools) in
+a Chrome that runs on the host: the browser takes button and key presses only while it answers
+itself that the host's managed policy, which switches those windows off, is in force
+(`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
+blocks; `yulius_browser::policy`, written by `yulius host setup`;
+[ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. Chrome is on the
+host's network, not its sandbox's, so each browser is started behind a proxy of its own
+(`BrowserNetwork`; `--proxy-server` for every address, the loopback included), a listener the
+egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wired by
+`BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
+dev-server ports on the loopback and the welcome page, and never intercepts, injects or
+redacts; without its proxy a browser is not started
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
 ([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
-[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). Pixels cannot be
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). A secret is typed into the
+page the browser shows when the typing begins: the vault's rule (a page of one of the secret's
+hosts) travels to `tool_type_secret`, which applies it to the document read with the input lock
+held, and Yulius's own navigations wait for that lock; a page that moves on by itself to one
+the secret may not get is reported instead of `filled`
+([ADR-0319](decisions/0319-a-secret-is-typed-into-the-page-the-browser-shows-when-the-typing-begins.md)).
+The same rule is asked of what else the keys can reach: unless the focus is in a text field of
+a document the page's probe read, of every frame of another site the page holds; of the
+document read again once the field has the focus; and, last, of the addresses Chrome announced
+navigations of the page's frames to (`Leaving`: `Page.frameStartedNavigating`, kept until the
+frame arrived, stopped loading or is gone, bounded). A secret's user name and one-time code are
+typed under the same rule (`tool_type_beside_secret`)
+([ADR-0320](decisions/0320-a-secrets-keys-reach-only-sites-it-is-for.md)).
+Pixels cannot be
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
 a password field. Before and after a capture the browser instance reads the page's text and
@@ -483,6 +511,53 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+### A limit met while a dynamic workflow runs
+
+Claude Code's Workflow tool ("ultracode") runs a script's agents inside the session's process.
+A usage limit that refuses those agents is written to their own transcripts only
+(`<session>/subagents/workflows/<run>/agent-<id>.jsonl`); Claude Code pauses the workflow and
+does not wake the session's thread, whose transcript ends with a finished turn
+([SPEC-486](../.ai/specs/SPEC-486-a-usage-limit-reached-while-a-dynamic-wo.md),
+[decision 0326](decisions/0326-a-workflow-agents-usage-limit-is-the-sessions.md)). The harness
+follows those files (`SubagentTails`: the 64 runs changed last, their files changed since the
+run under watch began, the newest runs' first, 512 at most), and the transcript watch reports
+a limit found there as `WorkflowLimitReached`: once the session's transcript is read to its
+end, once until a prompt reaches its thread again, and not when a later prompt was worked on,
+the thread's own limit stands or the limit's reset has passed. A limit of "the model that
+runs" is of that agent's model, told from its files (`WorkflowAgents`): the model its
+`agent-<id>.meta.json` names when the script gave it one, else the one its answered records
+name, else, for the default agent type, the one that answered such agents of its run, else
+the session's. For a task whose run is of the model the limit binds (or a limit of the subscription) it
+is then a limit like any other; a limit of another model is only kept in the subscription's
+reading. The Superagent does not act on it: its relaunch types nothing, so its paused workflow
+is left to Claude Code's continuation at the reset.
+
+A workflow's launch in the session's transcript is background work by its task id and names
+its run; the turn record's pending workflows count with its pending agents, and a record that
+counts less than the runs known ends the oldest (a run stopped in the terminal). A process that
+ends takes its workflows with it, and Claude Code resumes none by itself, so any launch that
+resumes a session with unfinished runs opens with a prompt (`dynamic_workflow::resume_prompt`)
+that tells the agent to resume them with `Workflow({scriptPath, resumeFromRunId})`: finished
+agents' results come back from the run's journal and only the others run again. Past a limit
+that prompt replaces the silent continuation for that launch. A prompt that reaches a session
+whose workflow is paused at a limit gets the same advice through the prompt hook.
+
+```mermaid
+sequenceDiagram
+    participant W as Workflow agent
+    participant CC as Claude Code (session)
+    participant Y as Yulius
+    W->>CC: request refused (usage limit), recorded in the agent's file only
+    CC-->>CC: workflow paused, the session's thread not woken
+    Y->>CC: watch reads the agent's file: LimitReached
+    alt a subscription can run the task
+        Y->>CC: end the process, resume the session there with the resume prompt
+        CC->>W: Workflow({scriptPath, resumeFromRunId}): only unfinished agents run
+    else none can
+        Y-->>Y: limit pause until the earliest reset, then the same resume
+    end
+```
+
 ### What a limit binds
 
 A limit Claude reports binds either the subscription or the models of one family
@@ -523,14 +598,57 @@ recorded while a reading is under way is kept. The write that marks a subscripti
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
 
-A model's limit nothing says the end of, with no subscription the task can go to, makes the task
+### The fallback model
+
+A task of a Fable model does not wait while a subscription can run Opus 5.5
+([SPEC-482](../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md),
+[decision 0312](decisions/0312-a-fable-run-falls-back-to-opus-5-5-while-no-subscription-can-run-fable.md)).
+The pool's policy decides the model at each placement (`rotation::placing_family`):
+
+```mermaid
+flowchart TD
+    P[A run is placed: start, limit, turn boundary it cannot stay at, a person's move] --> F{An account is a candidate<br/>for the task's model?}
+    F -- yes --> O[Launch with the task's model]
+    F -- no --> B{The model has a fallback and<br/>an account is a candidate for it?}
+    B -- yes --> X[Launch with the fallback: Opus 5.5 for a Fable model]
+    B -- no --> W[Wait until the earliest time either model can run]
+```
+
+The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model,
+the default one included; no other model has one). The task's own setting is not changed:
+`choose_account` returns the account with the fallback model from the same snapshot of the pool
+(`Placed`), and the launch gives it to Claude Code. A run records the model it was launched with
+(`attempts.model`; a Superagent's `shell.json`), and that model, not the task's, is what a limit
+reported to the run binds and what a run stays on its subscription by. So a run that fell back
+is not restarted because Fable can run again: the next launch that happens anyway is placed with
+the task's own model once an account is a candidate for it. A placement after a limit leaves
+the current account out only when the run placed would be of the model the current run was
+launched with, so a run that changes its model may stay where it is and one subscription is
+enough. The session's terminal says the change in one line, at the launch that makes it; the
+move's entry names the model; `TaskDetail.fallback_model` and the capacity view's
+`fallback_model` carry it to the task's details, the Capacity panel and the Status line. The
+Superagent is placed by the same rule (`App::place_default_run`).
+
+A run on the fallback sits on a subscription that cannot run the task's own model. A restart
+that asks for the run's subscription only to keep it (a newer Claude Code, a fresh session after
+a full context, a hand-over) therefore asks for it only while it can take the run placed now
+(`rotation::keeps_account`); when it cannot and another subscription can, the pool places the
+run, with the task's own model.
+
+A model's limit nothing says the end of, with no subscription the task can go to (for a Fable
+model: none for its fallback either), makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
 (`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
 the task is not started on that subscription at each of its readings, so no session is restarted
 every few minutes with nobody told. What follows depends on what is known. When another
 subscription says when it resets, the task waits for that reset and the pool leaves the refusing
 subscription out for the waiting task, whatever its readings say meanwhile
-(`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+(`rotation::decide_leaving_out`). Left out means out of the refused model: `BlindLimits` keeps
+each subscription with the family of the model it refused, and that model's own window counts
+as full with no reset. So the reset of the other model's window on the same subscription is one
+to wait for, and a fallback refused with no end is not started again at every reading while
+the task's own model says when it resets. The task's "resumes at" time follows the same decision
+(`App::decide_for_waiting`). When nothing says when the task can go on, its session stays
 at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
 subscription remain possible, one each: once no reset is known any more (the other subscription
 was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
@@ -1309,6 +1427,23 @@ new name with a link or `RENAME_NOREPLACE`, never a check then a rename; and the
 creates in a sandbox tree are 0755 whatever the umask
 ([SPEC-402](../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
 [decision 0257](decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
+The merge attributes the server keeps in a clone's `info/attributes` and the pre-push guard's
+files in a worktree's Git directory go the same way (`yulius_git::handles`, shared with the
+scrub): the clone is named by the caller, never asked of the worktree; Git only says which of the
+clone's Git directories is the worktree's, and the files are read (regular, bounded) and replaced
+(a random `O_EXCL` name, renamed in the handle) below the clone's own `.git`. A contained run is
+started with the `bwrap` of the process host's own `PATH`, never the run's, whose first entries
+are in the sandbox home
+([decision 0314](decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md)).
+The reads the server still made by path there go the same way
+([decision 0315](decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md)):
+a session's transcript is opened from the sandbox directory folder by folder, without following
+a link or waiting on a FIFO, and only a regular file is read (`transcripts::open`, used by the
+transcript pages, `session_read` and the search index; the run watcher's tail opens it the same
+way at its name); the sandbox adapter reads the system layer's `passwd` and `group` itself, at
+most 1 MiB of a regular file, and hands people's identity files the text; `record_number` lists
+a numbered directory from the sandbox directory down; the quota's disk usage is measured from
+folder handles; and the task review reads an untracked file from the worktree's folder.
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
@@ -1317,6 +1452,40 @@ in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken 
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
+
+Git itself, which the server runs in those folders as the service user, is confined by the
+kernel: every command of the Git adapter is started through `yulius git-confined`
+(`yulius_git::confine`, Landlock), which lets it execute Git's own programs only and read and
+write only the folders the command works in (a sandbox's clone, worktrees and import
+worktrees; what else a command touches is named where it is made). A clone's configuration
+can then make the server's Git run nothing, and a link in the clone leads it nowhere
+outside. Only a transfer between two folders Yulius names may start the shell, with its
+transports pinned to `file`, and never in a sandbox's folder
+([decision 0322](decisions/0322-the-hosts-own-git-runs-confined.md)). A clone's transfers,
+with GitHub (which carry the server's token) and with a playground's origin (which need the
+shell), are not made in the clone at all: a courier, a bare repository of the server's own in
+`<data>/git-couriers`, fetches or pushes on the clone's objects, and the refs travel as data
+(the server lists them, the clone's Git sets them); a new clone is an empty repository filled
+that way. No command in a sandbox's folder, and none that writes a new repository there, gets
+the adapter's own configuration, where the token travels, or the shell. What the server itself
+commits and pushes (a change from the remote control, an empty repository's first commit) is
+made in `<data>/changes`, not in the sandbox's folder
+(`yulius_git::courier`,
+[decision 0323](decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md)).
+
+```mermaid
+flowchart LR
+  SRV["server: Git adapter"] -->|"yulius git-confined --rw <its sandbox's folders> -- git ..."| L["launcher: Landlock on itself, then exec"]
+  L --> G["git: executes git, its exec-path, the loader"]
+  G -->|"read, write"| S["<data>/sandboxes/<id>, <data>/import-worktrees/<id>"]
+  G -->|"read"| SYS["/usr, /lib, /etc"]
+  G -.->|"refused"| X["/bin/sh and other programs, <data> beyond the sandbox, other sandboxes"]
+  SRV -->|"a clone's fetch, push, listing"| CO["courier in <data>/git-couriers: the server's own configuration, the clone's objects"]
+  CO -->|"HTTPS, with the token"| GH["GitHub"]
+  CO -->|"transfer between folders: + /bin/sh, file transport only, no token"| O["<data>/playgrounds/<id>.git"]
+  CO -->|"objects"| S
+  SRV -->|"refs as data: for-each-ref, update-ref"| G
+```
 
 ```mermaid
 flowchart LR
@@ -1370,7 +1539,24 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Yulius
+switches plugin language servers off for every session it starts, and none is asked to install
+one: before each
+launch Yulius reads which plugins of the session bring a language server (the installed ones
+and the ones the home's or the worktree's settings switch on; `lspServers` in the plugin's
+marketplace entry or manifest, or a `.lsp.json`; read through handles that follow no link, a
+path the agent wrote only inside the sandbox's folders, within one budget of 16 MiB and 1024
+folders, never failing the launch) and switches them off, whole, in the run's own
+settings (`"enabledPlugins": {"<id>": false}` in a task run's `claude-settings.json` and a
+Superagent's `--settings`), which outrank the home's `settings.json`, a repository's
+`.claude/settings.json` and a worktree's `.claude/settings.local.json`; the same preparation as
+above sets `"lspRecommendationDisabled": true` in `.claude.json`. Claude Code otherwise offers,
+in the terminal and with yes as the default, to install the plugin of any language server it
+finds on `PATH`, for every session of the home, and then starts one server per session at the
+first edited file, or reports that it could not
+([SPEC-485](../.ai/specs/SPEC-485-task-sessions-start-without-yellow-error.md),
+[decision 0327](decisions/0327-a-run-decides-its-plugin-language-servers-and-they-are-off.md)).
+Task runs and the
 Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
 full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
@@ -1940,7 +2126,7 @@ usage-limit move does but without redoing a turn.
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
-  APP -->|"pool_account"| POOL[("Subscriptions")]
+  APP -->|"place_default_run: the default model, or its fallback"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
   W -->|"adopted with another launch digest: start again resuming, once idle (switched)"| APP
   SH -->|"HTTPS_PROXY yulius:ck_… (bound hosts get their secrets)"| EG["Egress proxy: EgressCaller::Superagent"]
@@ -1980,9 +2166,11 @@ request waits on the secret (`requested_hosts`) until a person who manages it al
 agent misled by injected content cannot send that secret to another server; and production gets
 it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
 copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
-answering at once cannot end with both (SPEC-134 M-B, SPEC-262). Hosts a production secret kept
-from before that are used by the egress proxy only: `browser_fill_secret` never types a production
-secret into a page the agent drives (SPEC-405).
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262). No way gives a production
+secret to a run: the egress proxy sends it for no client (`EgressClient::may_use`),
+`browser_fill_secret` never types it into a page the agent drives (SPEC-405), and no row has
+hosts for one (migration 0055 removed those kept from before; the store refuses to insert the
+pair; [decision 0324](decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
@@ -2006,6 +2194,23 @@ after a fresh two-factor unlock (`answer_copy_request`), and the store removes t
 inserts the copy, sealed under its own id, in one transaction (`vault_answer_copy_request`). The
 copy is an ordinary project secret bound to the hosts asked for, with `auto_allow` off; the
 production secret never changes.
+
+The same unlock stands before every way the value of a secret allowed use by use (`auto_allow`
+off) goes somewhere new: a host it is not bound to (`update_agent_secret`,
+`answer_host_request`), `.env` copies (`answer_env_files`), production deploys
+(`answer_cd_prod`) and switching `auto_allow` on, each
+through `App::fresh_to_widen`; an API token is refused, and a secret agents set up is not asked
+for it, as agents bind its hosts without a person
+([ADR-0317](decisions/0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md)).
+Redaction that cannot load a sandbox's secrets withholds on every path: text redacted in one
+piece and a terminal's first screen say so, the live terminal stream shows one notice and drops
+its output until a load succeeds, asking again after a second or when a secret changes
+(`TerminalScrub::needs_load`, `loaded`; nothing is typed into a terminal whose screen is
+withheld or misses dropped output: `InputReady::ScreenWithheld` flags the task and
+`type_into_session` refuses), and the egress proxy reads the
+values before it sends a request and answers 503 without sending (`egress_redactor`). An edit
+of a secret compares the sealed value it read, so it never undoes a rotation made beside it
+(`vault_update`).
 
 ```mermaid
 sequenceDiagram
@@ -2042,7 +2247,14 @@ fingerprint file in place for the new owner (SPEC-248), and `task_message` from 
 owner refuses a task holding personal secrets. A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
-gets covers only its holder's (`App::matcher_for`). Global secrets are managed and switched by
+gets covers only its holder's and only what can be in its sandbox (`App::matcher_for`: no
+two-factor seed; in a playground a guest joined only its MCP servers' own values). A fingerprint
+says a value's length, its salted digest and a tag of 3 to 16 bits of a hash of its first 8
+bytes; a sandbox's set is the same on every request; a starting server and a guest's join
+rewrite the files of the sessions that are running, and a session an older Yulius launched keeps
+a file in the format its wrapper reads
+([decision 0313](decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md)).
+Global secrets are managed and switched by
 instance administrators, personal ones only by their owner (404 to everyone else), through
 `PUT /api/sandboxes/{sid}/agent-secrets/{id}/enabled`; the store counts the 200 secrets a project
 may get in the transaction that adds or switches one on. Schema version 39 switched every team-wide
@@ -2779,7 +2991,7 @@ A running task's activity is derived from Claude Code's own records, not guessed
 event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
 is counted from three sources:
 - background shells, from the process probe;
-- background agents, from the turn record;
+- background agents and dynamic workflows, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
 
 The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
@@ -2942,7 +3154,7 @@ flowchart LR
 ## Run metrics
 
 A run's tokens, turns and active time are computed from its own transcript lines and its
-sub-agents' transcripts, by one accumulator (`yulius-harness` `observe`), live while it runs and
+sub-agents' transcripts (those of a dynamic workflow's agents included, SPEC-486), by one accumulator (`yulius-harness` `observe`), live while it runs and
 again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-transcript.md)). Runs
 recorded before that rule are counted again once: migration 23 queues every run recorded so far,
 and after start, once reconciliation has ended the lost runs, a background job counts each ended

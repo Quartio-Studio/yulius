@@ -520,6 +520,28 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
+/// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
+#[test]
+fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, FALLBACK_CLAUDE_MODEL, fallback_model};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    assert!(
+        models.contains(&format!(
+            "export const FALLBACK_MODEL = '{FALLBACK_CLAUDE_MODEL}';"
+        )),
+        "models.js does not fall back to {FALLBACK_CLAUDE_MODEL}"
+    );
+    assert!(models.contains(&format!("{{ id: '{FALLBACK_CLAUDE_MODEL}', name: '")));
+    // The page's rule is the server's: a Fable model falls back, the default one included.
+    assert!(models.contains("includes('fable') ? FALLBACK_MODEL : null"));
+    assert_eq!(
+        fallback_model(DEFAULT_CLAUDE_MODEL),
+        Some(FALLBACK_CLAUDE_MODEL)
+    );
+    Ok(())
+}
+
 /// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
 /// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
 /// behind.
@@ -599,11 +621,23 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
         referenced.contains("/assets/mock.js")
             && referenced.contains("/assets/vendor/xterm/xterm.mjs")
     );
-    // The mock is the e2e suite's backend, served from the source tree; a real instance does not
-    // ship it (SPEC-277 MCK-001).
-    let mock = probe(&h.router, "GET", "/assets/mock.js").await?;
-    assert_eq!(mock.status, StatusCode::NOT_FOUND, "GET /assets/mock.js");
-    for path in referenced.iter().filter(|path| *path != "/assets/mock.js") {
+    // The mock is the e2e suite's backend and the brand lab a design aid of mock mode, both
+    // served from the source tree; a real instance ships neither (SPEC-277 MCK-001; SPEC-483
+    // W1: the lab styles the page from its address, which made an approval one blind click).
+    let unshipped = [
+        "/assets/mock.js",
+        "/assets/lab.js",
+        "/assets/lab-proposals.js",
+    ];
+    for path in unshipped {
+        assert!(referenced.contains(path), "{path} is imported by the UI");
+        let response = probe(&h.router, "GET", path).await?;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "GET {path}");
+    }
+    for path in referenced
+        .iter()
+        .filter(|path| !unshipped.contains(&path.as_str()))
+    {
         let response = probe(&h.router, "GET", path).await?;
         assert_eq!(
             response.status,

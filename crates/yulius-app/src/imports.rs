@@ -416,7 +416,7 @@ impl App {
         refuse_non_github(owner)?;
         match self.deps.store.sandbox_by_repo(owner, name).await? {
             Some(existing) => {
-                let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
+                let (record, _) = self.require_for(ctx, &existing.id, Action::Work).await?;
                 Ok(record)
             }
             None => {
@@ -1040,7 +1040,7 @@ impl App {
                 None,
             ),
         };
-        self.require(&ctx.user, &sid, Action::Work).await?;
+        self.require_for(ctx, &sid, Action::Work).await?;
         let login = import_login(&ctx.user);
         let prefix = format!("import/{login}");
         let repo_dir = self.sandbox_repo(&sid);
@@ -1384,6 +1384,7 @@ impl App {
         git.add_worktree(&repo, worktree, &branch, &base).await?;
         let profile = self.profile_of(sandbox);
         git.install_push_guard(
+            &repo,
             worktree,
             &[
                 profile.integration_branch.clone(),
@@ -1576,6 +1577,13 @@ fn sha256_file(path: &Path) -> AppResult<String> {
 
 /// Writes a read-only copy of `src` at `dest` (temporary file, fsync, rename).
 pub(crate) fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
+    let mut input = File::open(src).map_err(AppError::internal)?;
+    copy_immutable_from(&mut input, dest).map(|_| ())
+}
+
+/// Writes what `input` holds as a read-only file at `dest` (temporary file, fsync, rename) and
+/// says how many bytes that was.
+pub(crate) fn copy_immutable_from(input: &mut impl io::Read, dest: &Path) -> AppResult<u64> {
     let parent = dest
         .parent()
         .ok_or_else(|| AppError::Internal("transcript path without parent".into()))?;
@@ -1583,17 +1591,18 @@ pub(crate) fn copy_immutable(src: &Path, dest: &Path) -> AppResult<()> {
     let mut tmp_name = dest.as_os_str().to_owned();
     tmp_name.push(".tmp");
     let tmp = PathBuf::from(tmp_name);
-    {
-        let mut input = File::open(src).map_err(AppError::internal)?;
+    let copied = {
         let mut output = File::create(&tmp).map_err(AppError::internal)?;
-        io::copy(&mut input, &mut output).map_err(AppError::internal)?;
+        let copied = io::copy(input, &mut output).map_err(AppError::internal)?;
         output.sync_all().map_err(AppError::internal)?;
-    }
+        copied
+    };
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o444)).map_err(AppError::internal)?;
     fs::rename(&tmp, dest).map_err(AppError::internal)?;
     File::open(parent)
         .and_then(|dir| dir.sync_all())
-        .map_err(AppError::internal)
+        .map_err(AppError::internal)?;
+    Ok(copied)
 }
 
 /// Moves a staged directory into place (rename; merges into an existing directory).

@@ -353,7 +353,12 @@ impl GitPort for LocalGit {
             .is_empty())
     }
 
-    async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()> {
+    async fn install_push_guard(
+        &self,
+        _repo: &Path,
+        worktree: &Path,
+        protected: &[String],
+    ) -> AppResult<()> {
         self.record(format!(
             "guard {} {}",
             worktree.display(),
@@ -1044,6 +1049,7 @@ impl World {
             cookie: Some(cookie),
             csrf: Some(csrf),
             bearer: None,
+            oauth: None,
         })
     }
 
@@ -1164,6 +1170,7 @@ pub async fn call_raw(
         status,
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
+        set_cookies: Vec::new(),
         location: None,
         cache_control: None,
     })

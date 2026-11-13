@@ -17,7 +17,6 @@ use support::{
     Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
     seed_github_user, seed_sandbox,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
@@ -147,7 +146,7 @@ async fn fixture_tuned(
     let _ = std::process::Command::new(&exe).arg("version").output();
     let h = harness_with(HarnessOptions {
         session_host: Some(host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe)))),
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.ci.job_timeout = Duration::from_secs(8);
@@ -4162,6 +4161,147 @@ async fn a_pull_request_with_its_own_jobs_cannot_drop_the_security_job() -> Test
     Ok(())
 }
 
+/// SPEC-483 D4: a run again tests a pull request with the jobs the scheduler gave it. A pull
+/// request that changes the CI is tested with its own jobs; run again (by a person, by the
+/// agent's `ci_rerun`, by Yulius after an errored run), it was tested with the integration
+/// branch's instead, and that newest run was the head's verdict.
+#[tokio::test]
+async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo changed\"\n\n\
+             [[ci.jobs]]\nname = \"added\"\ncommand = \"echo added\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let newest = || async {
+        let overview = f.get("/api/sandboxes/s1/ci").await?;
+        let run = overview["runs"]
+            .as_array()
+            .and_then(|runs| runs.iter().find(|run| run["sha"] == sha.as_str()))
+            .ok_or("no run of the head")?;
+        BoxResult::Ok(run["id"].as_str().ok_or("id")?.to_owned())
+    };
+    let first_run = newest().await?;
+    let first = job_outputs(&f, &sha).await?;
+    assert!(output_of(&first, "plain")?.contains("changed"), "{first:?}");
+    assert!(output_of(&first, "added")?.contains("added"), "{first:?}");
+
+    let again = f
+        .post(
+            &format!("/api/sandboxes/s1/ci/runs/{first_run}/rerun"),
+            None,
+        )
+        .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    f.settle().await?;
+    assert_ne!(newest().await?, first_run, "a new run");
+    let second = job_outputs(&f, &sha).await?;
+    let names = |outputs: &[(String, String)]| -> Vec<String> {
+        outputs.iter().map(|(name, _)| name.clone()).collect()
+    };
+    assert_eq!(names(&second), names(&first), "the same jobs");
+    assert!(
+        output_of(&second, "plain")?.contains("changed"),
+        "its own command, not the integration branch's: {second:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-050 CI-110, held by SPEC-483 D4's one rule: a pull request that only carries the jobs
+/// the integration branch had when it branched off is tested with that branch's jobs of now,
+/// not with the old ones in its tree (F 2026-10-13: stale branches kept running a step `dev`
+/// had removed).
+#[tokio::test]
+async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo old\"\n".to_owned()
+    })
+    .await?;
+    let sha = f.push_feature("feature.txt", Some("a change that is no job's\n"))?;
+    f.push_dev(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo new\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let plain = output_of(&outputs, "plain")?;
+    assert!(plain.contains("new") && !plain.contains("old"), "{plain}");
+    Ok(())
+}
+
+/// SPEC-483 D5: the verdict of a commit that Yulius CI will test is "pending" before its first
+/// run exists, also when the integration branch has no CI and the commit brings it: a merge
+/// that requires checks waits for that run instead of reading "no checks" in the meantime.
+#[tokio::test]
+async fn a_pull_request_that_brings_ci_waits_for_its_first_run() -> TestResult {
+    use yulius_domain::ci::GateResult;
+    let f = fixture_with(false, |_| String::new()).await?;
+    let plain = f.push_feature("feature.txt", Some("no job\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &plain).await,
+        GateResult::NotConfigured,
+        "nothing will test it"
+    );
+    let brings = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"own\"\ncommand = \"echo own\"\n"),
+    )?;
+    // Fetched, and not yet looked at by the scheduler.
+    git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &brings).await,
+        GateResult::Run(None),
+        "pending before the scheduler's round"
+    );
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert!(matches!(
+        f.h.app.ci_gate_result(&f.sandbox, &brings).await,
+        GateResult::Run(Some(yulius_domain::ci::RunState::Passed))
+    ));
+    Ok(())
+}
+
+/// SPEC-483 D4: while the integration branch's own configuration cannot be read, nothing is
+/// tested, not even a pull request that brings jobs of its own: what is broken is said, and
+/// the pull request is not given a verdict by a configuration nobody merged.
+#[tokio::test]
+async fn nothing_is_tested_while_the_integration_branchs_configuration_is_broken() -> TestResult {
+    let f = fixture_with(false, |_| "[[ci.jobs]\nname = \"plain\"\n".to_owned()).await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"own\"\ncommand = \"echo own\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let tested = |overview: &serde_json::Value| {
+        overview["runs"]
+            .as_array()
+            .is_some_and(|runs| runs.iter().any(|run| run["sha"] == sha.as_str()))
+    };
+    assert!(!tested(&overview), "{overview}");
+    assert!(
+        overview["gate_problem"]
+            .as_str()
+            .is_some_and(|why| !why.is_empty()),
+        "what is broken is said: {overview}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]
@@ -4245,9 +4385,8 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         ids.insert(name, created.body["id"].as_str().ok_or("id")?.to_owned());
     }
-    // Production secrets are bound to no host; one from before that rule still never reaches a
-    // CI job.
-    crate::support::legacy_production_secret(&f.h.store, &ids["PROD_KEY"]).await?;
+    // A production secret never reaches a CI job, also when the job names it.
+    crate::support::production_secret(&f.h.store, &ids["PROD_KEY"]).await?;
     f.h.app.enable_egress(None);
 
     // A job of an earlier run replaced the integration branch's yulius.toml in the shared clone.

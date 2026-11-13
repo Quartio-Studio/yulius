@@ -4,8 +4,215 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-13
+
+- Sessions no longer show Claude Code's "Language server … couldn't start" notice, and are not
+  asked to install a language server (SPEC-485, task #467, ADR-0327). The cause, measured with
+  Claude Code 2.1.323: when a session writes a file of a language whose server is on `PATH`,
+  Claude Code offers the server's plugin in the terminal, yes by default; one Enter installed
+  it into the sandbox's home, switched on for every session. Each session then started its own
+  server at the first edited file (here 2.6 GiB, 6.2 GiB with its `cargo check` in the
+  worktree's `target/`; 20 GB with parallel tasks in October), or, where rustup's proxy found
+  no `rust-analyzer` in the toolchain, showed the notice. Now Yulius decides per run: the
+  session's plugins that bring a language server (installed, or switched on by the home's or
+  the worktree's settings) are switched off in the run's own settings, which outrank the
+  home's, a repository's and a worktree's, and the offer is switched off
+  (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a sandbox's home needs
+  changing. Checked against the real CLI in eight layouts by an opt-in test that needs no
+  account; what the lookup does not read (a marketplace outside the sandbox's folders) is in
+  ADR-0327 and the operations guide.
+- A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
+  are green was decided in five places by three rules: a task's merge and the Git page
+  asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
+  cases of its own, a promotion pull request read GitHub's checks only, and a fast-forward
+  promotion read none. A failed Yulius CI run at the `dev` head whose status had not been
+  published read as "no checks", and the promotion went through with required checks on.
+  All of them now ask one function: Yulius CI's newest run of the commit where the project
+  has Yulius CI, else GitHub's checks. A pull request that brings CI to a project without
+  any is "pending" until its first run, for every caller.
+- A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
+  #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
+  pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and
+  the task sat until its subscription's reset while others were free. Yulius now follows the
+  workflow agents' transcripts and treats their limit as the session's: the task moves to a
+  subscription that can run it, or reads paused with the reset when none can. The relaunched
+  session is told in one prompt to resume the workflow by its run id (finished agents' results
+  are kept, only the others run again), and a prompt typed at a paused workflow is told not to
+  start it again. A workflow counts as background work, and its agents' tokens count in the
+  run's metrics. Two cases stay where they are: the Superagent (its relaunch types nothing, so
+  Claude Code continues its paused workflow at the reset), and a limit of another model than
+  the session runs, met by a workflow agent the script put on that model.
+- A run again tests a commit with the jobs the scheduler gives it (SPEC-483 slice 13, task
+  #465): its own when it changed them, the integration branch's of now otherwise.
+  A pull request that changes the CI is tested with its own jobs; run again (Run again, the
+  agent's `ci_rerun`, Yulius's retry of an errored run), it was tested with the integration
+  branch's jobs instead, and that newest run was the head's verdict: a pull request whose
+  stricter job failed passed on the rerun. Which jobs test a commit on its way into the
+  integration branch is one rule now, for the scheduler, a merge train, a playground task,
+  a run again and a change from the remote control. A playground task that changes its jobs
+  keeps the trusted security job, as a pull request does.
+- A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
+  A secret allowed for production deploys that still had hosts from before such secrets
+  became exclusive was sent to those hosts for an agent's run by the egress proxy, while a
+  Superagent, a CI job, the browser, `.env` files and the secrets list all said agents never
+  get it. The proxy now refuses it for everyone; migration 0055 removes the hosts such rows
+  kept (one audit line per secret, `vault.agent.hosts_cleared`), the store takes no new row
+  with both, and the Edit dialog no longer offers "Remove these hosts". Also: a fetch, a
+  listing and a clone that only take from a folder of the machine (a CD mirror from a clone,
+  a new origin from an upload) reach that folder read-only.
+- The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
+  task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
+  clone, where a key for GitHub's address in the clone's configuration (a proxy, no
+  certificate check) beat the server's own: the connection, token included, could go through
+  a proxy the agents run. And a transfer with a playground's origin, a folder, started the
+  shell in the clone, which ran what the clone's configuration names for a transfer (the
+  command of a remote to fetch a missing object from, of a submodule's remote, a helper for
+  a password). Every transfer of a sandbox's clone is now made in a repository of the
+  server's own that works on the clone's objects (`<data>/git-couriers`, empty between
+  transfers), with the refs written as data; a new clone is an empty repository filled
+  that way. No command in a sandbox's folder gets the token in its environment or may
+  start the shell, and an empty repository's first commit is made in `<data>/changes`
+  instead of the sandbox's folder. Also, for every Git command of the server in one place:
+  no external diff or text conversion, no signing, no editor, no `ssh` or `git` transport,
+  no program or helper asked for a password, no missing object fetched, no going into
+  submodules, no bundle downloaded.
+  `yulius doctor` checks the host's Git for the last one as "git missing objects": Git
+  2.45.1 or a patched release of the system's (Ubuntu 24.04's has it).
+- The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
+  runs Git as the service user in clones whose every file an agent writes. A clone's
+  configuration could make it run commands on the host (a filter, an `ssh` command, a
+  remote's upload or receive program), a link in the clone made it overwrite a file outside
+  the sandbox or repeat one in an error, and a changed remote address sent a push to another
+  sandbox. Every Git command is now started through `yulius git-confined`, which lets it
+  execute Git's own programs only and touch only its sandbox's folders (Landlock). Hosts
+  need Linux 5.13 or later with Landlock enabled (Ubuntu 22.04+ and Debian 12 have it);
+  `yulius doctor` checks it as "git confinement". Also: a flag for a withheld screen that
+  the agent's own state replaced comes back with the next message kept out.
+- The sandbox browser reaches what its sandbox reaches (SPEC-483 slice 9, task #465,
+  ADR-0321). Chrome runs on the host, and connected by itself: through the browser tools an
+  agent could open another project's dev server (`localhost:<its port>`), a service on the
+  host's loopback, a cloud's metadata address, or Yulius's internal listener by a name the
+  address guard did not list. Each browser now starts behind a proxy of its own, served by
+  the egress proxy, for every address: of local ones it reaches its own sandbox's dev ports
+  and the welcome page, nothing else; no secret is added to what a page sends. A browser
+  whose proxy cannot be opened is not started. Nothing to configure.
+- `browser_fill_secret` types neither into a frame of another site nor into a tab that is
+  leaving (SPEC-483 slice 8, task #465, ADR-0320). The keys go to the element with the focus:
+  with the focus in a document of another site inside a page of the secret's host (an
+  advertisement or a widget in a frame, an object or a closed shadow root), the secret was
+  typed there and answered as `filled`. Unless the focus is in a text field of the page
+  itself, every frame of another site the page holds must now be one the secret is bound to.
+  And a tab Chrome announced a navigation for (a link clicked just before) gets nothing typed
+  when it, or one of its frames, is going to a site the secret is not for. Both answers name
+  the site. The secret's user name and one-time code, which were typed on the address Yulius
+  had last heard of the tab, go only where the secret goes.
+- `browser_fill_secret` types into the page the browser shows when the typing begins
+  (SPEC-483 slice 7, task #465, ADR-0319). It checked the tab's address as Yulius had last
+  heard it and typed after waiting behind a screenshot: an agent that navigated the tab in
+  between had the secret typed into a site of its choice, answered as `filled` on the secret's
+  host. The page is now asked with the input lock held, Yulius's own navigations wait for that
+  lock, and a page that moves on by itself to a site the secret is not for is reported with
+  where it went. Also from the review of slice 6: a tab made, changed or closed while the
+  browser's policy probe waits is listed as it ends up, and a probe whose tab comes late
+  closes it.
+- A viewer of a sandbox browser could read the host's files (SPEC-483 slice 6, task #465,
+  ADR-0318). The browser runs on the host and viewers' clicks are real input there: a click on
+  a page's upload button opened Chrome's own file chooser, in which any path the service user
+  reads could be picked for the page to read (reproduced on Chrome 157). `yulius host setup`
+  now writes a managed Chrome policy that switches off Chrome's own file dialogs, downloads and
+  printing and leaves only web addresses (no `file:` pages, no links to other programs), and a browser on a virtual display takes clicks and keys only
+  once it answers that the policy is in force. **After this update run `sudo yulius host
+  setup` once on the host**: until then the sandbox browsers show and scroll, the agents'
+  tools work, and the panel says that clicks and keys are off. `yulius doctor` reports the
+  policy. Chrome's own pages are no longer listed as tabs. Also: a message kept out of a task
+  whose terminal screen was withheld now flags the task, once, so its person learns to stop
+  and continue it (from the review of slice 5).
+- The vault's rules hold on every path (SPEC-483 slice 5, task #465, ADR-0317). Reading an
+  agent secret needs your two-factor code, but sending it to a server of your choice read it
+  too, with write access alone, also by an API token. For a secret you allow use by use ("Let
+  agents set it up" off) a new host, `.env` copies, production deploys and letting agents set
+  it up now ask for the code (the page asks and carries on), and an API token is told to use the Secrets page;
+  secrets agents set up are unchanged. When the secrets cannot be read, nothing is shown
+  unredacted any more: a task's terminal says the screen is withheld and shows no output until
+  they can, asking again every second (it passed everything through, until the next change of a
+  secret), and the proxy
+  answers 503 before sending a request (it redacted nothing). An edit of a secret no longer
+  undoes a new value saved beside it: it is refused and reloads. From the review of slice 4: an
+  imported session's files are copied up to 1 GiB together, counted as they are read (it was
+  1 GiB each), and the sign-in
+  page's "busy" text fits both of its causes.
+- Six access rules now hold on every way in (SPEC-483 slice 4, task #465, ADR-0316). A `read`
+  API token no longer reads what only people who work in a sandbox see (its working tree with
+  the `.env` files secrets are copied into, their shells, previews and Superagent): the scope
+  is checked with every access check, not only by the request's method. Revoking an API token
+  stops typing on the terminal sockets it opened at the next key. A GitHub sign-in completes
+  only in the browser that started it (its callback link, handed to someone else, signed them
+  in as whoever made it), and starts are limited per client. The brand lab, a design aid that
+  styles the page from its address, is no longer shipped: on a real instance a link with
+  `?lab=` could cover the device approval page with its one button. A task's pull request is
+  merged only into the integration branch: one pointed at the production branch (an agent's
+  own token may do that) used to be brought up to date with production and merged there. And
+  the command of a delivery environment that follows production needs an administrator and the
+  project's slug, as every production deploy does.
+- The server no longer reads a host file, or hangs, because of what an agent put in its own
+  folders (SPEC-483 slice 3, task #465, ADR-0315). Five readers went by path where an agent can
+  write. A session's transcript in the sandbox home: a FIFO there held a server thread for good
+  at every read (enough of them stopped the server's file and Git work for every sandbox), and
+  a link was read as the session's transcript. The sandbox system's `passwd`: a link there to a
+  file of the service user was copied into the `/etc/passwd` of the next shell a person opened.
+  A numbered directory (`record_number`), the disk usage of the quota and an untracked file in a
+  task review followed a link out of the sandbox. All five now go through handles that follow no
+  link, read regular files only and never wait; continuing an imported session copies its
+  files the same way, and the usage walk stops listing below 128 nested folders, so no depth
+  an agent builds uses up the server's file descriptors. Also from the review of slice 2: the
+  pre-push guard refuses a worktree whose Git directory is not the clone's own (compared by
+  device and inode), and a set-user-id bit on a replaced file is not carried over.
+- In three places an agent can no longer make the server start its program or write a host
+  file through its own folders (SPEC-483 slice 2, task #465, ADR-0314; what Git itself writes
+  or runs for the server in an agent-writable clone is still open, ADR-0114's remaining hole,
+  SPEC-483 finding G1). These three trusted what an agent can write. A contained run was started
+  as `bwrap` by name with the run's `PATH`, which begins in
+  the sandbox home: a program of that name put there was started instead of bubblewrap, as the
+  service user and before any containment; the process host now takes `bwrap` from its own
+  `PATH`. The merge attributes Yulius keeps in a clone's `.git/info/attributes` at every task
+  start, and the files of the pre-push guard in a new worktree's Git directory, were read and
+  written by path: a link planted there made the server copy a host file to where the agent
+  reads it, or overwrite one. Both now go through handles that follow no link, below the clone
+  the server names itself.
+- Redaction fingerprints no longer give an agent secret's value away (SPEC-483 slice 1, task
+  #465, ADR-0313; the request: a deep security and quality audit). The Bash wrapper and the tool
+  hook inside a sandbox redact from fingerprints of each value. A fingerprint held a rolling
+  hash of the value, and the server chose a new base for it on every request: a run that asked
+  as often as a value has characters could compute the value, for every agent secret that
+  reaches it, production ones and the instance Vidoc key included. A sandbox's fingerprints are
+  now the same on every request, and a fingerprint says the value's length, its salted digest
+  and a tag of 3 to 16 bits of a hash of its first 8 bytes. A run's fingerprints no longer
+  include two-factor seeds, and a playground that a guest joined keeps only those of its MCP
+  servers' own values. Sessions that were running across the update keep working: their
+  wrapper reads the old format, so Yulius keeps their fingerprint file in it, without the hash
+  that told too much. Redacting 1 MB of output takes 126 ms with 10 secrets (460 ms before) and
+  205 ms with 40 (781 ms). **After the update, once the sessions that were running across it
+  have ended, rotate the agent secrets that untrusted code could have reached**, and make new
+  values 20 random letters and digits or 32 hexadecimal digits, or longer: a shorter one can be
+  guessed against its fingerprints (12 letters and digits within minutes on one graphics card,
+  as the ADR tables).
+
 ## 2026-11-12
 
+- A task of a Fable model goes on with Opus 5.5 while no subscription can run Fable (SPEC-482,
+  task #464, ADR-0312; the request: "add fallback for opus 5.5 if fable is done everywhere").
+  Fable's weekly allowance of usage credits could be used up on every subscription while their
+  5-hour and weekly windows had room: tasks of the default model then waited for a reset, up
+  to a week, or asked a person. Now the pool places such a run with Opus 5.5: at the limit
+  that cut its turn (the same session, on the same subscription when that is the one with
+  room), at its start and when it resumes. The session's terminal says "Fable 5.2 is used up
+  on every subscription: this session runs on Opus 5.5.", the task's details name the model,
+  and the Capacity card and the Status line say that tasks run on Opus 5.5. A session that
+  fell back is not restarted to get back; its next launch runs Fable again once a subscription
+  can. Each run records the model it was launched with (`attempts.model`, schema version 54),
+  and a limit binds that model. The Superagent follows the same rule. A task waits, or asks a
+  person, only when neither model can run. While a subscription can still run Fable, tasks
+  move there as before.
 - `yulius instance migrate` no longer calls a move finished while its old instance is not held
   (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while the
   old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now` and

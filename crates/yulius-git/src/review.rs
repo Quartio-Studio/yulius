@@ -2,7 +2,6 @@
 //! untracked files as added — against its merge base with the integration branch, and the
 //! branch's own commits. Bounded: large diffs are cut and say so (`truncated`).
 
-use std::io::Read as _;
 use std::path::Path;
 
 use yulius_domain::time::Timestamp;
@@ -506,19 +505,9 @@ fn untracked_file(worktree: &Path, path: &str, budget: &mut Budget) -> FileDiff 
         binary: false,
         hunks: Vec::new(),
     };
-    let full = worktree.join(path);
-    let Ok(meta) = std::fs::symlink_metadata(&full) else {
+    let Some(bytes) = untracked_start(worktree, path) else {
         return file;
     };
-    if !meta.is_file() {
-        return file;
-    }
-    let mut bytes = Vec::new();
-    let read = std::fs::File::open(&full)
-        .and_then(|f| f.take(MAX_UNTRACKED_BYTES + 1).read_to_end(&mut bytes));
-    if read.is_err() {
-        return file;
-    }
     if bytes.iter().take(8_000).any(|b| *b == 0) {
         file.binary = true;
         return file;
@@ -549,6 +538,37 @@ fn untracked_file(worktree: &Path, path: &str, budget: &mut Budget) -> FileDiff 
     }
     file.hunks.push(hunk);
     file
+}
+
+/// The start of the untracked file `path` of `worktree` (one byte more than is shown, to tell a
+/// larger file); `None` when it cannot be read. The worktree is the agent's to write while it is
+/// reviewed, so the file is reached from the worktree's folder through handles that follow no
+/// link, at its name or on the way, and only a regular file is read, never waited on
+/// (ADR-0315): a link or a FIFO is listed without lines.
+#[cfg(unix)]
+fn untracked_start(worktree: &Path, path: &str) -> Option<Vec<u8>> {
+    use crate::handles::{open_dir, open_dir_in, read_start_in};
+    let mut names: Vec<&str> = Path::new(path)
+        .components()
+        .map(|part| match part {
+            std::path::Component::Normal(name) => name.to_str(),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let name = names.pop()?;
+    let mut dir = open_dir(worktree).ok()?;
+    for folder in names {
+        dir = open_dir_in(&dir, folder, false).ok()??;
+    }
+    let (bytes, _) =
+        read_start_in(&dir, name, MAX_UNTRACKED_BYTES + 1, "untracked file").ok()??;
+    Some(bytes)
+}
+
+/// Off Unix there are no no-follow handles: untracked files are listed without lines.
+#[cfg(not(unix))]
+fn untracked_start(_: &Path, _: &str) -> Option<Vec<u8>> {
+    None
 }
 
 /// `log --numstat` records: `RS sha US at US author US subject`, then `ins TAB del TAB path`.
@@ -597,6 +617,53 @@ fn parse_commit_stats(stdout: &[u8]) -> Result<Vec<CommitStat>, GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0315: the review reads an untracked file from the worktree's folder without
+    /// following a link at its name or on the way (a folder swapped for a link after Git listed
+    /// the file), and never waits on a FIFO: such a file is listed without lines.
+    #[cfg(unix)]
+    #[test]
+    fn an_untracked_file_is_read_without_following_a_link() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let worktree = dir.path().join("worktree");
+        std::fs::create_dir_all(worktree.join("src/deep"))?;
+        std::fs::write(worktree.join("src/deep/new.rs"), "fn new() {}\n")?;
+        let host = dir.path().join("host");
+        std::fs::create_dir_all(&host)?;
+        std::fs::write(host.join("secret.txt"), "a file of the host\n")?;
+        symlink(&host, worktree.join("linked"))?;
+        symlink(host.join("secret.txt"), worktree.join("src/link.txt"))?;
+        let fifo = worktree.join("src/fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+
+        assert_eq!(
+            untracked_start(&worktree, "src/deep/new.rs").as_deref(),
+            Some(b"fn new() {}\n".as_slice())
+        );
+        let started = std::time::Instant::now();
+        for path in [
+            "linked/secret.txt",
+            "src/link.txt",
+            "src/fifo",
+            "src/missing.rs",
+            "../host/secret.txt",
+            "/etc/hostname",
+        ] {
+            assert_eq!(untracked_start(&worktree, path), None, "{path}");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let mut budget = Budget::default();
+        let listed = untracked_file(&worktree, "linked/secret.txt", &mut budget);
+        assert!(listed.hunks.is_empty() && listed.insertions == 0);
+        Ok(())
+    }
 
     /// Deterministic xorshift generator for randomized tests (no extra dependency).
     struct Rng(u64);

@@ -48,6 +48,92 @@ mod linux {
         }
     }
 
+    /// The run's `PATH` begins in the sandbox home (`~/.cargo/bin`), which the agent writes, and
+    /// that home is the same path on the host. A program named `bwrap` put there is never the
+    /// one that starts a run: the host takes bubblewrap from its own `PATH` (ADR-0314).
+    #[tokio::test]
+    async fn a_bwrap_planted_on_the_runs_path_never_starts_a_run() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        // No skip where bubblewrap cannot make namespaces: which program the host starts shows
+        // either way, and the run then just ends at once.
+        let fake = locate_fake_agent().ok_or("fake-agent not built")?;
+        let fake_dir = fake
+            .parent()
+            .ok_or("no parent")?
+            .to_string_lossy()
+            .into_owned();
+        let sandbox = tempfile::tempdir()?;
+        let root = sandbox.path().to_string_lossy().into_owned();
+        let planted_dir = sandbox.path().join("home/.cargo/bin");
+        std::fs::create_dir_all(&planted_dir)?;
+        let runs = tempfile::tempdir()?;
+        let marker = runs.path().join("the-planted-bwrap-ran");
+        let planted = planted_dir.join("bwrap");
+        std::fs::write(
+            &planted,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )?;
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755))?;
+        let run_dir = runs.path().join("run");
+        let launch = LaunchSpec {
+            version: RECORD_VERSION,
+            attempt_id: "att-planted".into(),
+            task_id: "task-planted".into(),
+            argv: vec![
+                fake.to_string_lossy().into_owned(),
+                "--session-id".into(),
+                "planted".into(),
+            ],
+            cwd: root.clone(),
+            env: BTreeMap::from([
+                (
+                    "PATH".into(),
+                    format!("{}:/usr/bin:/bin", planted_dir.display()),
+                ),
+                ("TERM".into(), "xterm-256color".into()),
+            ]),
+            secret_env_names: Vec::new(),
+            cols: 80,
+            rows: 24,
+            containment: Containment::Bubblewrap(BubblewrapSpec {
+                sandbox_root: root.clone(),
+                home: format!("{root}/home"),
+                writable: Vec::new(),
+                readonly: vec![fake_dir],
+                share_net: false,
+                binds: Vec::new(),
+                identity: None,
+                join: None,
+            }),
+            ring_bytes: 0,
+            token_sha256: token_sha256_hex(&TOKEN),
+            linger_ms: 1_000,
+        };
+        let spawned = spawn_host(
+            Path::new(HOST_EXE),
+            &run_dir,
+            &launch,
+            &[],
+            Duration::from_secs(10),
+        )
+        .await;
+        if let Ok(mut host) = spawned {
+            if let Ok((mut client, _, _)) = PtyClient::connect(&run_dir, &TOKEN, true).await {
+                let _ = client.send(ClientFrame::Input(b"/exit\r".to_vec())).await;
+                while let Ok(Ok(Some(_))) =
+                    tokio::time::timeout(Duration::from_secs(20), client.recv()).await
+                {
+                }
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(20), host.wait()).await;
+        }
+        assert!(
+            !marker.exists(),
+            "the bwrap in the sandbox home started the run"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn contained_agent_runs_inside_bwrap_and_hides_the_run_directory()
     -> Result<(), Box<dyn Error>> {

@@ -1283,6 +1283,7 @@ async fn seed_agent(
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/tmp/none".into(),
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),

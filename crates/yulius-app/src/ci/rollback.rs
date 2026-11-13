@@ -208,7 +208,7 @@ impl App {
         req: &CdRollbackRequest,
     ) -> AppResult<CdRun> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
+        let (sandbox, level) = self.require_for(ctx, &sid, Action::Work).await?;
         let env = dom::env_name(environment).ok_or_else(|| {
             AppError::Invalid("the environment is a [cd.<name>] of yulius.toml".into())
         })?;

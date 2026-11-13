@@ -439,7 +439,7 @@ impl App {
     /// Access errors (`Work` on the sandbox), store failures.
     pub async fn files_roots(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<FileRoots> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let mut tasks = self.deps.store.tasks(&record.id, false).await?;
         tasks.extend(self.deps.store.tasks(&record.id, true).await?);
         tasks.sort_by_key(|task| std::cmp::Reverse(task.number));
@@ -495,7 +495,7 @@ impl App {
         write: bool,
     ) -> AppResult<Target> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let folder = match root.unwrap_or("sandbox") {
             "sandbox" | "" => {
                 let repo = self.sandbox_repo(&record.id);

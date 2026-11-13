@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use support::{HarnessOptions, harness_with, seed_github_user, seed_sandbox, seed_task};
-use yulius::wiring::git::GitAdapter;
 use yulius_app::delivery::DeliveryRecord;
 use yulius_app::error::AppResult;
 use yulius_app::model::SandboxRecord;
@@ -92,7 +91,7 @@ async fn world() -> BoxResult<World> {
 /// [`world`] with a process host of the test's own (default: none available).
 async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<World> {
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host,
         ..HarnessOptions::default()
     })?;
@@ -817,6 +816,7 @@ impl World {
                 account_id: None,
                 provider_session_id: None,
                 launch_kind: LaunchKind::New,
+                model: None,
                 state: AttemptState::Live,
                 run_dir: self
                     .root

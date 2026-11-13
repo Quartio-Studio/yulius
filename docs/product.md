@@ -133,6 +133,8 @@ watching, steering and unblocking.
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. Like task runs, it answers in Claude
   Code's Concise output style unless someone picks another with `/output-style` (SPEC-210).
+  Yulius switches the language servers of Claude Code plugins off for each run of either, and
+  neither is asked to install one (SPEC-485).
   `/clear` starts over, it cannot be
   deleted and comes back with its conversation. When it cannot reach Yulius from its sandbox, its
   panel says so and Restart Superagent starts it again in place, keeping its conversation
@@ -261,7 +263,10 @@ watching, steering and unblocking.
   on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
   wait for the reset by themselves, the pool sends it no such task until then whatever its
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
-  allowance as "Fable this week", and a task of another model can still be run on it. Every
+  allowance as "Fable this week", and a task of another model can still be run on it. A limit
+  met while a session runs a dynamic workflow (Claude Code's "ultracode") is handled the same
+  way: the task moves or waits by itself, and its agent is told to resume the workflow from
+  where it stopped, not to start it again (SPEC-486). Every
   card says how old its usage reading is and which window is used up with its reset (the
   5-hour window, the week, or a model's allowance), worked out when it is shown: it stops
   saying "Limit reached" the moment the window resets. An administrator presses Refresh on a
@@ -272,7 +277,12 @@ watching, steering and unblocking.
   Yulius tries it once more after the provider's next usage reading. Refused again, the task
   waits for another subscription's reset when one is known, and otherwise asks a person
   instead of trying on; that request ends by itself once the task's agent works again or
-  Yulius takes the task on after all (SPEC-464). Its Capacity card says what
+  Yulius takes the task on after all (SPEC-464). A task of a Fable model, the default one
+  included, does not wait while a subscription can run Opus 5.5: when Fable is used up on
+  every subscription its session goes on with Opus 5.5, on the same subscription when that is
+  the one with room, and says so; the task's details, the Capacity card and the Status line
+  say it too, and the task's next launch runs Fable again once a subscription can. The
+  Superagent does the same (SPEC-482). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude
@@ -392,7 +402,8 @@ watching, steering and unblocking.
   dev is empty until it has a dev machine, and production is the push to `main`, which each
   instance installs once a superadmin chooses Update now.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
-  and sign-ins for the agent.
+  and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
+  `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
   its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
   docs up to date", "Work through open issues" (the issues of the core team, of people with write
@@ -434,7 +445,11 @@ watching, steering and unblocking.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
-  The people who manage an agent secret can read it too. A shown value stays masked until its eye
+  The people who manage an agent secret can read it too. Sending a value somewhere new reads
+  it: for an agent secret allowed use by use, a new host, `.env` copies, production deploys and
+  letting agents set it up ask for the same code, and an API token cannot do them (ADR-0317). What cannot be checked
+  for secrets is withheld: a terminal says so and shows nothing, the proxy sends nothing, until
+  the secrets can be read again. A shown value stays masked until its eye
   button is pressed; it copies without being shown, from a copy icon always in its box, as the
   notes do (SPEC-207). A multi-line value (a key, recovery codes) pasted into a team secret keeps
   its line breaks as pasted, masked, and shows and copies on its lines (SPEC-299). An agent secret

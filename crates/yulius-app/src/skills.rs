@@ -582,7 +582,7 @@ impl App {
     /// `NotFound` without access.
     pub async fn list_skills(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<Vec<SkillView>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let states = self.skill_states(&sid).await?;
         Ok(self
             .skill_catalog(&sid)
@@ -620,7 +620,7 @@ impl App {
         name: &str,
     ) -> AppResult<SkillContent> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_for(ctx, &sid, Action::View).await?;
         let skill = self.find_skill(&sid, name).await?;
         let path = skill.dir.join("SKILL.md");
         let content = blocking(move || read_bounded(&path, MAX_SKILL_MD_BYTES))
@@ -646,7 +646,7 @@ impl App {
         enabled: bool,
     ) -> AppResult<()> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        self.require(&ctx.user, &sid, Action::Configure).await?;
+        self.require_for(ctx, &sid, Action::Configure).await?;
         let skill = self.find_skill(&sid, name).await?;
         match skill.source {
             SkillSource::Repository => {

@@ -13,7 +13,6 @@ use support::{
     Creds, TestResult, call, harness_with_git, perms, seed_github_user, seed_live_attempt,
     seed_sandbox, seed_task,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius_app::ports::store::TaskStore as _;
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
 use yulius_domain::ids::SandboxId;
@@ -27,6 +26,9 @@ const EXISTING: &str = concat!("sk_live_", "51ExistingValue9q2w");
 struct World {
     h: support::Harness,
     writer: Creds,
+    /// Alice's browser, the vault unlocked: what allowing `.env` copies of a secret allowed use
+    /// by use needs (ADR-0317).
+    person: Creds,
     worktree: PathBuf,
     home: PathBuf,
 }
@@ -34,7 +36,7 @@ struct World {
 /// Sandbox s1 (`app`): alice writes it, bob reads it. Task t1 (alice's) runs in a Git worktree
 /// that ignores `.env`; task t2 is bob's. The agent secret `STRIPE_KEY` already applies to s1.
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
-    let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
+    let h = harness_with_git(Arc::new(crate::support::confined_git()))?;
     let writer = seed_github_user(&h, "u-alice", "alice").await?;
     seed_github_user(&h, "u-bob", "bob").await?;
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
@@ -71,9 +73,11 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let person = crate::secrets::unlocked(&h, "u-alice").await?;
     Ok(World {
         h,
         writer,
+        person,
         worktree,
         home,
     })
@@ -127,7 +131,7 @@ async fn allow_env(w: &World, name: &str) -> TestResult {
         Method::POST,
         &format!("/api/agent-secrets/{}/env", record.id),
         Some(json!({"allow": true, "env_files": record.env_files.as_str(), "env_requested_by": record.env_requested_by})),
-        &w.writer,
+        &w.person,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);

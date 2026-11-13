@@ -31,7 +31,9 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
-# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list
-# and the needrestart rule.
+# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list,
+# the needrestart rule and Chrome's managed policy for the sandbox browsers (ADR-0318; the
+# directories are made by `yulius host setup`).
 ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
+ReadWritePaths=-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed -/etc/chromium-browser/policies/managed
 UMask=0022

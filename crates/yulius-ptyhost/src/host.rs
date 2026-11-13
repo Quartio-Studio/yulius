@@ -209,6 +209,22 @@ fn load_launch(run_dir: &Path) -> Result<LaunchSpec, HostError> {
     Ok(launch)
 }
 
+/// The absolute path of `name` in the directories of `path` (this process's own `PATH`, which is
+/// the server's): the first absolute directory holding an executable file of that name.
+fn host_program(name: &str, path: Option<&std::ffi::OsStr>) -> Result<String, HostError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    path.into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|file| {
+            fs::metadata(file)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+        .map(|file| file.to_string_lossy().into_owned())
+        .ok_or_else(|| HostError::Spawn(format!("{name} was not found on the host's PATH")))
+}
+
 /// Builds the child command: launch argv (inside bwrap when contained), cleared environment plus
 /// the launch env and the named secrets from the host's own environment.
 fn prepare_command(launch: &LaunchSpec) -> Result<CommandBuilder, HostError> {
@@ -229,6 +245,11 @@ fn prepare_command(launch: &LaunchSpec) -> Result<CommandBuilder, HostError> {
                 ));
             }
             let mut argv = bwrap_argv(spec, &launch.argv, &launch.cwd);
+            // By its path on the host: the run's own `PATH` begins in the sandbox home, which
+            // the agent writes and which is the same path here (ADR-0314).
+            if let Some(program) = argv.first_mut() {
+                *program = host_program(program, std::env::var_os("PATH").as_deref())?;
+            }
             // `yulius sandbox-exec` hands bwrap the seccomp filter and execs it (same pid).
             if let Some(shim) = spec.join.as_ref().and_then(|j| j.exec_shim.as_ref()) {
                 argv.splice(0..0, [shim.clone(), "sandbox-exec".into(), "--".into()]);
@@ -1177,6 +1198,46 @@ impl ClientQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0314: the program is taken from the first absolute directory of the host's `PATH`
+    /// that holds an executable file of its name; a relative directory (the run's working
+    /// folder), a file that is not executable and a directory of that name are passed over.
+    #[test]
+    fn a_host_program_is_an_executable_file_in_an_absolute_directory()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let (plain, folder, real) = (
+            dir.path().join("plain"),
+            dir.path().join("folder"),
+            dir.path().join("real"),
+        );
+        for part in [&plain, &folder, &real] {
+            fs::create_dir_all(part)?;
+        }
+        fs::write(plain.join("bwrap"), b"not executable")?;
+        fs::create_dir_all(folder.join("bwrap"))?;
+        fs::write(real.join("bwrap"), b"#!/bin/sh\n")?;
+        fs::set_permissions(real.join("bwrap"), fs::Permissions::from_mode(0o755))?;
+        let path = std::env::join_paths([
+            Path::new("relative/bin"),
+            Path::new(""),
+            &plain,
+            &folder,
+            &real,
+        ])?;
+        assert_eq!(
+            host_program("bwrap", Some(&path))?,
+            real.join("bwrap").to_string_lossy()
+        );
+        for missing in [Some(std::ffi::OsStr::new("relative/bin")), None] {
+            assert!(matches!(
+                host_program("bwrap", missing),
+                Err(HostError::Spawn(text)) if text.contains("was not found on the host's PATH")
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn queue_enforces_its_byte_bound_and_drains_after_finish() {

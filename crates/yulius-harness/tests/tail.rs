@@ -96,6 +96,37 @@ fn open_at_end_and_resume_cursor() -> TestResult {
     Ok(())
 }
 
+/// ADR-0315: the transcript is in a home the agent writes. A FIFO where it should be is refused
+/// at once (an open of it would wait for a writer and hold the watcher), and a link is not
+/// followed: what it points at is never read as the session's lines.
+#[test]
+fn a_fifo_or_a_link_in_the_transcripts_place_is_refused_at_once() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let fifo = dir.path().join("fifo.jsonl");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()?
+            .success()
+    );
+    let started = std::time::Instant::now();
+    let mut tail = TranscriptTail::open(&fifo, 1024)?;
+    assert_eq!(
+        tail.poll().map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::InvalidInput)
+    );
+    assert!(TranscriptTail::open_at_end(&fifo, 1024).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+    let elsewhere = dir.path().join("elsewhere.jsonl");
+    append(&elsewhere, b"a line of another file\n")?;
+    let link = dir.path().join("link.jsonl");
+    std::os::unix::fs::symlink(&elsewhere, &link)?;
+    let mut tail = TranscriptTail::open(&link, 1024)?;
+    assert!(tail.poll().is_err());
+    Ok(())
+}
+
 #[test]
 fn invalid_utf8_is_replaced_and_zero_bound_is_rejected() -> TestResult {
     let dir = tempfile::tempdir()?;

@@ -50,6 +50,7 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         yulius_url: "http://127.0.0.1:7801/".into(),
         mcp_servers: servers(),
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        disabled_plugins: Vec::new(),
     }
 }
 
@@ -524,6 +525,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -531,6 +533,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         redaction_exe: None,
         bypass_permissions: false,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP or prompt (SPEC-021 CKP-002), and uncontained
@@ -627,6 +630,23 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
             Err(LaunchError::Invalid("session_id"))
         );
     }
+    // The fallback model while no subscription can run the default one (SPEC-482 FBK-011), at
+    // the effort that model takes.
+    let fallback = plan_cockpit(&CockpitRequest {
+        model: Some("claude-opus-5-5".into()),
+        ..request.clone()
+    })?;
+    assert_eq!(
+        fallback.argv[fallback.argv.len() - 4..],
+        ["--model", "claude-opus-5-5", "--effort", "high"]
+    );
+    assert_eq!(
+        plan_cockpit(&CockpitRequest {
+            model: Some("--help".into()),
+            ..request.clone()
+        }),
+        Err(LaunchError::Invalid("model"))
+    );
     assert_eq!(
         plan_cockpit(&CockpitRequest {
             credential: Credential::ClaudeOauthToken(Secret::new("a\nb".into())),
@@ -644,6 +664,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: Some(SESSION.into()),
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -651,6 +672,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         redaction_exe: None,
         bypass_permissions: true,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-208 BYP-001: bypass-permissions mode, not Claude Code's auto mode; it runs as uid 0 of
@@ -673,6 +695,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
     let plain = plan_cockpit(&CockpitRequest {
         bypass_permissions: false,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
         ..request
     })?;
     assert!(
@@ -692,6 +715,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: Some(SESSION.into()),
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081/".into(),
@@ -702,6 +726,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         redaction_exe: None,
         bypass_permissions: false,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
@@ -769,6 +794,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: vec![
@@ -780,6 +806,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         redaction_exe: None,
         bypass_permissions: false,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     let at = plan
@@ -813,6 +840,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
@@ -823,6 +851,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         redaction_exe: Some(PathBuf::from("/opt/yulius it's/yulius")),
         bypass_permissions: false,
         only_yulius: None,
+        disabled_plugins: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     let value_of = |flag: &str| -> Result<Value, Box<dyn std::error::Error>> {
@@ -950,6 +979,7 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         config_dir: PathBuf::from("/data/users/u1/superagent/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
@@ -960,6 +990,7 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         redaction_exe: None,
         bypass_permissions,
         only_yulius: Some(vec!["projects_list".into(), "tasks_list".into()]),
+        disabled_plugins: Vec::new(),
     };
     let settings_of = |argv: &[String]| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let settings = argv
@@ -1016,5 +1047,111 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         argv.last().map(String::as_str),
         Some("--dangerously-skip-permissions")
     );
+    Ok(())
+}
+
+/// SPEC-485 LSP-003 (ADR-0327): a task run switches off the plugins it is given in its own
+/// settings file, which outranks the sandbox home's `settings.json`, a repository's and a
+/// worktree's (measured on Claude Code 2.1.323): a language server one of them brings is neither
+/// started nor reported, whatever those files say. With none given the key is absent, so the
+/// run decides nothing about plugins.
+#[test]
+fn a_task_run_switches_off_the_plugins_it_is_given() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::New {
+            session_id: Some(SESSION.into()),
+            prompt: Some("Do it".into()),
+        },
+        true,
+    );
+    let plain = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
+    assert!(plain.get("enabledPlugins").is_none(), "{plain}");
+    request.disabled_plugins = vec![
+        "pyright-lsp@claude-plugins-official".into(),
+        "rust-analyzer-lsp@claude-plugins-official".into(),
+    ];
+    let settings = json_of(file(&plan_launch(&request)?, "claude-settings.json")?)?;
+    assert_eq!(
+        settings["enabledPlugins"],
+        json!({
+            "pyright-lsp@claude-plugins-official": false,
+            "rust-analyzer-lsp@claude-plugins-official": false,
+        })
+    );
+    // Nothing else of the run's settings changes.
+    let mut rest = settings.clone();
+    rest.as_object_mut()
+        .ok_or("an object")?
+        .remove("enabledPlugins");
+    assert_eq!(rest, plain);
+    Ok(())
+}
+
+/// SPEC-485 LSP-003: a Superagent switches the plugins it is given off the same way, in its
+/// `--settings`; a plain one given none still has no settings at all, and the Global Superagent's
+/// other settings stay.
+#[test]
+fn a_superagent_switches_off_the_plugins_it_is_given() -> TestResult {
+    let settings_of = |argv: &[String]| -> Result<Option<Value>, serde_json::Error> {
+        argv.windows(2)
+            .find(|w| w[0] == "--settings")
+            .map(|w| serde_json::from_str(&w[1]))
+            .transpose()
+    };
+    let plain = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        model: None,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
+        bypass_permissions: false,
+        only_yulius: None,
+        disabled_plugins: Vec::new(),
+    };
+    assert_eq!(settings_of(&plan_cockpit(&plain)?.argv)?, None);
+    let plugins = vec!["gopls-lsp@claude-plugins-official".to_owned()];
+    let off = json!({ "gopls-lsp@claude-plugins-official": false });
+    let plan = plan_cockpit(&CockpitRequest {
+        disabled_plugins: plugins.clone(),
+        ..plain.clone()
+    })?;
+    assert_eq!(
+        settings_of(&plan.argv)?,
+        Some(json!({ "enabledPlugins": off }))
+    );
+    // The Global Superagent reads no settings file, and flag settings are read all the same.
+    let global = CockpitRequest {
+        yulius: Some(CockpitYulius {
+            url: "http://127.0.0.1:8081".into(),
+            token: Secret::new("gs_synthetic".into()),
+        }),
+        bypass_permissions: true,
+        only_yulius: Some(vec!["projects_list".into()]),
+        disabled_plugins: plugins,
+        ..plain
+    };
+    let settings = settings_of(&plan_cockpit(&global)?.argv)?.ok_or("settings")?;
+    assert_eq!(settings["enabledPlugins"], off);
+    assert_eq!(settings["disableAllHooks"], json!(true));
+    assert_eq!(settings["outputStyle"], json!("Concise"));
+
+    // The most the lookup hands over (256 ids of 200 bytes, of characters JSON does not escape)
+    // stays far below what one argument of a command line may have (128 KiB), so the list cannot
+    // keep a Superagent from starting.
+    let most: Vec<String> = (0..256)
+        .map(|n| format!("{}@{n:03}", "n".repeat(196)))
+        .collect();
+    assert!(most.iter().all(|id| id.len() == 200));
+    let plan = plan_cockpit(&CockpitRequest {
+        disabled_plugins: most,
+        ..global
+    })?;
+    let longest = plan.argv.iter().map(String::len).max().unwrap_or(0);
+    assert!(longest < 64 * 1024, "{longest} bytes in one argument");
     Ok(())
 }

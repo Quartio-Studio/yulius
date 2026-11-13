@@ -1245,3 +1245,227 @@ fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-486 WFL-007: a workflow as Claude Code 2.1.323 records one. The launch and the turn's
+/// end are in the session's transcript; the usage limit that refuses the run's second agent is
+/// in that agent's file only. A resumed process names the unfinished run for the transcript
+/// only, and a prompt naming the run and `resumeFromRunId` resumes it to its end.
+#[test]
+fn a_workflow_is_launched_paused_by_a_limit_and_resumed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("s-wf.jsonl");
+    let path = transcript.to_str().ok_or("a path")?;
+    let args = [
+        "--session-id",
+        "s-wf",
+        "--transcript",
+        path,
+        "--transcript-kind",
+        "claude",
+    ];
+    let first = run(
+        &[&args[..], &["--workflow-limit"]].concat(),
+        "/workflow\n/exit\n",
+    )?;
+    let text = stdout(&first);
+    let run_id = text
+        .lines()
+        .find_map(|line| line.strip_prefix("WORKFLOW ")?.split(' ').next())
+        .ok_or("the run's id")?
+        .to_owned();
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} PAUSED")),
+        "{text}"
+    );
+    let records = read_jsonl(&transcript)?;
+    let launch = records
+        .iter()
+        .find_map(|r| r.get("toolUseResult"))
+        .ok_or("the launch's tool result")?;
+    assert_eq!(launch["status"], "async_launched");
+    assert_eq!(launch["taskType"], "local_workflow");
+    assert_eq!(launch["runId"], run_id.as_str());
+    let task = launch["taskId"].as_str().ok_or("a task id")?.to_owned();
+    let last = records.last().ok_or("records")?;
+    assert_eq!(last["subtype"], "turn_duration");
+    assert_eq!(last["pendingWorkflowCount"], 1);
+    let own = std::fs::read_to_string(&transcript)?;
+    assert!(!own.contains("usage_limit_reached"), "not in the session's");
+    let run_dir = dir.path().join("s-wf/subagents/workflows").join(&run_id);
+    let mut agents = Vec::new();
+    for entry in std::fs::read_dir(&run_dir)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if name.starts_with("agent-") && name.ends_with(".jsonl") {
+            agents.extend(read_jsonl(&path)?);
+        }
+    }
+    assert_eq!(agents.len(), 2, "a finished agent and a refused one");
+    assert!(agents.iter().all(|r| r["isSidechain"] == true));
+    // Each has its meta file, which names no model: they run the session's.
+    let metas: Vec<Value> = std::fs::read_dir(&run_dir)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with(".meta.json"))
+        .filter_map(|path| serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok())
+        .collect();
+    assert_eq!(metas.len(), 2);
+    assert!(
+        metas.iter().all(|meta| meta.get("model").is_none()),
+        "{metas:?}"
+    );
+    let refused: Vec<&Value> = agents
+        .iter()
+        .filter(|r| r["apiError"] == "usage_limit_reached")
+        .collect();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0]["isApiErrorMessage"], true);
+    assert_eq!(
+        refused[0]["apiErrorParams"]["rate_limit_info"]["status"],
+        "rejected"
+    );
+    assert!(refused[0]["apiErrorParams"]["rate_limit_info"]["resetsAt"].is_i64());
+
+    // A resumed process with nothing to say: the run is named, and stays unfinished.
+    let idle = run(&args, "/exit\n")?;
+    assert!(
+        stdout(&idle).contains(&format!("WORKFLOW {run_id} ORPHANED")),
+        "{}",
+        stdout(&idle)
+    );
+    let notice = read_jsonl(&transcript)?;
+    // Handed on from the queue like a prompt, then written for the transcript only.
+    let handed: Vec<&str> = notice[notice.len().saturating_sub(3)..]
+        .iter()
+        .map(|r| r["operation"].as_str().unwrap_or("-"))
+        .collect();
+    assert_eq!(handed, ["enqueue", "dequeue", "-"]);
+    let notice = notice.last().ok_or("records")?;
+    assert_eq!(notice["queueTranscriptOnly"], true);
+    assert_eq!(notice["promptSource"], "system");
+    let said = notice["message"]["content"].as_str().unwrap_or_default();
+    assert!(
+        said.contains(&format!("<task-id>{task}</task-id>")),
+        "{said}"
+    );
+    assert!(said.contains("<status>stopped</status>"), "{said}");
+
+    // A prompt that names another run is a message like any other; one that names this run
+    // resumes it.
+    let other = run(
+        &[
+            &args[..],
+            &["--prompt", "use resumeFromRunId for run wf_none"],
+        ]
+        .concat(),
+        "/exit\n",
+    )?;
+    assert!(stdout(&other).contains("ECHO: use resumeFromRunId"));
+    let prompt = format!("Resume (run {run_id}) with resumeFromRunId.");
+    let resumed = run(&[&args[..], &["--prompt", &prompt]].concat(), "/exit\n")?;
+    let text = stdout(&resumed);
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} RESUMED")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("WORKFLOW {run_id} COMPLETED")),
+        "{text}"
+    );
+    assert!(!text.contains("ECHO: Resume"), "{text}");
+    let records = read_jsonl(&transcript)?;
+    let relaunch = records
+        .iter()
+        .rev()
+        .find_map(|r| r.get("toolUseResult"))
+        .ok_or("the relaunch")?;
+    assert_eq!(relaunch["runId"], run_id.as_str());
+    let new_task = relaunch["taskId"].as_str().ok_or("a task id")?;
+    assert_ne!(new_task, task, "a task of its own");
+    let wake = records
+        .iter()
+        .rev()
+        .find(|r| r["origin"]["kind"] == "task-notification")
+        .ok_or("the wake-up")?;
+    assert!(wake.get("queueTranscriptOnly").is_none());
+    let said = wake["message"]["content"].as_str().unwrap_or_default();
+    assert!(
+        said.contains(&format!("<task-id>{new_task}</task-id>")),
+        "{said}"
+    );
+    assert!(said.contains("<status>completed</status>"), "{said}");
+    assert!(
+        records
+            .last()
+            .ok_or("records")?
+            .get("pendingWorkflowCount")
+            .is_none()
+    );
+    assert!(
+        dir.path()
+            .join(format!("s-wf/workflows/{run_id}.json"))
+            .exists()
+    );
+    // Nothing is unfinished any more.
+    let after = run(&args, "/exit\n")?;
+    assert!(!stdout(&after).contains("ORPHANED"), "{}", stdout(&after));
+    Ok(())
+}
+
+/// SPEC-486 WFL-007: with `--workflow-limit-model` the refused agent's record is the refusal of
+/// a model's usage credits, which names no family; its meta file names the model the agent
+/// runs, or none when that is the session's.
+#[test]
+fn a_workflow_agent_s_model_refusal_names_its_model_in_the_meta_file() -> TestResult {
+    for (model, named) in [
+        ("claude-opus-5-5", Some("claude-opus-5-5")),
+        ("session", None),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s-wf.jsonl");
+        let path = transcript.to_str().ok_or("a path")?;
+        let output = run(
+            &[
+                "--session-id",
+                "s-wf",
+                "--transcript",
+                path,
+                "--transcript-kind",
+                "claude",
+                "--workflow-limit",
+                "--workflow-limit-model",
+                model,
+            ],
+            "/workflow\n/exit\n",
+        )?;
+        assert!(stdout(&output).contains("PAUSED"), "{}", stdout(&output));
+        let runs = dir.path().join("s-wf/subagents/workflows");
+        let run_dir = std::fs::read_dir(&runs)?.next().ok_or("a run")??.path();
+        let mut refused = None;
+        for entry in std::fs::read_dir(&run_dir)? {
+            let path = entry?.path();
+            let name = path.to_string_lossy().into_owned();
+            if name.ends_with(".jsonl")
+                && name.contains("agent-")
+                && std::fs::read_to_string(&path)?.contains("model_requires_usage_credits")
+            {
+                refused = Some(path);
+            }
+        }
+        let refused = refused.ok_or("the refused agent's file")?;
+        let record = &read_jsonl(&refused)?[0];
+        assert_eq!(record["isApiErrorMessage"], true);
+        assert!(
+            record.get("apiErrorParams").is_none(),
+            "no family, no reset"
+        );
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(
+            refused.with_extension("meta.json"),
+        )?)?;
+        assert_eq!(meta.get("model").and_then(Value::as_str), named, "{model}");
+    }
+    Ok(())
+}

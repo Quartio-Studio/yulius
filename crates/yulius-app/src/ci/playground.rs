@@ -9,9 +9,9 @@
 
 use std::path::Path;
 
-use yulius_domain::ci::{CiRef, Gate, GateSource, RunState};
+use yulius_domain::ci::{CiRef, RunState};
 
-use super::{CiRunRecord, PLAN_RUNS, own_jobs_apply, short};
+use super::{CiRunRecord, PLAN_RUNS, short};
 use crate::context::App;
 use crate::delivery::delivery_profile;
 use crate::error::{AppError, AppResult};
@@ -115,29 +115,11 @@ impl App {
             None => return Err(AppError::internal("a merge was built without its head")),
         }
         let candidate = built.head;
-        // Its own jobs when the task changed them, as for a pull request (CI-110), and when the
-        // integration branch has none yet (bootstrap).
-        let own = match self.ci_jobs_at(&repo, &candidate).await {
-            Ok(jobs) if !jobs.is_empty() => Some(jobs),
-            _ => None,
-        };
-        let at_base = match git.merge_base(&repo, head, &base).await {
-            Ok(Some(since)) => self.ci_jobs_at(&repo, &since).await.ok(),
-            _ => None,
-        };
-        let gate = match (view.gate, own) {
-            (Some(gate), Some(jobs)) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => {
-                Gate {
-                    jobs,
-                    source: GateSource::PullRequest,
-                }
-            }
-            (Some(gate), _) => gate,
-            (None, Some(jobs)) => Gate {
-                jobs,
-                source: GateSource::PullRequest,
-            },
-            (None, None) => return Ok(TaskChecks::Clear),
+        // Its own jobs when the task changed them, and when the integration branch has none
+        // yet, as for a pull request (`ci_gate_for_head`).
+        let merged = (candidate.as_str(), super::Head::Merged);
+        let Some(gate) = self.ci_gate_for_head(sandbox, &view, merged).await else {
+            return Ok(TaskChecks::Clear);
         };
         let reason = format!("superseded by {}", short(&candidate));
         for run in runs.iter().filter(|run| run.state.is_active()) {

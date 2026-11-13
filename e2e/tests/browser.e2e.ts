@@ -80,6 +80,29 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
 // SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
 const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
 
+// SPEC-483 E1 (ADR-0318): on a host whose browser policy is not in force the sandbox browser
+// shows, but refuses clicks and keys (they would reach Chrome's own file dialogs on the host).
+// The viewer is told why and what an administrator runs, once, not at every key.
+test('a sandbox browser without the host policy says once that clicks and keys are off', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&browser=locked'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toHaveAttribute('aria-selected', 'true');
+  await expect
+    .poll(() => browser.evaluate(() => ((document.querySelector('.bp-canvas') as HTMLCanvasElement | null)?.width ?? 0) > 10), { timeout: 15000 })
+    .toBe(true);
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  const told = browser.locator('.toast:has-text("clicks and keys are off in this browser")');
+  await expect(told).toBeVisible();
+  await expect(told).toContainText('sudo yulius host setup');
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.type('mug');
+  await browser.locator('.bp-surface').click({ position: { x: 200, y: 355 } });
+  // Nothing was typed into the page, and the notice did not multiply.
+  expect(await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? '')).toBe('');
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.toast')].filter((t) => (t.textContent || '').includes('clicks and keys are off')).length)).toBe(1);
+});
+
 test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
   // product: no tab asks for an action (its attention pulse is studio's).
   await app.open(mock('/s/product', '&ambient=0&browserask=0'));

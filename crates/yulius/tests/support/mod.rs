@@ -639,6 +639,28 @@ pub struct Harness {
     pub _dir: tempfile::TempDir,
 }
 
+/// The real Git adapter as the server builds it: on Linux every command confined (ADR-0322),
+/// with a test's temporary folder standing for one sandbox's, and with the shell allowed, as
+/// the tests' `origin` is a folder standing for GitHub ([`strict_git`] is the server's own).
+pub fn confined_git() -> yulius::wiring::git::GitAdapter {
+    strict_git().with_local_origins()
+}
+
+/// The Git adapter exactly as the server builds it: confined, no shell but for a transfer
+/// between two folders that Yulius itself names. A test's data folder is a child of the
+/// system's temporary folder, so `<tmp>/<test>/sandboxes/<id>` is one sandbox's as
+/// `<data>/sandboxes/<id>` is on a server.
+pub fn strict_git() -> yulius::wiring::git::GitAdapter {
+    let adapter = yulius::wiring::git::GitAdapter::new("git");
+    #[cfg(target_os = "linux")]
+    let adapter = adapter.confined(
+        std::path::PathBuf::from(env!("CARGO_BIN_EXE_yulius")),
+        std::env::temp_dir(),
+        1,
+    );
+    adapter
+}
+
 pub fn harness() -> Result<Harness, Box<dyn std::error::Error>> {
     harness_with_git(Arc::new(yulius::wiring::pending::UnavailableGit))
 }
@@ -670,6 +692,8 @@ pub struct Resp {
     pub status: StatusCode,
     pub body: serde_json::Value,
     pub set_cookie: Option<String>,
+    /// Every `Set-Cookie` of the response, in order.
+    pub set_cookies: Vec<String>,
     pub location: Option<String>,
     pub cache_control: Option<String>,
 }
@@ -680,6 +704,17 @@ pub struct Creds {
     pub cookie: Option<String>,
     pub csrf: Option<String>,
     pub bearer: Option<String>,
+    /// The state of a GitHub sign-in this browser started (its `yulius_oauth` cookie).
+    pub oauth: Option<String>,
+}
+
+/// The browser that started the GitHub sign-in with `state`: it holds the cookie the callback
+/// asks for (SPEC-483 A2).
+pub fn started(state: &str) -> Creds {
+    Creds {
+        oauth: Some(state.to_owned()),
+        ..Creds::default()
+    }
 }
 
 pub async fn call(
@@ -692,6 +727,10 @@ pub async fn call(
     let mut req = Request::builder().method(method).uri(path);
     if let Some(cookie) = &creds.cookie {
         req = req.header(header::COOKIE, cookie_header(cookie));
+    }
+    if let Some(state) = &creds.oauth {
+        let both = format!("yulius_oauth={state}; __Host-yulius_oauth={state}");
+        req = req.header(header::COOKIE, both);
     }
     if let Some(csrf) = &creds.csrf {
         req = req.header("x-yulius-csrf", csrf);
@@ -712,6 +751,13 @@ pub async fn call(
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let set_cookies = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .collect();
     let location = resp
         .headers()
         .get(header::LOCATION)
@@ -728,6 +774,7 @@ pub async fn call(
         status,
         body,
         set_cookie,
+        set_cookies,
         location,
         cache_control,
     })
@@ -763,6 +810,7 @@ pub async fn send(
         status,
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
+        set_cookies: Vec::new(),
         location: None,
         cache_control: None,
     })
@@ -859,10 +907,10 @@ pub fn harness_with_host(
     )
 }
 
-/// Makes the agent secret `id` a production secret while it keeps its hosts, as a row from
-/// before SPEC-134 round 2 M-B could be: the store refuses that pair to every change since
-/// (SPEC-262 VTR-001), so it is written back whole, to prove the runtime never uses such a secret.
-pub async fn legacy_production_secret(
+/// Makes the agent secret `id` a production secret, written back whole. It loses its hosts:
+/// a production secret has none, and the store takes no row that says otherwise (ADR-0324:
+/// the pair with hosts kept is refused here).
+pub async fn production_secret(
     store: &SqliteStore,
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -872,6 +920,12 @@ pub async fn legacy_production_secret(
     assert!(record.sandbox_id.is_some(), "a project secret");
     assert!(store.vault_delete(id).await?);
     record.cd_prod = true;
+    let with_its_hosts = store.vault_insert(&record).await;
+    assert!(
+        matches!(&with_its_hosts, Err(yulius_app::error::AppError::Conflict(why)) if why.contains("no hosts")),
+        "a production secret that keeps hosts is no row: {with_its_hosts:?}"
+    );
+    record.hosts.clear();
     store.vault_insert(&record).await?;
     Ok(())
 }
@@ -897,6 +951,7 @@ pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::e
         cookie: session_from(&r.set_cookie),
         csrf: r.body["csrf_token"].as_str().map(str::to_owned),
         bearer: None,
+        oauth: None,
     })
 }
 
@@ -964,7 +1019,7 @@ pub async fn admit_and_sign_in(
         Method::GET,
         &format!("/api/auth/github/callback?code={code}&state={state}"),
         None,
-        &Creds::default(),
+        &started(&state),
     )
     .await?;
     let cookie = session_from(&cb.set_cookie).ok_or("no session cookie")?;
@@ -972,6 +1027,7 @@ pub async fn admit_and_sign_in(
         cookie: Some(cookie),
         csrf: None,
         bearer: None,
+        oauth: None,
     };
     let me = call(&h.router, Method::GET, "/api/me", None, &creds).await?;
     Ok(Creds {
@@ -1790,6 +1846,7 @@ pub async fn seed_live_attempt_at(
             account_id: None,
             provider_session_id: None,
             launch_kind: yulius_app::model::LaunchKind::New,
+            model: None,
             state: yulius_domain::task::AttemptState::Live,
             run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
@@ -1962,4 +2019,53 @@ pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
         .await?
         .map_err(|_| "the server never reached the pause point")?;
     Ok(())
+}
+
+/// What the Bash wrapper of a Yulius from before fingerprint version 2 makes of `text` with the
+/// fingerprint file `file` (ADR-0313): that wrapper's own search, a rolling hash of every window
+/// of a needle's length modulo 2^61 - 1 at the file's `base`, confirmed by the salted SHA-256.
+/// `None` when that wrapper could not read the file (it takes version 1 only, with every field).
+pub fn old_wrapper_redacts(file: &[u8], text: &str) -> Option<String> {
+    use sha2::Digest as _;
+    const MODULUS: u128 = (1 << 61) - 1;
+    let set: serde_json::Value = serde_json::from_slice(file).ok()?;
+    if set["version"] != 1 {
+        return None;
+    }
+    let base = u128::from(set["base"].as_u64()?);
+    let salt = hex::decode(set["salt"].as_str()?).ok()?;
+    let rolling = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .fold(0u128, |h, b| (h * base + u128::from(*b) + 1) % MODULUS)
+    };
+    let data = text.as_bytes();
+    let mut found: Vec<(usize, usize, String)> = Vec::new();
+    for needle in set["needles"].as_array()? {
+        let len = usize::try_from(needle["len"].as_u64()?).ok()?;
+        let name = set["names"][usize::try_from(needle["secret"].as_u64()?).ok()?].as_str()?;
+        for (start, window) in data.windows(len).enumerate() {
+            if rolling(window) != u128::from(needle["rolling"].as_u64()?) {
+                continue;
+            }
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(&salt);
+            hasher.update(window);
+            if hex::encode(hasher.finalize()) == needle["digest"].as_str()? {
+                found.push((start, start + len, name.to_owned()));
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (start, end, name) in found {
+        if start >= at {
+            out.extend_from_slice(&data[at..start]);
+            out.extend_from_slice(format!("[secret:{name}]").as_bytes());
+            at = end;
+        }
+    }
+    out.extend_from_slice(&data[at..]);
+    String::from_utf8(out).ok()
 }

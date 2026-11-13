@@ -128,6 +128,7 @@ async fn the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it() -
         cookie: support::session_from(&setup.set_cookie),
         csrf: setup.body["csrf_token"].as_str().map(str::to_owned),
         bearer: None,
+        oauth: None,
     };
     let s = status(&h).await?;
     assert_eq!(
@@ -164,6 +165,7 @@ async fn the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it() -
         cookie: support::session_from(&login.set_cookie),
         csrf: login.body["csrf_token"].as_str().map(str::to_owned),
         bearer: None,
+        oauth: None,
     };
     let used = recover(&h, &code).await?;
     assert_eq!(

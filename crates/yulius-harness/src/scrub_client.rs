@@ -8,7 +8,7 @@
 //! - `yulius hook claude PostToolUse` replaces a tool result that holds a secret with its
 //!   redacted copy (`hookSpecificOutput.updatedToolOutput`, Claude Code ≥ 2.1.292).
 //!
-//! Neither holds a value: they redact from **fingerprints** (rolling hash plus salted SHA-256
+//! Neither holds a value: they redact from **fingerprints** (a short tag plus the salted SHA-256
 //! of each value and encoding), fetched from `POST /internal/scrub/fingerprints` with the task
 //! token, or read from the run's `scrub.json` while Yulius restarts. With neither, a Yulius run
 //! fails closed: the command does not run and a tool result is withheld.
@@ -126,7 +126,15 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     if !in_run {
         return Fingerprints::NotARun;
     }
-    let server = match post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT) {
+    // The version this wrapper reads: a server answers an older one through its file (ADR-0313).
+    let request = format!("{{\"version\":{FINGERPRINT_VERSION}}}");
+    let asked = post_internal(
+        "/internal/scrub/fingerprints",
+        request.as_bytes(),
+        env,
+        FETCH_TIMEOUT,
+    );
+    let server = match asked {
         Ok(body) => match serde_json::from_slice(&body).ok().and_then(valid) {
             Some(set) => return Fingerprints::Set(set),
             None => ServerAnswer::Unusable,
@@ -216,7 +224,7 @@ pub fn matcher(set: &FingerprintSet) -> Option<HashedMatcher<impl Fn(&[u8]) -> [
             Some(Fingerprint {
                 secret: n.secret,
                 len: n.len,
-                rolling: n.rolling,
+                tag: n.tag,
                 digest,
             })
         })
@@ -230,7 +238,7 @@ pub fn matcher(set: &FingerprintSet) -> Option<HashedMatcher<impl Fn(&[u8]) -> [
         hasher.update(window);
         hasher.finalize().into()
     };
-    let matcher = HashedMatcher::new(set.base, set.names.clone(), fingerprints, verify);
+    let matcher = HashedMatcher::new(set.names.clone(), fingerprints, verify);
     (!matcher.is_empty()).then_some(matcher)
 }
 
@@ -515,7 +523,7 @@ mod tests {
     use super::*;
     use yulius_contracts::scrub::Fingerprint as WireFingerprint;
     use yulius_domain::vault::encode::{base64, needles};
-    use yulius_domain::vault::redact::rolling_hash;
+    use yulius_domain::vault::redact::needle_tag;
 
     const VALUE: &str = "sk_test_4eC39HqLyjWDarjtT1zdp7dc";
 
@@ -530,24 +538,22 @@ mod tests {
 
     /// [`set`] with another salt: the set a rewrite makes (same layout, other digests).
     fn salted(salt: &[u8]) -> FingerprintSet {
-        let base = 912_367;
         FingerprintSet {
             version: FINGERPRINT_VERSION,
-            base,
             salt: hex(salt),
             names: vec!["STRIPE_KEY".into()],
             needles: needles(VALUE)
                 .iter()
-                .map(|n| {
+                .filter_map(|n| {
                     let mut hasher = Sha256::new();
                     hasher.update(salt);
                     hasher.update(n);
-                    WireFingerprint {
+                    Some(WireFingerprint {
                         secret: 0,
                         len: n.len(),
-                        rolling: rolling_hash(base, n),
+                        tag: needle_tag(n)?,
                         digest: hex(&hasher.finalize()),
-                    }
+                    })
                 })
                 .collect(),
         }
@@ -630,7 +636,7 @@ mod tests {
             // The whole request (its body is `{}`), so the answer never cuts the client's write.
             let mut request = Vec::new();
             let mut buffer = [0u8; 4096];
-            while !request.ends_with(b"{}") {
+            while !request.ends_with(b"}") {
                 match stream.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => request.extend_from_slice(&buffer[..n]),
@@ -784,6 +790,29 @@ mod tests {
         Ok(())
     }
 
+    /// ADR-0313: this wrapper reads version 2 only. The file of a session an older Yulius
+    /// launched is in the format before it: while Yulius cannot be reached nothing runs.
+    #[test]
+    fn a_fingerprint_file_in_the_format_before_version_2_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let old = dir.path().join("scrub.json");
+        std::fs::write(
+            &old,
+            br#"{"version":1,"base":0,"salt":"00","names":["KEY"],
+                "needles":[{"secret":0,"len":8,"rolling":57,"digest":"00"}]}"#,
+        )?;
+        let old = old.to_string_lossy().into_owned();
+        assert_eq!(
+            unavailable(load_fingerprints(&run_env(nobody()?, Some(old.clone()))))?,
+            Unavailable {
+                server: ServerAnswer::Unreachable,
+                file: FileState::Invalid(old),
+            }
+        );
+        Ok(())
+    }
+
     /// LAP-001: an unreachable Yulius may be restarting, or this sandbox's connections to it may
     /// be used up by leftover processes; the message says both and what is wrong with the file.
     #[test]
@@ -852,7 +881,7 @@ mod tests {
             // The whole request first, so the close is an end of stream, not a reset.
             let mut request = Vec::new();
             let mut buffer = [0u8; 4096];
-            while !request.ends_with(b"{}") {
+            while !request.ends_with(b"}") {
                 match stream.read(&mut buffer) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => request.extend_from_slice(&buffer[..n]),

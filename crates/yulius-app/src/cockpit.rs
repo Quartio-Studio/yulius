@@ -26,17 +26,17 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use yulius_domain::harness::{Harness, Provider};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{ModelFamily, ReportedLimit};
+use yulius_domain::usage::ReportedLimit;
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::model::{AccountRecord, SandboxRecord, UserRecord};
+use crate::model::{SandboxRecord, UserRecord};
 use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch, WatchFrom};
 use crate::shells::{COCKPIT_NOT_MOVED, COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
@@ -130,6 +130,30 @@ fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
     seen.is_none_or(|(path, len)| transcript_len(path) == len)
 }
 
+/// The usage limit `observation` says the Cockpit's own thread met, and when. A limit that
+/// refused the agents of a dynamic workflow is not one (SPEC-486): the Cockpit's relaunch types
+/// nothing (SPEC-074), so it could not tell the Superagent to resume the workflow the old
+/// process takes with it; the paused workflow stays, and Claude Code continues it at the reset.
+fn own_limit(observation: Observation) -> Option<(ReportedLimit, Option<Timestamp>)> {
+    match observation {
+        Observation::LimitReached {
+            resets_at,
+            window_minutes,
+            scope,
+            at,
+            ..
+        } => Some((
+            ReportedLimit {
+                scope,
+                window_minutes,
+                resets_at,
+            },
+            at,
+        )),
+        _ => None,
+    }
+}
+
 impl TurnState {
     fn observe(&mut self, observation: &Observation, now: Timestamp) {
         match observation {
@@ -174,10 +198,13 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model family the Cockpit runs: the default model's, Fable 5.2 (SPEC-023), which its
-/// weekly allowance of usage credits binds (SPEC-464).
-fn cockpit_family() -> ModelFamily {
-    crate::capacity::default_family()
+/// The model a Cockpit was launched with: the default one, Fable 5.2 (SPEC-023), or its fallback
+/// while no subscription could run that (SPEC-482 FBK-011).
+fn cockpit_model(runtime: &ShellRuntime) -> &str {
+    runtime
+        .model
+        .get()
+        .map_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL, String::as_str)
 }
 
 impl App {
@@ -317,7 +344,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         // A running Cockpit is returned without waiting for anybody's start.
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
@@ -358,10 +385,9 @@ impl App {
         record: &SandboxRecord,
         global: bool,
     ) -> AppResult<ShellInfo> {
-        // The Cockpit runs the default model, Fable 5.2: no per-model weekly cap binds (SPEC-023).
-        let account = self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await?;
+        // The Cockpit runs the default model, Fable 5.2 (SPEC-023), or its fallback while no
+        // subscription can run that (SPEC-482).
+        let account = self.place_default_run(None).await?;
         let seat = if global {
             Seat::Global
         } else {
@@ -392,9 +418,10 @@ impl App {
         user: &UserRecord,
         record: &SandboxRecord,
         global: bool,
-        account: &AccountRecord,
+        placed: &crate::supervisor::Placed,
         continue_interrupted: bool,
     ) -> AppResult<ShellInfo> {
+        let account = &placed.account;
         let folder = if global {
             self.global_superagent_folder(&user.id)?
         } else {
@@ -413,6 +440,9 @@ impl App {
             global,
         );
         let _ = runtime.account.set(account.id.clone());
+        if let Some(fallback) = placed.fallback {
+            let _ = runtime.model.set(fallback.to_owned());
+        }
         let _ = runtime.launch.set(self.cockpit_launch_digest(global));
         let launched = if global {
             self.launch_global_superagent(user, &runtime, credential, continue_interrupted)
@@ -558,24 +588,11 @@ impl App {
             let handled = runtime.limit_handled_ms.load(Ordering::SeqCst);
             // Several read at once count as one, the newest (transcript order): its reset is the
             // subscription's, and the mark passes them all.
-            let mut limit = observations.into_iter().filter_map(|o| match o {
-                Observation::LimitReached {
-                    resets_at,
-                    window_minutes,
-                    scope,
-                    at,
-                    ..
-                } if at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
-                    && resets_at.is_none_or(|resets| resets.0 > now.0) =>
-                {
-                    let limit = ReportedLimit {
-                        scope,
-                        window_minutes,
-                        resets_at,
-                    };
-                    Some((limit, at))
-                }
-                _ => None,
+            let mut limit = observations.into_iter().filter_map(|o| {
+                let (limit, at) = own_limit(o)?;
+                (at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
+                    && limit.resets_at.is_none_or(|resets| resets.0 > now.0))
+                .then_some((limit, at))
             });
             let limit = limit.next_back();
             history_read = history_read || watch.caught_up();
@@ -672,7 +689,7 @@ impl App {
     /// `NotFound`/`Forbidden` without write access.
     pub async fn cockpit_link(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<CockpitLink> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) else {
             return Ok(CockpitLink {
                 state: "unknown",
@@ -703,7 +720,7 @@ impl App {
         sandbox: &str,
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let (record, _) = self.require_for(ctx, &sandbox_id, Action::Work).await?;
         let app = Arc::clone(self);
         let user = ctx.user.clone();
         Self::run_detached(async move {
@@ -712,9 +729,7 @@ impl App {
                     .cockpit_start_slot(&user.id, Seat::Sandbox(record.id.clone()))
                     .await?;
                 if let Some(running) = app.running_cockpit(&user.id, &record.id) {
-                    let account = app
-                        .pool_account(Provider::Anthropic, cockpit_family())
-                        .await?;
+                    let account = app.place_default_run(None).await?;
                     running.notice(RESTART_NOTICE);
                     running.switching.store(true, Ordering::SeqCst);
                     if !app.end_shells(std::slice::from_ref(&running)).await {
@@ -838,10 +853,7 @@ impl App {
         let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return Refresh::Failed;
         };
-        let account = match self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await
-        {
+        let account = match self.place_default_run(None).await {
             Ok(account) => account,
             Err(err) => {
                 tracing::info!(error = %err, shell = %runtime.id(), "the cockpit waits for a subscription to restart on");
@@ -885,8 +897,11 @@ impl App {
     ) -> bool {
         let current = runtime.account.get().cloned();
         tracing::info!(shell = %runtime.id(), account = ?current, scope = ?limit.scope, "usage limit reached in the cockpit");
+        // The limit of the model this Cockpit was launched with (SPEC-482 FBK-006).
+        let model = cockpit_model(runtime);
+        let family = crate::capacity::model_family(Some(model));
         if let Some(account) = &current {
-            self.record_limit(account, limit, cockpit_family()).await;
+            self.record_limit(account, limit, family).await;
         }
         let Ok(_starting) = self
             .cockpit_start_slot(runtime.creator(), runtime.seat())
@@ -905,16 +920,18 @@ impl App {
         let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return false;
         };
-        let account = match self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await
-        {
-            Ok(account) if Some(&account.id) != current.as_ref() => account,
-            _ => {
-                runtime.notice(NO_CAPACITY_NOTICE);
-                return false;
-            }
+        // Off its subscription, unless the model changes: the fallback may run where the default
+        // model was refused, and the other way round (SPEC-482 FBK-003).
+        let on = current.clone().map(|account| (account, family));
+        let Ok(account) = self.place_default_run(on).await else {
+            runtime.notice(NO_CAPACITY_NOTICE);
+            return false;
         };
+        let default = yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+        let next = account.fallback.unwrap_or(default);
+        if let Some(said) = crate::supervisor::model_change_notice(default, Some(model), next) {
+            runtime.notice(&said);
+        }
         runtime.switching.store(true, Ordering::SeqCst);
         if !self.end_shells(std::slice::from_ref(runtime)).await {
             // Its process may still run: a second one would write the same conversation, whose
@@ -929,7 +946,7 @@ impl App {
             .await
         {
             Ok(started) => {
-                tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
+                tracing::info!(from = %runtime.id(), to = %started.id, account = %account.account.id, model = next, "cockpit moved past a usage limit");
             }
             // The panel starts it again when it asks for its Cockpit, still continuing the turn.
             Err(err) => {
@@ -1034,6 +1051,7 @@ impl App {
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
             continue_interrupted: continue_interrupted && resume.is_some(),
+            model: runtime.model.get().cloned(),
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),
@@ -1095,7 +1113,38 @@ impl Drop for CockpitStartSlot<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Observation, Timestamp, TurnState};
+    use super::{Observation, ReportedLimit, Timestamp, TurnState, own_limit};
+
+    /// SPEC-486: the Cockpit acts on its own thread's limit, not on one that refused a
+    /// workflow's agents (it could not have the workflow resumed after a move).
+    #[test]
+    fn a_workflow_agent_s_limit_is_not_the_cockpit_s_to_act_on() {
+        let resets_at = Some(Timestamp(9_000));
+        let at = Some(Timestamp(5_000));
+        let scope = yulius_domain::usage::LimitScope::Account;
+        let own = Observation::LimitReached {
+            resets_at,
+            message: "limit".into(),
+            window_minutes: Some(300),
+            scope,
+            at,
+        };
+        let agents = Observation::WorkflowLimitReached {
+            resets_at,
+            message: "limit".into(),
+            window_minutes: Some(300),
+            scope,
+            at,
+        };
+        let limit = ReportedLimit {
+            scope,
+            window_minutes: Some(300),
+            resets_at,
+        };
+        assert_eq!(own_limit(own), Some((limit, at)));
+        assert_eq!(own_limit(agents), None);
+        assert_eq!(own_limit(Observation::ContextFull), None);
+    }
 
     /// SPEC-186 SAV-006: a conversation is idle with no turn open and no background work Claude
     /// Code waits for; a Monitor stops counting once it expires.

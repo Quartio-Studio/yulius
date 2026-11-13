@@ -74,7 +74,8 @@ impl Git {
             Invocation::new(self, "bundle create", Some(repo))
                 .args(["bundle", "create", "--quiet"])
                 .arg(out_path)
-                .args(&revisions),
+                .args(&revisions)
+                .touching(out_path),
         )?;
         Ok(())
     }
@@ -102,6 +103,7 @@ impl Git {
                 .args(["bundle", "create", "--quiet"])
                 .arg(out_path)
                 .args(["HEAD", "--branches", "--tags"])
+                .touching(out_path)
                 .watch_size(&[out_path, &lock], limit),
         )?;
         Ok(())
@@ -114,12 +116,14 @@ impl Git {
         self.run_ok(
             Invocation::new(self, "bundle verify", Some(repo))
                 .args(["bundle", "verify", "--quiet"])
-                .arg(bundle),
+                .arg(bundle)
+                .touching(bundle),
         )?;
         let output = self.run_ok(
             Invocation::new(self, "bundle list-heads", Some(repo))
                 .args(["bundle", "list-heads"])
-                .arg(bundle),
+                .arg(bundle)
+                .touching(bundle),
         )?;
         let mut heads = Vec::new();
         for line in output.stdout_text().lines() {
@@ -182,6 +186,7 @@ impl Git {
                 ])
                 .arg(bundle)
                 .args(&refspecs)
+                .touching(bundle)
                 .timeout(self.network_timeout),
         )?;
         ref_mapping

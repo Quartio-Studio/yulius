@@ -197,6 +197,14 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         ),
     });
     checks.extend(browser_display_checks());
+    checks.push(browser_policy_check(|path| {
+        std::fs::read_to_string(path).ok()
+    }));
+    #[cfg(target_os = "linux")]
+    checks.push(git_confinement_check(confined_git_runs()));
+    if let Some(left_missing) = git_leaves_a_missing_object_missing(Path::new("git")) {
+        checks.push(git_missing_objects_check(left_missing));
+    }
     checks.extend(containment_visibility(contained, extra));
     if cfg!(target_os = "linux") {
         if contained {
@@ -510,6 +518,144 @@ fn delegation_check() -> Check {
     }
 }
 
+/// Chrome's managed policy for the sandbox browsers (ADR-0318), as `yulius host setup` writes
+/// it: without it a browser on a virtual display refuses viewers' clicks and keys.
+fn browser_policy_check(read: impl Fn(&Path) -> Option<String>) -> Check {
+    use yulius_browser::policy::{POLICY_DIRS, POLICY_FILE, managed_policy};
+    let policy = managed_policy();
+    let missing: Vec<&str> = POLICY_DIRS
+        .iter()
+        .copied()
+        .filter(|dir| read(&Path::new(dir).join(POLICY_FILE)).as_deref() != Some(policy.as_str()))
+        .collect();
+    if missing.is_empty() {
+        check(
+            "browser policy",
+            Level::Ok,
+            format!("{POLICY_FILE} in the managed policy directories of Chrome and Chromium"),
+        )
+    } else {
+        check(
+            "browser policy",
+            Level::Warn,
+            format!(
+                "{POLICY_FILE} is missing or old in {}: a sandbox browser whose Chrome reads it \
+                 there refuses viewers' clicks and keys; run `sudo yulius host setup`",
+                missing.join(", ")
+            ),
+        )
+    }
+}
+
+/// Whether this program's `git-confined` starts Git on this host (ADR-0322): `Err` with what
+/// it said when it does not (no Landlock in the kernel, no Git).
+#[cfg(target_os = "linux")]
+fn confined_git_runs() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let ran = std::process::Command::new(exe)
+        .args(["git-confined", "--", "git", "--version"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if ran.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned())
+    }
+}
+
+/// The server's own Git is confined by the kernel's Landlock (ADR-0322); where that cannot be
+/// done, Yulius runs no Git in a sandbox's repository.
+#[cfg(target_os = "linux")]
+fn git_confinement_check(runs: Result<(), String>) -> Check {
+    match runs {
+        Ok(()) => check(
+            "git confinement",
+            Level::Ok,
+            "the server's Git runs confined (Landlock): only its own programs, only its sandbox's folders",
+        ),
+        Err(why) => check(
+            "git confinement",
+            Level::Fail,
+            format!(
+                "the server's Git cannot be confined, so clones, worktrees, fetches and merges fail: {why}"
+            ),
+        ),
+    }
+}
+
+/// Whether `git`, told not to (`GIT_NO_LAZY_FETCH=1`, as the server tells it, ADR-0323), leaves
+/// a missing object missing: asked for one in a repository that names a "promisor" remote
+/// with a command for the other side, it does not start that command. `None`: the probe
+/// could not be set up (no Git, no temporary folder).
+fn git_leaves_a_missing_object_missing(git: &Path) -> Option<bool> {
+    let dir = nix::unistd::mkdtemp(&std::env::temp_dir().join("yulius-doctor-XXXXXX")).ok()?;
+    let left_missing = missing_object_probe(git, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    left_missing
+}
+
+/// [`git_leaves_a_missing_object_missing`] in the empty folder `dir`.
+fn missing_object_probe(git: &Path, dir: &Path) -> Option<bool> {
+    let (repo, ran) = (dir.join("probe"), dir.join("ran"));
+    let run = |args: &[&str]| {
+        Command::new(git)
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+    };
+    let probe = repo.to_str()?;
+    run(&["init", "--quiet", probe])?.success().then_some(())?;
+    let command = format!("echo ran > '{}'; false", ran.display());
+    for (key, value) in [
+        ("extensions.partialClone", "probe"),
+        ("remote.probe.promisor", "true"),
+        ("remote.probe.url", probe),
+        ("remote.probe.uploadpack", command.as_str()),
+    ] {
+        run(&["-C", probe, "config", key, value])?
+            .success()
+            .then_some(())?;
+    }
+    // No repository has this object.
+    run(&[
+        "-C",
+        probe,
+        "cat-file",
+        "-e",
+        "1234567890123456789012345678901234567890",
+    ])?;
+    Some(!ran.exists())
+}
+
+/// A sandbox's clone can name a remote to fetch missing objects from, with a command of its
+/// own: a Git that fetches them all the same (one older than the releases of May 2024, 2.45.1
+/// and the maintenance releases beside it) runs that command in a transfer between two
+/// folders.
+fn git_missing_objects_check(left_missing: bool) -> Check {
+    if left_missing {
+        check(
+            "git missing objects",
+            Level::Ok,
+            "the server's Git fetches no missing object from a remote a clone names",
+        )
+    } else {
+        check(
+            "git missing objects",
+            Level::Fail,
+            "this Git does not know GIT_NO_LAZY_FETCH: a sandbox's clone can make the server's \
+             Git run a command of its own; update Git (2.45.1 or a patched release of your system)",
+        )
+    }
+}
+
 /// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and
 /// libx264. Without them the sandbox browser runs headless and shows JPEG frames.
 fn browser_display_checks() -> Vec<Check> {
@@ -692,6 +838,87 @@ mod tests {
         restart_check("yulius.service", &facts)
             .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
             .unwrap_or_default()
+    }
+
+    /// ADR-0322: a host whose kernel cannot confine the server's Git fails the doctor, with
+    /// what the launcher said.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_host_that_cannot_confine_git_fails() {
+        let fine = super::git_confinement_check(Ok(()));
+        assert_eq!(
+            (fine.name, fine.level),
+            ("git confinement", super::Level::Ok)
+        );
+        let refused =
+            super::git_confinement_check(Err("this kernel does not enforce Landlock".into()));
+        assert_eq!(refused.level, super::Level::Fail);
+        assert!(
+            refused.detail.contains("does not enforce Landlock"),
+            "{}",
+            refused.detail
+        );
+    }
+
+    /// ADR-0323: the doctor asks the host's Git whether it leaves a missing object missing
+    /// when told to, and fails a host whose Git fetches it from the remote a clone names.
+    #[test]
+    fn a_git_that_fetches_missing_objects_fails() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(std::path::Path::new("git")),
+            Some(true),
+            "this machine's Git"
+        );
+        // A Git that does not know the switch: this machine's, with the switch taken away.
+        let dir = tempfile::tempdir()?;
+        let old = dir.path().join("old-git");
+        std::fs::write(
+            &old,
+            "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec git \"$@\"\n",
+        )?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755))?;
+        }
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(&old),
+            Some(false)
+        );
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(&dir.path().join("none")),
+            None
+        );
+        let fine = super::git_missing_objects_check(true);
+        assert_eq!(
+            (fine.name, fine.level),
+            ("git missing objects", super::Level::Ok)
+        );
+        let old = super::git_missing_objects_check(false);
+        assert_eq!(old.level, super::Level::Fail);
+        assert!(old.detail.contains("GIT_NO_LAZY_FETCH"), "{}", old.detail);
+        Ok(())
+    }
+
+    /// SPEC-483 E1 (ADR-0318): the doctor says whether the sandbox browsers' policy is where
+    /// `yulius host setup` writes it, and what is off while it is not.
+    #[test]
+    fn the_browser_policy_line_warns_until_host_setup_wrote_it() {
+        use yulius_browser::policy::{POLICY_DIRS, POLICY_FILE, managed_policy};
+        let missing = super::browser_policy_check(|_| None);
+        assert_eq!(missing.level, Level::Warn);
+        assert!(
+            missing.detail.contains(POLICY_DIRS[0])
+                && missing.detail.contains("clicks and keys")
+                && missing.detail.contains("sudo yulius host setup"),
+            "{}",
+            missing.detail
+        );
+        let old = super::browser_policy_check(|path| {
+            (path == Path::new(POLICY_DIRS[0]).join(POLICY_FILE)).then(|| "{}\n".to_owned())
+        });
+        assert_eq!(old.level, Level::Warn);
+        let written = super::browser_policy_check(|_| Some(managed_policy()));
+        assert_eq!(written.level, Level::Ok, "{}", written.detail);
     }
 
     #[test]

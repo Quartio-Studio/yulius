@@ -174,12 +174,12 @@ impl GitPort for RealGit {
         _token: Option<&Secret>,
     ) -> AppResult<String> {
         let origin = self.origin.to_string_lossy().into_owned();
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .mirror_fetch_head(mirror, &origin, branch, None)
             .await
     }
     async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .export_tree(mirror, sha, dest)
             .await
     }
@@ -253,7 +253,7 @@ impl GitPort for RealGit {
             .await?
             .is_empty())
     }
-    async fn install_push_guard(&self, _: &Path, _: &[String]) -> AppResult<()> {
+    async fn install_push_guard(&self, _: &Path, _: &Path, _: &[String]) -> AppResult<()> {
         Ok(())
     }
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()> {
@@ -268,7 +268,7 @@ impl GitPort for RealGit {
         worktree: &Path,
         base: &str,
     ) -> AppResult<yulius_app::ports::git::ReviewChanges> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .review_changes(worktree, base)
             .await
     }
@@ -280,14 +280,14 @@ impl GitPort for RealGit {
         head: &str,
         limit: u32,
     ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .review_commits(repo, base, head, limit)
             .await
     }
 
     /// The production adapter (SPEC-083): record numbers, review carry-over, merge attributes.
     async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .list_dir(repo, rev, dir)
             .await
     }
@@ -300,13 +300,13 @@ impl GitPort for RealGit {
         integration: &str,
         limit: usize,
     ) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .only_clean_merges_since(worktree, reviewed, head, integration, limit)
             .await
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .resolve_commit(repo, rev)
             .await
     }
@@ -318,19 +318,19 @@ impl GitPort for RealGit {
         since: &str,
         head: &str,
     ) -> AppResult<Option<bool>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .adds_to(worktree, base, since, head)
             .await
     }
 
     async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .is_ancestor(repo, ancestor, descendant)
             .await
     }
 
     async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .set_merge_attributes(repo, lines)
             .await
     }
@@ -1218,6 +1218,167 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 D5: an automatic promotion (`auto_promote`) is part of the merge it follows. With
+/// required checks and Yulius CI, the merge needs the pull request's head green; the
+/// integration head that merge makes has no run of its own yet, and the fast-forward goes on
+/// the merge's checks instead of waiting for ever on a run nobody would act on.
+#[tokio::test]
+async fn an_automatic_promotion_goes_on_the_checks_of_its_merge() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let mut profile = DeliveryProfile::studio();
+    profile.require_checks = true;
+    let f = fixture(&profile).await?;
+    // Yulius CI is the project's CI: a commit without a run is pending.
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut stored: Value = serde_json::from_str(&record.profile_json)?;
+    stored["gate"] = json!("true");
+    f.h.store.set_profile(&sandbox, &stored.to_string()).await?;
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    commit_file(&wt, "landing.txt", "v1", "Landing")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    let waiting = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(
+        waiting.status,
+        StatusCode::CONFLICT,
+        "pending: {}",
+        waiting.body
+    );
+    yulius_ci_run(&f.h.store, "run-pr-1", &head, RunState::Passed, 10).await?;
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    let quartio = f.origin_sha("quartio")?;
+    assert_ne!(quartio, head, "the merge made a commit of its own");
+    assert_eq!(f.origin_sha("main")?, quartio, "promoted with the merge");
+    Ok(())
+}
+
+/// SPEC-483 D5: an automatic promotion goes while the integration head's checks have not
+/// reported, wherever it starts (after a merge, after an integration environment), and is
+/// stopped by a verdict that is there: with a failed run of Yulius CI at that head, the
+/// environment's confirmation promotes nothing and says why; a person promotes once the run
+/// passed.
+#[tokio::test]
+async fn an_automatic_promotion_stops_at_a_failed_head() -> TestResult {
+    use yulius_domain::ci::RunState;
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let custom = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "custom", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": true,
+                "require_checks": true,
+                "environments": [
+                    {"name": "staging", "after": "integration", "verify": "manual", "command": null}
+                ]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(custom.status, StatusCode::OK, "{}", custom.body);
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    commit_file(&wt, "landing.txt", "v1", "Landing")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    f.h.github
+        .set_checks(&git(&wt, &["rev-parse", "HEAD"])?, ChecksState::Success);
+    let main_before = f.origin_sha("main")?;
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(f.origin_sha("main")?, main_before, "staging comes first");
+    let quartio = f.origin_sha("quartio")?;
+    yulius_ci_run(&f.h.store, "run-q-1", &quartio, RunState::Failed, 10).await?;
+    let confirmed = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/environments/staging/confirm",
+            Some(json!({"confirm": true})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert!(
+        confirmed
+            .body
+            .to_string()
+            .contains("Automatic promotion did not happen"),
+        "{}",
+        confirmed.body
+    );
+    assert_eq!(
+        f.origin_sha("main")?,
+        main_before,
+        "a failed head is not promoted"
+    );
+    yulius_ci_run(&f.h.store, "run-q-2", &quartio, RunState::Passed, 20).await?;
+    let promoted = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
+    assert_eq!(f.origin_sha("main")?, quartio);
+    Ok(())
+}
+
+/// A run of Yulius CI at `sha` of branch `dev`, ended in `state`, queued at `at` (the newest
+/// run of a commit is its verdict).
+async fn yulius_ci_run(
+    store: &impl yulius_app::ports::store_ext::CiStore,
+    id: &str,
+    sha: &str,
+    state: yulius_domain::ci::RunState,
+    at: i64,
+) -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_domain::ci::{CiRef, GateSource};
+    store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: id.to_owned(),
+                sandbox_id: SandboxId::parse("s1")?,
+                reference: CiRef::Branch("dev".to_owned()),
+                sha: sha.to_owned(),
+                source: GateSource::Profile,
+                state,
+                reason: None,
+                requested_by: "yulius".to_owned(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: Timestamp(at),
+                started_at: Some(Timestamp(at)),
+                ended_at: Some(Timestamp(at + 1)),
+            },
+            &[],
+        )
+        .await?;
+    Ok(())
+}
+
 /// AC-DLV-1: standard profile — merging waits for green checks and nothing waits for a person
 /// after it; promotion opens a promotion PR dev → main and merges it on a later request.
 #[tokio::test]
@@ -1383,6 +1544,42 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         unknown.body
     );
     f.h.github.set_checks(&promotion_head, ChecksState::Success);
+    // SPEC-483 D5: a promotion asks what every merge asks. With a run of Yulius CI at that
+    // head, the run alone decides, whatever GitHub shows from elsewhere: failed, the promotion
+    // is refused; run again and passed, it goes.
+    use yulius_domain::ci::RunState;
+    yulius_ci_run(
+        &f.h.store,
+        "run-dev-1",
+        &promotion_head,
+        RunState::Failed,
+        10,
+    )
+    .await?;
+    let failing = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(failing.status, StatusCode::CONFLICT, "{}", failing.body);
+    assert!(error_message(&failing).contains("fail"), "{}", failing.body);
+    assert!(
+        !f.h.github
+            .writes()
+            .contains(&"merge_pull #2 merge".to_owned()),
+        "nothing merged past a failed run"
+    );
+    yulius_ci_run(
+        &f.h.store,
+        "run-dev-2",
+        &promotion_head,
+        RunState::Passed,
+        20,
+    )
+    .await?;
     let promoted = f
         .req(
             Method::POST,
@@ -1590,6 +1787,35 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
 
     // Fast-forward main to the integration head, then confirm the rollout step.
     let quartio = f.origin_sha("quartio")?;
+    // SPEC-483 D5: what goes to production is the integration head, and its checks decide
+    // for a fast-forward as for a promotion pull request: a failed run of Yulius CI there
+    // refuses it, the run passed again lets it go.
+    use yulius_domain::ci::RunState;
+    // A run that still goes: a person's promotion waits for it.
+    yulius_ci_run(&f.h.store, "run-q-0", &quartio, RunState::Running, 5).await?;
+    let running = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(running.status, StatusCode::CONFLICT, "{}", running.body);
+    assert_ne!(f.origin_sha("main")?, quartio, "main did not move");
+    yulius_ci_run(&f.h.store, "run-q-1", &quartio, RunState::Failed, 10).await?;
+    let failing = f
+        .req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(failing.status, StatusCode::CONFLICT, "{}", failing.body);
+    assert!(error_message(&failing).contains("fail"), "{}", failing.body);
+    assert_ne!(f.origin_sha("main")?, quartio, "main did not move");
+    yulius_ci_run(&f.h.store, "run-q-2", &quartio, RunState::Passed, 20).await?;
     let promoted = f
         .req(
             Method::POST,
@@ -1889,6 +2115,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/tmp/none".into(),
             token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
@@ -2414,6 +2641,7 @@ async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/tmp/none".into(),
             token_hash: f.h.app.deps.crypto.sha256_hex(token.as_bytes()),
@@ -2720,7 +2948,7 @@ async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
     );
 
     // Kept by Yulius: the same update merges both entries and the merge stays armed.
-    f.h.app.keep_union_merges(&wt).await;
+    f.h.app.keep_union_merges(&sandbox, &wt).await;
     assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
     f.h.app.merge_armed(&sandbox).await;
     let moved = git(&wt, &["rev-parse", "HEAD"])?;
@@ -3195,6 +3423,7 @@ async fn a_task_without_a_github_creator_delivers_as_the_app() -> TestResult {
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/tmp/none".into(),
             token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
@@ -3528,6 +3757,7 @@ impl ArmedTask {
                 account_id: None,
                 provider_session_id: None,
                 launch_kind: LaunchKind::New,
+                model: None,
                 state: AttemptState::Live,
                 run_dir: "/tmp/none".into(),
                 token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
@@ -3708,6 +3938,73 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
             .is_empty(),
         "MSR-002: no message"
     );
+    Ok(())
+}
+
+/// SPEC-483 D3: a task's change merges into the integration branch only. An agent's own token
+/// may change its pull request's base; a pull request pointed at another branch (production)
+/// is not merged by the armed merge, cannot be armed, and is refused to a person too, until it
+/// goes into the integration branch again.
+#[tokio::test]
+async fn a_pull_request_pointed_at_another_branch_is_never_merged() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    let retarget = |base: &str| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            base.clone_into(&mut pull.base);
+        }
+    };
+    let merged = || {
+        f.h.github
+            .pulls
+            .lock()
+            .is_ok_and(|pulls| pulls.iter().any(|p| p.number == 1 && p.merged))
+    };
+    t.arm().await?;
+
+    // Pointed at production after it was armed, then green: dropped, not merged.
+    retarget("main");
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("dropped") && outcome.contains("goes into `main`, not `quartio`"),
+        "{outcome}"
+    );
+    assert!(!merged());
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // The agent cannot merge or arm it, nor can a person.
+    let refused = t.merge().await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("goes into `main`, not `quartio`"),
+        "{refused}"
+    );
+    let person = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(person.status, StatusCode::CONFLICT, "{}", person.body);
+    assert!(
+        person
+            .body
+            .to_string()
+            .contains("does not go into the integration branch"),
+        "{}",
+        person.body
+    );
+    assert!(!merged());
+
+    // Back at the integration branch it merges as any other.
+    retarget("quartio");
+    let done = t.merge().await?;
+    assert_eq!(done["isError"], false, "{done}");
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
     Ok(())
 }
 
@@ -6159,14 +6456,34 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
         )
         .await?;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
-    let started = f
-        .req(
-            Method::POST,
-            "/api/sandboxes/s1/delivery/environments/rollout/runs",
-            Some(json!({"confirm": true})),
-            &f.alice,
-        )
+    // The command of an environment that follows production is a production deploy (ADR-0110,
+    // SPEC-483 P8): an administrator's, with the project's slug typed.
+    let rollout = "/api/sandboxes/s1/delivery/environments/rollout/runs";
+    let typed = json!({"confirm": true, "slug": "shop"});
+    let writer = f
+        .req(Method::POST, rollout, Some(typed.clone()), &f.bob)
         .await?;
+    assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
+    assert!(
+        error_message(&writer).contains("administrator"),
+        "{}",
+        writer.body
+    );
+    for untyped in [
+        json!({"confirm": true}),
+        json!({"confirm": true, "slug": "other"}),
+    ] {
+        let refused = f
+            .req(Method::POST, rollout, Some(untyped), &f.alice)
+            .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+    }
+    let started = f.req(Method::POST, rollout, Some(typed), &f.alice).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let run = f
         .wait_run(started.body["run_id"].as_str().ok_or("run id")?)

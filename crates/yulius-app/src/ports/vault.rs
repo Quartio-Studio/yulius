@@ -283,15 +283,17 @@ pub trait VaultStore: Send + Sync {
     /// Answers an agent secret's host request in one step: `hosts` replace its bindings and the
     /// request is cleared, only while the request still is `request` and the bindings still are
     /// `bound` (what the person saw) and new hosts would not bind a production secret (SPEC-262
-    /// VTR-001); `false` otherwise. Nothing else in the row changes.
+    /// VTR-001); `false` otherwise. With `auto_allow`, also only while the secret's `auto_allow`
+    /// still is that: what a caller passes whose answer depended on it (ADR-0317: no unlock was
+    /// asked because agents set the secret up). Nothing else in the row changes.
     async fn vault_answer_request(
         &self,
         id: &str,
         request: &[String],
         bound: &[String],
         hosts: &[String],
-        by: &str,
-        at: Timestamp,
+        by_at: (&str, Timestamp),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool>;
     /// The copy requests for `sandbox` (SPEC-440), by secret.
     async fn vault_copy_requests(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultCopyRequest>>;
@@ -324,12 +326,15 @@ pub trait VaultStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Sets whether agents may copy an agent secret into `.env` files, and who asks, only while
     /// they still are `from` (compare and set) and an allowance would not meet a production
-    /// secret (SPEC-262 VTR-001); `false` otherwise. Nothing else in the row changes.
+    /// secret (SPEC-262 VTR-001); `false` otherwise. With `auto_allow`, also only while the
+    /// secret's `auto_allow` still is that, as for [`Self::vault_answer_request`]. Nothing else
+    /// in the row changes.
     async fn vault_set_env_files(
         &self,
         id: &str,
         from: (EnvFiles, Option<&str>),
         to: (EnvFiles, Option<&str>),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool>;
     /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
     /// `from` (compare and set) and, to allow it, agents can use it in no way: they do not set

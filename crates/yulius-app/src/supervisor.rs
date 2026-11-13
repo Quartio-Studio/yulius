@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, oneshot};
 use yulius_contracts::events::UiEvent;
-use yulius_domain::harness::Harness;
+use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, Harness, claude_model_name};
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
@@ -130,6 +130,8 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
+    /// The dynamic workflows the session launched whose end was not read (SPEC-486 WFL-003).
+    pub(crate) workflows: Mutex<crate::dynamic_workflow::Unfinished>,
     /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
     /// word that the session stays there (SPEC-464 UCL-007).
     pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
@@ -206,6 +208,11 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
+    /// The redaction state of the terminal `hub` shows (the attached run's): while it withholds
+    /// output the screen is not what the program drew (ADR-0317).
+    scrub: Mutex<crate::vault::TerminalScrub>,
+    /// The task's person was told that nothing is typed into this screen (once per attach).
+    screen_flagged: AtomicBool,
     /// The goal-mode session opened with a first message (a resumed session's continuation)
     /// whose turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
@@ -399,6 +406,15 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
+    /// Whether the screen `hub` shows is not what the program drew: its output is withheld
+    /// (agent secrets cannot be read) or some was dropped since the last whole screen. A state
+    /// that cannot be read counts.
+    pub(crate) fn screen_withheld(&self) -> bool {
+        self.scrub
+            .lock()
+            .map_or(true, |scrub| scrub.screen_unknown())
+    }
+
     /// Whether a run is attached (a process can redraw the terminal).
     pub(crate) async fn has_run(&self) -> bool {
         self.run.lock().await.is_some()
@@ -477,6 +493,17 @@ impl TaskRuntime {
             || self.queue.lock().map_or(true, |queue| queue.hands_on())
     }
 
+    /// Reads or changes what is known of the session's dynamic workflows (SPEC-486).
+    pub(crate) fn with_workflows<T: Default>(
+        &self,
+        change: impl FnOnce(&mut crate::dynamic_workflow::Unfinished) -> T,
+    ) -> T {
+        self.workflows
+            .lock()
+            .map(|mut workflows| change(&mut workflows))
+            .unwrap_or_default()
+    }
+
     /// Changes what is known of the queue.
     pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
         if let Ok(mut queue) = self.queue.lock() {
@@ -498,6 +525,7 @@ impl TaskRuntime {
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             at_limit: AtomicBool::new(false),
+            workflows: Mutex::new(crate::dynamic_workflow::Unfinished::default()),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
             blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
@@ -519,6 +547,8 @@ impl TaskRuntime {
             turn_end_ms: AtomicI64::new(0),
             turn_order: tokio::sync::Mutex::new(()),
             session_started: AtomicBool::new(false),
+            scrub: Mutex::new(crate::vault::TerminalScrub::default()),
+            screen_flagged: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
@@ -964,7 +994,18 @@ enum InputReady {
     /// Claude Code's folder-trust dialog was still shown after
     /// [`crate::context::AppConfig::trust_answer_ms`]: type nothing into it.
     TrustUnanswered,
+    /// The terminal's screen is withheld, or misses output dropped while it was (agent secrets
+    /// could not be read, ADR-0317): what the program shows is unknown, a dialog included, so
+    /// type nothing.
+    ScreenWithheld,
 }
+
+/// Said when the screen is not the program's: what is wrong, and what its person does.
+pub(crate) const SCREEN_WITHHELD: &str = "Agent secrets could not be read, so this terminal's \
+     screen was withheld and Yulius typed nothing";
+const SCREEN_WITHHELD_ANSWER: &str = "If the terminal still says its screen is withheld, replace \
+     or delete the agent secret that cannot be read (the server's log names the error). Then \
+     stop and continue the task";
 
 /// Said when the trust dialog is still shown at the end of the wait: what is wrong, and how its
 /// person's part begins.
@@ -1198,20 +1239,22 @@ impl App {
             return None;
         }
         let input = self.rotation_input(task, None).await.ok()?;
-        match rotation::decide(&input, Trigger::Start).0 {
+        // As the resume loop decides: off what refused the task with no end (SPEC-464 UCL-010).
+        match self.decide_for_waiting(&task.id, &input, Trigger::Start).0 {
             Decision::Wait { until } => until,
             Decision::Switch { .. } | Decision::Stay => None,
         }
     }
 
-    /// The account a new attempt of `task` runs on (placement, ROT-004), or `None` when no
-    /// subscription has capacity and the task must pause (ROT-010). A requested account is
-    /// honoured when it is usable and refused otherwise (ROT-007).
+    /// Where a new attempt of `task` runs (placement, ROT-004): its account, and the fallback
+    /// model it is launched with while no subscription can run the task's own (SPEC-482). `None`
+    /// when no subscription has capacity and the task must pause (ROT-010). A requested account
+    /// is honoured when it is usable and refused otherwise (ROT-007).
     pub(crate) async fn choose_account(
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
-    ) -> AppResult<Option<AccountRecord>> {
+    ) -> AppResult<Option<Placed>> {
         let trigger = match requested {
             Some(id) => Trigger::Manual {
                 account: Some(id.clone()),
@@ -1220,13 +1263,17 @@ impl App {
         };
         let input = self.rotation_input(task, None).await?;
         match rotation::decide(&input, trigger) {
-            (Decision::Switch { account, .. }, _) => Ok(Some(
-                self.deps
+            (Decision::Switch { account, .. }, _) => Ok(Some(Placed {
+                account: self
+                    .deps
                     .store
                     .account(&account)
                     .await?
                     .ok_or(AppError::NotFound)?,
-            )),
+                // The same snapshot decided the account and says the model.
+                fallback: crate::capacity::fallback_of(task.model.as_deref())
+                    .filter(|_| rotation::placing_family(&input) != input.family),
+            })),
             (Decision::Wait { .. }, _) => Ok(None),
             (Decision::Stay, reason) => {
                 let label = match requested {
@@ -1297,7 +1344,7 @@ impl App {
         ];
         self.deps
             .git
-            .install_push_guard(&worktree, &protected)
+            .install_push_guard(&repo, &worktree, &protected)
             .await?;
         self.set_task_identity(&worktree, task).await?;
         let update = TaskFieldUpdate {
@@ -1525,7 +1572,7 @@ impl App {
         }
         let worktree = self.ensure_worktree(&sandbox, task).await?;
         // The logs every task appends to merge by union in this repository (SPEC-083 MRG-001).
-        self.keep_union_merges(&worktree).await;
+        self.keep_union_merges(&sandbox.id, &worktree).await;
         // The spec path is given out once, so parallel tasks never pick the same number.
         if let Ok(Some(fresh)) = store.task(&task.id).await {
             self.allocate_spec_path(&fresh, &worktree).await;
@@ -1540,7 +1587,9 @@ impl App {
             Some(id) if store.account(&id).await?.is_none() => None,
             other => other,
         };
-        let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
+        let Some(Placed { account, fallback }) =
+            self.choose_account(&task, requested.as_ref()).await?
+        else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -1576,11 +1625,38 @@ impl App {
         // The task's request file could not be written, so a fresh goal session has no goal.
         let mut request_unwritten = false;
         // Decide new / resume.
+        // Workflows the old process left unfinished end with it: the session is told to resume
+        // them by their run ids, which Claude Code does not do by itself. Past a limit that
+        // prompt is the turn the launch opens with, in place of the silent continuation
+        // (SPEC-486 WFL-004).
+        // They stay known until the new process's transcript is read, so a launch that fails
+        // here, or runs again for another subscription, still tells its session. A fresh
+        // session has none: a run is resumed in its own session only.
+        let unfinished = match (&start, &previous) {
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+                self.runtime(&task.id).with_workflows(|workflows| {
+                    workflows.relaunched();
+                    workflows.runs()
+                })
+            }
+            _ => {
+                self.runtime(&task.id)
+                    .with_workflows(|workflows| *workflows = Default::default());
+                Vec::new()
+            }
+        };
+        let resumes = |prompt: Option<&str>| {
+            Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+        };
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: prompt.clone(),
+                    prompt: if unfinished.is_empty() {
+                        prompt.clone()
+                    } else {
+                        resumes(prompt.as_deref())
+                    },
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
@@ -1588,8 +1664,8 @@ impl App {
             (RunStart::AfterLimit, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: None,
-                    continue_interrupted: true,
+                    prompt: (!unfinished.is_empty()).then(|| resumes(None)).flatten(),
+                    continue_interrupted: unfinished.is_empty(),
                 },
                 LaunchKind::Resume,
             ),
@@ -1653,13 +1729,12 @@ impl App {
                         ..
                     }
                 ));
-        // This session's transcript steps back over a usage limit before the run (SPEC-034).
-        let stepped_back = match &mode {
-            SessionMode::Resume {
-                session_id,
-                continue_interrupted: true,
-                ..
-            } => Some(session_id.clone()),
+        // This session's transcript steps back over a usage limit before the run (SPEC-034),
+        // also when the run opens with the prompt that resumes its workflows (SPEC-486).
+        let stepped_back = match (&start, &mode) {
+            (RunStart::AfterLimit, SessionMode::Resume { session_id, .. }) => {
+                Some(session_id.clone())
+            }
             _ => None,
         };
         let attempt_id =
@@ -1681,7 +1756,8 @@ impl App {
             worktree: worktree.clone(),
             sandbox_home: home.clone(),
             run_dir: run_dir.clone(),
-            model: task.model.clone(),
+            // The fallback while no subscription can run the task's own model (SPEC-482).
+            model: fallback.map(str::to_owned).or_else(|| task.model.clone()),
             effort: task.effort.clone(),
             contained: self.config.contained,
             mcp,
@@ -1760,7 +1836,16 @@ impl App {
         };
         // `gh` in the agent's shell acts as the task's owner, like its Git (F 2026-10-11).
         self.add_agent_gh(&mut launch)?;
-        let seq = u32::try_from(store.attempts(&task.id).await?.len() + 1).unwrap_or(u32::MAX);
+        let earlier = store.attempts(&task.id).await?;
+        let seq = u32::try_from(earlier.len() + 1).unwrap_or(u32::MAX);
+        let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+        let model = fallback.unwrap_or(own);
+        // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
+        // and at the first one that runs the task's own model again.
+        let before = earlier.last().and_then(|run| run.model.as_deref());
+        if let Some(said) = model_change_notice(own, before, model) {
+            self.runtime(&task.id).hub.notice(said);
+        }
         let attempt = AttemptRecord {
             id: attempt_id.clone(),
             task_id: task.id.clone(),
@@ -1769,6 +1854,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
+            model: Some(model.to_owned()),
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),
@@ -1941,7 +2027,7 @@ impl App {
             let (task_id, attempt_id) = (task.id.clone(), attempt_id.clone());
             tokio::spawn(async move {
                 let mut typed_before = 0;
-                match app
+                let ready = app
                     .wait_input_ready(
                         &task_id,
                         &attempt_id,
@@ -1949,14 +2035,9 @@ impl App {
                         false,
                         &mut typed_before,
                     )
-                    .await
-                {
-                    InputReady::Ready => app.type_opening(&task_id, &attempt_id, opening).await,
-                    InputReady::Gone => {}
-                    InputReady::TrustUnanswered => {
-                        app.trust_unanswered(&task_id, ", then type the task's first message.")
-                            .await;
-                    }
+                    .await;
+                if matches!(ready, InputReady::Ready) {
+                    app.type_opening(&task_id, &attempt_id, opening).await;
                 }
                 // A run that is gone leaves the flag to the task's next start, which sets it
                 // for its own first message (this one may already be that run's).
@@ -1964,6 +2045,17 @@ impl App {
                     app.runtime(&task_id)
                         .typing_opening
                         .store(false, Ordering::SeqCst);
+                }
+                // The typing is over before the task says it was given up: a message sent on
+                // seeing the flag is answered with why nothing is typed, not with "Yulius is
+                // still typing".
+                match ready {
+                    InputReady::Ready | InputReady::Gone => {}
+                    InputReady::TrustUnanswered => {
+                        app.trust_unanswered(&task_id, ", then type the task's first message.")
+                            .await;
+                    }
+                    InputReady::ScreenWithheld => app.screen_withheld(&task_id).await,
                 }
             });
         }
@@ -2031,6 +2123,28 @@ impl App {
             AttentionRecord::yulius(
                 &format!("{TRUST_UNANSWERED}."),
                 &format!("{TRUST_ANSWER}{then}"),
+            ),
+        )
+        .await;
+    }
+
+    /// The terminal's screen is not what the program drew (agent secrets could not be read,
+    /// ADR-0317): nothing was typed, and the task needs a person. The terminal is told once per
+    /// attached run, however many typists are refused (a first message, messages from agents
+    /// and Yulius). The flag is raised each time: one that stands stays as it is, and one the
+    /// agent's own state replaced meanwhile (its turn ended) comes back with its reason.
+    pub(crate) async fn screen_withheld(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        if !runtime.screen_flagged.swap(true, Ordering::SeqCst) {
+            runtime
+                .hub
+                .notice(format!("{SCREEN_WITHHELD}. {SCREEN_WITHHELD_ANSWER}."));
+        }
+        self.flag_task(
+            task_id,
+            AttentionRecord::yulius(
+                &format!("{SCREEN_WITHHELD}."),
+                &format!("{SCREEN_WITHHELD_ANSWER}."),
             ),
         )
         .await;
@@ -2110,6 +2224,13 @@ impl App {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt_id).await {
                 return InputReady::Gone;
+            }
+            // A screen that is withheld, or misses output dropped while it was, is not what the
+            // program drew: whether it reads input, or asks something (the trust dialog), cannot
+            // be told, also once output flows again (the dropped part is gone until the run is
+            // attached anew). Nothing is typed; the task's person is told.
+            if runtime.screen_withheld() {
+                return InputReady::ScreenWithheld;
             }
             let trust = !runtime.session_started.load(Ordering::SeqCst)
                 && trust_prompt_shown(&runtime.hub.screen_text());
@@ -2290,7 +2411,9 @@ impl App {
                 .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
                 .await
             {
-                InputReady::Ready => {}
+                // This watch types nothing: whether the launch goal was taken is told by its
+                // hook below, not by the screen, so a withheld screen changes nothing here.
+                InputReady::Ready | InputReady::ScreenWithheld => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => {
                     app.trust_unanswered(
@@ -2366,6 +2489,11 @@ impl App {
                 InputReady::Ready => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => return unanswered().await,
+                InputReady::ScreenWithheld => {
+                    return app
+                        .goal_never_set(&task_id, SCREEN_WITHHELD, Some(SCREEN_WITHHELD_ANSWER))
+                        .await;
+                }
             }
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
@@ -2543,6 +2671,10 @@ impl App {
             .sandbox_id;
         // The terminal people see is redacted of agent secrets (SPEC-002 ADR-20).
         let scrub = crate::vault::TerminalScrub::default();
+        if let Ok(mut shown) = runtime.scrub.lock() {
+            *shown = scrub.clone();
+        }
+        runtime.screen_flagged.store(false, Ordering::SeqCst);
         let attached = self
             .deps
             .session_host
@@ -3590,13 +3722,25 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // A restart that only keeps its subscription lets the pool place the run when that
+        // subscription cannot take it and another can (SPEC-482 FBK-004).
+        let account = match account {
+            Some(kept) if keeps_subscription(reason) => {
+                let input = self.rotation_input(&task, None).await?;
+                rotation::keeps_account(&input, &kept).then_some(kept)
+            }
+            other => other,
+        };
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
-        if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
-            self.refuse_switch(&task, account.as_ref(), reason, &err)
-                .await;
-            return Err(err);
-        }
+        let fallback = match self.preflight_start(&task, account.as_ref()).await {
+            Ok(fallback) => fallback,
+            Err(err) => {
+                self.refuse_switch(&task, account.as_ref(), reason, &err)
+                    .await;
+                return Err(err);
+            }
+        };
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -3616,7 +3760,11 @@ impl App {
             None => task.harness.as_str().to_owned(),
         };
         let decision_id = self.deps.crypto.new_id();
-        let to_desc = self.account_desc(task.harness, account.as_ref()).await;
+        let mut to_desc = self.account_desc(task.harness, account.as_ref()).await;
+        // A move onto the fallback names the model (SPEC-482 FBK-008).
+        if let Some(fallback) = fallback {
+            to_desc = format!("{to_desc}, {}", claude_model_name(fallback));
+        }
         store
             .insert_switch(&SwitchDecisionRecord {
                 id: decision_id.clone(),
@@ -3642,13 +3790,22 @@ impl App {
         if for_claude_code {
             runtime.hub.notice(self.claude_code_move_notice());
         } else {
-            runtime.hub.notice(if fresh {
+            let line = if fresh {
                 "↻ Yulius starts a fresh session for this task…"
             } else if elsewhere {
                 "↻ Yulius continues this session on another Claude subscription…"
             } else {
                 "↻ Yulius continues this session…"
-            });
+            };
+            // A workflow the old process leaves unfinished is resumed (SPEC-486 WFL-004).
+            let resumes_workflow =
+                !fresh && runtime.with_workflows(|workflows| !workflows.runs().is_empty());
+            if resumes_workflow {
+                let resumed = crate::dynamic_workflow::RESUMED_NOTICE;
+                runtime.hub.notice(format!("{line}{resumed}"));
+            } else {
+                runtime.hub.notice(line);
+            }
         }
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
@@ -3744,6 +3901,8 @@ impl App {
                     && task.status == TaskStatus::Running
                     && task.mode == TaskMode::Prompt
                     && matches!(start, RunStart::Resume { prompt: None })
+                    // A session told to resume its workflow opens with that turn (SPEC-486).
+                    && runtime.with_workflows(|workflows| workflows.runs().is_empty())
             })
             .map(|activity| IdleRest {
                 activity,
@@ -3898,7 +4057,8 @@ impl App {
 
     /// What a launch would need, checked without changing anything: the repository, a usable
     /// subscription credential and the sandbox's isolation (disk quota, holder). A switch runs
-    /// it before it ends the running session (ROT-014).
+    /// it before it ends the running session (ROT-014). `Ok` names the fallback model the
+    /// launch would be placed with (SPEC-482), `None` for the task's own.
     ///
     /// # Errors
     /// The reason the launch would be refused.
@@ -3906,7 +4066,7 @@ impl App {
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<&'static str>> {
         let sandbox = self
             .deps
             .store
@@ -3924,11 +4084,12 @@ impl App {
             ));
         }
         // No subscription with capacity is not a refusal: the switch pauses the task instead.
-        if let Some(account) = self.choose_account(task, requested).await? {
-            self.open_credential(&account)?;
+        let placed = self.choose_account(task, requested).await?;
+        if let Some(placed) = &placed {
+            self.open_credential(&placed.account)?;
         }
         self.isolation_join(&sandbox).await?;
-        Ok(())
+        Ok(placed.and_then(|placed| placed.fallback))
     }
 
     /// Whether a switch of `task` was refused so recently that an automatic one waits.
@@ -4519,6 +4680,21 @@ impl App {
                     continue;
                 }
             };
+            // A workflow agent's limit of another model than the session runs is not the
+            // session's (SPEC-486 WFL-002): it goes into the subscription's reading when it is
+            // read live, and never into what is known of the session.
+            let family = self.run_family_of(&attempt).await;
+            let (other_models, observations): (Vec<_>, Vec<_>) = observations
+                .into_iter()
+                .partition(|observation| binds_another_model(observation, family));
+            for limit in other_models {
+                if let (false, Some(account), Some(limit)) =
+                    (catching_up, &attempt.account_id, reported_limit(&limit))
+                {
+                    tracing::info!(task = %task_id, ?limit, "a workflow agent's model is at its limit");
+                    self.record_limit(account, limit, family).await;
+                }
+            }
             for observation in &observations {
                 facts.fold(observation);
             }
@@ -4556,7 +4732,9 @@ impl App {
                 if let Some(limit) = observations.into_iter().rfind(|o| {
                     matches!(
                         o,
-                        Observation::LimitReached { .. } | Observation::AccessLost { .. }
+                        Observation::LimitReached { .. }
+                            | Observation::WorkflowLimitReached { .. }
+                            | Observation::AccessLost { .. }
                     )
                 }) {
                     replayed_limit = Some(limit);
@@ -4623,6 +4801,8 @@ impl App {
             Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
             _ => None,
         };
+        // A workflow launched, ended, or met by a limit while unfinished (SPEC-486 WFL-003).
+        runtime.with_workflows(|workflows| workflows.observe(&observation));
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4632,25 +4812,30 @@ impl App {
                 at,
             } => {
                 tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
-                runtime.end_turn(self.now());
-                runtime.limit_cut_the_turn(at);
                 let limit = ReportedLimit {
                     scope,
                     window_minutes,
                     resets_at,
                 };
-                let blind = limit.without_an_end(self.now());
-                if let Some(account) = &attempt.account_id {
-                    let family = self.task_family(task_id).await;
-                    self.record_limit(account, limit, family).await;
-                }
-                let app = self.clone();
-                let tid = task_id.clone();
-                let account = attempt.account_id.clone();
-                tokio::spawn(async move {
-                    app.rotate_at(&tid, account, Trigger::LimitReached, blind)
-                        .await;
-                });
+                self.limit_met(task_id, attempt, limit, at).await;
+            }
+            Observation::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => {
+                // One that binds the model the session runs (the watcher keeps the others to
+                // the subscription's reading): the session cannot go on here either, whatever
+                // its own thread is doing (its next request would be refused).
+                tracing::info!(task = %task_id, %message, ?scope, "usage limit reached by a workflow's agent");
+                let limit = ReportedLimit {
+                    scope,
+                    window_minutes,
+                    resets_at,
+                };
+                self.limit_met(task_id, attempt, limit, at).await;
             }
             Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
@@ -4811,11 +4996,41 @@ impl App {
             Observation::BackgroundResumable { id } => {
                 self.background_resumable(task_id, id).await;
             }
+            // Kept above; its background work is the `BackgroundStarted` beside it.
+            Observation::WorkflowLaunched { .. } => {}
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
         }
         runtime.with_queue(|queue| queue.work_seen(worked));
+    }
+
+    /// The session of `task_id` is at the usage limit `limit`, recorded at `at`: its turn is
+    /// over, the subscription's reading keeps the limit, and the pool decides where the task
+    /// goes on (SPEC-034, SPEC-464).
+    async fn limit_met(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        limit: ReportedLimit,
+        at: Option<Timestamp>,
+    ) {
+        let runtime = self.runtime(task_id);
+        runtime.end_turn(self.now());
+        runtime.limit_cut_the_turn(at);
+        let blind = limit.without_an_end(self.now());
+        if let Some(account) = &attempt.account_id {
+            // The limit of the model this run was launched with (SPEC-482 FBK-006).
+            let family = self.run_family_of(attempt).await;
+            self.record_limit(account, limit, family).await;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        let account = attempt.account_id.clone();
+        tokio::spawn(async move {
+            app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+                .await;
+        });
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -4851,6 +5066,15 @@ impl App {
         let Ok(input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
+        // Remembered for the model this run was launched with: a task of a Fable model may be
+        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
+        if blind
+            && limit
+            && let Some(account) = &current
+            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
+        {
+            met.met(account, input.running.unwrap_or(input.family));
+        }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
             .proactive_switch
@@ -4881,7 +5105,7 @@ impl App {
                         .blind_limits
                         .lock()
                         .map_or(crate::moves::BlindWait::Pause, |mut blind| {
-                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                            blind.nowhere_to_go(until, task.status)
                         });
                     if next == crate::moves::BlindWait::AskAPerson {
                         self.limit_without_end(&task).await;
@@ -4909,6 +5133,35 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Whether `observation` is a workflow agent's limit of another model family than `family`, the
+/// one the session's run was launched with (SPEC-486 WFL-002): that agent's alone.
+fn binds_another_model(observation: &Observation, family: ModelFamily) -> bool {
+    matches!(
+        observation,
+        Observation::WorkflowLimitReached {
+            scope: yulius_domain::usage::LimitScope::Model(Some(other)),
+            ..
+        } if *other != family
+    )
+}
+
+/// The limit a workflow agent's limit observation reports.
+fn reported_limit(observation: &Observation) -> Option<ReportedLimit> {
+    match observation {
+        Observation::WorkflowLimitReached {
+            resets_at,
+            window_minutes,
+            scope,
+            ..
+        } => Some(ReportedLimit {
+            scope: *scope,
+            window_minutes: *window_minutes,
+            resets_at: *resets_at,
+        }),
+        _ => None,
     }
 }
 
@@ -4956,6 +5209,36 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Where the pool places a run (SPEC-482).
+pub(crate) struct Placed {
+    /// The subscription.
+    pub account: AccountRecord,
+    /// The model the run is launched with instead of the task's own, while no subscription can
+    /// run that; `None`: the task's own.
+    pub fallback: Option<&'static str>,
+}
+
+/// What a session's terminal says when a launch changes the model it runs (SPEC-482 FBK-008):
+/// `model` is not the task's `own` (the launch falls back), or it is again after a run on
+/// another model (`before`, the model of the task's last run). `None` when nothing changes.
+pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) -> Option<String> {
+    let name = claude_model_name;
+    if model != own {
+        return (before != Some(model)).then(|| {
+            format!(
+                "{} is used up on every subscription: this session runs on {}.",
+                name(own),
+                name(model)
+            )
+        });
+    }
+    // Only a fallback is undone: a task set to another model since its last run says nothing.
+    let fell_back = before.is_some_and(|before| {
+        before != own && yulius_domain::harness::fallback_model(own) == Some(before)
+    });
+    fell_back.then(|| format!("{} can run again: this session runs on it.", name(own)))
+}
+
 /// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
 /// (SPEC-447 MOV-002).
 fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> String {
@@ -4978,15 +5261,53 @@ fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> Str
     }
 }
 
+/// Whether a switch for `reason` restarts the session where it is and asks for its subscription
+/// only to keep it: a newer Claude Code, a fresh session after a full context, a hand-over. A
+/// person's choice and the pool's own decisions name the subscription they mean.
+fn keeps_subscription(reason: &str) -> bool {
+    matches!(reason, "context_full" | "handover") || reason == crate::claude_code::MOVE_REASON
+}
+
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
 /// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
-/// automatic switches come while the agent is idle.
+/// automatic switches come while the agent is idle, or at a usage limit, where its turn can go
+/// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
+/// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
     matches!(reason, "manual" | "handover" | "removed")
 }
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-482 FBK-008: the terminal says a change of the model once, at the launch that
+    /// makes it: onto the fallback, and back to the task's own model after a run on it.
+    #[test]
+    fn a_launch_says_when_the_model_changes() {
+        use super::model_change_notice as said;
+        let (fable, opus) = ("claude-fable-5-2", "claude-opus-5-5");
+        let fell_back =
+            "Fable 5.2 is used up on every subscription: this session runs on Opus 5.5.";
+        let back = "Fable 5.2 can run again: this session runs on it.";
+        // The first run, a run after one on Fable, and one after a run that names no model.
+        for before in [None, Some(fable)] {
+            assert_eq!(said(fable, before, opus).as_deref(), Some(fell_back));
+            assert_eq!(said(fable, before, fable), None);
+        }
+        assert_eq!(said(fable, Some(opus), opus), None, "said at the first");
+        assert_eq!(said(fable, Some(opus), fable).as_deref(), Some(back));
+        // An older Fable model names itself.
+        assert_eq!(
+            said("claude-fable-5-1", Some(opus), "claude-fable-5-1").as_deref(),
+            Some("Fable 5.1 can run again: this session runs on it.")
+        );
+        // A task a person set to another model since its last run did not fall back.
+        assert_eq!(said(opus, Some(fable), opus), None);
+        assert_eq!(
+            said("claude-sonnet-5-5", Some(opus), "claude-sonnet-5-5"),
+            None
+        );
+    }
+
     /// SPEC-464 UCL-010: only the model's own records say it answered. A turn's work (a tool
     /// call) and its end both do; a refusal Claude Code writes itself, a prompt and a
     /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.

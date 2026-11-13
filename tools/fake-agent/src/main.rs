@@ -28,7 +28,7 @@
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
 //!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]
 //!            [--pause-hold-file PATH]]
-//!            [--no-response-line]
+//!            [--no-response-line] [--workflow-limit [--workflow-limit-model MODEL]]
 //! ```
 //!
 //! Modes:
@@ -73,6 +73,17 @@
 //! `--hooks` the continued turn then runs its Stop hook and prints `CONTINUED STOP ANSWERED`.
 //! `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
+//!
+//! `/workflow` launches a dynamic workflow as Claude Code 2.1.323 records one (the Workflow
+//! tool, `workflow.rs`; SPEC-486): the launch in the session's transcript, the run's agents in
+//! `<session>/subagents/workflows/<run>/`, and the turn's end that still waits for it. With
+//! `--workflow-limit` the run's second agent is refused by a usage limit, written to that
+//! agent's file only (`WORKFLOW <run> PAUSED`); with `--workflow-limit-model MODEL` that
+//! refusal is of the model the agent runs (its usage credits, no family named): MODEL, which
+//! the agent's `.meta.json` then names, or the session's own with `session`. A resumed process says which runs the ended one
+//! left unfinished (`WORKFLOW <run> ORPHANED`), and a `--prompt` that names their ids and
+//! `resumeFromRunId` resumes them (`WORKFLOW <run> RESUMED`, `WORKFLOW <run> COMPLETED`). A
+//! prompt hook's additional context is printed as `PROMPT CONTEXT: <text>`.
 //!
 //! Goal mode (TSK-010/TSK-014), like Claude Code 2.1.292: `/goal <condition>` prints `GOAL SET`,
 //! appends the goal's sentinel record, then (after `--goal-delay-ms`, default 0) runs one turn and
@@ -302,6 +313,8 @@ const STUCK: &str = "/stuck ";
 /// notification of its own, a slash command, a `!` line).
 const ALONE: &str = "/alone ";
 
+mod workflow;
+
 /// What a waiting line says: itself, or the prompt a `/scheduled` line stands for, or the
 /// entry a `/stuck` or an `/alone` line stands for.
 fn said(line: &str) -> &str {
@@ -398,6 +411,8 @@ struct Options {
     credits_reset_s: Option<i64>,
     idle_compact_ms: Option<u64>,
     trust_prompt: bool,
+    workflow_limit: bool,
+    workflow_limit_model: Option<String>,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -469,6 +484,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         credits_reset_s: None,
         idle_compact_ms: None,
         trust_prompt: false,
+        workflow_limit: false,
+        workflow_limit_model: None,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -650,6 +667,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.credits_reset_s = Some(seconds.clamp(1, 10 * 365 * 24 * 3600));
             }
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
+            "--workflow-limit" => options.workflow_limit = true,
+            "--workflow-limit-model" => {
+                options.workflow_limit_model =
+                    Some(args.next().ok_or("--workflow-limit-model needs a model")?);
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -1473,6 +1495,13 @@ impl Hooks {
                 "prompt": prompt}),
         );
         let value: Value = serde_json::from_str(&answer).ok()?;
+        // What the hook adds to the prompt for the model is shown, as nothing else would be.
+        if let Some(context) = value
+            .pointer("/hookSpecificOutput/additionalContext")
+            .and_then(Value::as_str)
+        {
+            let _ = say(&format!("PROMPT CONTEXT: {context}"));
+        }
         (value.get("decision").and_then(Value::as_str) == Some("block")).then(|| {
             value
                 .get("reason")
@@ -2599,8 +2628,14 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         )?;
     }
     let entered = options.queue_prompts.then(Entered::start);
+    // A resumed process finds the workflows the ended one left unfinished (SPEC-486).
+    if let Some(transcript) = &transcript {
+        workflow::orphaned(transcript)?;
+    }
     if let Some(prompt) = &options.prompt {
-        if prompt.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) {
+        if workflow::resume(prompt, transcript.as_ref(), hooks.as_ref(), &mut state)? {
+            // The prompt resumed them: its turn and the runs' ends are written.
+        } else if prompt.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) {
             // Claude Code runs a slash command given as its prompt argument (SPEC-117).
             state.turns += 1;
             goal_turn(options, prompt, transcript.as_ref(), hooks.as_ref())?;
@@ -2749,6 +2784,15 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
                 state.turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
+            }
+            "/workflow" => {
+                workflow::launch(
+                    options,
+                    &line,
+                    transcript.as_ref(),
+                    hooks.as_ref(),
+                    &mut state,
+                )?;
             }
             _ if line.starts_with("/work ") => {
                 state.turns += 1;

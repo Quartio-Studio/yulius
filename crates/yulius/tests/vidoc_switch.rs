@@ -566,7 +566,7 @@ async fn a_sandbox_admin_switches_vidoc_in_the_sandbox_and_the_instance_card_agr
 /// switch; a file the scanner would refuse is said; an instance switched off is said.
 #[tokio::test]
 async fn the_repositorys_committed_switch_wins_and_is_said() -> TestResult {
-    let git = Arc::new(yulius::wiring::git::GitAdapter::new("git"));
+    let git = Arc::new(crate::support::confined_git());
     let i = instance_on(support::harness_with_git(git)?).await?;
     integration_head(&i, None)?;
     assert_eq!(vidoc_view(&i, &i.alice).await?["repository"], "on");

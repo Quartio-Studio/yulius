@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
@@ -96,7 +95,7 @@ fn build_custom(
             Some(fake) => Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
             None => Arc::new(HarnessAdapter::new(exe, "http://127.0.0.1:9")),
         },
-        git: Arc::new(GitAdapter::new("git")),
+        git: Arc::new(crate::support::confined_git()),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
         usage,

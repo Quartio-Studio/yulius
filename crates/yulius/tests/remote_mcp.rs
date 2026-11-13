@@ -207,6 +207,65 @@ async fn a_read_token_only_reads_the_rest_api() -> TestResult {
     Ok(())
 }
 
+/// SPEC-247 RMT-001 (SPEC-483 A1): the scope of a token only narrows what its person may do,
+/// whatever the request's method. A writer's `read` token reads what view access allows and
+/// nothing a GET shows only to people who work there: the working tree (an ignored `.env` with
+/// copied secrets included), their shells, the previews, the Superagent's link and requests.
+#[tokio::test]
+async fn a_read_token_reads_nothing_above_view_access() -> TestResult {
+    let w = World::new("org").await?;
+    let (_alice, browser, operate) = person(&w, "alice").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    w.grant("alice", "acme/shop", "push");
+    let read = bearer(text(
+        &make_token(&w, &browser, "dashboards", "read").await?["token"],
+    ));
+    let working = [
+        "/api/sandboxes/s1/files/roots",
+        "/api/sandboxes/s1/files?path=",
+        "/api/sandboxes/s1/files/content?path=.env",
+        "/api/sandboxes/s1/files/live?path=.env&session=s&since=0",
+        "/api/sandboxes/s1/shells",
+        "/api/sandboxes/s1/previews",
+        "/api/sandboxes/s1/cockpit/link",
+        "/api/sandboxes/s1/superagent/requests",
+    ];
+    for path in working {
+        let refused = call(&w.h.router, Method::GET, path, None, &read).await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "GET {path}: {}",
+            refused.body
+        );
+        assert!(
+            text(&refused.body["error"]["message"]).contains("read-only"),
+            "GET {path}: {}",
+            refused.body
+        );
+    }
+    // What view access shows stays readable, and the same person's operate token works there.
+    let tasks = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/tasks",
+        None,
+        &read,
+    )
+    .await?;
+    assert_eq!(tasks.status, StatusCode::OK, "{}", tasks.body);
+    let roots = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &operate,
+    )
+    .await?;
+    assert_eq!(roots.status, StatusCode::OK, "{}", roots.body);
+    Ok(())
+}
+
 /// A JSON-RPC request to the public `/mcp`.
 async fn rpc(
     w: &World,
@@ -1084,6 +1143,63 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
         error && !said.contains("unknown tool"),
         "nothing was requested: {said}"
     );
+
+    // SPEC-483 V5 (ADR-0317): a secret allowed use by use goes somewhere new only by its person
+    // in the browser, after a two-factor code; a token still describes it and dismisses.
+    use yulius_app::ports::vault::VaultStore as _;
+    let guarded = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DEPLOY_KEY", "value": "deploy-value-0123456", "auto_allow": false})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(guarded.status, StatusCode::CREATED, "{}", guarded.body);
+    let id = text(&guarded.body["id"]);
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "DEPLOY_KEY", "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("allowed use by use") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, updated) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "DEPLOY_KEY", "description": "Deploys the shop"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(updated["secret"]["hosts"], json!([]));
+    let asked = vec!["evil.example".to_owned()];
+    assert!(
+        w.h.store
+            .vault_set_request(id, &[], &asked, Some("a task"))
+            .await?
+    );
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "DEPLOY_KEY", "allow": true, "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(error && said.contains("allowed use by use"), "{said}");
+    let (error, said, dismissed) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "DEPLOY_KEY", "allow": false, "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(dismissed["secret"]["hosts"], json!([]));
     Ok(())
 }
 

@@ -10,7 +10,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   are raw bodies with their own limits. Timestamps are RFC 3339 UTC strings.
 - Authentication: the session cookie (browser) or `Authorization: Bearer yul_…` (personal API
   tokens: `cli` from `yulius login`, `operate` or `read` from Settings, SPEC-247; a `read` token
-  gets 403 for anything but GET and HEAD, and for every WebSocket). The cookie is
+  gets 403 for anything but GET and HEAD, for every WebSocket, and for a GET of what only people
+  who work in a sandbox see: its working tree (`files`), their shells, the previews, the
+  Superagent's link and requests). The cookie is
   `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
@@ -46,8 +48,8 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
-| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422). What the instance knows of its sign-in callback never stops a start, and a start asks GitHub nothing (SPEC-466) |
-| GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
+| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, more than 10 starts a minute from one client, or 1000 started sign-ins waiting → `/signin?error=busy[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422). Sets the cookie `__Host-yulius_oauth` (HTTP: `yulius_oauth`; HttpOnly, SameSite=Lax, 10 minutes) with the state: the callback is honoured only in the browser that started (SPEC-483 A2). What the instance knows of its sign-in callback never stops a start, and a start asks GitHub nothing (SPEC-466) |
+| GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback — or a callback in a browser that did not start this sign-in: its state is then not spent), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
 | POST | `/api/auth/logout` | → 204 |
 | GET | `/api/me` | → `Me`; a playground's guest's `user` has `"login": "<name> (guest)"` and `"guest": {"sandbox_id", "slug", "expires_at"}` (SPEC-410) |
 | GET | `/api/guest-invites/{code}` | no session; a playground's guest link (SPEC-410, ADR-0260) → `{"playground", "invited_by", "expires_at"}`; 410 `gone` for an unknown, revoked or expired link or a playground removed or moved to GitHub (one answer); counts against 10 looks and joins per client a minute (429) |
@@ -102,7 +104,7 @@ person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
 `task_unpause`, `task_start_now`, `task_update`, `task_archive`, `task_delete`, `attachments_trash`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
-`secret_update`, `secret_hosts_answer`, `secret_delete` (the project's own agent secret, SPEC-274), `variables_set`, `variable_delete`) or administer (`onboarding_skip`). A project the person
+`secret_update`, `secret_hosts_answer` (neither binds a host of a secret allowed use by use: that needs the person's two-factor code on the Secrets page, ADR-0317), `secret_delete` (the project's own agent secret, SPEC-274), `variables_set`, `variable_delete`) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
 true}` adds the tool's record as `structuredContent`. `initialize` answers
 `_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).
@@ -324,7 +326,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/resume` | write | → `TaskSummary`; ends a person's pause and thaws the run (while an update holds the task, the update thaws it); nothing for a task that is not paused; audited `task.resumed_by_person` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065); 409 when the task is not live, or when it keeps changing after 4 rounds (SPEC-250) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is the subscription a person chose (the task view's "Continue on…", SPEC-447); a subscription that no longer exists is refused (429, "That subscription no longer exists.")); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
-| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`: moves a running or waiting (`waiting_capacity`, with or without a process) task to the Claude subscription a person chose, or the pool's best other one without `account_id`, in the same session: past a limit, its first message again, a held prompt typed again, a turn cut mid-way told to go on, nothing typed into an idle one (SPEC-447 MOV-001). A choice is honoured below 100 % of every window binding the task (the pool's 98 % does not refuse it); 429 with one sentence naming the subscription otherwise ("… needs a new sign-in", "… is at its usage limit"); 409 "Resume the task first." while a person paused it. The task view's subscription button ("Run #N on…") calls it; an ended task's "Continue on…" calls `/continue` with `account_id` |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`: moves a running or waiting (`waiting_capacity`, with or without a process) task to the Claude subscription a person chose, or the pool's best other one without `account_id`, in the same session: past a limit, its first message again, a held prompt typed again, a turn cut mid-way told to go on, nothing typed into an idle one (SPEC-447 MOV-001). A choice is honoured below 100 % of every window binding the model the task would run there: its own, or its fallback while no subscription can run its own (SPEC-482) (the pool's 98 % does not refuse it); 429 with one sentence naming the subscription otherwise ("… needs a new sign-in", "… is at its usage limit"); 409 "Resume the task first." while a person paused it. The task view's subscription button ("Run #N on…") calls it; an ended task's "Continue on…" calls `/continue` with `account_id` |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); its attachments stay while another task's request or an automation's prompt names them, otherwise they wait 7 days in the trash (SPEC-396, `attachments_trash`); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
@@ -424,7 +426,7 @@ TaskDetail = TaskSummary + {
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
   "request": "the whole request, queued messages included", "started": false,
-  "model": "claude-fable-5-2", "model_default": true, "effort?": "high",
+  "model": "claude-fable-5-2", "model_default": true, "fallback_model?": "claude-opus-5-5", "effort?": "high",
   "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322", "cli_moves_stopped": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
@@ -433,7 +435,11 @@ Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","
 
 `model` and `effort` are what the task asks Claude Code for (its own, else Yulius's default:
 `model_default`); what answered is `metrics.models` and each attempt's `model`, read from the
-transcripts. `cli_version` is the Claude Code version the latest session's transcript names (each
+transcripts. `fallback_model` is the model its live run was launched with when that is not
+`model`: a task of a Fable model runs Opus 5.5 while no subscription can run Fable (SPEC-482),
+on the same subscription when that is the one with room, and its next launch runs `model` again
+once a subscription can. The move's entry of `switches` then names the model in `to`
+("Claude Code (Claude #2), Opus 5.5"). `cli_version` is the Claude Code version the latest session's transcript names (each
 attempt has its own), and `cli_moves_to` the newer version a running session is restarted on when
 its turn ends (SPEC-461), or only at its next start when `cli_moves_stopped` is true (running
 tasks are no longer moved to that version, SPEC-468); a restart for it is no entry of `switches`.
@@ -571,8 +577,8 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
 | POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
-| POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
-| POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
+| POST | `/api/sandboxes/{sid}/delivery/promote` | admin | `{"confirm":"<slug>"}` → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
+| POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write; admin for the command of an environment that follows production | `{"confirm":true}`, with `"slug":"<slug>"` typed for such a command (a production deploy, ADR-0110) → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
 | GET | `/api/sandboxes/{sid}/delivery/runs` | read | → `[EnvironmentRun]` (newest 20, output tails of 2 KiB) |
 | GET | `/api/sandboxes/{sid}/delivery/runs/{run_id}` | read | → `EnvironmentRun` |
@@ -654,7 +660,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
   through Yulius once no integration environment is pending; the outcome is added to `notes`
-  and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
+  and audited. With `require_checks`, an automatic fast-forward does not wait for the
+  integration head's own checks (they may not have reported yet), and is stopped by failing
+  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
   independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
@@ -677,8 +685,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
   production (`result: "pr_opened"`, `sha` = PR URL); a later call merges it with a merge commit
-  once its checks allow (`result: "promoted"`). Tasks waiting for promotion then advance to
-  `promoted` (or `production_done` without production environments).
+  once its checks allow (`result: "promoted"`). With `require_checks`, both ways ask what
+  the checks at the integration head say, as a task's merge does: Yulius CI's newest run of
+  that commit when the project has Yulius CI (failed, errored or cancelled refuses; none yet
+  or running waits), else GitHub's checks; unreadable checks never pass. Tasks waiting for
+  promotion then advance to `promoted` (or `production_done` without production environments).
 - **Environment runs** need `{"confirm": true}` on every request. For an environment with a
   command, the run starts in the background and `GET …/runs/{run_id}` reports progress; only one
   command run per sandbox runs at a time (`conflict` otherwise). An environment without a command
@@ -786,8 +797,13 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 
 - **Runs.** Every open pull request into the integration branch (same repository, at most 30) and
   every new integration and production head is tested once per commit. The integration branch's
-  configuration applies; while it has none, a pull request that adds CI is tested with its own
-  (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
+  configuration applies; a pull request that changed the jobs since it branched off is tested
+  with its own, which keep the trusted security job, and while the integration branch has
+  none, a pull request that adds CI is tested with its own (`source: pull_request`). A merge
+  train, a playground task's merge, and a run again of a pull request's or a playground task's
+  run are given their jobs by the same rule (a train's run is not run again). While the
+  integration branch's configuration cannot be read, no pull request is tested; a playground
+  task's merge that brings a readable one is, with it. A newer head cancels the active run of the same reference ("superseded
   by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
   checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
@@ -863,7 +879,7 @@ restart is recorded as `error` and never run again by itself.
 | `POST /api/sandboxes/{sid}/cd/{env}/rollback`, a production-stage `env` | admin, `{"part"?, "release"?, "confirm": "<slug>", "confirm_ms"?}` | the running `CdRun`; never promotes |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
-| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216) |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216). Allowing needs the caller's fresh two-factor code, as a reveal does (403 `reauth_required` with the reauth status; 403 `forbidden` for an API token; ADR-0317); revoking does not |
 
 ```text
 CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage; the default first,
@@ -1173,7 +1189,7 @@ resolves to nothing, the run gets the server without that variable or token.
     `{"type":"agent_activity","tab_id","x","y","action":"click|type|open|navigate","label"}` (an
     agent acted; `x`/`y` in viewport CSS pixels or null), `{"type":"action_requested","tab_id",
     "reason","task_id"}`, `{"type":"error","code":"invalid|url_refused|not_found|capacity|
-    upstream|internal","message"}`.
+    input_locked|upstream|internal","message"}`.
   - Bounds: an acknowledging viewer has at most its base round trip plus 120 ms of video
     unacknowledged; video that waited on the server 250 ms (or beyond 300 frames, 8 MiB) is
     dropped and the viewer resumes at a fresh keyframe, which the server asks the encoder for
@@ -1184,12 +1200,20 @@ resolves to nothing, the run gets the server without that variable or token.
     `invalid` error. Pointer moves are coalesced (the newest position is applied; a press, release
     or key lands after the position before it) and a move or wheel turn is never answered with an
     error; wheel turns are summed while Chrome has two outstanding. Discrete input the display
-    cannot take (its X server stopped reading) gets `capacity`. Keys and buttons a viewer held are
+    cannot take (its X server stopped reading) gets `capacity`. On a virtual display, button and
+    key presses get `input_locked` (with what an administrator runs) while the browser does not
+    answer that the host's managed policy is in force (ADR-0318); moves, the wheel and releases
+    pass; a "no" is asked again after 5 s, a "yes" after 5 minutes. Keys and buttons a viewer held are
     released when it leaves. Access is re-checked every 60 s (close 4003). When Chromium is
     missing or the browser stops, the server sends an `upstream` error with the reason and closes
     with 1011. Addresses of Yulius itself (its public origin and its subdomains, every loopback
     form of its listeners) are refused with `url_refused`, and pages' own requests to them fail as
-    blocked (SPEC-001 BRW-008).
+    blocked (SPEC-001 BRW-008). The browser goes out through a proxy of its own and reaches what
+    its sandbox's processes reach: of local addresses only its sandbox's dev-server ports on
+    `localhost` (by that name, a name below it or the address; and the welcome page). Another sandbox's port, a service of the host, a
+    link-local address: a plain request is answered 403 "the sandbox browser does not load …",
+    a tunnel (HTTPS, a WebSocket) does not connect, for the agents' tools, a viewer's address
+    bar and a page's own requests alike (ADR-0321).
 - New tabs of the sandbox Chrome open `GET /browser/welcome?sandbox=<id>` on the internal
   (loopback) listener: the sandbox name and links to its listening dev-server ports (probed on
   127.0.0.1 every 5 s via `/browser/welcome/ports`; Yulius's own ports are never listed).
@@ -1489,7 +1513,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
 | POST | `/api/admin/accounts/login/{login_id}/cancel` | instance admin | → `{"status":"cancelled|ok|error|running"}`: stops a running login and waits (at most 15 s) for its end. Its process is stopped and its temporary directory removed; the account keeps its state (`cancelled`), unless the output already held a complete token, which is sealed (`ok`). `running` when it had not ended within the wait. Audited `account.login_cancelled`. Once ended, nothing changes and the answer is how it ended; 404 for an unknown or expired login (SPEC-243) |
 | POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: the Subscriptions page's Refresh (SPEC-473, ADR-0307). It asks Claude for the account's usage windows (`/api/oauth/usage`, else the rate-limit headers of a one-token request on the cheapest model) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). Then it asks Claude about each usage limit stored for the account and in effect, one request of one output token with the model that limit binds: a model of each family whose own weekly window is used up (`weekly_fable`, `weekly_opus`, `weekly_sonnet`), and the default model for a limit of the whole subscription (`limit_reached`). A model that runs ends its limit, and a task that waits for it goes on; a refusal that names a reset gives it to a limit stored without one; nothing is asked when no limit is stored. The usage endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: a reading Claude does not share is not an error — the answer is the account with its windows as they were and `usage_read: false` (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later; the limits are asked about all the same. `usage_read` is only in this answer and says whether Claude gave a usage reading this time: by the reading itself, or with an answer about a limit that carried the 5-hour and the weekly window. A window the reading itself carried (`weekly_opus`, `weekly_sonnet` from the usage endpoint) is not asked about: the reading is Claude's word on it. A reading or an answer that comes back after the subscription was signed in again is not stored, nor is a note about it; the refresh then answers 502 "This subscription was signed in again while its usage was read; refresh it once more.". 502 with one plain sentence when Claude refuses the sign-in (401), a request fails for now, Claude throttles the reading (the limits are still asked about first), a question about a limit gets no answer ("Claude did not answer when asked whether the limit still holds; the limit stays as it was.") or the call passes its deadline of 25 s ("Claude took too long to answer; what it had answered by then is stored."); except for a throttle the sentence is also kept as `last_error`, prefixed `usage: `. What was stored about a limit stays in each of those cases. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null","cost_usd|null"}` observed by Yulius (ROT-009; runs started in the window; `cost_usd` is their estimate at Claude API list prices, SPEC-110) The server also reads every signed-in account in the background (a round every 2 min; a subscription whose usage was read in the last 90 s is skipped, and one the round read is asked again after 5 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; the round asks about no limit (ADR-0307); a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
-| GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
+| GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4). `available` counts the subscriptions a task of the default model can be placed on now, and each account's `available` says the same; `fallback_model` (`"claude-opus-5-5"` or `null`) is set while no subscription can run the default model and one can run its fallback: such a task is placed with the fallback, `available` counts the subscriptions that run it, and `resumes_at` is the earliest time either model can run (SPEC-482) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
@@ -1760,7 +1784,7 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 | POST | `/api/team-secrets` | `{scope?: "instance", title, value?, notes?}` → 201 a team-wide `TeamSecret` (any other field: 422) |
 | GET | `/api/sandboxes/{sid}/team-secrets` | (read) → `[TeamSecret]`: the sandbox's and the team-wide ones (SPEC-216) |
 | POST | `/api/sandboxes/{sid}/team-secrets` | `{scope?: "sandbox" (default)\|"instance", title, value?, notes?}` → 201 `TeamSecret`; a sandbox's needs write access (403 for readers, 404 without access) |
-| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret`. A sandbox's: write access (403 for readers, 404 without access) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret`. A sandbox's: write access (403 for readers, 404 without access). 409 when someone saved it since this edit read it (reload) |
 | DELETE | `/api/team-secrets/{id}` | → 204. A sandbox's: write access |
 | POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields; a sandbox's: read access, 404 without). Audited (`vault.team.reveal` / `vault.team.copy`) |
 
@@ -1789,11 +1813,11 @@ after an unlock.
 | GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"\|"personal"), enabled, shadowed_by?, hosts, requested_hosts, requested_by, env_files ("no"\|"asked"\|"allowed"), env_requested_by, cd_prod, auto_allow, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, flattened, can_manage}` — the project's secrets, every global one and the caller's own personal ones (`enabled`: it reaches this project's runs; `shadowed_by`: the scope whose secret of the same name wins, project > personal > global, [ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md); `has_totp`: only older secrets; `flattened`: a key whose line breaks were lost before SPEC-193, to be pasted again, told only to people who manage it) |
 | POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance"\|"personal", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value, auto_allow?: true (default)\|false, env_files?: bool}` → 201. `auto_allow` (SPEC-216): agents bind the hosts they ask for at once and production CD runs get the value. `env_files: true` (SPEC-256): it starts allowed into `.env` files (`secret_copy_to_env` asks no one), audited `vault.agent.env_allow` "at creation"; 422 for a personal secret or with `auto_allow: false`. Sandbox scope: write access; instance (global): instance administrators; personal: the caller's own, which needs work access. A global or personal secret starts switched on for `{sid}`. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name; under the reserved `ANTHROPIC_` only `ANTHROPIC_API_KEY_<NAME>` and `ANTHROPIC_AUTH_TOKEN_<NAME>`, ADR-0292); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks (a multi-line key holds literal `\n`; a key flattened onto one line, `-----BEGIN X-----` … `-----END Y-----` (any labels) with no `\n`, is refused with 422, SPEC-193); `username` only for (and required by) `basic`. 409 when the name exists in its scope; 429 past 200 secrets reaching the project |
 | PUT | `/api/sandboxes/{sid}/agent-secrets/{id}/enabled` | `{enabled: bool}` → `AgentSecret`: switches a global secret (instance administrators, 403 otherwise) or the caller's own personal one (needs work access on the project) on or off for the project; 422 for a project secret; 429 past 200 secrets reaching the project. Audited `vault.agent.enable` / `vault.agent.disable` |
-| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts, `auto_allow` or value changed since it was read (reload). For a secret allowed use by use (`auto_allow` off) a host it is not bound to, or `auto_allow: true`, sends its value somewhere new, which reads it (ADR-0317): 403 `reauth_required` with the reauth status until the caller's two-factor code is fresh, as for a reveal, and 403 `forbidden` for an API token; nothing changes. Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/sandboxes/{sid}/agent-secrets/{id}/copy` | `{allow: bool, name, hosts: [..]}` → `AgentSecret` (the production secret, as the project's list shows it): answers the copy an agent of the project asked for with `secret_request_copy` (SPEC-440). `name` and `hosts` are what the person saw (409 unless they are what waits; 409 when nothing waits). Needs manage rights on the secret and write access to the project (403/404); allowing also needs the secret still to be a production secret (409) and a fresh two-factor unlock (403 `reauth_required` with `reauth`, as a reveal; API tokens 403). Allowing adds the project secret `name` with the production secret's value, injection, user name and two-factor seed, bound to `hosts`, `auto_allow` off and no `.env` allowance, in the transaction that removes the request (409 for a name taken meanwhile, the request stays); dismissing removes it. Audited (`vault.agent.copy_allow` with `vault.agent.create`, `vault.agent.copy_dismiss`). A project's list (`GET /api/sandboxes/{sid}/agent-secrets`) shows a waiting copy as the secret's `copy_request: {name, hosts, requested_by, reason, can_answer}` |
-| POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
-| POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
+| POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). For a secret allowed use by use (`auto_allow` off) `allow: true` needs the caller's fresh two-factor code (403 `reauth_required`; 403 `forbidden` for an API token; the request stays, ADR-0317). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
+| POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. For a secret allowed use by use (`auto_allow` off) `allow: true` needs the caller's fresh two-factor code (403 `reauth_required`; 403 `forbidden` for an API token; ADR-0317). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`value` as stored, but a key block stored with literal `\n` as its key file with real line breaks, ADR-0275; `notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 | GET | `/api/sandboxes/{sid}/agent-states` | (read) → `[AgentState]`: `{name, description, version, bytes, files, updated_by, updated_at, restored_path?, restored_version?, restored_at?}`, never content (SPEC-271): the project's folders of operator state; `restored_path` (`~/…` of the sandbox home) is the copy written to, stale while `restored_version` < `version` |
 | PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`; 409 while a CD run holds it (whatever `replace` says), and once a CD run saved it last, 409 unless `replace=true` ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)). Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
@@ -1918,8 +1942,13 @@ task; other hooks answer as usual.
   ended (its attempt over, a CI job's credential closed, a Superagent's shell gone), its token is
   refused (407) and a request on a connection it already holds answers 403 with nothing sent
   (503 when its state cannot be read; ADR-0252).
-- `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
-  [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
+- `POST /internal/scrub/fingerprints` (task token) `{version?}` → `{version, salt, names,
+  needles: [{secret, len, tag, digest}]}`: the run's redaction fingerprints (no values;
+  `version` 2). The answer is the same on every request until a secret changes; `tag` is 3 to 16
+  bits of a hash of the needle's first 8 bytes and `digest` is `SHA-256(salt || needle)`
+  (ADR-0313). A playground a guest joined gets only its MCP servers' own values. A request that
+  does not name version 2 comes from the wrapper of a session an older Yulius launched: its
+  fingerprint file is brought up to date in the format it reads before the answer.
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
   once per run, secret and channel (`vault.agent.redacted`).
 - MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
@@ -1945,9 +1974,20 @@ task; other hooks answer as usual.
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it
   ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
-  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
-  it kept from before production secrets became exclusive, which only the egress proxy still uses
-  (SPEC-405). Pixels are not redacted, so `browser_screenshot` is a tool error pointing to
+  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), and the
+  egress proxy sends it for no one; it has no hosts
+  ([ADR-0324](decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md)). The page is the one the browser shows when the typing begins, not the one Yulius
+  last listed for the tab: a tab that went elsewhere meanwhile gets nothing typed ("nothing was
+  typed: this tab shows … now"), and a page that moves on by itself while it is typed to a
+  site the secret is not for answers with where it went instead of `filled` (ADR-0319). The
+  keys go to the element with the focus: unless that is a text field of the page itself, a
+  page that holds a frame of a site the secret is not for gets nothing typed ("the focus is
+  not in a field of this page itself, and the page holds a frame of …"; name a field of the
+  page with `selector`, or ask for that host), and so does a tab on its way to such a site
+  after a click ("this tab is on its way to …"), both 403; a frame that took the focus while
+  it was typed is reported like a page that moved on. The secret's user name and one-time
+  code (`field`) are typed under the same rules (ADR-0320). Pixels
+  are not redacted, so `browser_screenshot` is a tool error pointing to
   `browser_snapshot` while the page shows an agent secret, cannot be read or frames a site a value
   was filled into, and, after a fill of a value (not a user name or TOTP code) outside a password
   field or edited in place, on every page of that host until Yulius restarts (SPEC-450).

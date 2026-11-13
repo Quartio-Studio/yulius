@@ -417,7 +417,7 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
         ["task:1"],
         "each use is audited under the instance key"
     );
-    let redactor = app.egress_redactor(&s1).await;
+    let redactor = app.egress_redactor(&s1).await.ok_or("matcher")?;
     let (redacted, _) = redact_text(redactor.as_ref(), &format!("echo {SAVED}"));
     assert_eq!(redacted, "echo [secret:VIDOC_API_KEY]");
 
@@ -446,7 +446,10 @@ async fn the_instance_key_reaches_vidoc_through_the_proxy_only() -> TestResult {
         forwarded(&sent, "x-api-key").map(|(v, _)| v).as_deref(),
         Some(REPLACED)
     );
-    let (redacted, _) = redact_text(app.egress_redactor(&s1).await.as_ref(), REPLACED);
+    let (redacted, _) = redact_text(
+        app.egress_redactor(&s1).await.ok_or("matcher")?.as_ref(),
+        REPLACED,
+    );
     assert_eq!(redacted, "[secret:VIDOC_API_KEY]");
 
     // Agents see it listed, without a value.

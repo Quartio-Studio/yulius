@@ -39,11 +39,11 @@ pub type EgressBody = UnsyncBoxBody<Bytes, std::io::Error>;
 const WARN_EVERY: Duration = Duration::from_secs(60);
 
 /// Connect timeout toward a destination.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// TLS handshake with the agent's client.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Request head read timeout inside an intercepted connection.
-const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest life of one tunnel or intercepted connection.
 const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
 /// Least idle time before a connection gives way to a new one at a limit (SPEC-355 SLR-002,
@@ -51,7 +51,7 @@ const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
 /// waits without a byte.
 pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 /// DNS resolution timeout.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Headers that belong to one hop (RFC 9110 §7.6.1) or to the proxy.
 const HOP_BY_HOP: &[&str] = &[
@@ -111,9 +111,9 @@ pub struct EgressProxy {
     policy: Arc<dyn EgressPolicy>,
     ca: CertificateAuthority,
     http: reqwest::Client,
-    resolve: HashMap<String, SocketAddr>,
+    pub(crate) resolve: HashMap<String, SocketAddr>,
     /// How long a plain request waits for its response head with no progress (SPEC-369).
-    response_head_timeout: Duration,
+    pub(crate) response_head_timeout: Duration,
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
@@ -229,7 +229,7 @@ fn wall_ms() -> i64 {
 }
 
 /// A connection's place in its sandbox's share and the proxy. Freed when it ends.
-struct Slot {
+pub(crate) struct Slot {
     slots: Arc<Slots>,
     id: u64,
     activity: Activity,
@@ -264,7 +264,7 @@ impl Drop for Slot {
 /// When a request last made progress (a request-body frame forwarded upstream), in ms after it
 /// began (SPEC-369 PHT-001).
 #[derive(Clone)]
-struct Progress {
+pub(crate) struct Progress {
     start: Instant,
     last_ms: Arc<AtomicU64>,
 }
@@ -279,14 +279,14 @@ impl Default for Progress {
 }
 
 impl Progress {
-    fn touch(&self) {
+    pub(crate) fn touch(&self) {
         let now = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.last_ms.store(now, Ordering::Relaxed);
     }
 
     /// `waiting`'s output, or `None` once `bound` passed with no progress. A bound past the clock's
     /// range waits with no bound.
-    async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
+    pub(crate) async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
         let mut waiting = std::pin::pin!(waiting);
         loop {
             let last = self.last_ms.load(Ordering::Relaxed);
@@ -453,7 +453,7 @@ impl reqwest::dns::Resolve for PolicyResolver {
     }
 }
 
-fn text(status: u16, message: &str) -> Response<EgressBody> {
+pub(crate) fn text(status: u16, message: &str) -> Response<EgressBody> {
     let mut response = Response::new(
         Full::new(Bytes::from(format!("{message}\n")))
             .map_err(|never| match never {})
@@ -479,7 +479,7 @@ fn auth_required() -> Response<EgressBody> {
     response
 }
 
-fn empty(status: StatusCode) -> Response<EgressBody> {
+pub(crate) fn empty(status: StatusCode) -> Response<EgressBody> {
     let mut response = Response::new(Empty::new().map_err(|never| match never {}).boxed_unsync());
     *response.status_mut() = status;
     response
@@ -497,12 +497,12 @@ fn proxy_token(headers: &hyper::http::HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_owned())
 }
 
-fn hop(name: &str) -> bool {
+pub(crate) fn hop(name: &str) -> bool {
     HOP_BY_HOP.contains(&name)
 }
 
 /// A host for a URL (IPv6 literals in brackets).
-fn url_host(host: &str) -> String {
+pub(crate) fn url_host(host: &str) -> String {
     if host.contains(':') {
         format!("[{host}]")
     } else {
@@ -511,7 +511,7 @@ fn url_host(host: &str) -> String {
 }
 
 /// `host:port` of a CONNECT request.
-fn connect_target(uri: &hyper::http::Uri) -> Option<(String, u16)> {
+pub(crate) fn connect_target(uri: &hyper::http::Uri) -> Option<(String, u16)> {
     let authority = uri.authority()?;
     let host = authority
         .host()
@@ -547,6 +547,8 @@ struct Outgoing {
     method: Method,
     path: String,
     headers: Vec<(String, Vec<u8>)>,
+    /// What to redact from the answer, read before anything is sent.
+    matcher: Arc<PlainMatcher>,
 }
 
 /// A response body redacted as it streams.
@@ -634,13 +636,12 @@ impl EgressProxy {
     ///
     /// A `held` connection (a plain request) is held in flight before the table is released, so
     /// nothing takes it meanwhile (review round 4).
-    fn slot(
+    pub(crate) fn slot(
         &self,
-        client: &EgressClient,
+        sandbox: &str,
+        run: &str,
         held: bool,
     ) -> Result<(Slot, oneshot::Receiver<()>), String> {
-        let sandbox = client.sandbox_id.as_str();
-        let run = client.use_key();
         let (end, ended) = oneshot::channel();
         let (admitted, counts, holders) = self.slots.admit(sandbox, run, held, end);
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
@@ -754,10 +755,11 @@ impl EgressProxy {
                 Ok(addrs) => addrs,
                 Err(message) => return text(403, &message),
             };
-            let (permit, ended) = match self.slot(&client, false) {
-                Ok(slot) => slot,
-                Err(refused) => return text(503, &refused),
-            };
+            let (permit, ended) =
+                match self.slot(client.sandbox_id.as_str(), client.use_key(), false) {
+                    Ok(slot) => slot,
+                    Err(refused) => return text(503, &refused),
+                };
             let on_upgrade = hyper::upgrade::on(&mut request);
             let proxy = Arc::clone(self);
             tokio::spawn(async move {
@@ -825,19 +827,13 @@ impl EgressProxy {
         };
         // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
         // through no tracked stream), so its wait for the head is bounded (SPEC-369 PHT-001).
-        let (permit, ended) = match self.slot(&client, true) {
+        let (permit, ended) = match self.slot(client.sandbox_id.as_str(), client.use_key(), true) {
             Ok(slot) => slot,
             Err(refused) => return text(503, &refused),
         };
         drop(ended);
         let response = self
-            .send(
-                &client,
-                &upstream,
-                outgoing,
-                body,
-                Some(self.response_head_timeout),
-            )
+            .send(&upstream, outgoing, body, Some(self.response_head_timeout))
             .await;
         drop(permit);
         response
@@ -909,7 +905,7 @@ impl EgressProxy {
         B::Error: Into<BoxError>,
     {
         match self.prepare(client, upstream, &parts).await {
-            Ok(outgoing) => self.send(client, upstream, outgoing, body, None).await,
+            Ok(outgoing) => self.send(upstream, outgoing, body, None).await,
             Err((status, message)) => text(status, &message),
         }
     }
@@ -937,6 +933,13 @@ impl EgressProxy {
             .flat_map(|v| v.split(','))
             .map(|v| v.trim().to_ascii_lowercase())
             .collect();
+        let Some(matcher) = self.policy.egress_redactor(client).await else {
+            return Err((
+                503,
+                "Yulius proxy: agent secrets cannot be read right now, so the answer could not be checked for them; nothing was sent, try again"
+                    .to_owned(),
+            ));
+        };
         let path = parts
             .uri
             .path_and_query()
@@ -971,6 +974,7 @@ impl EgressProxy {
             method: parts.method.clone(),
             path,
             headers,
+            matcher,
         })
     }
 
@@ -980,7 +984,6 @@ impl EgressProxy {
     /// bounded.
     async fn send<B>(
         &self,
-        client: &EgressClient,
         upstream: &Upstream,
         outgoing: Outgoing,
         body: B,
@@ -994,6 +997,7 @@ impl EgressProxy {
             method,
             path,
             headers,
+            matcher,
         } = outgoing;
         let mut builder = self.http.request(method, upstream.url(&path));
         for (name, value) in headers {
@@ -1049,49 +1053,45 @@ impl EgressProxy {
                 );
             }
         };
-        self.respond(client, response).await
-    }
-
-    async fn respond(
-        &self,
-        client: &EgressClient,
-        response: reqwest::Response,
-    ) -> Response<EgressBody> {
-        let matcher = self.policy.egress_redactor(client).await;
-        if !matcher.is_empty()
-            && let Some(encoding) = response
-                .headers()
-                .get(header::CONTENT_ENCODING)
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_ascii_lowercase())
-            && encoding != "identity"
-        {
-            return text(
-                502,
-                &format!(
-                    "Yulius proxy: the response is compressed ({encoding}) and cannot be checked for agent secrets; request it without Accept-Encoding"
-                ),
-            );
-        }
-        let mut builder = Response::builder().status(response.status().as_u16());
-        for (name, value) in response.headers() {
-            if hop(name.as_str()) || name == header::CONTENT_LENGTH {
-                continue;
-            }
-            let (redacted, _) = redact_all(matcher.as_ref(), value.as_bytes());
-            if let Ok(value) = HeaderValue::from_bytes(&redacted) {
-                builder = builder.header(name, value);
-            }
-        }
-        let body = redacting_body(response.bytes_stream(), matcher);
-        builder
-            .body(body)
-            .unwrap_or_else(|_| text(502, "Yulius proxy: invalid upstream response"))
+        respond(response, matcher)
     }
 }
 
+/// The upstream's answer for the client, redacted with `matcher` as it streams.
+fn respond(response: reqwest::Response, matcher: Arc<PlainMatcher>) -> Response<EgressBody> {
+    if !matcher.is_empty()
+        && let Some(encoding) = response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim().to_ascii_lowercase())
+        && encoding != "identity"
+    {
+        return text(
+            502,
+            &format!(
+                "Yulius proxy: the response is compressed ({encoding}) and cannot be checked for agent secrets; request it without Accept-Encoding"
+            ),
+        );
+    }
+    let mut builder = Response::builder().status(response.status().as_u16());
+    for (name, value) in response.headers() {
+        if hop(name.as_str()) || name == header::CONTENT_LENGTH {
+            continue;
+        }
+        let (redacted, _) = redact_all(matcher.as_ref(), value.as_bytes());
+        if let Ok(value) = HeaderValue::from_bytes(&redacted) {
+            builder = builder.header(name, value);
+        }
+    }
+    let body = redacting_body(response.bytes_stream(), matcher);
+    builder
+        .body(body)
+        .unwrap_or_else(|_| text(502, "Yulius proxy: invalid upstream response"))
+}
+
 /// An opaque tunnel to a host without agent secrets.
-async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
+pub(crate) async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
     let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await {
         Ok(Ok(stream)) => stream,
         _ => {

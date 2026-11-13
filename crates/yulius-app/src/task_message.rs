@@ -281,6 +281,20 @@ impl App {
                 task.number
             )));
         }
+        // A screen that is withheld, or misses output dropped while it was (agent secrets could
+        // not be read, ADR-0317), is not what the program drew: a dialog may show there that
+        // nobody saw, and a paste and an Enter would answer it.
+        if runtime.screen_withheld() {
+            // Its person learns it here, once: until the task is stopped and continued, every
+            // message for it is kept out (review of SPEC-483 slice 5, round 4).
+            self.screen_withheld(&task.id).await;
+            return Err(AppError::Conflict(format!(
+                "{} into task #{}: its person stops and continues the task (and first replaces \
+                 or deletes the agent secret that cannot be read, while the terminal says so)",
+                crate::supervisor::SCREEN_WITHHELD,
+                task.number
+            )));
+        }
         // Before Claude Code's session starts, typed input is lost or left unsubmitted, and a
         // trust dialog only a person answers (SPEC-117 ONE-005) may show or be about to: a paste
         // and an Enter would answer it with its default. Without a SessionStart (a CLI without
