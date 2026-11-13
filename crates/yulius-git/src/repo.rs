@@ -37,10 +37,21 @@ impl Git {
         Ok(())
     }
 
-    /// Clones `url` into the absolute `dest` (network timeout applies).
+    /// Clones `url` into the absolute `dest` (network timeout applies). A clone from elsewhere
+    /// into a sandbox's folder is made in a repository of the server's own first
+    /// ([`Git::clone_through`], ADR-0323).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
+        let a_sandboxes = self
+            .confinement
+            .as_ref()
+            .and_then(|confinement| confinement.sandbox_of_path(dest));
+        if let Some((data, id)) = a_sandboxes
+            && !Path::new(url).is_absolute()
+        {
+            return self.clone_through((&data, &id), url, dest);
+        }
         self.run_ok(
             Invocation::new(self, "clone", None)
                 .args(["clone", "--quiet", "--no-recurse-submodules", "--", url])
@@ -66,7 +77,7 @@ impl Git {
             // A folder the caller names itself.
             fetch.arg(remote).local(remote)
         } else {
-            match self.remote_route(repo, remote)? {
+            match self.remote_route(repo, remote, true)? {
                 Route::Folder(origin) => fetch
                     .arg(&origin)
                     .arg(format!("+refs/heads/*:refs/remotes/{remote}/*"))

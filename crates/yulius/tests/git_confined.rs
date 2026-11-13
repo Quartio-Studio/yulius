@@ -506,16 +506,142 @@ async fn a_transfer_with_the_token_is_not_shaped_by_the_clone() -> TestResult {
     let left: Vec<_> = std::fs::read_dir(&couriers)?.flatten().collect();
     assert!(left.is_empty(), "{left:?}");
 
+    // The clone says where its objects are, and a courier borrows them only from its
+    // sandbox's folders: not from a folder outside that Git can read (here through a link),
+    let objects = w.repo.join(".git/objects");
+    let kept = w.repo.join(".git/objects.kept");
+    std::fs::rename(&objects, &kept)?;
+    std::os::unix::fs::symlink("/usr/lib", &objects)?;
+    let transfers = async || {
+        [
+            format!(
+                "{:?}",
+                w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await
+            ),
+            format!(
+                "{:?}",
+                w.adapter.merge_integration(&w.wt, "main", &secret).await
+            ),
+        ]
+    };
+    for answer in transfers().await {
+        assert!(
+            answer.starts_with("Err") && answer.contains("outside its sandbox's folders"),
+            "{answer}"
+        );
+    }
+    // and not from a path that would be two lines of the file that lends them (the second
+    // one naming any folder of the host).
+    let two_lines = w.sandbox.join("a\nb");
+    std::fs::create_dir_all(&two_lines)?;
+    std::fs::remove_file(&objects)?;
+    std::fs::rename(&kept, two_lines.join("objects"))?;
+    std::os::unix::fs::symlink(two_lines.join("objects"), &objects)?;
+    for answer in transfers().await {
+        assert!(
+            answer.starts_with("Err") && answer.contains("on one line"),
+            "{answer}"
+        );
+    }
+    // The head of a branch is listed without the clone's objects.
+    let listed = w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await;
+    assert!(
+        format!("{listed:?}").contains("ls-remote"),
+        "the listing was tried: {listed:?}"
+    );
+    std::fs::remove_file(&objects)?;
+    std::fs::rename(two_lines.join("objects"), &objects)?;
+
     // A worktree that names another sandbox's repository as its own: no transfer is made
     // with that repository's objects (the confined Git cannot even read it).
     let commondir = w.repo.join(".git/worktrees/t1/commondir");
+    let own = std::fs::read_to_string(&commondir)?;
     std::fs::write(
         &commondir,
         format!("{}\n", w.other_repo.join(".git").display()),
     )?;
     let lent = w.adapter.push(&w.wt, "feat/1", "feat/1", &secret).await;
     assert!(lent.is_err(), "{lent:?}");
+    std::fs::write(&commondir, own)?;
+
+    // A remote without an address of its own (`remote.<name>.url`): Git would make one of
+    // other keys of the clone's (a rewrite of the name, here to a server of the agent's that
+    // would ask for a password, with the loader as the program to ask through), and make the
+    // transfer in the clone. It is refused before any connection.
+    git(&w.repo, &["config", "--unset", "remote.origin.url"])?;
+    let rewrite = format!("url.{at}/r.git.insteadOf");
+    git(&w.repo, &["config", &rewrite, "origin"])?;
+    git(
+        &w.repo,
+        &["config", "core.askPass", "/lib64/ld-linux-x86-64.so.2"],
+    )?;
+    for answer in transfers().await.into_iter().chain([format!(
+        "{:?}",
+        w.adapter.remote_branch_head(&w.wt, "feat/1", &secret).await
+    )]) {
+        assert!(
+            answer.starts_with("Err") && answer.contains("gives it no address"),
+            "{answer}"
+        );
+    }
     assert_eq!(asked(), 0, "still not asked");
+    let left: Vec<_> = std::fs::read_dir(&couriers)?.flatten().collect();
+    assert!(left.is_empty(), "{left:?}");
+    Ok(())
+}
+
+/// A missing object is missing. A clone can name a "promisor" remote that Git fetches missing
+/// objects from, with a command for the other side: the shell of a transfer between two
+/// folders (a push to a playground's origin) would run it when the commit to push lacks its
+/// tree.
+#[tokio::test]
+async fn a_missing_object_is_not_fetched_with_the_clones_command() -> TestResult {
+    let w = world().await?;
+    let (command, marker) = w.marking("ran-promisor");
+    let promisor = w.sandbox.join("promisor.git");
+    std::fs::create_dir_all(&promisor)?;
+    git(&promisor, &["init", "--bare", "-q", "-b", "main"])?;
+    for (key, value) in [
+        ("extensions.partialClone", "promisor"),
+        ("remote.promisor.promisor", "true"),
+        ("remote.promisor.url", &*promisor.to_string_lossy()),
+        (
+            "remote.promisor.uploadpack",
+            &*format!("{command}; git-upload-pack"),
+        ),
+    ] {
+        git(&w.repo, &["config", key, value])?;
+    }
+    // A commit of the agent's whose tree no repository has.
+    let parent = git(&w.wt, &["rev-parse", "HEAD"])?;
+    let commit = format!(
+        "tree 1234567890123456789012345678901234567890\nparent {parent}\n\
+         author a <a@example.com> 1 +0000\ncommitter a <a@example.com> 1 +0000\n\nx\n"
+    );
+    let source = w.sandbox.join("commit.txt");
+    std::fs::write(&source, commit)?;
+    let made = git(
+        &w.wt,
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            &source.to_string_lossy(),
+        ],
+    )?;
+    git(&w.wt, &["update-ref", "refs/heads/feat/1", &made])?;
+
+    let _ = w.adapter.push(&w.wt, "feat/1", "feat/1", &token()).await;
+    let _ = w.adapter.merge_integration(&w.wt, "main", &token()).await;
+    let _ = w.adapter.review_changes(&w.wt, "origin/main").await;
+    let _ = w.adapter.diff_stat(&w.wt, "origin/main", "HEAD").await;
+    let _ = w
+        .adapter
+        .sync_clone(&w.origin.to_string_lossy(), &w.repo, &token())
+        .await;
+    assert!(!marker.exists(), "the clone's command for its remote ran");
     Ok(())
 }
 
@@ -537,8 +663,29 @@ async fn a_fetch_and_a_push_through_the_servers_own_repository_arrive() -> TestR
     let sandbox = root.join("sandboxes/s1");
     let (repo, wt) = (sandbox.join("repo"), sandbox.join("worktrees/t1"));
     std::fs::create_dir_all(sandbox.join("worktrees"))?;
+    git(&origin, &["tag", "v1", "main"])?;
+    // The clone is made in a repository of the server's own and copied: what a clone has, it
+    // has (the checked-out default branch following the remote's, the remote's branches and
+    // tags, the note of its default branch), and its address is the remote's.
     adapter.sync_clone(url, &repo, &token()).await?;
     assert_eq!(git(&repo, &["config", "remote.origin.url"])?, url);
+    assert_eq!(git(&repo, &["config", "branch.main.remote"])?, "origin");
+    assert_eq!(
+        git(&repo, &["config", "branch.main.merge"])?,
+        "refs/heads/main"
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("README.md"))?, "# one\n");
+    let head_note = || git(&repo, &["symbolic-ref", "refs/remotes/origin/HEAD"]);
+    assert_eq!(head_note()?, "refs/remotes/origin/main");
+    assert_eq!(
+        git(&repo, &["rev-parse", "v1", "origin/gone"])?,
+        git(&origin, &["rev-parse", "v1", "gone"])?
+    );
+    assert_eq!(adapter.default_branch(&repo).await?, "main");
+    let couriers = || -> Result<usize, std::io::Error> {
+        Ok(std::fs::read_dir(root.join("git-couriers"))?.count())
+    };
+    assert_eq!(couriers()?, 0, "the clone's courier is gone");
     let base = git(&repo, &["rev-parse", "HEAD"])?;
     adapter.add_worktree(&repo, &wt, "feat/1", &base).await?;
     adapter
@@ -587,11 +734,86 @@ async fn a_fetch_and_a_push_through_the_servers_own_repository_arrive() -> TestR
         git(&repo, &["rev-parse", "--verify", "--quiet", "origin/gone"]).is_err(),
         "a branch gone from the remote is pruned"
     );
+    assert_eq!(head_note()?, "refs/remotes/origin/main", "the note stays");
+    // A clone without the note of the remote's default branch (one made while the remote was
+    // empty) gets it with a fetch, as a fetch by the remote's name gives it; a note it has
+    // is its own to keep.
+    git(&origin, &["branch", "trunk", "main"])?;
+    git(&origin, &["symbolic-ref", "HEAD", "refs/heads/trunk"])?;
     adapter.sync_clone(url, &repo, &token()).await?;
-    let left: Vec<_> = std::fs::read_dir(root.join("git-couriers"))?
-        .flatten()
-        .collect();
-    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(head_note()?, "refs/remotes/origin/main", "kept");
+    git(&repo, &["symbolic-ref", "-d", "refs/remotes/origin/HEAD"])?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(head_note()?, "refs/remotes/origin/trunk");
+    assert_eq!(adapter.default_branch(&repo).await?, "trunk");
+    assert_eq!(couriers()?, 0);
+
+    // An empty remote: the clone is made, and has no note until the remote has a branch.
+    let empty = github.join("acme/empty.git");
+    std::fs::create_dir_all(&empty)?;
+    git(&empty, &["init", "--bare", "-q", "-b", "main"])?;
+    let (empty_url, second) = (
+        "https://github.com/acme/empty.git",
+        root.join("sandboxes/s2/repo"),
+    );
+    std::fs::create_dir_all(root.join("sandboxes/s2"))?;
+    adapter.sync_clone(empty_url, &second, &token()).await?;
+    assert_eq!(git(&second, &["config", "remote.origin.url"])?, empty_url);
+    adapter.sync_clone(empty_url, &second, &token()).await?;
+    assert!(git(&second, &["symbolic-ref", "refs/remotes/origin/HEAD"]).is_err());
+    let target = empty.to_string_lossy().into_owned();
+    git(&elsewhere, &["push", "-q", &target, "main"])?;
+    adapter.sync_clone(empty_url, &second, &token()).await?;
+    assert_eq!(
+        git(&second, &["symbolic-ref", "refs/remotes/origin/HEAD"])?,
+        "refs/remotes/origin/main"
+    );
+    assert_eq!(couriers()?, 0);
+    Ok(())
+}
+
+/// A data folder reached through a link (a bigger disk behind `/var/lib/yulius`): the clone's
+/// objects are found by following links, and so are the sandbox's folders they must lie in.
+#[tokio::test]
+async fn a_data_folder_behind_a_link_transfers_as_any_other() -> TestResult {
+    struct Link(PathBuf);
+    impl Drop for Link {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let dir = tempfile::tempdir()?;
+    let real = dir.path().canonicalize()?;
+    // The data folder as the server is given it: a child of the temporary folder, a link.
+    let name = real.file_name().ok_or("name")?.to_string_lossy();
+    let link = Link(real.with_file_name(format!("{name}-link")));
+    std::os::unix::fs::symlink(&real, &link.0)?;
+    let root = link.0.clone();
+    let github = real.join("github");
+    let origin = github.join("acme/app.git");
+    seeded(&origin, "README.md", "# one\n")?;
+    let adapter = crate::support::strict_git().with_github_base(&github);
+    let url = "https://github.com/acme/app.git";
+    let (repo, wt) = (
+        root.join("sandboxes/s1/repo"),
+        root.join("sandboxes/s1/worktrees/t1"),
+    );
+    std::fs::create_dir_all(root.join("sandboxes/s1/worktrees"))?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    let base = git(&repo, &["rev-parse", "HEAD"])?;
+    adapter.add_worktree(&repo, &wt, "feat/1", &base).await?;
+    std::fs::write(wt.join("a.txt"), "a\n")?;
+    adapter
+        .commit_all(&wt, "feat: a", "Alice", "alice@example.com")
+        .await?;
+    adapter.push(&wt, "feat/1", "feat/1", &token()).await?;
+    assert_eq!(
+        git(&origin, &["rev-parse", "feat/1"])?,
+        git(&wt, &["rev-parse", "HEAD"])?
+    );
+    adapter.merge_integration(&wt, "main", &token()).await?;
+    adapter.sync_clone(url, &repo, &token()).await?;
+    assert_eq!(std::fs::read_dir(real.join("git-couriers"))?.count(), 0);
     Ok(())
 }
 
@@ -662,6 +884,12 @@ fn the_doctor_reports_the_confinement() -> TestResult {
     let line = said
         .lines()
         .find(|line| line.contains("git confinement"))
+        .ok_or_else(|| format!("no such check in: {said}"))?;
+    assert!(line.starts_with("ok"), "{line}");
+    // And that this machine's Git leaves a missing object missing when told to (ADR-0323).
+    let line = said
+        .lines()
+        .find(|line| line.contains("git missing objects"))
         .ok_or_else(|| format!("no such check in: {said}"))?;
     assert!(line.starts_with("ok"), "{line}");
     Ok(())

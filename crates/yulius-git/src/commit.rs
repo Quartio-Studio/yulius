@@ -174,7 +174,7 @@ impl Git {
         validate_remote(remote)?;
         validate_push_refspec(refspec)?;
         let push = Invocation::new(self, "push", Some(repo)).args(["push", "--quiet", "--"]);
-        let push = match self.remote_route(repo, remote)? {
+        let push = match self.remote_route(repo, remote, true)? {
             Route::Folder(origin) => push.arg(&origin).local(&origin),
             Route::Courier(courier, url) => {
                 let (source, destination) = refspec.split_once(':').unwrap_or((refspec, refspec));
@@ -210,7 +210,8 @@ impl Git {
 
     /// The commit `branch` points at on `remote`, as the remote answers now (`git ls-remote`),
     /// not as a remote-tracking ref last saw it; `None` when the remote has no such branch.
-    /// Bounded by [`REMOTE_HEAD_TIMEOUT`] (or the network deadline when shorter).
+    /// The listing is bounded by [`REMOTE_HEAD_TIMEOUT`] (or the network deadline when
+    /// shorter); finding where to ask, by the usual deadline of a command.
     ///
     /// # Errors
     /// Invalid names, a timeout, or the remote cannot be read.
@@ -223,24 +224,26 @@ impl Git {
         validate_remote(remote)?;
         validate_branch_name(branch)?;
         let wanted = format!("refs/heads/{branch}");
-        let route = self.remote_route(repo, remote)?;
-        // In the courier, when there is one: the listing carries the token too.
-        let at = match &route {
-            Route::Courier(courier, _) => courier.dir.as_path(),
-            _ => repo,
-        };
+        let timeout = self.network_timeout.min(REMOTE_HEAD_TIMEOUT);
         let list =
-            Invocation::new(self, "ls-remote", Some(at)).args(["ls-remote", "--heads", "--"]);
-        let list = match &route {
-            Route::Folder(origin) => list.arg(origin).local(origin),
-            Route::Courier(_, url) => list.arg(url),
-            Route::Named => list.arg(remote),
+            Invocation::new(self, "ls-remote", Some(repo)).args(["ls-remote", "--heads", "--"]);
+        // A listing needs no objects: its courier borrows none.
+        let listed = match self.remote_route(repo, remote, false)? {
+            // In the courier: the listing carries the token too.
+            Route::Courier(courier, url) => self.list_through(&courier, &url, &wanted, timeout)?,
+            Route::Folder(origin) => self
+                .run_ok(
+                    list.arg(&origin)
+                        .local(&origin)
+                        .arg(&wanted)
+                        .timeout(timeout),
+                )?
+                .stdout_text(),
+            Route::Named => self
+                .run_ok(list.arg(remote).arg(&wanted).timeout(timeout))?
+                .stdout_text(),
         };
-        let listed = self.run_ok(
-            list.arg(&wanted)
-                .timeout(self.network_timeout.min(REMOTE_HEAD_TIMEOUT)),
-        )?;
-        Ok(listed.stdout_trimmed().lines().find_map(|line| {
+        Ok(listed.lines().find_map(|line| {
             let (sha, name) = line.split_once('\t')?;
             (name == wanted).then(|| sha.to_owned())
         }))

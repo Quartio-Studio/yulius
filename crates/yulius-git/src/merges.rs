@@ -138,7 +138,7 @@ impl Git {
             });
         }
         let push = Invocation::new(self, "push", Some(worktree)).args(["push", "--quiet", "--"]);
-        let push = match self.remote_route(worktree, remote)? {
+        let push = match self.remote_route(worktree, remote, true)? {
             Route::Folder(origin) => push.arg(&origin).local(&origin),
             Route::Courier(courier, url) => {
                 self.push_through(&courier, &url, &commit, &format!("refs/heads/{branch}"))?;
