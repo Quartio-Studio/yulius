@@ -2077,7 +2077,8 @@ for it, as agents bind its hosts without a person
 Redaction that cannot load a sandbox's secrets withholds on every path: text redacted in one
 piece and a terminal's first screen say so, the live terminal stream shows one notice and drops
 its output until a load succeeds, asking again after a second or when a secret changes
-(`TerminalScrub::needs_load`, `loaded`), and the egress proxy reads the
+(`TerminalScrub::needs_load`, `loaded`; the supervisor types nothing into a terminal whose
+screen is withheld and flags the task, `InputReady::ScreenWithheld`), and the egress proxy reads the
 values before it sends a request and answers 503 without sending (`egress_redactor`). An edit
 of a secret compares the sealed value it read, so it never undoes a rotation made beside it
 (`vault_update`).

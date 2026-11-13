@@ -1537,6 +1537,13 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["cd_prod"], true);
     assert_eq!(f.prod_secret_state().await?, "ready");
+    // Revoking sends the value nowhere new: a token may, without a code.
+    let revoked = cd_prod(false).await?;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert_eq!(revoked.body["cd_prod"], false);
+    assert_eq!(f.prod_secret_state().await?, "not_allowed");
+    assert_eq!(allow_as_person().await?.status, StatusCode::OK);
+    assert_eq!(f.prod_secret_state().await?, "ready");
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let run = f

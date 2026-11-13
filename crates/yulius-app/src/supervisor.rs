@@ -206,6 +206,9 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
+    /// The redaction state of the terminal `hub` shows (the attached run's): while it withholds
+    /// output the screen is not what the program drew (ADR-0317).
+    scrub: Mutex<crate::vault::TerminalScrub>,
     /// The goal-mode session opened with a first message (a resumed session's continuation)
     /// whose turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
@@ -399,6 +402,13 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
+    /// Whether the terminal `hub` shows withholds its output (agent secrets cannot be read):
+    /// its screen is then not what the program drew. A state that cannot be read counts as
+    /// withheld.
+    pub(crate) fn screen_withheld(&self) -> bool {
+        self.scrub.lock().map_or(true, |scrub| scrub.withheld())
+    }
+
     /// Whether a run is attached (a process can redraw the terminal).
     pub(crate) async fn has_run(&self) -> bool {
         self.run.lock().await.is_some()
@@ -519,6 +529,7 @@ impl TaskRuntime {
             turn_end_ms: AtomicI64::new(0),
             turn_order: tokio::sync::Mutex::new(()),
             session_started: AtomicBool::new(false),
+            scrub: Mutex::new(crate::vault::TerminalScrub::default()),
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
@@ -964,7 +975,17 @@ enum InputReady {
     /// Claude Code's folder-trust dialog was still shown after
     /// [`crate::context::AppConfig::trust_answer_ms`]: type nothing into it.
     TrustUnanswered,
+    /// The terminal's screen was withheld for that long (agent secrets cannot be read,
+    /// ADR-0317): what the program shows is unknown, a dialog included, so type nothing.
+    ScreenWithheld,
 }
+
+/// Said when the screen is still withheld at the end of the wait: what is wrong, and what its
+/// person does.
+const SCREEN_WITHHELD: &str =
+    "Agent secrets cannot be read, so this terminal's screen is withheld and Yulius typed nothing";
+const SCREEN_WITHHELD_ANSWER: &str = "Replace or delete the agent secret that cannot be read (the \
+     server's log names the error), then stop and continue the task";
 
 /// Said when the trust dialog is still shown at the end of the wait: what is wrong, and how its
 /// person's part begins.
@@ -1976,6 +1997,7 @@ impl App {
                         app.trust_unanswered(&task_id, ", then type the task's first message.")
                             .await;
                     }
+                    InputReady::ScreenWithheld => app.screen_withheld(&task_id).await,
                 }
                 // A run that is gone leaves the flag to the task's next start, which sets it
                 // for its own first message (this one may already be that run's).
@@ -2055,6 +2077,22 @@ impl App {
         .await;
     }
 
+    /// The terminal's screen is still withheld once the time to wait for it is over (agent
+    /// secrets cannot be read, ADR-0317): nothing was typed, and the task needs a person.
+    async fn screen_withheld(&self, task_id: &TaskId) {
+        self.runtime(task_id)
+            .hub
+            .notice(format!("{SCREEN_WITHHELD}. {SCREEN_WITHHELD_ANSWER}."));
+        self.flag_task(
+            task_id,
+            AttentionRecord::yulius(
+                &format!("{SCREEN_WITHHELD}."),
+                &format!("{SCREEN_WITHHELD_ANSWER}."),
+            ),
+        )
+        .await;
+    }
+
     /// Marks the task as needing a person, for `reason`: what its terminal said to the viewers
     /// there, kept for whoever opens the task later (SPEC-472).
     async fn flag_task(&self, task_id: &TaskId, reason: AttentionRecord) {
@@ -2124,11 +2162,28 @@ impl App {
         let mut quiet_since = tokio::time::Instant::now();
         // When the trust dialog showed; `None` while it does not.
         let mut trust_since: Option<tokio::time::Instant> = None;
+        // Since when the screen is withheld; `None` while it is not.
+        let mut withheld_since: Option<tokio::time::Instant> = None;
         let mut started = started;
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt_id).await {
                 return InputReady::Gone;
+            }
+            // A withheld screen is not what the program drew: whether it reads input, or asks
+            // something (the trust dialog), cannot be told. Nothing is typed until it shows
+            // again, and the wait starts over then, as for a TUI that just started.
+            if runtime.screen_withheld() {
+                let since = *withheld_since.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= Duration::from_millis(self.config.trust_answer_ms) {
+                    return InputReady::ScreenWithheld;
+                }
+                continue;
+            }
+            if withheld_since.take().is_some() {
+                started = tokio::time::Instant::now();
+                quiet_since = started;
+                last = runtime.hub.output_seq();
             }
             let trust = !runtime.session_started.load(Ordering::SeqCst)
                 && trust_prompt_shown(&runtime.hub.screen_text());
@@ -2320,6 +2375,11 @@ impl App {
                     launch_goal_settled(&run_dir);
                     return;
                 }
+                InputReady::ScreenWithheld => {
+                    app.screen_withheld(&task_id).await;
+                    launch_goal_settled(&run_dir);
+                    return;
+                }
             }
             let runtime = app.runtime(&task_id);
             let bound = Duration::from_millis(app.config.launch_goal_ms);
@@ -2385,6 +2445,11 @@ impl App {
                 InputReady::Ready => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => return unanswered().await,
+                InputReady::ScreenWithheld => {
+                    return app
+                        .goal_never_set(&task_id, SCREEN_WITHHELD, Some(SCREEN_WITHHELD_ANSWER))
+                        .await;
+                }
             }
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
@@ -2562,6 +2627,9 @@ impl App {
             .sandbox_id;
         // The terminal people see is redacted of agent secrets (SPEC-002 ADR-20).
         let scrub = crate::vault::TerminalScrub::default();
+        if let Ok(mut shown) = runtime.scrub.lock() {
+            *shown = scrub.clone();
+        }
         let attached = self
             .deps
             .session_host

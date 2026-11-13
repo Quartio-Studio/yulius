@@ -38,6 +38,33 @@ const WITHHELD: &[u8] = b"\r\n[Yulius: the screen is withheld until agent secret
 const RETRY_AFTER: Duration = Duration::from_secs(1);
 
 impl TerminalScrub {
+    /// Whether the terminal's output is withheld: what its screen shows is then not what the
+    /// program drew, so nothing may be read off it or typed by it (the supervisor's waits).
+    pub(crate) fn withheld(&self) -> bool {
+        self.0.lock().map_or(true, |inner| inner.failed.is_some())
+    }
+
+    /// Records how the secrets were read for a whole screen: a failure withholds the stream
+    /// that follows too (no second notice: the screen says it), a success after a failure makes
+    /// the stream load its redactor anew.
+    fn screen_loaded(&self, generation: u64, readable: bool, now: Instant) {
+        let Ok(mut inner) = self.0.lock() else {
+            return;
+        };
+        if let Some(redactor) = inner.redactor.as_mut() {
+            let _ = redactor.flush();
+        }
+        if readable {
+            if inner.failed.take().is_some() {
+                inner.generation = None;
+            }
+        } else {
+            inner.redactor = None;
+            inner.generation = None;
+            inner.failed = Some((generation, now + RETRY_AFTER));
+        }
+    }
+
     /// Whether the redactor has to be loaded for the vault's `generation` before the next
     /// chunk: it was built for another one, or its last load failed and it is time to ask again.
     fn needs_load(&self, generation: u64, now: Instant) -> bool {
@@ -155,12 +182,10 @@ impl App {
         sandbox: &SandboxId,
         bytes: &[u8],
     ) -> Vec<u8> {
-        if let Ok(mut inner) = scrub.0.lock()
-            && let Some(redactor) = inner.redactor.as_mut()
-        {
-            let _ = redactor.flush();
-        }
-        match self.agent_secret_matcher(sandbox).await {
+        let generation = self.vault_generation();
+        let matcher = self.agent_secret_matcher(sandbox).await;
+        scrub.screen_loaded(generation, matcher.is_ok(), Instant::now());
+        match matcher {
             Ok(matcher) => redact_screen(matcher.as_ref(), bytes),
             Err(err) => {
                 tracing::error!(error = %err, "terminal snapshot withheld: agent secrets unreadable");
@@ -279,11 +304,23 @@ mod tests {
             shown.starts_with("TOKEN=[secret:") && !shown.contains(VALUE),
             "{shown}"
         );
+        assert!(!scrub.withheld());
         // A later failure says so again.
         assert_eq!(scrub.loaded(2, failed(), again), WITHHELD);
+        assert!(scrub.withheld());
         // Without agent secrets there is nothing to redact: the output passes.
         assert_eq!(scrub.loaded(3, Ok(None), again), b"");
         assert_eq!(scrub.push(b"plain\r\n").0, b"plain\r\n");
+
+        // A whole screen that could not be checked withholds the stream after it, without a
+        // second notice (the screen says it); one that could makes the stream load anew.
+        scrub.screen_loaded(4, false, again);
+        assert!(scrub.withheld());
+        assert_eq!(scrub.push(text.as_bytes()).0, b"");
+        assert_eq!(scrub.loaded(4, failed(), again + RETRY_AFTER), b"");
+        scrub.screen_loaded(4, true, again + RETRY_AFTER);
+        assert!(!scrub.withheld());
+        assert!(scrub.needs_load(4, again + RETRY_AFTER));
     }
 
     fn matcher() -> Arc<PlainMatcher> {

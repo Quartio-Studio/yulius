@@ -94,9 +94,14 @@ would guard nothing.
 - While the secrets cannot be read, a task's terminal shows "[Yulius: the screen is withheld
   until agent secrets can be read]" once and no output, and requests through the proxy get 503.
   A store that answers again ends it by itself. A secret that no longer opens (its key is
-  gone) does not: the terminals of its sandbox stay withheld, and a run started meanwhile
-  waits for a screen that never comes and ends at its timeout, until someone replaces or
-  deletes that secret; the server's log names the error.
+  gone) does not: the terminals of its sandbox stay withheld until someone replaces or deletes
+  that secret (the server's log names the error), and no run starts there meanwhile (a start
+  reads the secrets).
+- A withheld screen is not what the program drew, so Yulius reads nothing off it and types
+  nothing into it: a run waiting for its first message or its goal keeps waiting
+  (`wait_input_ready`), and after the time a trust dialog gets (5 minutes) the task is flagged
+  with what to do. Before, a wait that timed out typed blind, which a withheld folder-trust
+  dialog would have taken as its answer.
 - Two people editing one secret: the second save is refused and reloads, whatever each changed.
 - Not covered here: switching a global secret on for a project stays its administrators'
   switch, and a personal one its owner's (the project's agents then use it as the secret

@@ -492,6 +492,109 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
     Ok(())
 }
 
+/// SPEC-483 slice 5 (review round 2, ADR-0317): a terminal whose screen is withheld (an agent
+/// secret no longer opens) shows nothing of what the program draws, so Yulius cannot tell
+/// whether it reads input or asks something. It types nothing, here no goal into a session
+/// that started behind the withheld screen, and flags the task with what to do.
+#[test]
+fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            config.trust_answer_ms = 8_000;
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let add = |name: &'static str| {
+            let (app, ctx, sandbox) = (Arc::clone(&app), ctx.clone(), sandbox.clone());
+            async move {
+                let input = serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "value": format!("{name}-value-0123456"),
+                }))?;
+                Ok::<_, BoxError>(
+                    app.create_agent_secret(&ctx, sandbox.as_str(), &input)
+                        .await?,
+                )
+            }
+        };
+        let key = add("DEPLOY_KEY").await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+
+        // The secret no longer opens (a key-encryption key nobody has), and a change of a
+        // secret makes the terminal read them anew.
+        let seen = app.deps.store.vault_get(&key.id).await?.ok_or("secret")?;
+        let mut broken = seen.clone();
+        broken.envelope.kek_id = 9_999;
+        assert!(app.deps.store.vault_update(&broken, &seen).await?);
+        add("LATER_KEY").await?;
+        // A person answers the dialog: the session starts behind a withheld screen.
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        app.terminal_input(&ctx, &attach, b"2\r", false).await?;
+
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Agent secrets cannot be read, so this terminal's screen is withheld \
+                            and Yulius typed nothing.",
+                "action": "Replace or delete the agent secret that cannot be read (the server's \
+                           log names the error), then stop and continue the task.",
+                "link": null,
+            })
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("screen is withheld and Yulius typed nothing")),
+            "{said:?}"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|n| n.contains("still asks whether to trust")),
+            "{said:?}"
+        );
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-106 OTR-002: the trust dialog's words in a session that has started (here a person's
 /// draft) are no trust prompt: the draft is left alone and the task flagged, as in #252.
 #[test]
