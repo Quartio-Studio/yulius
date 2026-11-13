@@ -329,7 +329,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
-- [ ] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it, reviewed
+- [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it, reviewed
 
 ## Acceptance criteria
 
@@ -974,3 +974,29 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   entries (Save as, Inspect) were not clicked on the real browser; their accelerators were
   pressed. That the accelerator check would see a window or page were one to open was not
   shown (without the policy the keys are refused before they reach Chrome).
+
+### Slice 7 (2026-11-13)
+
+- **Tests failing without their fix** (`target/audit/slice7/mutate.py`, eight cases): the page
+  not asked under the lock: `instance::a_secret_is_typed_only_into_a_page_it_may_go_to` and
+  `browser::agents_type_secrets_only_into_pages_of_their_hosts` failed (the secret was typed
+  into `evil.example`); the page it moved to not asked:
+  `instance::a_secret_typed_while_the_page_moves_on_is_reported` failed; navigate, reload and
+  history each without the lock: `instance::a_navigation_waits_for_a_secret_being_typed`
+  failed each time; a later held announcement dropped, a closed tab's announcement kept: the
+  two probe tests failed.
+- **Real browser.** `drives_a_real_chromium_when_configured` (Google Chrome 157, opt-in; it
+  types secrets into a real page and takes screenshots): passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed in this slice; the e2e suite last ran at
+  slice 6 (1019 passed).
+- **Gate.** `scripts/dev ci` at `0d924205e`: exit 0; `4152 tests run: 4152 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Slice 6's delivery.** Its first CI run failed in one e2e test of a page it does not touch
+  (`notes.e2e.ts` "a failed reload after a teammate's edit backs off": 4 loads counted in a
+  fixed 2.5 s window, at most 3 expected), filed as issue #1246; the run was repeated once at
+  the same head and passed.
+- **Review of slice 6, round 3** (head 70cc7698d): approve, three nits, all answered here.
+- **Not tested here.** The race on a real browser (a slow screenshot, a fill and a navigation
+  at once): the order is tested on the fake with the lock held by a delayed look at the page.
+  A page that redirects by itself while it is typed into, on a real site.
