@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- The server's token no longer travels on a connection the clone shapes (SPEC-483 slice 11,
+  task #465, ADR-0323). The server fetched from GitHub and pushed to it inside the sandbox's
+  clone, where a key for GitHub's address in the clone's configuration (a proxy, no
+  certificate check) beat the server's own: the connection, token included, could go through
+  a proxy the agents run. Such a transfer is now made in a repository of the server's own
+  that borrows the clone's objects (`<data>/git-couriers`, empty between transfers), and no
+  command in a sandbox's folder gets the token in its environment. Also, for every Git
+  command of the server in one place: no external diff or text conversion, no signing, no
+  editor, no `ssh` or `git` transport.
 - The server's own Git runs confined (SPEC-483 slice 10, task #465, ADR-0322). The server
   runs Git as the service user in clones whose every file an agent writes. A clone's
   configuration could make it run commands on the host (a filter, an `ssh` command, a

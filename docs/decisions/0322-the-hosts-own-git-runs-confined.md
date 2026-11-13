@@ -115,10 +115,15 @@ alternate's refs).
 - Git on a path the service user's `PATH` does not name, or installed outside `/usr`, is
   found by `PATH` and its `exec-path`; a build that keeps other helpers elsewhere fails
   there, and the doctor's check shows it.
-- Still open, finding G2: for a transfer with GitHub, the clone's configuration still shapes
-  the connection that carries the server's token (`http.<url>.proxy`, `http.<url>.sslVerify`:
-  a key for a URL beats the command line), so a clone can send that connection through a
-  proxy of its own without a certificate check.
+- The program loader is among what may be executed (the kernel starts every program through
+  it), and it runs any file it can read. "Git's own programs only" therefore rests on Git
+  never starting a configured word with an argument an agent chooses, and, where the shell
+  is allowed, on the other folder of the transfer being one Yulius names. Both are made
+  explicit and central by [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
+- Was open, finding G2: for a transfer with GitHub, the clone's configuration shaped the
+  connection that carries the server's token (`http.<url>.proxy`, `http.<url>.sslVerify`:
+  a key for a URL beats the command line). Closed by
+  [0323](0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md).
 - Tests' stand-ins for GitHub are folders, so their adapter allows the shell in every
   command (`with_local_origins`, `with_github_base`); the tests of this decision use the
   adapter as the server builds it.

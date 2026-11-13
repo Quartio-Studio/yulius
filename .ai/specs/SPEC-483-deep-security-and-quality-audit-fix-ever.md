@@ -47,7 +47,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
      under way, and its user name and one-time code typed without the rule (E8, E9, E10):
      merged, pull request #1248;
   9. the sandbox browser's network (E2): merged, pull request #1250;
-  10. the host's own Git in a clone its agents write (G1);
+  10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6);
   12. delivery and CI decided once (D4-D6, QB1);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
@@ -58,7 +58,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
-      found in slice 10).
+      found in slice 10): taken next, as slice 11 of the Plan (the earlier number 11, V6,
+      follows it).
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -246,6 +247,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
   environment (`git config --get-urlmatch`, `target/audit/slice10/urlmatch-proof.log`): the
   connection that carries the server's token can be sent through a proxy in the sandbox's
   own ports without a certificate check. Not fixed by confinement; slice 19.
+
+### Slice 11: the server's token on a connection the clone shapes
+
+- **G2 (high).** `GitAdapter::git_with_token` passes the token as
+  `http.https://github.com/.extraheader` in `GIT_CONFIG_*`, and `fetch`, `push` and
+  `remote_branch_head` ran `git fetch origin`, `git push origin …` and `git ls-remote origin`
+  in the clone or a worktree. The clone's configuration applies there, and a key for a URL
+  beats a general one from any source (slice 10's proof). The merge after the fetch ran with
+  the same environment.
+- **The loader** (review of slice 10, and by hand): `/lib64/ld-linux-x86-64.so.2 <file>`
+  runs any file it can read, and the loader must stay executable. With `diff.external` set to
+  the loader and a new file in a folder that is a program, a bare confined `git diff`
+  executed that file (`target/audit/slice10/loader-gadget.log`: "added.bin: '/dev/null':
+  Permission denied" is the copied `env` trying to run its argument). The adapter's own diff
+  commands already carried `--no-ext-diff --no-textconv`, each at its call site.
 
 ## Requirements
 
@@ -448,6 +464,22 @@ no code path reaches; documents, texts shown to agents and people, and code that
   command's own sandbox; otherwise it is made by the name, without shell or reach.
 - **GCR-005** `yulius doctor` reports whether Git can be confined on the host.
 
+- **TKR-001** A confined fetch, push or listing of a clone in a sandbox's folder with a
+  remote whose address is `https:` or `http:` is made in a courier: a bare repository in
+  `<data>/git-couriers`, made for it and removed after it, with the clone's objects as its
+  alternate. The clone's objects must lie in the sandbox's own folders.
+- **TKR-002** A fetch through a courier leaves the clone's `refs/remotes/<remote>/*` as a
+  fetch by name with pruning would; a push sends the commit of the given branch and is
+  refused when it would rewind the remote; the listing answers the remote's branch.
+- **TKR-003** A command whose folder is a sandbox's, and a transfer between folders, gets
+  none of the adapter's `GIT_CONFIG_*`; a command in another folder or in none gets it.
+- **TKR-004** Every command of the runner carries the constant options that switch off the
+  `ssh` and `git` transports, signing, signatures and the alternate-refs command, and
+  `GIT_EDITOR=:`; every `diff`, `log`, `show`, `diff-tree`, `diff-index` and `diff-files`
+  carries `--no-ext-diff --no-textconv` right after its name, once.
+- **TKR-005** A sandbox that is being made gets its own folder for its first command, not
+  the folder of all sandboxes.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -462,7 +494,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
-- [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders, reviewed
+- [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
+- [ ] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed
 
 ## Acceptance criteria
 
@@ -697,6 +730,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   clone, a worktree and an import worktree, none for any other folder or address.
 - **AC-60** The binary's whole test suite passes with every adapter confined in the
   server's layout (the tests' stand-ins for GitHub, which are folders, with the shell).
+- **AC-61** With the clone's configuration naming a proxy (generally, for the remote's host
+  and for its full address) and no certificate check, and the remote at an address where
+  nothing listens: the server's fetch-and-merge, push and listing fail, no answer holds the
+  token, the proxy was never connected to, and `<data>/git-couriers` is empty afterwards. A
+  worktree whose `commondir` names another sandbox's repository gets no transfer.
+- **AC-62** With the tests' stand-in for GitHub (an address rewritten to a folder in the
+  server's own configuration only): a clone, a push that arrives, the remote's head, a push
+  that would rewind refused, a fetch that brings the remote's new commit and prunes a branch
+  the remote dropped; the clone's configuration keeps the address; no courier is left.
+- **AC-63** The runner's command: in a sandbox's folder no `GIT_CONFIG_*` of the adapter; in
+  a folder of the server's own and in none, all of it; the constant options and
+  `GIT_EDITOR=:` on every command; the two diff options right after the name of each command
+  that can make a diff, past the command's own `-c` pairs, not twice, and on no other.
+- **AC-64** With the clone naming the program loader as external diff, diff driver, text
+  conversion, `ssh` command and signing program, and a new file in a folder that is a
+  program: the server's status, review, diff, log, commit, fetch and push start nothing.
 
 ## Test plan
 
@@ -823,6 +872,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `yulius-egress` `nothing_is_added_to_or_taken_from_a_browsers_requests` (a request without
   a body). A flaky test of slice 5, fixed with what it found:
   `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once`.
+- Slice 11: `yulius` `git_confined::a_transfer_with_the_token_is_not_shaped_by_the_clone`
+  (AC-61), `git_confined::a_fetch_and_a_push_through_the_servers_own_repository_arrive`
+  (AC-62), `git_confined::the_loader_is_never_started_with_a_file_of_the_clone` (AC-64);
+  `yulius-git` `runner::tests::a_confined_command_is_the_launcher_with_its_sandboxes_folders`
+  and `runner::tests::nothing_is_started_with_an_argument_of_the_clones` (AC-63),
+  `tests::a_command_reaches_its_own_sandboxes_folders` (TKR-005).
 
 ## Decisions
 
@@ -882,6 +937,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   restriction is applied by a process to itself before it becomes Git, not in a `pre_exec`).
   The shell only for transfers Yulius names; a remote's name stands for a folder only when
   it is the sandbox's own origin. No Landlock, no Git.
+- [ADR-0323](../../docs/decisions/0323-a-transfer-with-the-servers-token-is-made-in-a-repository-of-the-servers-own.md):
+  transfers with the token in a courier of the server's own; no adapter configuration for a
+  command in a sandbox's folder; nothing started with an argument of the clone's. The
+  remote's address stays the clone's for now (ADR-0323 says why).
+- From the review of slice 10 (four nits, answered in slice 11): the loader (what the claim
+  rests on is in ADR-0322 and enforced in the runner); a sandbox being made gets its own
+  folder; what `/etc` and `/usr` readable means is in ADR-0322 already; the safety of a
+  transfer between folders rests on the other folder being one Yulius names (ADR-0322).
 - From the review of slice 9, round 2 (two nits, answered in slice 10): a request without a
   body goes on without one (a wrapper of the body that keeps its end and length); ADR-0321
   says that a name can still be answered with an address of the host's private network.
@@ -930,7 +993,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
 | G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | fixed (slice 10): what Git executes and the files it touches; the token's connection is G2 |
-| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 19 |
+| G2 | git | A key for a URL in the clone's configuration (`http.https://github.com/.proxy`, `.sslVerify`) beats the server's own: the connection of a fetch or push that carries the server's token can go through a proxy in the sandbox without a certificate check (found in slice 10) | high | slice 11 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
