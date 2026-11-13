@@ -449,3 +449,26 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   sandbox has no holder to join; the refusal of a bare name there is a unit test, and the
   process host's lookup, which every launch passes first, is tested end to end.
 
+### Slice 3 (2026-11-13)
+
+- **Tests.** The seven tests named in the Test plan pass. Against the code before the fix:
+  `the_push_guard_follows_no_link_an_agent_planted` failed without the comparison of the common
+  directory (run with the comparison switched off: the install into the directory elsewhere was
+  not refused); `managed_attributes_follow_no_link_an_agent_planted` failed on `dev` in slice 2.
+  The transcript, tail, `passwd`, listing, usage and review tests were written with their
+  fixes: on `dev` the readers they cover take a path (`File::open`, `is_file()`,
+  `read_dir(path)`), their FIFO cases would not return, and their link cases read the target;
+  they were not run against `dev`.
+- **Gate.** `scripts/dev ci` at fc7de6a02 (on `dev` 5f581c3f3 merged in): exit 0; `4123 tests
+  run: 4123 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 2** (head 7248a0cec): approve, no blocker or major; its four minor findings
+  and two of its nits are taken in this slice (HRD-006, the test case, the change log's
+  wording, `ok_or_else`, a test that cannot replace its own process); "each new test failed on
+  `dev` first" in the slice 2 Test plan holds for the three tests its Evidence names, not for
+  the two unit tests of functions that are new; the directory is not synced after a rename in
+  `replace_in`, as before the change.
+- **Not tested here.** A sandbox with a real system layer and holder: `system_file_text` is
+  tested on folders laid out like one.
+
