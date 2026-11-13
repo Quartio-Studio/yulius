@@ -77,6 +77,25 @@ async fn origin_in(
     Err("no free port in the sandbox's range".into())
 }
 
+/// An origin on a port the system gives that is in none of `ranges`: the system's free ports
+/// include the fixtures' sandbox ranges, and a "service of the host" that landed in one would
+/// be that sandbox's own.
+async fn origin_outside(
+    name: &'static str,
+    ranges: &[std::ops::RangeInclusive<u16>],
+) -> Result<(SocketAddr, Arc<Mutex<Vec<String>>>), Box<dyn std::error::Error>> {
+    // Those that landed inside are kept until one is outside, so the system gives another.
+    let mut inside = Vec::new();
+    for _ in 0..64 {
+        let origin = origin_at(name, 0).await?;
+        if !ranges.iter().any(|range| range.contains(&origin.0.port())) {
+            return Ok(origin);
+        }
+        inside.push(origin);
+    }
+    Err("no port outside the sandboxes' ranges".into())
+}
+
 /// A plain `GET` through `proxy`, as Chrome sends it: the whole answer.
 async fn get(proxy: SocketAddr, url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let authority = url
@@ -115,7 +134,8 @@ async fn wired() -> Result<Wired, Box<dyn std::error::Error>> {
     let s1 = seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
     let s2 = seed_sandbox(&h, "s2", "other", "u-alice").await?;
     let range = |s: &yulius_app::model::SandboxRecord| s.port_base..=s.port_base + s.port_count - 1;
-    let yulius = origin_at("yulius", 0).await?;
+    let ranges = [range(&s1), range(&s2)];
+    let yulius = origin_outside("yulius", &ranges).await?;
     let proxies = Arc::new(BrowserProxies::new(
         yulius.0,
         vec!["/browser/welcome?".to_owned()],
@@ -132,7 +152,7 @@ async fn wired() -> Result<Wired, Box<dyn std::error::Error>> {
     Ok(Wired {
         own: origin_in("own", range(&s1)).await?,
         other: origin_in("other", range(&s2)).await?,
-        host: origin_at("host", 0).await?,
+        host: origin_outside("host", &ranges).await?,
         yulius,
         proxies,
         h,
