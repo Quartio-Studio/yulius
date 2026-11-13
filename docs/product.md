@@ -266,7 +266,10 @@ watching, steering and unblocking.
   on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
   wait for the reset by themselves, the pool sends it no such task until then whatever its
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
-  allowance as "Fable this week", and a task of another model can still be run on it. Every
+  allowance as "Fable this week", and a task of another model can still be run on it. A limit
+  met while a session runs a dynamic workflow (Claude Code's "ultracode") is handled the same
+  way: the task moves or waits by itself, and its agent is told to resume the workflow from
+  where it stopped, not to start it again (SPEC-486). Every
   card says how old its usage reading is and which window is used up with its reset (the
   5-hour window, the week, or a model's allowance), worked out when it is shown: it stops
   saying "Limit reached" the moment the window resets. An administrator presses Refresh on a
