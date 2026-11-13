@@ -43,7 +43,7 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// TLS handshake with the agent's client.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Request head read timeout inside an intercepted connection.
-const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest life of one tunnel or intercepted connection.
 const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
 /// Least idle time before a connection gives way to a new one at a limit (SPEC-355 SLR-002,
@@ -264,7 +264,7 @@ impl Drop for Slot {
 /// When a request last made progress (a request-body frame forwarded upstream), in ms after it
 /// began (SPEC-369 PHT-001).
 #[derive(Clone)]
-struct Progress {
+pub(crate) struct Progress {
     start: Instant,
     last_ms: Arc<AtomicU64>,
 }
@@ -279,14 +279,14 @@ impl Default for Progress {
 }
 
 impl Progress {
-    fn touch(&self) {
+    pub(crate) fn touch(&self) {
         let now = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.last_ms.store(now, Ordering::Relaxed);
     }
 
     /// `waiting`'s output, or `None` once `bound` passed with no progress. A bound past the clock's
     /// range waits with no bound.
-    async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
+    pub(crate) async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
         let mut waiting = std::pin::pin!(waiting);
         loop {
             let last = self.last_ms.load(Ordering::Relaxed);
@@ -502,7 +502,7 @@ pub(crate) fn hop(name: &str) -> bool {
 }
 
 /// A host for a URL (IPv6 literals in brackets).
-fn url_host(host: &str) -> String {
+pub(crate) fn url_host(host: &str) -> String {
     if host.contains(':') {
         format!("[{host}]")
     } else {

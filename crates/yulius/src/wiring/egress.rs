@@ -92,13 +92,18 @@ async fn dispatch(State(layer): State<EgressLayer>, request: Request, next: Next
 pub struct BrowserProxies {
     /// The listener of Yulius's pages for the browser and the beginnings of their paths.
     pages: (SocketAddr, Vec<String>),
-    bound: OnceLock<(Weak<App>, Arc<EgressProxy>)>,
+    /// Yulius's other listeners (the public one), which no browser reaches.
+    listeners: Vec<SocketAddr>,
+    /// Both weakly: the application holds the browsers, which hold this, and the proxy holds
+    /// the application (its policy). The server's router holds the proxy.
+    bound: OnceLock<(Weak<App>, Weak<EgressProxy>)>,
 }
 
 impl std::fmt::Debug for BrowserProxies {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BrowserProxies")
             .field("pages", &self.pages)
+            .field("listeners", &self.listeners)
             .field("bound", &self.bound.get().is_some())
             .finish()
     }
@@ -115,33 +120,36 @@ impl Drop for Serving {
 
 impl BrowserProxies {
     /// Proxies that give a browser, of Yulius itself, the plain paths beginning with one of
-    /// `paths` on `listener` (the welcome page on the internal listener).
+    /// `paths` on `listener` (the welcome page on the internal listener) and nothing of its
+    /// `others` (the public listener).
     #[must_use]
-    pub fn new(listener: SocketAddr, paths: Vec<String>) -> Self {
+    pub fn new(listener: SocketAddr, paths: Vec<String>, others: Vec<SocketAddr>) -> Self {
         Self {
             pages: (listener, paths),
+            listeners: others,
             bound: OnceLock::new(),
         }
     }
 
     /// Binds the proxies to the application (which knows a sandbox's ports) and to the egress
-    /// proxy; the first binding stands.
-    pub fn bind(&self, app: &Arc<App>, proxy: Arc<EgressProxy>) {
-        let _ = self.bound.set((Arc::downgrade(app), proxy));
+    /// proxy, for as long as the caller keeps both; the first binding stands.
+    pub fn bind(&self, app: &Arc<App>, proxy: &Arc<EgressProxy>) {
+        let _ = self.bound.set((Arc::downgrade(app), Arc::downgrade(proxy)));
     }
 }
 
 impl BrowserNetwork for BrowserProxies {
     fn open(&self, sandbox: &SandboxId) -> std::io::Result<NetworkLease> {
-        let Some((app, proxy)) = self.bound.get() else {
-            return Err(std::io::Error::other("the egress proxy is not running yet"));
-        };
+        let not_running = || std::io::Error::other("the egress proxy is not running");
+        let (app, proxy) = self.bound.get().ok_or_else(not_running)?;
+        let proxy = proxy.upgrade().ok_or_else(not_running)?;
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let listener = tokio::net::TcpListener::from_std(listener)?;
-        let (app, proxy) = (Weak::clone(app), Arc::clone(proxy));
+        let app = Weak::clone(app);
         let (sandbox, pages) = (sandbox.clone(), self.pages.clone());
+        let listeners = self.listeners.clone();
         let serving = tokio::spawn(async move {
             // The sandbox's ports are read once: they are given at its creation. Connections
             // made meanwhile wait in the listener's queue.
@@ -165,6 +173,7 @@ impl BrowserNetwork for BrowserProxies {
                 sandbox: sandbox.as_str().to_owned(),
                 ports,
                 pages: Some(pages),
+                listeners,
             };
             serve_browser(listener, proxy, Arc::new(browser)).await;
         });

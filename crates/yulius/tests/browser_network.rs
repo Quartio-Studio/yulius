@@ -116,6 +116,8 @@ async fn get(proxy: SocketAddr, url: &str) -> Result<String, Box<dyn std::error:
 
 struct Wired {
     h: Harness,
+    /// The egress proxy, which the server's router holds as long as it serves.
+    egress: Arc<yulius_egress::EgressProxy>,
     proxies: Arc<BrowserProxies>,
     /// What stands for the internal listener, and what it was asked.
     yulius: (SocketAddr, Arc<Mutex<Vec<String>>>),
@@ -139,6 +141,7 @@ async fn wired() -> Result<Wired, Box<dyn std::error::Error>> {
     let proxies = Arc::new(BrowserProxies::new(
         yulius.0,
         vec!["/browser/welcome?".to_owned()],
+        Vec::new(),
     ));
     let unbound = proxies.open(&SandboxId::parse("s1")?);
     assert!(
@@ -148,8 +151,9 @@ async fn wired() -> Result<Wired, Box<dyn std::error::Error>> {
     let egress =
         yulius::wiring::egress::egress_proxy(&h.app, yulius_egress::EgressConfig::default())
             .await?;
-    proxies.bind(&h.app, egress);
+    proxies.bind(&h.app, &egress);
     Ok(Wired {
+        egress,
         own: origin_in("own", range(&s1)).await?,
         other: origin_in("other", range(&s2)).await?,
         host: origin_outside("host", &ranges).await?,
@@ -227,7 +231,19 @@ async fn each_browsers_proxy_reaches_its_own_sandboxes_ports() -> TestResult {
         answer.as_ref().map_or(true, |answer| answer.is_empty()),
         "{answer:?}"
     );
-    w.h.app.stop_workspace_services().await;
+    // The egress proxy is gone (the server no longer serves): no proxy opens, so no browser
+    // starts. The proxies hold it weakly; a browser's own, while it runs, holds it.
+    let Wired {
+        h, proxies, egress, ..
+    } = w;
+    drop((second, nobody, egress));
+    tokio::time::timeout(WAIT, async {
+        while proxies.open(&s1).is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    h.app.stop_workspace_services().await;
     Ok(())
 }
 

@@ -417,6 +417,7 @@ fn browser_config(
             "/browser/welcome?".to_owned(),
             "/browser/welcome/ports?".to_owned(),
         ],
+        vec![bind],
     ));
     config.network = Some(network.clone());
     (config, network)
@@ -663,7 +664,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
     let egress =
         crate::wiring::egress::egress_proxy(&app, yulius_egress::EgressConfig::default()).await?;
-    browser_network.bind(&app, Arc::clone(&egress));
+    browser_network.bind(&app, &egress);
     // Shells left running by the previous server process are adopted before serving.
     let workspace_reaper = app.start_workspace_services().await;
     // Sessions that ran across an update hold the fingerprint file an older server wrote.
@@ -771,6 +772,10 @@ mod tests {
             );
         }
         assert!(wired.contains("127.0.0.1:8081"), "{wired}");
+        assert!(
+            wired.contains("listeners: [127.0.0.1:8080]"),
+            "the public listener is none of a browser's: {wired}"
+        );
         assert!(wired.contains("bound: false"), "{wired}");
         assert!(config.deny.denies("http://127.0.0.1:8081/internal/version"));
     }
