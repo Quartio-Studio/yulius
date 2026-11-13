@@ -4214,6 +4214,34 @@ async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 D4: while the integration branch's own configuration cannot be read, nothing is
+/// tested, not even a pull request that brings jobs of its own: what is broken is said, and
+/// the pull request is not given a verdict by a configuration nobody merged.
+#[tokio::test]
+async fn nothing_is_tested_while_the_integration_branchs_configuration_is_broken() -> TestResult {
+    let f = fixture_with(false, |_| "[[ci.jobs]\nname = \"plain\"\n".to_owned()).await?;
+    let sha = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"own\"\ncommand = \"echo own\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let tested = |overview: &serde_json::Value| {
+        overview["runs"]
+            .as_array()
+            .is_some_and(|runs| runs.iter().any(|run| run["sha"] == sha.as_str()))
+    };
+    assert!(!tested(&overview), "{overview}");
+    assert!(
+        overview["problem"]
+            .as_str()
+            .is_some_and(|why| !why.is_empty()),
+        "what is broken is said: {overview}"
+    );
+    Ok(())
+}
+
 /// SPEC-142 CSE-003: inside the containment, a granted job reads its CA bundle (written in its run
 /// directory, outside the sandbox).
 #[tokio::test]
