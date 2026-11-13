@@ -2111,3 +2111,30 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested.** Whether any instance holds a production secret with hosts (the migration
   changes nothing where none does; the audit line shows it where one did); the whole e2e
   suite (one page's file changed, and its file was run).
+- **Review of slice 12, round 1** (head 3820558c5, request changes; the rule, the migration
+  and the store's check held: "`may_use` is false for cd_prod for every caller", "No write
+  path can make the pair cd_prod + hosts"). Three minor findings, in the reviewer's words:
+  "Two docs still describe the old state"; "Two such call sites still get read-write"
+  (the fetch and the listing by a remote's name); "Several integration assertions can no
+  longer fail for the rule they claim to hold". Five nits. Answered: both documents; both
+  sites, and a test that reads how each command reaches the origin from the launcher's own
+  words; the comments of those assertions say what they show, and AC-74 no longer cites
+  them for the proxy's rule; the doc comment a new test had taken from its neighbour; three
+  stale comments; the audit line as a sentence with a name on the Secrets page; a command
+  without a folder that takes from a sandbox's folder counted as one in it. Left as it is
+  (the fifth nit): the store's compare-and-sets still let a production row keep hosts
+  unchanged; no row has any, and the general rule they are part of (hosts change only
+  against what the editor saw) is not this slice's.
+- **Tests failing without their fix, after the review** (`mutations.log`, now 11 cases, each
+  failed its test): the six above and: a production secret like any other to the proxy
+  (the rule gone for every caller); a fetch, a listing and a clone allowed to write in the
+  folder they take from; a command without a folder that takes from a sandbox's folder
+  counted as none of a sandbox's.
+- **The suites after it:** `2885 tests run: 2885 passed` (`slice12-suite2.log`); the secrets
+  page's e2e file again, `30 passed`.
+- **Gate after it.** `scripts/dev ci` at `19018a164`: exit 0; `4206 tests run: 4206 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
+- **Noted, not a defect:** a clone between two folders now copies the objects where it
+  linked them (the source is read-only to the confined Git, and a link needs more); more
+  disk and time for a playground's first clone of a large repository.
