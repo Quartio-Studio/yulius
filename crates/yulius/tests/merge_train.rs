@@ -1923,6 +1923,10 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;
     app.advance_chains(&first).await;
-    assert_ne!(status().await, Some(TaskStatus::Chained), "merged: it starts");
+    assert_ne!(
+        status().await,
+        Some(TaskStatus::Chained),
+        "merged: it starts"
+    );
     Ok(())
 }

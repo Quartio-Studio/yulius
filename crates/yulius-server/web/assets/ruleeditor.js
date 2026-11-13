@@ -14,7 +14,11 @@ export const RULE_STATES = [
 /** Most tasks a condition offers: the newest ones, as the "After #N" choices. */
 const MAX_CHOICES = 50;
 
-/** Most conditions in a rule: the server refuses a rule naming more tasks (MAX_ATOMS, RUL-002). */
+/**
+ * Most conditions the editor builds. The server takes up to 64 tasks in a rule (MAX_ATOMS,
+ * RUL-002, SPEC-487 CHN-005: "after all current tasks", which a tool writes); a rule a person
+ * builds by hand stays readable at 16.
+ */
 export const RULE_MAX_CONDITIONS = 16;
 
 /**

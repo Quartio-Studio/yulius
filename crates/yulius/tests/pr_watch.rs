@@ -406,9 +406,11 @@ fn a_chained_task_waits_until_its_predecessor_heard_of_its_merge() -> TestResult
         echoed(&app, &id, "ECHO: Yulius, about your pull request #7").await?;
         turn_ended().await?;
         app.advance_chains(&id).await;
-        wait_for("the chained task's start", Duration::from_secs(30), || async {
-            status().await != Some(TaskStatus::Chained)
-        })
+        wait_for(
+            "the chained task's start",
+            Duration::from_secs(30),
+            || async { status().await != Some(TaskStatus::Chained) },
+        )
         .await?;
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
         assert!(!app.task_summary(&task).await?.yulius_wait);

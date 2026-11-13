@@ -112,6 +112,8 @@ impl App {
     pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
         let steps = self.deps.store.steps(&task.id).await?;
         let p = progress(&steps);
+        let chain = self.deps.store.chain(&task.id).await?;
+        let waits = task.status == yulius_domain::task::TaskStatus::Chained;
         Ok(json!({
             "task_id": task.id.as_str(),
             "number": task.number,
@@ -122,8 +124,12 @@ impl App {
             "branch": task.branch,
             "spec_path": task.spec_path,
             "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
-            // A chained task runs after this task number (TSK-012).
-            "runs_after": self.deps.store.chain(&task.id).await?.map(|c| c.after_number),
+            // How it waits to start, as stored (SPEC-487 CHN-004): after one task (TSK-012), or
+            // on its whole start rule (SPEC-017), never the rule's first task alone.
+            "runs_after": chain.as_ref().filter(|c| c.rule.is_none()).map(|c| c.after_number),
+            "start_rule": chain.as_ref().and_then(|c| c.rule.clone()),
+            // Why it will not start by itself any more, while it waits.
+            "start_blocked": chain.as_ref().filter(|_| waits).and_then(|c| c.blocked_reason.clone()),
             "created_at": rfc3339(task.created_at),
             "updated_at": rfc3339(task.updated_at),
         }))

@@ -814,6 +814,13 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(after) = task.get("runs_after").and_then(Value::as_u64) {
         parts.push(format!("after #{after}"));
     }
+    // The whole rule, as stored (SPEC-487 CHN-004).
+    if let Some(rule) = text(task, "start_rule") {
+        parts.push(format!("start rule `{rule}`"));
+    }
+    if let Some(blocked) = text(task, "start_blocked") {
+        parts.push(format!("will not start by itself: {blocked}"));
+    }
     if let Some(spec) = text(task, "spec_path") {
         parts.push(format!("spec {spec}"));
     }
@@ -1368,6 +1375,25 @@ mod tests {
              Profile standard: squash merge into dev, merge_commit promotion to main; checks required."
         );
         Ok(())
+    }
+
+    /// SPEC-487 CHN-004: a task that waits on a rule shows the whole rule, and why it will not
+    /// start by itself, never "after" the rule's first task.
+    #[test]
+    fn a_waiting_tasks_rule_reads_whole() {
+        let value = json!({"tasks": [{
+            "task_id": UUID, "number": 9, "title": "Last", "harness": "claude",
+            "status": "chained", "activity": null, "branch": "feat/9-last", "spec_path": null,
+            "steps": {"done": 0, "total": 0, "percent": 0, "current": null},
+            "runs_after": null, "start_rule": "#3 done and #5 done and #7 merged",
+            "start_blocked": "Its start rule `#3 done and #5 done and #7 merged` can no longer become true. Start this task now or cancel it.",
+            "created_at": "2026-11-13T06:44:27Z", "updated_at": "2026-11-13T20:10:29Z"
+        }]});
+        assert_eq!(
+            render("tasks_list", &json!({}), &value),
+            "Tasks (1, most recently updated first):\n\
+             - #9 Last · chained · branch feat/9-last · start rule `#3 done and #5 done and #7 merged` · will not start by itself: Its start rule `#3 done and #5 done and #7 merged` can no longer become true. Start this task now or cancel it. · created 2026-11-13T06:44:27Z · updated 2026-11-13T20:10:29Z"
+        );
     }
 
     /// TOL-004: tasks are one line each, named by number; their ids are left out.
