@@ -104,6 +104,29 @@ fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)
     (servers, secrets)
 }
 
+/// The plugins a session with the config dir `config_dir`, started in `worktree`, would load a
+/// language server from, which its run switches off (SPEC-485 LSP-003). Said in the log, with
+/// what the lookup could not read: a plugin behind that is not known to bring none.
+fn language_server_plugins(config_dir: &Path, sandbox_dir: &Path, worktree: &Path) -> Vec<String> {
+    let found =
+        yulius_harness::claude_plugins::language_server_plugins(config_dir, sandbox_dir, worktree);
+    if !found.plugins.is_empty() {
+        tracing::info!(
+            config_dir = %config_dir.display(),
+            plugins = ?found.plugins,
+            "switching off the plugins that bring a language server for this run"
+        );
+    }
+    if !found.unread.is_empty() {
+        tracing::warn!(
+            config_dir = %config_dir.display(),
+            unread = ?found.unread,
+            "could not read everything about this session's plugins; a language server may still start"
+        );
+    }
+    found.plugins
+}
+
 impl HarnessPort for HarnessAdapter {
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let (mcp_servers, extra_secrets) = mcp_specs(&l.mcp);
@@ -140,6 +163,17 @@ impl HarnessPort for HarnessAdapter {
             yulius_url: self.yulius_url.clone(),
             mcp_servers,
             credential,
+            // A run's language servers are Yulius's to decide, and they are off: the plugins of
+            // the sandbox home that bring one are switched off in the run's own settings, which
+            // outrank the files a session, a `/plugin` or Claude Code's install dialog writes
+            // (SPEC-485 LSP-003, ADR-0327).
+            disabled_plugins: match l.harness {
+                Harness::ClaudeCode => language_server_plugins(
+                    &l.sandbox_home.join(".claude"),
+                    l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
+                    &l.worktree,
+                ),
+            },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         if l.harness == Harness::ClaudeCode {
@@ -199,6 +233,8 @@ impl HarnessPort for HarnessAdapter {
             redaction_exe: l.only_yulius.is_none().then(|| self.yulius_exe.clone()),
             bypass_permissions: l.contained,
             only_yulius: l.only_yulius.clone(),
+            // As a task run: no plugin's language server (SPEC-485 LSP-003).
+            disabled_plugins: language_server_plugins(&l.config_dir_host, &l.sandbox_dir, &l.cwd),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
@@ -1177,8 +1213,124 @@ mod tests {
             yulius_url: "http://127.0.0.1:1".into(),
             mcp_servers: servers,
             credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+            disabled_plugins: Vec::new(),
         };
         launch::plan_launch(&request)?;
+        Ok(())
+    }
+
+    /// SPEC-485 LSP-003 (ADR-0327): a task run and a Superagent switch off, in their own settings,
+    /// the plugins of their config dir that bring a language server, though the home's
+    /// `settings.json` switches them on; another plugin is left as the home has it.
+    #[test]
+    fn every_claude_code_launch_switches_its_language_server_plugins_off()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Secret;
+        // A home as Claude Code's install dialog leaves it: the plugin installed, its language
+        // server named in the marketplace's entry, and switched on for every session.
+        let seed = |config: &Path| -> std::io::Result<()> {
+            let plugins = config.join("plugins");
+            let catalog = plugins.join("marketplaces/official/.claude-plugin");
+            std::fs::create_dir_all(&catalog)?;
+            std::fs::write(
+                catalog.join("marketplace.json"),
+                r#"{"name":"official","plugins":[
+                    {"name":"x-lsp","lspServers":{"x":{"command":"x-language-server"}}},
+                    {"name":"skills"}]}"#,
+            )?;
+            std::fs::write(
+                plugins.join("installed_plugins.json"),
+                r#"{"version":2,"plugins":{"x-lsp@official":[{"scope":"user"}],"skills@official":[{"scope":"user"}]}}"#,
+            )?;
+            std::fs::write(
+                config.join("settings.json"),
+                r#"{"enabledPlugins":{"x-lsp@official":true,"skills@official":true}}"#,
+            )
+        };
+        // A plugin only the repository switches on, from a marketplace that is a folder of the
+        // repository: found only when the lookup is given the session's own working directory
+        // and the sandbox directory that folder lies in.
+        let repository = |config: &Path, work: &Path| -> std::io::Result<()> {
+            let market = work.join("market");
+            std::fs::create_dir_all(market.join(".claude-plugin"))?;
+            std::fs::write(
+                market.join(".claude-plugin/marketplace.json"),
+                r#"{"name":"folder","plugins":[{"name":"y-lsp","lspServers":{"y":{"command":"y-language-server"}}}]}"#,
+            )?;
+            std::fs::write(
+                config.join("plugins/known_marketplaces.json"),
+                serde_json::json!({ "folder": { "installLocation": market } }).to_string(),
+            )?;
+            std::fs::create_dir_all(work.join(".claude"))?;
+            std::fs::write(
+                work.join(".claude/settings.json"),
+                r#"{"enabledPlugins":{"y-lsp@folder":true}}"#,
+            )
+        };
+        let off = serde_json::json!({ "x-lsp@official": false, "y-lsp@folder": false });
+        let dir = tempfile::tempdir()?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let home = dir.path().join("home");
+        seed(&home.join(".claude"))?;
+        let worktree = dir.path().join("worktrees").join("t1");
+        repository(&home.join(".claude"), &worktree)?;
+        let planned = adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: worktree.clone(),
+            sandbox_home: home.clone(),
+            run_dir: dir.path().join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("token".into()),
+        })?;
+        let settings = planned
+            .plan
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("claude-settings.json"))
+            .ok_or("the run's settings file")?;
+        let settings: serde_json::Value = serde_json::from_slice(&settings.contents)?;
+        assert_eq!(settings["enabledPlugins"], off);
+        // The home's file is the person's and Claude Code's: it stays as it was.
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            home.join(".claude/settings.json"),
+        )?)?;
+        assert_eq!(kept["enabledPlugins"]["x-lsp@official"], true);
+
+        // A Superagent: its config dir in the person's own folder, its working directory the
+        // sandbox's repository, in another folder.
+        let config = dir.path().join("users").join("u1").join(".claude");
+        seed(&config)?;
+        let sandbox = dir.path().join("sandboxes").join("s1");
+        repository(&config, &sandbox.join("repo"))?;
+        let plan = adapter.plan_cockpit(&CockpitLaunch {
+            cwd: sandbox.join("repo"),
+            sandbox_dir: sandbox,
+            config_dir: PathBuf::from("/home/person/.claude"),
+            config_dir_host: config,
+            resume: None,
+            continue_interrupted: false,
+            model: None,
+            credential: Secret("token".into()),
+            yulius: None,
+            project_mcp_servers: Vec::new(),
+            mcp: Vec::new(),
+            contained: false,
+            only_yulius: None,
+        })?;
+        let settings = plan
+            .argv
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .ok_or("the Superagent's --settings")?;
+        let settings: serde_json::Value = serde_json::from_str(&settings[1])?;
+        assert_eq!(settings["enabledPlugins"], off);
         Ok(())
     }
 

@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- Sessions no longer show Claude Code's "Language server … couldn't start" notice, and are not
+  asked to install a language server (SPEC-485, task #467, ADR-0327). The cause, measured with
+  Claude Code 2.1.323: when a session writes a file of a language whose server is on `PATH`,
+  Claude Code offers the server's plugin in the terminal, yes by default; one Enter installed
+  it into the sandbox's home, switched on for every session. Each session then started its own
+  server at the first edited file (here 2.6 GiB, 6.2 GiB with its `cargo check` in the
+  worktree's `target/`; 20 GB with parallel tasks in October), or, where rustup's proxy found
+  no `rust-analyzer` in the toolchain, showed the notice. Now Yulius decides per run: the
+  session's plugins that bring a language server (installed, or switched on by the home's or
+  the worktree's settings) are switched off in the run's own settings, which outrank the
+  home's, a repository's and a worktree's, and the offer is switched off
+  (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a sandbox's home needs
+  changing. Checked against the real CLI in eight layouts by an opt-in test that needs no
+  account; what the lookup does not read (a marketplace outside the sandbox's folders) is in
+  ADR-0327 and the operations guide.
 - A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
   are green was decided in five places by three rules: a task's merge and the Git page
   asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
