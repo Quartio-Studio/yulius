@@ -519,13 +519,20 @@ A usage limit that refuses those agents is written to their own transcripts only
 does not wake the session's thread, whose transcript ends with a finished turn
 ([SPEC-486](../.ai/specs/SPEC-486-a-usage-limit-reached-while-a-dynamic-wo.md),
 [decision 0326](decisions/0326-a-workflow-agents-usage-limit-is-the-sessions.md)). The harness
-follows those files (`SubagentTails`, the 64 runs changed last and 512 files at most), and the
-transcript watch reports a limit found there as the session's: once the session's transcript
-is read to its end, once until its thread does something again, and not when the thread did
-something later or its own limit stands. From there it is a limit like any other.
+follows those files (`SubagentTails`: the 64 runs changed last, their files changed since the
+run under watch began, the newest runs' first, 512 at most), and the transcript watch reports
+a limit found there as `WorkflowLimitReached`: once the session's transcript is read to its
+end, once until a prompt reaches its thread again, and not when a later prompt was worked on,
+the thread's own limit stands or the limit's reset has passed. A limit of "the model that
+runs" is of that agent's model, which its `agent-<id>.meta.json` names when the script gave it
+one. For a task whose run is of the model the limit binds (or a limit of the subscription) it
+is then a limit like any other; a limit of another model is only kept in the subscription's
+reading. The Superagent does not act on it: its relaunch types nothing, so its paused workflow
+is left to Claude Code's continuation at the reset.
 
 A workflow's launch in the session's transcript is background work by its task id and names
-its run; the turn record's pending workflows count with its pending agents. A process that
+its run; the turn record's pending workflows count with its pending agents, and a record that
+counts less than the runs known ends the oldest (a run stopped in the terminal). A process that
 ends takes its workflows with it, and Claude Code resumes none by itself, so any launch that
 resumes a session with unfinished runs opens with a prompt (`dynamic_workflow::resume_prompt`)
 that tells the agent to resume them with `Workflow({scriptPath, resumeFromRunId})`: finished

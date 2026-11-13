@@ -34,27 +34,38 @@ stand-in for the model API (Claude Code 2.1.323), it behaves like this:
 ## Decision
 
 1. **The limit is read from the workflow agent's transcript.** The harness follows the agents'
-   files of the workflow runs changed last, with bounds of their own (64 runs, 512 files), and
-   the watch reports a usage limit found there as the session's `LimitReached`: once the
-   session's own transcript is read to its end, once until the session's thread does something
-   again, and not when the thread did something later than the refusal or its own limit stands.
-   From there the limit is any other limit: the pool decides, the task moves or waits.
+   files of the workflow runs changed last, with bounds of their own (64 runs, 512 files, the
+   newest runs' first, only files changed since the run under watch began), and the watch
+   reports a usage limit found there as `WorkflowLimitReached`: once the session's own
+   transcript is read to its end, once until a prompt reaches the session's thread again, and
+   not when a later prompt was worked on, the thread's own limit stands or the limit's reset
+   has passed. A limit of "the model that runs" is of that agent's model, read from the
+   agent's meta file. For a task whose run is of the model the limit binds (or a limit of the
+   subscription) it is then any other limit: the pool decides, the task moves or waits. A
+   limit of another model is kept in the subscription's reading and moves nothing. The
+   Superagent leaves a workflow agent's limit to Claude Code's own continuation at the reset:
+   its relaunch types nothing, so it could not have the workflow resumed.
 2. **A workflow is background work with a name.** The launch is `BackgroundStarted` by its task
    id, ended by that task's notification, and `WorkflowLaunched` names its run. A turn record's
-   pending workflows count with its pending agents. The session's unfinished runs are kept per
-   task and are part of a replay's facts.
+   pending workflows count with its pending agents, and a turn record that counts less than
+   the runs known ends the oldest (a run stopped in the terminal leaves no notification). The
+   session's unfinished runs are kept per task and are part of a replay's facts.
 3. **A relaunch tells the agent to resume the unfinished runs.** Any launch that resumes a
    session while runs of it are unfinished opens with one prompt (after the prompt it would
    have had, if any): the workflow stopped with the previous process, resume it with the
    Workflow tool by its script path and run id, do not start it again, then continue the task.
    Past a limit this replaces the silent continuation of 0027 for that launch; the transcript
-   is stepped back as before. The run ids come from Claude Code's own records and pass only as
-   letters, digits, `_` and `-`.
-4. **A prompt at a paused workflow gets the same advice.** While a run is unfinished after a
-   limit and nothing relaunched it, the prompt hook adds a note to a prompt that reaches the
-   session: the workflow is paused, do not start it again, resume it by its run id.
+   is stepped back as before. The runs stay known until the new process's transcript is read,
+   so a launch that fails still tells its session at the next one; a fresh session knows none.
+   The run ids come from Claude Code's own records and pass only as letters, digits, `_` and
+   `-`.
+4. **A prompt at a paused workflow gets the same advice.** While a run is paused at a limit
+   (not relaunched or ended, the thread's model not answering again, the reset not passed),
+   the prompt hook adds a note to a typed prompt that reaches the session: the workflow is
+   paused, do not start it again, resume it by its run id.
 5. **A notification written for the transcript only starts no turn.** `queueTranscriptOnly`
-   records end the background work they name and are not a prompt.
+   records end the background work they name and their hand-over from Claude Code's queue,
+   and are not a prompt.
 
 ## Alternatives
 
@@ -72,6 +83,11 @@ stand-in for the model API (Claude Code 2.1.323), it behaves like this:
   resume at the reset would leave a self-continued workflow alone. An agent that finishes after
   the session's own refusal would then end the pause while the session is still at its limit.
   Yulius relaunches at the reset; it costs the agents in flight, never the finished ones.
+- **Move the Superagent too.** Its relaunch cannot carry a prompt; moved, it would lose the
+  workflow with nothing to resume it. Left alone, Claude Code continues the workflow at the
+  reset.
+- **Take a model's limit met by any agent for the session's.** A script may run an agent on
+  another model; the session's model would be marked used up on every subscription in turn.
 - **Resume the workflow from Yulius** (type the tool call, or a slash command). There is no
   command for it; the Workflow tool is the model's to call.
 
@@ -85,5 +101,10 @@ stand-in for the model API (Claude Code 2.1.323), it behaves like this:
 - One more place where Yulius's words reach the agent: the resume prompt and the hook's note.
   Whether a model follows them cannot be tested without a paid session; the fake agent does,
   and the real CLI was driven by a scripted stand-in.
-- More than 512 agent files in a session's last 64 runs are not followed: a limit met only by
-  a later agent would be missed until the session's thread asks the model.
+- More than 512 agent files written during one run of a session, in its 64 runs changed last,
+  are not all followed (the newest runs' come first): a limit met only by an agent left out
+  would be missed until the session's thread asks the model.
+- A workflow whose agent runs another model than its session and meets that model's limit
+  stays paused where it is; so does a Superagent's workflow at any limit.
+- A task that waits without a process across a Yulius restart is resumed without the prompt
+  (the unfinished runs are rebuilt from a watched run's transcripts only).
