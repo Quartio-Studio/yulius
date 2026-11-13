@@ -11,6 +11,8 @@
 const PROMPT: &str = "❯";
 /// What the rows directly above and below the box consist of, across the whole width.
 const RULE: &str = "─";
+/// What follows the share in Claude Code's notice of a nearly full context, in the hint row.
+const CONTEXT_NOTICE: &str = "% context used";
 /// The column of the box's first cell, where Claude Code parks the cursor while the box is
 /// empty: after the prompt character and a blank.
 const FIRST_CELL: u16 = 2;
@@ -25,10 +27,12 @@ const FIRST_CELL: u16 = 2;
 ///   labels its upper rule; a draft of several rows has no rule below its first), and not
 ///   dim: the agents view, whose box starts a new session with what is entered, draws dim
 ///   rules in every theme, and under `dark-ansi` a dim placeholder like a suggestion;
-/// - the row above the upper rule is blank. Claude Code writes its hints there, among them
-///   "› stashed" for as long as a draft is put aside with the stash key: that draft comes
-///   back into the box by itself after the next submit, so a box with a stash is not empty
-///   for what is typed after. Other hints there last seconds (deleted text) and cost a try;
+/// - the row above the upper rule says nothing of the box (`says_nothing_of_the_box`): it
+///   is blank, or holds only the notice of a nearly full context. Claude Code writes its
+///   hints there, among them "› stashed" for as long as a draft is put aside with the stash
+///   key: that draft comes back into the box by itself after the next submit, so a box with a
+///   stash is not empty for what is typed after. Other notices there (deleted text, a
+///   dismissed dialog) last seconds and cost a try;
 /// - from the first cell on, the row holds nothing, or only dim text: what Claude Code draws
 ///   into an empty box by itself (its prompt suggestion, "Press up to edit queued messages"),
 ///   which a paste replaces. Typed text is never dim. The cell under the cursor is drawn
@@ -51,12 +55,17 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
     let blank = |r: u16, c: u16| text(r, c).trim().is_empty();
     let rule =
         |r: u16| (0..cols).all(|c| text(r, c) == RULE && !cell(r, c).is_some_and(vt100::Cell::dim));
-    let hint_row_blank = (0..cols).all(|c| blank(row - 2, c));
+    let hint_row: String = (0..cols)
+        .map(|c| match text(row - 2, c) {
+            "" => " ",
+            shown => shown,
+        })
+        .collect();
     if text(row, 0) != PROMPT
         || !blank(row, 1)
         || !rule(row - 1)
         || !rule(row + 1)
-        || !hint_row_blank
+        || !says_nothing_of_the_box(hint_row.trim())
     {
         return false;
     }
@@ -69,6 +78,18 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
     let first_is_nothing_typed =
         blank(row, FIRST_CELL) || dim(FIRST_CELL) || (under_cursor_inverse && dim_follows);
     rest_is_dim && first_is_nothing_typed
+}
+
+/// Whether the hint row's text `hint` says nothing about the prompt box: it is blank, or it
+/// is, whole, Claude Code's notice of a nearly full context ("88% context used"), which stays
+/// there for as long as the context does. Anything else is no proof of an empty box: a stash
+/// is written there ("› stashed", behind the context notice when both show), and what a
+/// notice not seen with the real tool means is not known.
+fn says_nothing_of_the_box(hint: &str) -> bool {
+    hint.is_empty()
+        || hint.strip_suffix(CONTEXT_NOTICE).is_some_and(|share| {
+            (1..=3).contains(&share.len()) && share.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 #[cfg(test)]
