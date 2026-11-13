@@ -357,7 +357,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
-- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
+- [ ] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
 
 ## Acceptance criteria
 
@@ -691,6 +691,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
 | E8 | browser | A secret's keys go to the focused element, which can be a frame of another site inside a page of the secret's host (a selector naming the frame, or a click into it before); answered `filled` (found by the review of slice 7; on `dev` before it) | high | slice 8 |
 | E9 | browser | A navigation under way when a secret's typing begins (a clicked link, an Enter) can land between the look at the page and the keys; reported afterwards, not prevented | medium | slice 8 |
+| E10 | browser | `browser_fill_secret` types the user name and the TOTP code through `tool_type`, with none of the page, frame or navigation checks: a live code can go to another site's frame or a tab that moved on (found by the review of slice 8; on `dev` before it) | high | slice 8 |
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
@@ -1113,3 +1114,15 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   during a navigation, so only the fake reaches it. A frame nested in another site's frame
   in a process of its own on a real Chrome (the fake lists such targets; the real test uses
   one frame). Chromium builds other than Google Chrome 157.
+- **Review of slice 8, round 1** (head a3320e970): request changes; open, not yet answered.
+  Own code: (1, major) the frame check hangs on a focus test that fails open for `<object>`,
+  `<embed>`, a frame in a closed shadow root and `<fencedframe>`: the focus counts as "in the
+  page" only on a text field of a document the probe read, anything else asks the frames;
+  (2, minor) nothing is asked again between the look and the keys (ask `leaving` again before
+  the keys, refuse when the document changed after the focus, report a frame that took the
+  focus as astray); (3, minor) `State.leaving` has no bound and only the main frame's entry is
+  read; (4, minor) untested branches (`Page.frameRequestedNavigation` and its disposition,
+  `Page.frameNavigated`, the session's end, the 30 s, a page that cannot be read, the order of
+  focus and look); nits: lost events (`Lagged`), the two error texts, honest refusals the ADR
+  does not name, the ADR's sentence on nested frames. Pre-existing (major): finding E10.
+  The reviewer's notes: `$HOME/.cache/yulius-review-465/slice8.md`.
