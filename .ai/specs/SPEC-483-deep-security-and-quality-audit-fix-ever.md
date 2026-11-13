@@ -241,9 +241,11 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **VLR-003** While a sandbox's agent secrets cannot be read, its terminals show one notice and
   no output, and ask again after a second or when a secret changes (not at every chunk); once
   they can, output flows redacted.
-- **VLR-007** Yulius types nothing into a terminal whose screen is withheld: the wait before a
-  first message or a goal goes on while it is, starts over when the screen shows again, and
-  after `trust_answer_ms` flags the task with what to do.
+- **VLR-007** Yulius types nothing into a terminal whose screen is withheld or misses output
+  dropped while it was (until the next whole screen): a first message or a goal waiting to be
+  typed is not typed and the task is flagged with what to do; a message for the task
+  (`type_into_session`) is refused with the reason. The launch goal's watch types nothing and
+  is unchanged.
 - **VLR-004** The proxy reads the values to redact before it sends a request and answers 503,
   sending nothing, when it cannot.
 - **VLR-005** An edit of a secret, an agent's or the team's, whose sealed value changed since
@@ -361,10 +363,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   changes nothing.
 - **AC-32** A file that states 0 bytes and holds 6 is refused with 5 left (no copy remains) and
   takes 6 from a budget of 10.
-- **AC-34** A goal task whose session starts behind a withheld screen (a secret stopped opening
-  while its trust dialog showed; a person answered it) gets no goal typed and is flagged
-  "Agent secrets cannot be read, so this terminal's screen is withheld and Yulius typed
-  nothing." with the action to replace or delete the secret; no trust notice is given.
+- **AC-34** A task whose first message Yulius types and whose session starts behind a withheld
+  screen (a secret stopped opening while its trust dialog showed; a person answered it) gets
+  nothing typed and is flagged "Agent secrets could not be read, so this terminal's screen
+  was withheld and Yulius typed nothing." with what to do; no trust notice is given; a
+  Superagent's message for it is refused with that reason; no transcript holds either text.
+  A scrub that dropped output says its screen is unknown until a whole screen is loaded.
 - **AC-33** The app's proxy policy has nothing to redact with for a sandbox one of whose secrets
   no longer opens, and still has for another sandbox.
 
@@ -735,11 +739,23 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   store only (below, "Not tested here"); the copy budget's failing run is not in the mutation
   log (its test was run and seen failing before the fix was written: "Ok(())" where a refusal
   was expected); issue #1175 is the flake's own issue (`gh issue view 1175`).
-- **Gate.** `scripts/dev ci` at `2021b3604` (round 2's answers; `7f3379e06` after round 1:
-  4137 passed; `78c891dac` before the reviews: 4134 passed): exit 0; `4138 tests run: 4138
-  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed. `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task`
-  with the wait's check switched off: "timed out waiting for the flag".
+- **Review of slice 5, round 3** (head f4e864bec): request changes, one minor finding and three
+  nits; round 2's answers verified. Minor: `type_into_session` (messages from agents and
+  Yulius's own) read the trust dialog off the same withheld screen and typed (it refuses now).
+  Nits: a failure at a program's last output stayed "withheld" and flagged a healthy run with
+  the wrong remedy, and after a recovery the screen missed what was dropped (one rule now: a
+  screen with dropped output is unknown until the next whole screen, the wait flags at once
+  and says to stop and continue); ADR-0317 said no run starts meanwhile (one whose own
+  secrets are readable does); the test did not show that nothing was typed (it reads the
+  transcripts now). The round-2 fix had also flagged a goal given at the launch, which is not
+  typed: the launch goal's watch is left as it was.
+- **Gate.** `scripts/dev ci` at `5fde92f16` (round 3's answers; `2021b3604` after round 2:
+  4138 passed; `7f3379e06` after round 1: 4137 passed; `78c891dac` before the reviews: 4134
+  passed): exit 0; `4138 tests run: 4138 passed, 16 skipped`; doctor, repository check, lint,
+  the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` with the wait's
+  check switched off: "timed out waiting for the flag"; with the message's check switched off:
+  its assertion on the refusal failed.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Review of slice 4** (head f07fde13c): approve, no blocker or major. Its two minor findings
   are fixed here (one byte budget for an imported session's transcript and side files; the
