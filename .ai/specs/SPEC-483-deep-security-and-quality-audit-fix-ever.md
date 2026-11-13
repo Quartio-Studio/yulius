@@ -473,4 +473,20 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   `replace_in`, as before the change.
 - **Not tested here.** A sandbox with a real system layer and holder: `system_file_text` is
   tested on folders laid out like one.
+- **Review of slice 3, round 1** (head cb7da51fc): request changes, two major findings, taken:
+  - "the walk can use up the server's file descriptors" (own code): `MAX_DEPTH` 128, deeper
+    folders counted and not listed, the measurement marked truncated;
+    `usage::tests::folders_nested_deeper_than_the_bound_are_not_listed`;
+  - "one transcript reader still goes by path" (there before): `continue_session` opens the
+    imported transcript with `transcripts::open` and copies its side files through handles;
+    `session_docs::tests::side_files_are_copied_without_following_a_link`;
+  - minor: a transcript that is no regular file reads as none (pages, a task's transcript,
+    `session_read`), not as a 500; `native.exists()` became a no-follow check; the review's
+    anchor (the worktree's folder, above which a link misleads Git first: finding G1) is
+    stated in ADR-0315; nits: path parts below the anchor must be plain names, the change
+    log's long line is wrapped. Left as they are, with the reviewer's reasons: an opaque
+    `upper/etc` without `passwd` shows the base's (a server-built copy); a root is not kept
+    in the hard-link set; a FIFO regression would end in the test runner's timeout.
+- **Gate after round 1.** `scripts/dev ci` at bb4859b97: exit 0; `4125 tests run: 4125
+  passed, 16 skipped`; the other steps passed.
 
