@@ -666,9 +666,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   through Yulius once no integration environment is pending; the outcome is added to `notes`
   and audited. With `require_checks`, an automatic fast-forward does not wait for the
   integration head's own checks (they may not have reported yet), and is stopped by failing
-  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges, promotes or deploys on its own. Agents deliver their own
-  work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
-  independent review approved: the branch head, or an earlier head followed only by clean merges of
+  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges,
+  promotes or deploys on its own. Agents deliver their own work through the MCP tools
+  `delivery_merge` (passed checks and `reviewed_head`, the commit an independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
   the task owner's authority and are audited as `task:<n>` too (DLV-008). `delivery_merge`

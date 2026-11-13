@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- An armed merge ends with its task's run (SPEC-483 slice 15, task #465). A merge an agent
+  armed outlived the task: for a task a person had stopped or closed, a green pull request
+  that was up to date was still merged, one behind `dev` waited for ever (bringing it up to
+  date needs a running, idle agent), and after a restart the same merge was dropped, also
+  for a task that only waited for capacity or a subscription switch. One rule now, in every
+  pass and at a start: armed while the task runs, its run is held or it waits in the queue
+  to start again; once the run ended, a pass ends the merge with a reason ("the task's run
+  ended (closed) …") and a start forgets it. Yulius leaves the pull request as it is; one
+  that a person merged meanwhile is said to be merged.
 - A task's steps show all the work it knows of (SPEC-484, task #466, ADR-0325). Task #465 read
   "Step 6/6" with a full bar while its spec named 15 slices: a merge was refused while any step
   was open, so a task that delivers one pull request per slice kept every later slice out of
