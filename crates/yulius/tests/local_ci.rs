@@ -4214,6 +4214,29 @@ async fn a_run_again_tests_a_pull_request_with_its_own_jobs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-050 CI-110, held by SPEC-483 D4's one rule: a pull request that only carries the jobs
+/// the integration branch had when it branched off is tested with that branch's jobs of now,
+/// not with the old ones in its tree (F 2026-10-13: stale branches kept running a step `dev`
+/// had removed).
+#[tokio::test]
+async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo old\"\n".to_owned()
+    })
+    .await?;
+    let sha = f.push_feature("feature.txt", Some("a change that is no job's\n"))?;
+    f.push_dev(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo new\"\n"),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    let plain = output_of(&outputs, "plain")?;
+    assert!(plain.contains("new") && !plain.contains("old"), "{plain}");
+    Ok(())
+}
+
 /// SPEC-483 D4: while the integration branch's own configuration cannot be read, nothing is
 /// tested, not even a pull request that brings jobs of its own: what is broken is said, and
 /// the pull request is not given a verdict by a configuration nobody merged.
