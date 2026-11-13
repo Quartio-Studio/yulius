@@ -128,6 +128,16 @@ pub enum Observed {
         /// When it was recorded, if parseable.
         at: Option<Timestamp>,
     },
+    /// The session launched a dynamic workflow (the Workflow tool; SPEC-486 WFL-003): its tool
+    /// result is `{status: "async_launched", taskType: "local_workflow", taskId, runId, …}`. It
+    /// comes with a [`Observed::BackgroundStarted`] for the same `task`, whose
+    /// `<task-notification>` ends it.
+    WorkflowLaunched {
+        /// Claude Code's task id of the run.
+        task: String,
+        /// The run id, which `Workflow({scriptPath, resumeFromRunId})` resumes the run by.
+        run: String,
+    },
     /// A `<task-notification>` said the background work `id` ended: it carries a `<status>`, or
     /// it is a Monitor's expiry event.
     BackgroundEnded {

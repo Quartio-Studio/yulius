@@ -32,6 +32,7 @@ pub mod delivery;
 pub mod deploy_gate;
 pub mod discipline;
 pub mod disk;
+pub mod dynamic_workflow;
 mod empty_repo;
 pub mod error;
 pub mod events;
