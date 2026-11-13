@@ -33,9 +33,11 @@ pub fn shown_empty(screen: &vt100::Screen) -> bool {
     if !screen.alternate_screen() {
         return false;
     }
-    let (rows, cols) = screen.size();
+    let (_, cols) = screen.size();
     let (row, col) = screen.cursor_position();
-    if col != FIRST_CELL || row == 0 || row >= rows.saturating_sub(1) || cols <= FIRST_CELL {
+    // A box in the first row has no rule above it; one in the last row has none below, which
+    // the rule check finds.
+    if col != FIRST_CELL || row == 0 {
         return false;
     }
     let text = |r: u16, c: u16| screen.cell(r, c).map_or("", vt100::Cell::contents);

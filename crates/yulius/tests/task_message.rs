@@ -868,6 +868,78 @@ fn a_draft_the_screen_shows_holds_until_it_is_cleared() -> TestResult {
     Ok(())
 }
 
+/// SPEC-488 EBX-004: a box seen empty ends the hold by itself, with no prompt hook to do it
+/// (a command Claude Code runs without one, a CLI without hooks; here an agent that runs none):
+/// a possible draft is flagged, its person clears it, and the pass that types the command has
+/// by then ended the flag and removed the draft's mark.
+#[test]
+fn a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook() -> TestResult {
+    use yulius_app::mcp_watch::{WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-13 * MINUTE)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let hookless = FakeAgentOptions {
+            hooks: false,
+            ..full_screen()
+        };
+        let (app, _) = start_on(&data, &fake, hookless, 0, probe, clock.clone(), |config| {
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (id, caller) = running(&app, &data).await?;
+        // Without a Stop hook the task never reads idle; the watch asks the transcript whether
+        // a turn is open, so its passes are repeated until the first turn has closed.
+        wait_for("the empty prompt box", Duration::from_secs(30), || async {
+            app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        wait_for("the draft in the box", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("❯ half a thought")
+        })
+        .await?;
+        let mark = draft_mark(&app, &id).await?;
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        wait_for("the flag", Duration::from_secs(30), || async {
+            app.watch_mcp(&bounds).await.is_empty()
+                && matches!(
+                    support::attention(&app, id.as_str()).await,
+                    Ok(flag) if flag == held_message_flag()
+                )
+        })
+        .await?;
+        assert!(mark.exists());
+
+        app.terminal_input(&ctx, &attach, b"\x15", false).await?;
+        wait_for("the cleared box", Duration::from_secs(30), || async {
+            app.runtime(&id).hub.prompt_box_shown_empty()
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        assert_eq!(
+            app.watch_mcp(&bounds).await,
+            vec![(id.clone(), WatchAction::Reconnect)]
+        );
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(!mark.exists(), "the mark went with the hold");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-488 AC6 (EBX-005), with a pull request's news: text left in the prompt box holds the
 /// news of a red run, and eleven minutes later the task is flagged for it. The pull-request
 /// watch types nothing into a task whose person must act; a flag that only says a message

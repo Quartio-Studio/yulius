@@ -167,6 +167,8 @@ still never typed behind text that is there (SPEC-480).
   request, its head and its red run as `pr_watch.rs` sets them up; the pure rule in
   `crates/yulius-app/src/task_message.rs`
   (`only_a_held_message_flag_over_an_empty_box_outlived_its_reason`).
+- The same file: `a_box_seen_empty_ends_the_hold_its_mark_and_its_flag_without_a_prompt_hook`
+  (EBX-004), with an agent that runs no hooks, so nothing but the screen ends the hold.
 - `crates/yulius-domain/src/intake.rs`: `an_empty_box_ends_a_possible_draft_after_the_minute`
   (EBX-003, EBX-004).
 - SPEC-480's tests stay green unchanged: their fake agent draws no box, so nothing is proven
