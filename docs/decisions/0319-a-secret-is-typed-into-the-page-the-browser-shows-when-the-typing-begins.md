@@ -24,12 +24,16 @@ there, and the tool answered `filled` on the secret's host, as the audit entry d
   tab's document as read after the input lock is taken. A page the secret may not go to gets
   nothing typed and the tool says where the tab is (`SecretPageRefused`).
 - **Yulius's own navigations wait for that lock.** `browser_navigate`, `browser_open`'s
-  navigation, a viewer's address bar, back, forward and reload take the input lock, so none of
-  them can put another page under the keys between that look and the last key.
-- **A page's own navigation is reported.** A page can still move on while it is typed into.
-  When the document changed and the one it changed to may not get the secret, the tool fails
-  with where the tab went (`SecretAstray`) and the secret's activity records it, instead of
-  `filled`. What SPEC-450 does for such a document (no screenshot of it or of its site) stays.
+  navigation, a viewer's address bar, back, forward and reload take the input lock: none of
+  them is asked of the browser between that look and the last key. The lock covers the
+  request, not the moment the new page takes over: a navigation already under way when the
+  typing begins (a link an agent clicked just before, an Enter it typed, a `Page.navigate`
+  that timed out) can still land in between. That is the next rule's case.
+- **A page that moves on meanwhile is reported.** A page can still move on while it is typed
+  into, by itself or by a navigation that was under way. When the document changed and the
+  one it changed to may not get the secret, the tool fails with where the tab went
+  (`SecretAstray`), whatever else the typing ran into, and the secret's activity records it,
+  instead of `filled`. What SPEC-450 does for such a document (no screenshot of it or of its site) stays.
 
 ## Alternatives
 
@@ -47,7 +51,13 @@ there, and the tool answered `filled` on the secret's host, as the audit entry d
 ## Consequences
 
 - A navigation asked for while a secret is typed or a screenshot is taken starts when that
-  ends (both are short).
+  ends (both are short). The other way round too: a screenshot, a fill, an agent's click or a
+  headless viewer's key waits behind a navigation's request, which Chrome answers within the
+  DevTools call's 10 seconds.
+- Two gaps stay, found by this slice's review and listed as findings E8 and E9 of SPEC-483: the
+  keys go to the focused element, which can be a frame of another site inside a page of the
+  secret's host; and a navigation under way when the typing begins is reported afterwards, not
+  prevented.
 - A fill on a tab that moved on since the agent looked fails with the site it is on; the agent
   navigates back or asks for that host.
 - A sign-in page that navigates by itself while the secret is typed to a host the secret is

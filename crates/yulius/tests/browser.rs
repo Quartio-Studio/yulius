@@ -651,6 +651,54 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             "{moved}"
         );
         assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+
+        // The page goes on to another site by itself while the secret is typed: the tool says
+        // where it went instead of `filled`, without the value, and the secret's activity
+        // keeps it for its people.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://docs.example/login"}),
+        )
+        .await?;
+        f.fake.navigate_to_during_nth(
+            "Input.insertText",
+            before + 1,
+            "https://evil.example/collect",
+        );
+        let astray = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "DOCS_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(astray["isError"], true, "{astray}");
+        assert!(
+            tool_text(&astray).as_str().is_some_and(|t| {
+                t.contains("went to evil.example while the secret was typed") && !t.contains(VALUE)
+            }),
+            "{astray}"
+        );
+        let activity = support::call(
+            &f.h.router,
+            axum::http::Method::GET,
+            "/api/secrets/activity",
+            None,
+            &f.writer,
+        )
+        .await?;
+        let recorded = activity.body.as_array().is_some_and(|entries| {
+            entries.iter().any(|e| {
+                e["action"] == "vault.agent.fill"
+                    && e["detail"].as_str().is_some_and(|d| {
+                        d.contains("docs.example") && d.contains("evil.example") && !d.contains(VALUE)
+                    })
+            })
+        });
+        assert!(recorded, "{}", activity.body);
+        let before = f.fake.calls_for("Input.insertText").len();
         mcp_tool(
             &f.h,
             TOKEN,

@@ -129,6 +129,9 @@ struct FakeState {
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
+    /// The address the next mid-call navigation ([`FakeCdpServer::navigate_during_nth`]) goes
+    /// to; `None`: another document at the same address.
+    navigating_to: Option<String>,
     going_back_after: HashMap<String, usize>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
@@ -327,6 +330,7 @@ impl FakeCdpServer {
                 enter_submits: false,
                 failing_after: HashMap::new(),
                 navigating_after: HashMap::new(),
+                navigating_to: None,
                 going_back_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
@@ -596,6 +600,14 @@ impl FakeCdpServer {
         lock(&self.shared.state)
             .navigating_after
             .insert(method.to_owned(), nth);
+    }
+
+    /// As [`Self::navigate_during_nth`], and the document the page moves to is at `url` (the
+    /// page went on to another site by itself; clients are not told).
+    pub fn navigate_to_during_nth(&self, method: &str, nth: usize, url: &str) {
+        let mut state = lock(&self.shared.state);
+        state.navigating_after.insert(method.to_owned(), nth);
+        state.navigating_to = Some(url.to_owned());
     }
 
     /// While the `nth` request of `method` runs, the page of its session goes back to the document
@@ -868,6 +880,20 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             let loader = state.next_loader();
             if let Some(page) = state.page(session_id.as_deref()) {
                 page.move_to(loader);
+            }
+            // To another address when one was named: the page went to another site.
+            if let Some(url) = state.navigating_to.take() {
+                let target_id = session_id
+                    .as_deref()
+                    .and_then(|s| state.sessions.get(s))
+                    .cloned();
+                if let Some(target) = state
+                    .targets
+                    .iter_mut()
+                    .find(|t| Some(&t.id) == target_id.as_ref())
+                {
+                    target.url = url;
+                }
             }
         }
         if state.going_back_after.get(&method) == Some(&seen)

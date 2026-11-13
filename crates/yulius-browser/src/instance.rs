@@ -2215,36 +2215,34 @@ impl BrowserInstance {
             browser: self,
             target: None,
         };
-        // The call lives on its own: a tab Chrome makes after the probe gave up on it is still
-        // closed.
+        // The call lives in its own task, which closes the tab Chrome made unless this probe
+        // takes its answer: after the probe gave up on it, or was dropped (it runs in a
+        // viewer's connection), nobody else would.
+        let (answer, answered) = tokio::sync::oneshot::channel();
         let cdp = self.cdp.clone();
-        let mut creating = tokio::spawn(async move {
-            cdp.call(
-                "Target.createTarget",
-                json!({"url": crate::policy::PROBE_BLANK, "background": true}),
-            )
-            .await
+        tokio::spawn(async move {
+            let created = cdp
+                .call(
+                    "Target.createTarget",
+                    json!({"url": crate::policy::PROBE_BLANK, "background": true}),
+                )
+                .await;
+            if let Err(Ok(unclaimed)) = answer.send(created)
+                && let Some(target) = unclaimed.get("targetId").and_then(Value::as_str)
+            {
+                let _ = cdp
+                    .call("Target.closeTarget", json!({"targetId": target}))
+                    .await;
+            }
         });
-        let created = match tokio::time::timeout(PROBE_TIMEOUT, &mut creating).await {
+        let created = match tokio::time::timeout(PROBE_TIMEOUT, answered).await {
             Ok(Ok(created)) => created.map_err(BrowserError::from),
             Ok(Err(_)) => Err(BrowserError::NavigationFailed(
                 "the policy probe's tab could not be asked for".into(),
             )),
-            Err(_) => {
-                let cdp = self.cdp.clone();
-                tokio::spawn(async move {
-                    if let Ok(Ok(late)) = creating.await
-                        && let Some(target) = late.get("targetId").and_then(Value::as_str)
-                    {
-                        let _ = cdp
-                            .call("Target.closeTarget", json!({"targetId": target}))
-                            .await;
-                    }
-                });
-                Err(BrowserError::NavigationFailed(
-                    "the policy probe got no tab in time".into(),
-                ))
-            }
+            Err(_) => Err(BrowserError::NavigationFailed(
+                "the policy probe got no tab in time".into(),
+            )),
         }
         .and_then(|created| {
             created
@@ -3003,8 +3001,9 @@ impl BrowserInstance {
                 secrets.expose(None);
             }
         }
+        // Where it went is said whatever else the typing ran into.
         match astray {
-            Some(page) => typed.and(Err(BrowserError::SecretAstray(page))),
+            Some(page) => Err(BrowserError::SecretAstray(page)),
             None => typed,
         }
     }

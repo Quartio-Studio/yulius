@@ -1979,18 +1979,44 @@ async fn a_secret_typed_while_the_page_moves_on_is_reported() -> TestResult {
         .await?;
     fake.set_password_field("#pw", true);
     let texts = fake.calls_for("Input.insertText").len();
-    fake.navigate_during_nth("Input.insertText", texts + 1);
-    // The page where the typing begins may get it; the document it moved to may not.
-    let asked = std::sync::atomic::AtomicUsize::new(0);
-    let first_only = |_: &str| asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+    fake.navigate_to_during_nth(
+        "Input.insertText",
+        texts + 1,
+        "https://evil.example/collect",
+    );
+    // The page where the typing begins may get it; the site it moved to may not.
+    let asked = std::sync::Mutex::new(Vec::new());
+    let bank_only = |address: &str| {
+        if let Ok(mut asked) = asked.lock() {
+            asked.push(address.to_owned());
+        }
+        address.starts_with("https://bank.example/")
+    };
     let astray = instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &first_only)
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
         .await;
     assert!(
-        matches!(&astray, Err(BrowserError::SecretAstray(_))),
+        matches!(&astray, Err(BrowserError::SecretAstray(host)) if host == "evil.example"),
         "{astray:?}"
     );
-    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        asked.lock().map(|asked| asked.clone()).unwrap_or_default(),
+        ["https://bank.example/login", "https://evil.example/collect"]
+    );
+
+    // A page that moves on within the sites the secret is for is no report.
+    instance
+        .tool_navigate(&to(&tab, "https://bank.example/login"))
+        .await?;
+    let texts = fake.calls_for("Input.insertText").len();
+    fake.navigate_to_during_nth(
+        "Input.insertText",
+        texts + 1,
+        "https://bank.example/welcome",
+    );
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"), &bank_only)
+        .await?;
     Ok(())
 }
 
