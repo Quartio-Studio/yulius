@@ -962,8 +962,9 @@ impl App {
                     AppError::internal(err)
                 }
             })?;
-            copy_bounded(transcript, &main_dest)?;
-            copy_dir_below(&anchor, &aux_src, &aux_dest)
+            let mut bytes = MAX_COPIED_BYTES;
+            copy_bounded(transcript, &main_dest, &mut bytes)?;
+            copy_dir_below(&anchor, &aux_src, &aux_dest, bytes)
         })
         .await
         .inspect_err(|_| {
@@ -1412,7 +1413,6 @@ fn block_texts(block: &mut TranscriptBlock) -> Vec<&mut String> {
     }
 }
 
-/// Copies a directory tree (regular files only, links skipped).
 /// Whether `path` is a regular file itself (a link there is not: what it points at is not asked).
 fn is_regular_file(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
@@ -1423,27 +1423,40 @@ const MAX_AUX_DEPTH: usize = 8;
 /// Entries of an imported session's side files copied at most.
 const MAX_AUX_ENTRIES: usize = 10_000;
 
-/// The most of one file of an imported session that is copied into the server's own folders,
-/// which no sandbox quota counts: a larger one (a sparse file an agent made) is refused.
-const MAX_COPIED_FILE_BYTES: u64 = 1 << 30;
+/// The most of an imported session (its transcript and side files together) that is copied into
+/// the server's own folders, which no sandbox quota counts: a larger one (sparse files an agent
+/// made) is refused.
+const MAX_COPIED_BYTES: u64 = 1 << 30;
 
-/// A read-only copy of `file` at `dest`, of at most [`MAX_COPIED_FILE_BYTES`].
-fn copy_bounded(file: fs::File, dest: &Path) -> AppResult<()> {
+/// A read-only copy of `file` at `dest`, taken from `bytes`, what is left of
+/// [`MAX_COPIED_BYTES`] for its session: a file larger than that is refused.
+fn copy_bounded(file: fs::File, dest: &Path, bytes: &mut u64) -> AppResult<()> {
     use std::io::Read as _;
-    if file.metadata().map_err(AppError::internal)?.len() > MAX_COPIED_FILE_BYTES {
+    let len = file.metadata().map_err(AppError::internal)?.len();
+    if len > *bytes {
         return Err(AppError::Invalid(
-            "a file of this session is larger than 1 GiB; it is not copied".into(),
+            "the files of this session are larger than 1 GiB together; they are not copied".into(),
         ));
     }
-    crate::imports::copy_immutable_from(&mut file.take(MAX_COPIED_FILE_BYTES), dest)
+    // What is read is bounded too: the file may grow while it is copied.
+    crate::imports::copy_immutable_from(&mut file.take(*bytes), dest)?;
+    *bytes -= len;
+    Ok(())
+}
+
+/// What is left to copy of an imported session's files: entries and bytes, all folders together.
+struct CopyBudget {
+    entries: usize,
+    bytes: u64,
 }
 
 /// Copies the folder `src` (side files of an imported session: sub-agent transcripts) to
 /// `dest` as read-only files; nothing when there is none. `src` is below `anchor`, a sandbox
 /// directory the agents write, so it is walked through handles (ADR-0315): no link is followed
 /// at any name, only regular files are copied and none is waited on, within
-/// [`MAX_AUX_DEPTH`] and [`MAX_AUX_ENTRIES`].
-fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path) -> AppResult<()> {
+/// [`MAX_AUX_DEPTH`], [`MAX_AUX_ENTRIES`] and `bytes`, what the transcript left of
+/// [`MAX_COPIED_BYTES`].
+fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path, bytes: u64) -> AppResult<()> {
     use nix::errno::Errno;
     let Ok(below) = src.strip_prefix(anchor) else {
         return Err(AppError::Internal(
@@ -1463,7 +1476,10 @@ fn copy_dir_below(anchor: &Path, src: &Path, dest: &Path) -> AppResult<()> {
         Err(Errno::ENOENT | Errno::ELOOP | Errno::ENOTDIR) => return Ok(()),
         Err(err) => return Err(AppError::internal(std::io::Error::from(err))),
     };
-    let mut budget = MAX_AUX_ENTRIES;
+    let mut budget = CopyBudget {
+        entries: MAX_AUX_ENTRIES,
+        bytes,
+    };
     copy_folder(&folder, dest, 0, &mut budget)
 }
 
@@ -1471,19 +1487,19 @@ fn copy_folder(
     folder: &std::os::fd::OwnedFd,
     dest: &Path,
     depth: usize,
-    budget: &mut usize,
+    budget: &mut CopyBudget,
 ) -> AppResult<()> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::{Mode, SFlag};
     fs::create_dir_all(dest).map_err(AppError::internal)?;
     // A folder that cannot be listed is left out, as a link is.
-    let names = crate::files::names_in(folder, *budget).unwrap_or_default();
+    let names = crate::files::names_in(folder, budget.entries).unwrap_or_default();
     for name in names {
-        // The bound is on all the side files together, whatever their folders.
-        if *budget == 0 {
+        // The bounds are on all the side files together, whatever their folders.
+        if budget.entries == 0 {
             break;
         }
-        *budget -= 1;
+        budget.entries -= 1;
         let target = dest.join(&name);
         match crate::files::kind_at(folder, &name).map(|(kind, _)| kind) {
             Ok(SFlag::S_IFDIR) if depth < MAX_AUX_DEPTH => {
@@ -1500,7 +1516,7 @@ fn copy_folder(
                 };
                 let file = fs::File::from(fd);
                 if file.metadata().is_ok_and(|meta| meta.is_file()) {
-                    copy_bounded(file, &target)?;
+                    copy_bounded(file, &target, &mut budget.bytes)?;
                 }
             }
             // A link, a FIFO, a deeper folder: not copied.
@@ -1554,7 +1570,7 @@ mod tests {
                 .success()
         );
         let dest = dir.path().join("dest");
-        copy_dir_below(&sandbox, &src, &dest)?;
+        copy_dir_below(&sandbox, &src, &dest, MAX_COPIED_BYTES)?;
         let mut copied: Vec<String> = Vec::new();
         for entry in std::fs::read_dir(&dest)? {
             copied.push(entry?.file_name().to_string_lossy().into_owned());
@@ -1575,10 +1591,12 @@ mod tests {
                 symlink(&host, &source)?;
             }
             let dest = dir.path().join(name);
-            copy_dir_below(&sandbox, &source, &dest)?;
+            copy_dir_below(&sandbox, &source, &dest, MAX_COPIED_BYTES)?;
             assert!(!dest.exists(), "{name}");
         }
-        assert!(copy_dir_below(&sandbox, &host, &dir.path().join("out")).is_err());
+        assert!(
+            copy_dir_below(&sandbox, &host, &dir.path().join("out"), MAX_COPIED_BYTES).is_err()
+        );
 
         // The bound is on all side files together: with more names than it, only that many
         // are taken, across folders.
@@ -1593,7 +1611,11 @@ mod tests {
             &["sessions", "doc", "many"].map(std::ffi::OsStr::new),
             false,
         )?;
-        let (mut budget, out) = (5usize, dir.path().join("bounded"));
+        let out = dir.path().join("bounded");
+        let mut budget = CopyBudget {
+            entries: 5,
+            bytes: MAX_COPIED_BYTES,
+        };
         copy_folder(&folder, &out, 0, &mut budget)?;
         let mut files = 0;
         let mut pending = vec![out];
@@ -1608,7 +1630,20 @@ mod tests {
             }
         }
         assert!(files <= 5, "{files} files copied with a budget of 5");
-        assert_eq!(budget, 0);
+        assert_eq!(budget.entries, 0);
+
+        // So is the bound on their bytes (review of SPEC-483 slice 4): every file is 2 bytes,
+        // and the copy that would pass what is left is refused, not cut.
+        let mut budget = CopyBudget {
+            entries: 100,
+            bytes: 5,
+        };
+        let refused = copy_folder(&folder, &dir.path().join("small"), 0, &mut budget);
+        assert!(
+            matches!(&refused, Err(AppError::Invalid(why)) if why.contains("1 GiB together")),
+            "{refused:?}"
+        );
+        assert_eq!(budget.bytes, 1, "two files of 2 bytes were copied");
         Ok(())
     }
 

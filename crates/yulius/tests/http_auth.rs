@@ -724,12 +724,15 @@ async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> Tes
         assert!(kept.contains(part), "{part}: {kept}");
     }
 
+    /// What a callback answers for the start's cookie: gone (ACR-003).
+    const CLEARED: &str = "__Host-yulius_oauth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure";
     let link = format!("/api/auth/github/callback?code=code-admitted&state={state}");
     let another_start = github_state(&h, "next=/").await?;
     for elsewhere in [Creds::default(), support::started(&another_start)] {
         let refused = call(&h.router, Method::GET, &link, None, &elsewhere).await?;
         assert_eq!(refused.location.as_deref(), Some("/signin?error=expired"));
         assert!(support::session_from(&refused.set_cookie).is_none());
+        assert_eq!(refused.set_cookies, [CLEARED], "every callback clears it");
     }
     let done = call(
         &h.router,
@@ -741,6 +744,11 @@ async fn a_github_sign_in_completes_only_in_the_browser_that_started_it() -> Tes
     .await?;
     assert_eq!(done.location.as_deref(), Some("/s/studio"));
     assert!(support::session_from(&done.set_cookie).is_some());
+    assert!(
+        done.set_cookies.iter().any(|c| c == CLEARED),
+        "{:?}",
+        done.set_cookies
+    );
     Ok(())
 }
 

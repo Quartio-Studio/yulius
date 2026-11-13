@@ -372,3 +372,36 @@ pub async fn revoke_token(
     app.revoke_api_token(&ctx, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-483 ACR-003 on an instance served over plain HTTP: the cookie is `yulius_oauth`
+    /// without `Secure` (a `__Host-` name needs it), and each kind of instance reads only its
+    /// own name, so one planted under the other name is never taken for the start's.
+    #[test]
+    fn the_sign_in_cookie_has_one_name_per_kind_of_instance() {
+        assert_eq!(
+            oauth_cookie("s1", 600, false),
+            "yulius_oauth=s1; HttpOnly; SameSite=Lax; Path=/; Max-Age=600"
+        );
+        assert_eq!(
+            oauth_cookie("s1", 600, true),
+            "__Host-yulius_oauth=s1; HttpOnly; SameSite=Lax; Path=/; Max-Age=600; Secure"
+        );
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("other=1; yulius_oauth=plain"),
+        );
+        assert_eq!(started_state(&headers, false), Some("plain"));
+        assert_eq!(started_state(&headers, true), None);
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-yulius_oauth=secure"),
+        );
+        assert_eq!(started_state(&headers, true), Some("secure"));
+        assert_eq!(started_state(&headers, false), Some("plain"));
+    }
+}
