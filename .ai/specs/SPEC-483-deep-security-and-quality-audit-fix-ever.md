@@ -307,7 +307,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
-- [ ] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy, reviewed
+- [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy, reviewed
 
 ## Acceptance criteria
 
@@ -848,3 +848,68 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   tested with a policy that has nothing to redact with, the app's policy on its own); a task
   agent's terminal (the Superagent's goes through the same `scrub_output`). The two-factor
   dialog over the open edit form is tested in the mock (e2e), not against a real server.
+
+### Slice 6 (2026-11-13)
+
+- **Reproduced on a real browser** (Google Chrome 157.0.8103.50 on Xvfb, this machine, the
+  opt-in test with `YULIUS_TEST_CHROMIUM`): before the fix a click through
+  `BrowserInstance::dispatch_mouse` on a page's file input mapped the window `"Open File"`,
+  1280x800, over the page (`xwininfo -root -tree`), and the test failed with "a native file
+  dialog opened". With the fix and no policy installed: "the host's browser policy is not
+  installed: the click was refused", no window, passed. With the policy written to
+  `/etc/opt/chrome/policies/managed/yulius.json`: "the host's browser policy is in force: the
+  click reached the page" (the page's title turned to "clicked"), no window; then Ctrl+O,
+  Ctrl+S, Ctrl+P, Ctrl+U, F12 and Ctrl+Shift+I through `dispatch_key`: no window shown (GTK
+  keeps one unmapped), no file dialog, no `devtools:`, `view-source:`, `file:` or print page
+  among the targets; and a click on a link to another program's address
+  (`yulius-test-scheme://open`): under the first draft of the policy the page stayed and the
+  address was handed over; with only web addresses allowed the tab shows it blocked; passed.
+- **Probes of the policy on that Chrome.** `Page.navigate` to the marker host:
+  `net::ERR_BLOCKED_BY_ADMINISTRATOR`; to `file:///etc/hostname`: the same; to another
+  `.invalid` host: `net::ERR_NAME_NOT_RESOLVED`. `showOpenFilePicker()`: `NotAllowedError`.
+  With `DeveloperToolsAvailability: 2` in the file `Target.attachToTarget` answered "Not
+  allowed" for every target, so it is left out. The existing real smoke test
+  (`drives_a_real_chromium_when_configured`: load, snapshot, type, click, screenshots, PDF
+  frames) passed with the policy installed.
+- **Tests failing without their fix** (`target/audit/slice6/mutate.py`, eight cases): the mouse
+  gate off, the key gate off, typed text ungated, the probe's tab listed:
+  `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` failed; Chrome's own
+  pages listed: `browser::chromes_own_pages_are_no_tabs` failed; a look-alike hidden by its
+  address: `browser::a_page_cannot_hide_a_window_behind_the_probes_address` failed; host setup
+  writing nothing:
+  `host_setup::tests::the_browser_policy_is_written_where_it_is_missing_or_differs` failed; no
+  flag on a refused message: `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once`
+  failed.
+- **Web UI.** `cd e2e && npx e2e run` at `2c4b50dbd`: `Test Files 84 passed | 1 skipped (85)`,
+  `Tests 1019 passed | 1 skipped (1020)`, exit 0 (nothing under `web/` or `e2e/` changed
+  after it).
+- **Review of slice 6, round 1** (head 53cb2786d): request changes, two major and four minor
+  findings and three nits, all in this slice's code, all answered in it. Major: the update
+  helper's unit could not write the policy directories, so its re-check could never bring a
+  newer policy (the shipped unit lists them, the setup writes a drop-in for a unit from
+  before; test); the probe's tab was hidden by its address, which a page can open (it is
+  known by Chrome's id now; test). Minor: a tab that went to a page of Chrome's own was
+  dropped (only a target created as one is no tab); texts that did not match the code; the
+  real-browser proof covered the file input only (accelerators and a link to another program
+  added, which changed the policy to web addresses only); typed text and releases untested.
+  Nits: a yes stood for the browser's life (asked again after 5 minutes); the probe could
+  hold a viewer's connection (3 seconds at most); another policy file can override a setting
+  (ADR-0318 says so).
+- **Gate.** `scripts/dev ci` at `84a173793` (`53cb2786d` before the review: 4145 passed): exit
+  0; `4147 tests run: 4147 passed, 16 skipped`; doctor, repository check, lint, the macOS
+  compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 5, round 4** (head cf2f03a6e): approve, two nits; one is fixed here (the
+  flag on a refused message), one is left with its reason (Decisions).
+- **Not tested here.** That a task flagged for a withheld screen is flagged again after it was
+  stopped and continued (the flag's reset at attach): a start reads the secrets, so a
+  continued task does not start while the secret that withheld the screen is unreadable.
+  The update helper's unit under systemd (its writable paths are tested against the fake
+  host's answer to `systemctl show`). `yulius host setup` on a real host (the item is tested against the fake
+  host; the policy file was written by hand for the real-browser runs, with the content
+  `managed_policy()` gives). Chromium and a snap-packaged Chromium (only Google Chrome is on
+  this machine): the browser is asked itself, so a flavor that reads no policy from these
+  directories refuses viewers' input instead of taking it unlocked. The context menu's
+  entries (Save as, Inspect) were not clicked on the real browser; their accelerators were
+  pressed. That the accelerator check would see a window or page were one to open was not
+  shown (without the policy the keys are refused before they reach Chrome).
