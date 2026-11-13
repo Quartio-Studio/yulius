@@ -1143,6 +1143,63 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
         error && !said.contains("unknown tool"),
         "nothing was requested: {said}"
     );
+
+    // SPEC-483 V5 (ADR-0317): a secret allowed use by use goes somewhere new only by its person
+    // in the browser, after a two-factor code; a token still describes it and dismisses.
+    use yulius_app::ports::vault::VaultStore as _;
+    let guarded = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DEPLOY_KEY", "value": "deploy-value-0123456", "auto_allow": false})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(guarded.status, StatusCode::CREATED, "{}", guarded.body);
+    let id = text(&guarded.body["id"]);
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "DEPLOY_KEY", "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(
+        error && said.contains("allowed use by use") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, updated) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "DEPLOY_KEY", "description": "Deploys the shop"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(updated["secret"]["hosts"], json!([]));
+    let asked = vec!["evil.example".to_owned()];
+    assert!(
+        w.h.store
+            .vault_set_request(id, &[], &asked, Some("a task"))
+            .await?
+    );
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "DEPLOY_KEY", "allow": true, "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(error && said.contains("allowed use by use"), "{said}");
+    let (error, said, dismissed) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "DEPLOY_KEY", "allow": false, "hosts": ["evil.example"]})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(dismissed["secret"]["hosts"], json!([]));
     Ok(())
 }
 

@@ -237,7 +237,12 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(card.getByText('Task #107 asks to send it to')).toBeVisible();
   await expect(card.getByText('api.vidoc.test')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // SPEC-483 V5 (ADR-0317): the secret is allowed use by use, so sending it to a new host needs
+  // the person's two-factor code, as reading it does; nothing is bound before.
   await screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY').click();
+  await expect(screen.getByRole('dialog', 'Set up two-factor')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { vault: { agent: { id: string; hosts: string[] }[] } } }).__yuliusMock.vault.agent.find((s) => s.id === 'as_vidoc')!.hosts)).toEqual([]);
+  await setUpTwoFactor(screen, browser);
   await expect(card.getByText(/asks to send it to/)).toBeHidden();
   await expect(card.getByText(/Not sent anywhere yet/)).toBeHidden();
   await expect(card.getByText('api.vidoc.test')).toBeVisible();
@@ -336,7 +341,7 @@ test('an agent’s host request shows its Allow on the open page at once', async
 // hosts it shows, and a request that changes under the person's pointer or keyboard gets an Allow
 // that is off for a moment, so a click meant for the old one cannot allow a host never seen.
 test('an Allow whose hosts just changed is off for a moment', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents'));
+  await app.open(mock('/s/studio/secrets?section=agents', '&vault=unlocked'));
   await expect(screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY')).toBeEnabled();
   // The person is on the Allow (keyboard focus) when the hosts change. The moment the new Allow
   // is drawn, before any timer could change it, its state is noted and it is clicked.
@@ -370,7 +375,7 @@ test('an Allow whose hosts just changed is off for a moment', async ({ app, brow
 // Review of SPEC-209 (L1): an answer on its way is not undone by a live update, which would give
 // back enabled buttons for a request about to be gone; the reload after the answer catches up.
 test('a live update waits for an answer on its way', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env'));
+  await app.open(mock('/s/studio/secrets?section=agents', '&holdpost=/api/agent-secrets/as_stripe/env&vault=unlocked'));
   const allow = screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files');
   await allow.click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as Asking).__yuliusMock.heldWaiting)).toBe(1);
@@ -408,7 +413,9 @@ test('a person allows an agent to copy a secret into .env, then revokes it', asy
   const card = browser.locator('.item-card:has-text("STRIPE_KEY")');
   await expect(card.getByText(/Task #111 asks to copy its value into the project’s git-ignored \.env/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // Agents read what a `.env` file holds: the allowance needs the two-factor code (ADR-0317).
   await screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files').click();
+  await setUpTwoFactor(screen, browser);
   await expect(card.getByText(/asks to copy/)).toBeHidden();
   await expect(card.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
   await screen.getByRole('button', 'Stop agents copying STRIPE_KEY into .env files').click();
@@ -911,6 +918,8 @@ test('a new agent secret lets agents set it up unless turned off, and secrets be
   await expect(edit.getByRole('switch', 'Let agents set it up')).not.toBeChecked();
   await edit.getByRole('switch', 'Let agents set it up').click();
   await edit.getByRole('button', 'Save').click();
+  // Agents then send it where they choose: the code first, over the open form (ADR-0317).
+  await setUpTwoFactor(screen, browser);
   await expect(edit).toBeHidden();
   await expect(card.getByText('Agents set it up')).toBeVisible();
 

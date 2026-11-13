@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 
 use super::create::Root;
 use super::requests::{reason, requester};
-use super::{AgentPayload, SecretUser, invalid};
+use super::{AgentPayload, Revealed, SecretUser, invalid};
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -275,7 +275,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         answer: &EnvFilesAnswer,
-    ) -> AppResult<AgentSecretView> {
+    ) -> AppResult<Revealed<AgentSecretView>> {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, &record.scope()).await?;
         let seen = EnvFiles::parse(&answer.env_files)
@@ -296,13 +296,21 @@ impl App {
             (EnvFiles::Asked, true) => "vault.agent.env_allow",
             (EnvFiles::Asked, false) => "vault.agent.env_dismiss",
             (EnvFiles::Allowed, false) => "vault.agent.env_revoke",
-            (EnvFiles::Allowed, true) => return self.agent_view(&record, true).await,
+            (EnvFiles::Allowed, true) => {
+                return Ok(Revealed::Values(self.agent_view(&record, true).await?));
+            }
             (EnvFiles::No, _) => {
                 return Err(AppError::Conflict(
                     "no agent asks to copy this secret into .env files".into(),
                 ));
             }
         };
+        // Agents read what a `.env` file holds: allowing it shows them the value (ADR-0317).
+        if answer.allow
+            && let Some(status) = self.fresh_to_widen(ctx, &record).await?
+        {
+            return Ok(Revealed::ReauthRequired(status));
+        }
         let to = if answer.allow {
             EnvFiles::Allowed
         } else {
@@ -333,7 +341,7 @@ impl App {
         if seen == EnvFiles::Asked {
             self.settle_secret_waits(record.sandbox_id.as_ref()).await;
         }
-        self.agent_view(&record, true).await
+        Ok(Revealed::Values(self.agent_view(&record, true).await?))
     }
 
     /// `POST /api/agent-secrets/{id}/cd-prod`: a person who manages the secret allows production

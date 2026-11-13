@@ -1307,13 +1307,15 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
     .await?;
     f.prove("main").await?;
     let secret_path = format!("/api/agent-secrets/{}", f.secret);
+    // Letting agents set it up needs the two-factor unlock (ADR-0317).
+    let person = crate::secrets::unlocked(&f.h, "u-alice").await?;
     let auto = |on: bool| {
         call(
             &f.h.router,
             Method::PATCH,
             &secret_path,
             Some(json!({"auto_allow": on})),
-            &f.alice,
+            &person,
         )
     };
     let on = auto(true).await?;
@@ -1407,7 +1409,7 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{}", f.secret),
         Some(json!({"hosts": ["api.example.com"]})),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(hosts.status, StatusCode::OK, "{}", hosts.body);

@@ -439,7 +439,11 @@ watching, steering and unblocking.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
-  The people who manage an agent secret can read it too. A shown value stays masked until its eye
+  The people who manage an agent secret can read it too. Sending a value somewhere new reads
+  it: for an agent secret allowed use by use, a new host, `.env` copies and letting agents set it
+  up ask for the same code, and an API token cannot do them (ADR-0317). What cannot be checked
+  for secrets is withheld: a terminal says so and shows nothing, the proxy sends nothing, until
+  the secrets can be read again. A shown value stays masked until its eye
   button is pressed; it copies without being shown, from a copy icon always in its box, as the
   notes do (SPEC-207). A multi-line value (a key, recovery codes) pasted into a team secret keeps
   its line breaks as pasted, masked, and shows and copies on its lines (SPEC-299). An agent secret

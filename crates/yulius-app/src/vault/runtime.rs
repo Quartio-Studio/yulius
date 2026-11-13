@@ -842,16 +842,21 @@ impl App {
     }
 
     /// A streaming redactor of the task terminal for `sandbox` (`None` without agent secrets).
+    ///
+    /// # Errors
+    /// The agent secrets cannot be read: the terminal then withholds its output.
     pub(crate) async fn terminal_redactor(
         &self,
         sandbox: &SandboxId,
-    ) -> Option<StreamRedactor<Arc<PlainMatcher>>> {
+    ) -> AppResult<Option<StreamRedactor<Arc<PlainMatcher>>>> {
         match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) if !matcher.is_empty() => Some(super::terminal::screen_redactor(matcher)),
-            Ok(_) => None,
+            Ok(matcher) if !matcher.is_empty() => {
+                Ok(Some(super::terminal::screen_redactor(matcher)))
+            }
+            Ok(_) => Ok(None),
             Err(err) => {
                 tracing::error!(error = %err, "agent secrets could not be loaded for the terminal");
-                None
+                Err(err)
             }
         }
     }
@@ -1396,13 +1401,13 @@ impl EgressPolicy for App {
         }
     }
 
-    async fn egress_redactor(&self, client: &EgressClient) -> Arc<PlainMatcher> {
+    async fn egress_redactor(&self, client: &EgressClient) -> Option<Arc<PlainMatcher>> {
         self.agent_secret_matcher(&client.sandbox_id)
             .await
-            .unwrap_or_else(|err| {
+            .inspect_err(|err| {
                 tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
-                Arc::new(PlainMatcher::default())
             })
+            .ok()
     }
 }
 

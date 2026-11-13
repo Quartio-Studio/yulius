@@ -5104,12 +5104,13 @@ fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_wo
         .await?;
         assert!(why().await?.is_null(), "no flag, no reason");
 
-        // The request still waits on the Secrets page; its answer changes nothing of the task.
+        // The request still waits on the Secrets page; its answer changes nothing of the task
+        // (a dismissal: allowing needs the person's two-factor unlock, ADR-0317).
         app.answer_host_request(
             &ctx,
             &secret.id,
             &serde_json::from_value(
-                serde_json::json!({"allow": true, "hosts": ["api.deploy.test"]}),
+                serde_json::json!({"allow": false, "hosts": ["api.deploy.test"]}),
             )?,
         )
         .await?;

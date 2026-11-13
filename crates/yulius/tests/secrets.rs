@@ -1102,6 +1102,17 @@ async fn get_as(
 }
 
 /// A browser session for a seeded user (signed in now).
+/// A browser session of `user` with two-factor set up and the vault unlocked: what a person
+/// needs to let the value of a secret allowed use by use go somewhere new (ADR-0317).
+pub(crate) async fn unlocked(
+    h: &support::Harness,
+    user: &str,
+) -> Result<Creds, Box<dyn std::error::Error>> {
+    let session = browser_session(h, user).await?;
+    enroll(h, &session).await?;
+    Ok(session)
+}
+
 async fn browser_session(
     h: &support::Harness,
     user: &str,
@@ -1962,7 +1973,7 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     ));
 
     // Responses are redacted of every in-scope value and encoding.
-    let matcher = app.egress_redactor(&s1).await;
+    let matcher = app.egress_redactor(&s1).await.ok_or("matcher")?;
     let (redacted, names) = redact_text(
         matcher.as_ref(),
         &format!(
@@ -1975,7 +1986,7 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
         "echo: Bearer [secret:STRIPE_KEY] hex [secret:STRIPE_KEY]"
     );
     assert_eq!(names, vec!["STRIPE_KEY".to_owned()]);
-    assert!(app.egress_redactor(&s2).await.is_empty());
+    assert!(app.egress_redactor(&s2).await.is_some_and(|m| m.is_empty()));
 
     // Uses are audited by name.
     let activity = call(
@@ -2737,6 +2748,150 @@ async fn agent_secret_of(w: &World, name: &str) -> Result<Value, Box<dyn std::er
         .ok_or(name.to_owned())?)
 }
 
+/// SPEC-483 V5 (ADR-0317): sending a value to a server of one's choice reads it. For a secret
+/// people allow use by use, a host it is not bound to and `.env` copies need what a reveal
+/// needs: a browser session with the two-factor unlock; an API token is refused. What sends it
+/// nowhere new (a description, fewer hosts, a dismissal, a revocation) needs neither, and a
+/// secret agents set up is unchanged: they bind its hosts without a person.
+#[tokio::test]
+async fn a_use_by_use_secret_goes_somewhere_new_only_after_two_factor() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "DEPLOY_KEY", "value": "deploy-value-0123456", "hosts": ["api.deploy.test"], "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let path = format!("/api/agent-secrets/{id}");
+    let patch = |body: Value, creds: Creds| {
+        let (router, path) = (w.h.router.clone(), path.clone());
+        async move { call(&router, Method::PATCH, &path, Some(body), &creds).await }
+    };
+    let env = |allow: bool, seen: &'static str, creds: Creds| {
+        let (router, path) = (w.h.router.clone(), format!("{path}/env"));
+        async move {
+            call(
+                &router,
+                Method::POST,
+                &path,
+                Some(json!({"allow": allow, "env_files": seen, "env_requested_by": "#1"})),
+                &creds,
+            )
+            .await
+        }
+    };
+    let hosts = || async {
+        Ok::<_, Box<dyn std::error::Error>>(
+            agent_secret_of(&w, "DEPLOY_KEY").await?["hosts"].clone(),
+        )
+    };
+    let person = browser_session(&w.h, "u-alice").await?;
+    let new_host = json!({"hosts": ["api.deploy.test", "evil.test"]});
+
+    // A new host: a token is told where a person does it, a session is asked for the code.
+    let token = patch(new_host.clone(), w.writer.clone()).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert_eq!(token.body["error"]["code"], "forbidden");
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Secrets page") && m.contains("two-factor")),
+        "{}",
+        token.body
+    );
+    let locked = patch(new_host.clone(), person.clone()).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(locked.cache_control.as_deref(), Some("no-store"));
+    assert_eq!(hosts().await?, json!(["api.deploy.test"]));
+
+    // `.env` copies an agent asked for: the same.
+    assert!(
+        w.h.store
+            .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Asked, Some("#1")))
+            .await?
+    );
+    let token = env(true, "asked", w.writer.clone()).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert_eq!(token.body["error"]["code"], "forbidden");
+    let locked = env(true, "asked", person.clone()).await?;
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(
+        agent_secret_of(&w, "DEPLOY_KEY").await?["env_files"],
+        "asked"
+    );
+
+    // Nothing new: its description, the same hosts in another case, fewer hosts.
+    for body in [
+        json!({"description": "Deploys the shop"}),
+        json!({"hosts": ["API.deploy.test"]}),
+        json!({"hosts": []}),
+    ] {
+        let kept = patch(body.clone(), w.writer.clone()).await?;
+        assert_eq!(kept.status, StatusCode::OK, "{body}: {}", kept.body);
+    }
+    assert_eq!(hosts().await?, json!([]));
+    // The host just removed is new again.
+    let back = patch(json!({"hosts": ["api.deploy.test"]}), w.writer.clone()).await?;
+    assert_eq!(back.status, StatusCode::FORBIDDEN, "{}", back.body);
+
+    // With the unlock both go through, and are audited as the person.
+    enroll(&w.h, &person).await?;
+    let bound = patch(new_host, person.clone()).await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert_eq!(hosts().await?, json!(["api.deploy.test", "evil.test"]));
+    let allowed = env(true, "asked", person.clone()).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.body["env_files"], "allowed");
+    // Revoking sends it nowhere new: a token may.
+    let revoked = call(
+        &w.h.router,
+        Method::POST,
+        &format!("{path}/env"),
+        Some(json!({"allow": false, "env_files": "allowed", "env_requested_by": null})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+
+    // Ten minutes later the unlock is over.
+    w.h.clock.0.fetch_add(minutes(11), Ordering::SeqCst);
+    let stale = patch(
+        json!({"hosts": ["api.deploy.test", "evil.test", "more.test"]}),
+        person,
+    )
+    .await?;
+    assert_eq!(stale.body["error"]["code"], "reauth_required");
+
+    // A secret agents set up: they bind its hosts themselves, so a person's token may too.
+    let open = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "OPEN_KEY", "value": "open-value-01234567"}),
+    )
+    .await?;
+    assert_eq!(open.body["auto_allow"], true, "{}", open.body);
+    let open_path = format!(
+        "/api/agent-secrets/{}",
+        open.body["id"].as_str().ok_or("id")?
+    );
+    let bound = call(
+        &w.h.router,
+        Method::PATCH,
+        &open_path,
+        Some(json!({"hosts": ["api.open.test"], "expect_hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    Ok(())
+}
+
 async fn answer_request(
     w: &World,
     creds: &Creds,
@@ -2862,7 +3017,26 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
     let outsider = answer_request(&w, &w.outsider, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
-    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    // SPEC-483 V5: allowing sends the value somewhere new, which reads it: an API token is
+    // refused, a browser session needs the two-factor unlock first; neither binds anything.
+    let token = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("allowed use by use") && m.contains("two-factor")),
+        "{}",
+        token.body
+    );
+    let person = browser_session(&w.h, "u-alice").await?;
+    let locked = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!([]));
+    assert_eq!(secret["requested_hosts"], json!(["api.vidoc.test"]));
+    enroll(&w.h, &person).await?;
+    let allowed = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["hosts"], json!(["api.vidoc.test"]));
     assert_eq!(allowed.body["requested_hosts"], json!([]));
@@ -3065,7 +3239,8 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
     .await?;
 
     // On again: a host that waited is bound when an agent asks for it; the others keep waiting.
-    let on = call(
+    // Agents then send it where they choose, so switching it on needs the unlock (SPEC-483 V5).
+    let token = call(
         &w.h.router,
         Method::PATCH,
         &path,
@@ -3073,6 +3248,25 @@ async fn agents_bind_the_hosts_of_a_secret_they_set_up() -> TestResult {
         &w.writer,
     )
     .await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    let person = browser_session(&w.h, "u-alice").await?;
+    let on = |creds: Creds| {
+        let (router, path) = (w.h.router.clone(), path.clone());
+        async move {
+            call(
+                &router,
+                Method::PATCH,
+                &path,
+                Some(json!({"auto_allow": true})),
+                &creds,
+            )
+            .await
+        }
+    };
+    let locked = on(person.clone()).await?;
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    enroll(&w.h, &person).await?;
+    let on = on(person).await?;
     assert_eq!(on.status, StatusCode::OK, "{}", on.body);
     let bound = tool_text(
         &mcp_tool(
@@ -3263,7 +3457,8 @@ async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
     );
 
     // The project's is answered: the flag stays for the other, and opens its tab.
-    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    let person = unlocked(&w.h, "u-alice").await?;
+    let allowed = answer_request(&w, &person, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     let why = support::attention(&w.h.app, "t1").await?;
     assert_eq!(why["action"], "Answer it on the Secrets page.", "{why}");
@@ -3273,7 +3468,11 @@ async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
     );
 
     // The last one answered: the flag and its reason go.
-    let allowed = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    let superadmin = yulius_app::ports::store::UserStore::superadmin(&w.h.store)
+        .await?
+        .ok_or("superadmin")?;
+    let admin = unlocked(&w.h, superadmin.id.as_str()).await?;
+    let allowed = answer_request(&w, &admin, &global_id, true, &["global.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert!(support::attention(&w.h.app, "t1").await?.is_null());
     Ok(())
@@ -3318,8 +3517,8 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
     let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
     assert!(!app.egress_intercepts(&s1, "evil.test", 443).await);
     // What the page shows after a reload answers it (any order, any case).
-    let allowed =
-        answer_request(&w, &w.writer, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
+    let person = unlocked(&w.h, "u-alice").await?;
+    let allowed = answer_request(&w, &person, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(
         allowed.body["hosts"],
@@ -3333,7 +3532,7 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
         Some(json!({"hosts": many[..15]})),
-        &w.writer,
+        &person,
     )
     .await?;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
@@ -3343,11 +3542,11 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
         Some(json!({"hosts": many})),
-        &w.writer,
+        &person,
     )
     .await?;
     assert_eq!(full.status, StatusCode::OK, "{}", full.body);
-    let over = answer_request(&w, &w.writer, &id, true, &["new.vidoc.test"]).await?;
+    let over = answer_request(&w, &person, &id, true, &["new.vidoc.test"]).await?;
     assert_eq!(
         over.status,
         StatusCode::UNPROCESSABLE_ENTITY,
@@ -3390,7 +3589,11 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
         "{}",
         by_writer.body
     );
-    let by_admin = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    let superadmin = yulius_app::ports::store::UserStore::superadmin(&w.h.store)
+        .await?
+        .ok_or("superadmin")?;
+    let admin = unlocked(&w.h, superadmin.id.as_str()).await?;
+    let by_admin = answer_request(&w, &admin, &global_id, true, &["global.test"]).await?;
     assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }

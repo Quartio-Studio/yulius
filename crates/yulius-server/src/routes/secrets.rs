@@ -294,8 +294,8 @@ async fn agent_update(
     Auth(ctx): Auth,
     Path(id): Path<String>,
     Json(patch): Json<AgentSecretPatch>,
-) -> ApiResult<Json<AgentSecretView>> {
-    Ok(Json(app.update_agent_secret(&ctx, &id, &patch).await?))
+) -> Result<Response, ApiError> {
+    Ok(revealed(app.update_agent_secret(&ctx, &id, &patch).await?))
 }
 
 async fn agent_answer(
@@ -303,8 +303,8 @@ async fn agent_answer(
     Auth(ctx): Auth,
     Path(id): Path<String>,
     Json(answer): Json<HostRequestAnswer>,
-) -> ApiResult<Json<AgentSecretView>> {
-    Ok(Json(app.answer_host_request(&ctx, &id, &answer).await?))
+) -> Result<Response, ApiError> {
+    Ok(revealed(app.answer_host_request(&ctx, &id, &answer).await?))
 }
 
 async fn agent_copy_answer(
@@ -323,8 +323,8 @@ async fn agent_env_answer(
     Auth(ctx): Auth,
     Path(id): Path<String>,
     Json(answer): Json<EnvFilesAnswer>,
-) -> ApiResult<Json<AgentSecretView>> {
-    Ok(Json(app.answer_env_files(&ctx, &id, &answer).await?))
+) -> Result<Response, ApiError> {
+    Ok(revealed(app.answer_env_files(&ctx, &id, &answer).await?))
 }
 
 async fn agent_cd_prod_answer(

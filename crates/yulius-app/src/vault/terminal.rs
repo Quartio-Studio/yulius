@@ -12,6 +12,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::vault::redact::{PlainMatcher, StreamRedactor, fitted_label, redact_all_with};
 
 use crate::context::App;
+use crate::error::AppResult;
 
 /// Quiet time after which held bytes are shown.
 const FLUSH_AFTER: Duration = Duration::from_millis(40);
@@ -23,6 +24,69 @@ struct Inner {
     redactor: Option<StreamRedactor<Arc<PlainMatcher>>>,
     /// Bumped by every push; a pending flush only runs if nothing came since.
     epoch: u64,
+    /// The agent secrets could not be read for the generation in force: output is withheld
+    /// until they can (VLT-007: never shown unredacted).
+    withheld: bool,
+}
+
+/// What a terminal shows in place of output it cannot check for agent secrets.
+const WITHHELD: &[u8] = b"\r\n[Yulius: the screen is withheld until agent secrets can be read]\r\n";
+
+impl TerminalScrub {
+    /// Takes the redactor loaded for the vault's `generation` and returns what to show now:
+    /// what the old redactor still held, and, when the load failed, the notice (once). A failed
+    /// load leaves the generation unset, so the next chunk asks again, and output is withheld
+    /// until a load succeeds.
+    fn loaded(
+        &self,
+        generation: u64,
+        fresh: AppResult<Option<StreamRedactor<Arc<PlainMatcher>>>>,
+    ) -> Vec<u8> {
+        let Ok(mut inner) = self.0.lock() else {
+            return Vec::new();
+        };
+        let mut show = inner
+            .redactor
+            .as_mut()
+            .map(StreamRedactor::flush)
+            .unwrap_or_default();
+        match fresh {
+            Ok(redactor) => {
+                inner.redactor = redactor;
+                inner.generation = Some(generation);
+                inner.withheld = false;
+            }
+            Err(_) => {
+                inner.redactor = None;
+                inner.generation = None;
+                if !inner.withheld {
+                    inner.withheld = true;
+                    show.extend_from_slice(WITHHELD);
+                }
+            }
+        }
+        show
+    }
+
+    /// One chunk through the redactor: what to show, the push's epoch and whether a tail is
+    /// held. Nothing while output is withheld, or when the state cannot be read.
+    fn push(&self, bytes: &[u8]) -> (Vec<u8>, u64, bool) {
+        let Ok(mut inner) = self.0.lock() else {
+            return (Vec::new(), 0, false);
+        };
+        inner.epoch += 1;
+        let epoch = inner.epoch;
+        if inner.withheld {
+            return (Vec::new(), epoch, false);
+        }
+        match inner.redactor.as_mut() {
+            Some(redactor) => {
+                let out = redactor.push(bytes);
+                (out, epoch, redactor.holding())
+            }
+            None => (bytes.to_vec(), epoch, false),
+        }
+    }
 }
 
 /// Redaction state of one terminal (cheap to clone).
@@ -83,7 +147,7 @@ impl App {
             Ok(matcher) => redact_screen(matcher.as_ref(), bytes),
             Err(err) => {
                 tracing::error!(error = %err, "terminal snapshot withheld: agent secrets unreadable");
-                b"\r\n[Yulius: the screen is withheld until agent secrets can be read]\r\n".to_vec()
+                WITHHELD.to_vec()
             }
         }
     }
@@ -126,34 +190,12 @@ impl App {
             .unwrap_or(true);
         if stale {
             let fresh = self.terminal_redactor(sandbox).await;
-            let released = scrub.0.lock().ok().map(|mut inner| {
-                let held = inner
-                    .redactor
-                    .as_mut()
-                    .map(StreamRedactor::flush)
-                    .unwrap_or_default();
-                inner.redactor = fresh;
-                inner.generation = Some(generation);
-                held
-            });
-            if let Some(held) = released.filter(|h| !h.is_empty()) {
-                sink(seq, &held);
+            let show = scrub.loaded(generation, fresh);
+            if !show.is_empty() {
+                sink(seq, &show);
             }
         }
-        let (out, epoch, holding) = match scrub.0.lock() {
-            Ok(mut inner) => {
-                inner.epoch += 1;
-                let epoch = inner.epoch;
-                match inner.redactor.as_mut() {
-                    Some(redactor) => {
-                        let out = redactor.push(bytes);
-                        (out, epoch, redactor.holding())
-                    }
-                    None => (bytes.to_vec(), epoch, false),
-                }
-            }
-            Err(_) => (bytes.to_vec(), 0, false),
-        };
+        let (out, epoch, holding) = scrub.push(bytes);
         if !out.is_empty() {
             sink(seq, &out);
         }
@@ -182,6 +224,42 @@ mod tests {
     const NAME: &str = "PIPEDREAM_PROJECT_ENVIRONMENT";
     const VALUE: &str = "production";
     const COLS: u16 = 40;
+
+    /// VLT-007 (SPEC-483 V4): when the agent secrets cannot be read for the terminal, its
+    /// output is withheld with one notice, never shown unredacted, and the next chunk asks
+    /// again; once they can be read the output flows, redacted.
+    #[test]
+    fn output_is_withheld_while_agent_secrets_cannot_be_read() {
+        let scrub = TerminalScrub::default();
+        let failed = || Err(crate::error::AppError::Internal("store".into()));
+        let text = format!("TOKEN={VALUE}\r\n");
+
+        let first = scrub.loaded(1, failed());
+        assert_eq!(first, WITHHELD);
+        assert_eq!(scrub.push(text.as_bytes()).0, b"");
+        assert_eq!(scrub.loaded(1, failed()), b"", "the notice shows once");
+        assert_eq!(scrub.push(text.as_bytes()).0, b"");
+        let stale = |scrub: &TerminalScrub| {
+            scrub
+                .0
+                .lock()
+                .map(|inner| inner.generation != Some(1))
+                .unwrap_or(true)
+        };
+        assert!(stale(&scrub), "the next chunk asks again");
+
+        assert_eq!(scrub.loaded(1, Ok(Some(screen_redactor(matcher())))), b"");
+        assert!(!stale(&scrub));
+        let shown = scrub.push(text.as_bytes()).0;
+        let shown = String::from_utf8_lossy(&shown);
+        assert!(
+            shown.starts_with("TOKEN=[secret:") && !shown.contains(VALUE),
+            "{shown}"
+        );
+        // Without agent secrets there is nothing to redact: the output passes.
+        assert_eq!(scrub.loaded(2, Ok(None)), b"");
+        assert_eq!(scrub.push(b"plain\r\n").0, b"plain\r\n");
+    }
 
     fn matcher() -> Arc<PlainMatcher> {
         Arc::new(PlainMatcher::new(vec![(NAME.into(), needles(VALUE))]))

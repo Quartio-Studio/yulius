@@ -227,6 +227,9 @@ impl VaultStore for SqliteStore {
     ) -> AppResult<bool> {
         let r = record.clone();
         let (seen_hosts, seen_auto) = (to_json(&seen.hosts), i64::from(seen.auto_allow));
+        // The sealed value the edit read: an edit writes it back, so one read before a
+        // rotation would undo it (SPEC-483 V3).
+        let seen_value = seen.envelope.ciphertext.clone();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             ensure_agent_unique(&tx, &r)?;
@@ -236,7 +239,8 @@ impl VaultStore for SqliteStore {
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
                      updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
                      WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
-                     AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15)",
+                     AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15) \
+                     AND ciphertext = ?17",
                     params![
                         r.id,
                         r.name,
@@ -254,6 +258,7 @@ impl VaultStore for SqliteStore {
                         i64::from(r.auto_allow),
                         seen_hosts,
                         seen_auto,
+                        seen_value,
                     ],
                 )
                 .map_err(db)?;
@@ -1779,6 +1784,38 @@ mod tests {
         );
         let got = store.vault_get("p").await?.ok_or("row")?;
         assert!(got.cd_prod && got.hosts.is_empty() && got.env_files == EnvFiles::No);
+        Ok(())
+    }
+
+    /// SPEC-483 V3: every edit writes the sealed value it read back. One read before a
+    /// rotation would write the old value over the new one, and the person who rotated was
+    /// told it worked: the edit is refused, and one read again goes through.
+    #[tokio::test]
+    async fn an_edit_read_before_a_rotation_does_not_undo_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        store
+            .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))
+            .await?;
+        let seen = store.vault_get("a").await?.ok_or("row")?;
+        let mut rotated = seen.clone();
+        rotated.envelope.ciphertext = vec![7, 7];
+        rotated.value_updated_at = Timestamp(5);
+        assert!(store.vault_update(&rotated, &seen).await?);
+
+        let mut described = seen.clone();
+        described.description = "edited by someone who read the old row".into();
+        assert!(
+            !store.vault_update(&described, &seen).await?,
+            "an edit read before the rotation"
+        );
+        let got = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(got.envelope.ciphertext, vec![7, 7]);
+        assert_eq!(got.value_updated_at, Timestamp(5));
+
+        let mut again = got.clone();
+        again.description = "edited after a reload".into();
+        assert!(store.vault_update(&again, &got).await?);
         Ok(())
     }
 

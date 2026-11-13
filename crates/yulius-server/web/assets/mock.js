@@ -12,6 +12,7 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
+// vault=unlocked (two-factor is on and the code was just entered),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), claude_hold_read=1 (the Claude Code
 // card's reads are answered late, once `__yuliusMock.claude.releaseRead()` is called), as=<login> (signed in as another member, a
@@ -227,6 +228,7 @@ function seed(params) {
     // its POST, PATCH and PUT requests.
     holdPath: params.get('hold') || null,
     holdPostPath: params.get('holdpost') || null,
+    vaultUnlocked: params.get('vault') === 'unlocked',
 
     nextId: 100,
     // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
@@ -3061,8 +3063,9 @@ function vaultOf(db) {
   if (!db.vault) {
     db.vault = {
       reauthAt: Date.now(),
-      unlockAt: 0,
-      twoFactor: 'missing',
+      // vault=unlocked: two-factor is on and the code was just entered.
+      unlockAt: db.vaultUnlocked ? Date.now() : 0,
+      twoFactor: db.vaultUnlocked ? 'on' : 'missing',
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
       agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
@@ -3135,6 +3138,14 @@ function reauthStatus(db) {
   if (db.me.user.is_superadmin) methods.push('password');
   if (db.me.user.github_linked) methods.push('github');
   return { fresh, fresh_until: fresh ? new Date(vault.unlockAt + REAUTH_MS).toISOString() : null, two_factor: vault.twoFactor, identity_fresh: Date.now() - vault.reauthAt < REAUTH_MS, methods };
+}
+
+/**
+ * As `fresh_to_widen` (ADR-0317): the value of a secret allowed use by use goes somewhere new
+ * (a host, `.env` files, agents binding it) only after the two-factor code.
+ */
+function needFreshToWiden(db, secret) {
+  return secret.auto_allow ? null : needFresh(db);
 }
 
 function needFresh(db) {
@@ -3305,6 +3316,9 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const sameHosts = (a, b) => a.length === b.length && a.every((x) => b.includes(String(x).toLowerCase()));
   if (body.expect_hosts && !sameHosts(body.expect_hosts, secret.hosts)) fail(409, 'conflict', `its hosts changed since you opened it (now ${secret.hosts.join(', ') || 'none'}): reload and edit again`);
   delete body.expect_hosts;
+  const widens = (body.auto_allow === true && !secret.auto_allow) || (body.hosts || []).some((host) => !secret.hosts.includes(String(host).toLowerCase()));
+  const refused = widens && needFreshToWiden(db, secret);
+  if (refused) return refused;
   for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
@@ -3329,6 +3343,8 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   if (seen.length !== asked.length || !asked.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the hosts that wait (${asked.join(', ')})`);
   // In the server's order (requests.rs, env_files.rs): a production secret right after the conflict.
   if (body.allow && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
+  const refused = body.allow && needFreshToWiden(db, secret);
+  if (refused) return refused;
   const hosts = [...new Set([...secret.hosts, ...asked])];
   if (body.allow && hosts.length > 16) fail(422, 'invalid', 'at most 16 hosts');
   if (body.allow) secret.hosts = hosts;
@@ -3372,6 +3388,8 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   if (body.allow && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
   if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
   if (state === 'allowed' && body.allow) return agentView(db, secret, sandbox);
+  const refused = body.allow && needFreshToWiden(db, secret);
+  if (refused) return refused;
   audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
   secret.env_files = body.allow ? 'allowed' : 'no';
   secret.env_requested_by = null;

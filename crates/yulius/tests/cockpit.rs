@@ -3802,7 +3802,7 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
@@ -3918,7 +3918,7 @@ async fn the_superagent_never_copies_into_a_repo_swapped_for_a_link() -> TestRes
         Some(
             json!({"allow": true, "env_files": "asked", "env_requested_by": "alice's Superagent"}),
         ),
-        &f.alice,
+        &crate::secrets::unlocked(&f.h, "u-alice").await?,
     )
     .await?;
     assert_eq!(allowed.status, StatusCode::OK, "{:?}", allowed.body);
