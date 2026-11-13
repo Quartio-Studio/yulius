@@ -2810,19 +2810,14 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
                 .is_some_and(|p| p.starts_with("Yulius could not end this session")),
             "{why}"
         );
-        assert_eq!(why["action"], "Stop the task again to retry.");
+        assert_eq!(why["action"], "Stop the task to try again.");
         let switches = app.deps.store.switches(&id).await?;
         assert_eq!(
             switches.last().map(|s| s.outcome.as_str()),
             Some("failed"),
             "the switch is recorded as failed"
         );
-        let mut said = Vec::new();
-        while let Ok(frame) = watch.try_recv() {
-            if let yulius_app::hub::HubFrame::Notice(text) = frame {
-                said.push(text);
-            }
-        }
+        let said = notices_of(&mut watch);
         assert!(
             said.iter()
                 .any(|line| line == "↻ The session was not switched: it could not be ended."),
@@ -2854,8 +2849,8 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
 }
 
 /// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
-/// terminated. The run is lost, as any run whose host had to be killed, and a switch whose old
-/// run is lost starts no new run (SPEC-250 STW-006): the task rests with its one run ended.
+/// terminated. The switch failed and starts no new run: the task rests as
+/// `stopped_switch_timeout` with its one run ended.
 #[test]
 fn a_switch_whose_old_run_had_to_be_killed_starts_no_new_run() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -2865,25 +2860,208 @@ fn a_switch_whose_old_run_had_to_be_killed_starts_no_new_run() -> TestResult {
         let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
         host.deafen(true);
         let outcome = switch_result(switch_on_worker(&app, &id)).await?;
-        assert_eq!(
-            outcome,
-            Err("the session ended during the switch".to_owned()),
-            "{}",
-            run_states(&app, &id).await
+        timed_out_switch(&app, &id, &outcome, "lost").await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// What a switch that gave its old run up leaves, whoever recorded that run's end (as
+/// `exit_reason`): the switch failed saying so, the task has its one run, ended, and rests as
+/// `stopped_switch_timeout`.
+async fn timed_out_switch(
+    app: &Arc<App>,
+    id: &TaskId,
+    outcome: &Result<(), String>,
+    exit_reason: &str,
+) -> TestResult {
+    let states = run_states(app, id).await;
+    assert_eq!(
+        outcome,
+        &Err("it did not end in time during the switch".to_owned()),
+        "{states}"
+    );
+    let runs = app.deps.store.attempts(id).await?;
+    assert_eq!(runs.len(), 1, "{states}");
+    assert!(runs[0].state.is_terminal(), "{states}");
+    assert_eq!(
+        runs[0].exit_reason.as_deref(),
+        Some(exit_reason),
+        "{states}"
+    );
+    assert_eq!(
+        task(app, id).await?.status,
+        TaskStatus::Stopped(StopReason::SwitchTimeout),
+        "{states}"
+    );
+    assert!(app.deps.store.live_attempt(id).await?.is_none());
+    let switches = app.deps.store.switches(id).await?;
+    assert_eq!(switches.last().map(|s| s.outcome.as_str()), Some("failed"));
+    Ok(())
+}
+
+/// Runs `then` in the switch of `id`, once it gave its old run up and before it terminates that
+/// run's host; `then` returns once the run's end is recorded.
+fn as_the_switch_ends_its_run<F, Fut>(app: &Arc<App>, id: &TaskId, then: F)
+where
+    F: FnOnce(Arc<App>, TaskId) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = TestResult>,
+{
+    let (app, key, id) = (app.clone(), id.clone(), id.clone());
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(
+        yulius_app::race::Point::SwitchEndsRun,
+        Path::new(key.as_str()),
+        move || {
+            let recorded = wait_in_hook(&handle, async {
+                let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+                then(app.clone(), id.clone()).await?;
+                wait_for("the run's end", Duration::from_secs(30), || async {
+                    matches!(
+                        app.deps.store.attempt(&run.id).await,
+                        Ok(Some(a)) if a.state.is_terminal()
+                    )
+                })
+                .await
+            });
+            if let Err(err) = recorded {
+                eprintln!("{err}");
+            }
+        },
+    );
+}
+
+/// SPEC-483 SWT-002 (review): the run's reader sees its host go before the switch that gave the
+/// run up records the loss. The loss is that switch's all the same: the task rests as
+/// `stopped_switch_timeout`, not `stopped_lost`.
+#[test]
+fn a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        host.deafen(true);
+        as_the_switch_ends_its_run(&app, &id, |app, id| async move {
+            kill_run_host(&app, &id).await
+        });
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        timed_out_switch(&app, &id, &outcome, "lost").await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 SWT-002 (review): the run exits by itself after the switch gave it up, before its
+/// host is terminated. Its exit is recorded as the switch's timeout and rests the task the same
+/// way: it is not left switching with no run.
+#[test]
+fn a_run_that_exits_as_its_switch_gives_it_up_rests_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        host.deafen(true);
+        as_the_switch_ends_its_run(&app, &id, |app, id| async move {
+            Ok(app.send_input(&id, b"/exit\r").await?)
+        });
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        timed_out_switch(&app, &id, &outcome, "switch_timeout").await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 SWT-002 (review): the same exit, and the host then cannot be terminated (the test
+/// host refuses). The run ended, so nothing is said about a session that could not be ended and
+/// the task is not put back to running with no run.
+#[test]
+fn a_run_that_exits_before_a_refused_kill_rests_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        host.refuse_ends(true);
+        as_the_switch_ends_its_run(&app, &id, |app, id| async move {
+            Ok(app.send_input(&id, b"/exit\r").await?)
+        });
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        timed_out_switch(&app, &id, &outcome, "switch_timeout").await?;
+        let said = notices_of(&mut watch);
+        assert!(
+            !said.iter().any(|line| line.contains("could not")),
+            "{said:?}"
         );
-        let runs = app.deps.store.attempts(&id).await?;
-        assert_eq!(runs.len(), 1, "{}", run_states(&app, &id).await);
-        assert_eq!(runs[0].state, AttemptState::Lost);
-        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
-        assert_eq!(
-            task(&app, &id).await?.status,
-            TaskStatus::Stopped(StopReason::Lost)
-        );
-        assert!(app.deps.store.live_attempt(&id).await?.is_none());
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// SPEC-483 SWT-002 (review): the old run ends by itself just as the switch's wait runs out: its
+/// end is being recorded (the switch's intent was taken) when the switch looks. The switch waits
+/// for that word and goes on: the run ended as switched and the new run starts, instead of a
+/// task left switching with no run.
+#[test]
+fn a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        // Long enough for the session to end at the switch's request before the wait is over.
+        let (app, _host, id) = gated_goal_task_ending(&data, &fake, 5_000).await?;
+        let (waited, wait_over) = std::sync::mpsc::channel::<()>();
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held_until_then = held.clone();
+        yulius_app::race::on(
+            yulius_app::race::Point::RunEndTaken,
+            Path::new(id.as_str()),
+            move || {
+                // The worker is handed off meanwhile: the switch's timer runs on.
+                let over =
+                    tokio::task::block_in_place(|| wait_over.recv_timeout(Duration::from_secs(60)));
+                held_until_then.store(over.is_ok(), std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        yulius_app::race::on(
+            yulius_app::race::Point::SwitchWaitOver,
+            Path::new(id.as_str()),
+            move || {
+                let _ = waited.send(());
+            },
+        );
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        assert!(
+            held.load(std::sync::atomic::Ordering::SeqCst),
+            "the run's end was held until the switch's wait ran out"
+        );
+        assert_eq!(outcome, Ok(()), "{}", run_states(&app, &id).await);
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 2, "{}", run_states(&app, &id).await);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("switched"));
+        assert_eq!(runs[1].state, AttemptState::Live);
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        stop(&app, &id).await?;
+        expect_stopped(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The notices said so far on a watch of a task's terminal.
+fn notices_of(
+    watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFrame>,
+) -> Vec<String> {
+    let mut said = Vec::new();
+    while let Ok(frame) = watch.try_recv() {
+        if let yulius_app::hub::HubFrame::Notice(text) = frame {
+            said.push(text);
+        }
+    }
+    said
 }
 
 /// Stops `id` on a runtime worker, so a pause point's hook can wait there.

@@ -694,16 +694,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
   others do (`error::bare_status`).
 - **SWT-001** A turn's end that would move the session to another subscription takes a look
   at the background work that gives no answer as work running: the session stays, the Stop
-  is answered as on a subscription that stays, and a later turn's end moves it. There is
-  one question (`background_work_now`), and no caller reads "not known" as "none".
+  is answered as on a subscription that stays, and a later turn's end moves it. No caller
+  of the two looks (`background_work_now`, `background_or_wait_now`) reads "not known" as
+  "none". The session that stays for it is logged; a host whose look never answers moves
+  no session at a turn's end (a move at a usage limit does not ask).
 - **SWT-002** A switch whose old run does not end within `switch_end_ms` (half of the
-  switch's two minutes) terminates the run's host. Terminated, the run is lost by the path
-  of every lost run and the switch starts no new run (STW-006): the task rests as
-  `stopped_lost`. Not terminated, the run stays the task's live run (END-001): no session
-  starts beside it, the task is `running` again, the switch is recorded `failed`, the task
-  says in its terminal and to a person that the session could not be ended, and the next
-  turn's end does not try the switch again within the cooldown. In both cases the switch's
-  intent leaves the task's slot.
+  switch's two minutes) gives the run up and terminates its host. The switch starts no
+  new run, is recorded `failed`, and the task rests as `stopped_switch_timeout` (SPEC-002's
+  state machine), whoever records the run's end first: the switch, the run's reader that
+  sees the host go, or the run's own exit. The task's end intent says the run was given up
+  (`EndIntent::SwitchTimeout`), set in the step in which the switch sees that the run's end
+  is still its own. A run whose end is already being recorded when the wait runs out is
+  waited for once more and the switch goes on. A host that cannot be terminated leaves
+  the run the task's live run (END-001): no session starts beside it, the task is
+  `running` again, the switch is recorded `failed`, the task says in its terminal and to a
+  person that the session could not be ended, and the next turn's end does not try the
+  switch again within the cooldown; a run that ended by itself meanwhile rests the task
+  instead. No intent of the switch stays in the task's slot.
 
 ## Plan
 
@@ -1116,13 +1123,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-97** A switch of a task whose session does not hear the request to end and whose
   host cannot be terminated ends with "the session could not be ended, so it was not
   switched": the task has its one run, live; it is `running` and reads Needs your action
-  with "Yulius could not end this session"; the switch is recorded `failed`, its terminal
+  with "Yulius could not end this session" and "Stop the task to try again."; the switch
+  is recorded `failed`, its terminal
   says "The session was not switched: it could not be ended.", and switches cool down. A
   session that leaves by itself afterwards ends as `exited` and closes the task (no intent
   of the switch was left for it).
 - **AC-98** A switch of a task whose session does not hear the request to end and whose
-  host can be terminated ends with "the session ended during the switch": the task has
-  its one run, lost, and is `stopped_lost`.
+  host can be terminated ends with "it did not end in time during the switch": the task
+  has its one run, lost, and is `stopped_switch_timeout`; the switch is recorded `failed`.
+- **AC-99** The same outcome when the run's reader records the loss before the switch
+  does (the host is killed after the switch gave the run up, before it terminates it), and
+  when the run exits by itself at that moment (its end is recorded `switch_timeout`), also
+  when the host then cannot be terminated: nothing says a session could not be ended.
+- **AC-100** A run whose end is being recorded when the switch's wait runs out (held
+  after its recorder took the switch's intent) is switched: the old run ended `switched`,
+  the new run is live, the task runs.
 
 ## Test plan
 
@@ -1302,9 +1317,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-95, slice 15's rule).
 - Slice 17: `yulius` `task_done::a_switch_waits_while_the_background_work_cannot_be_told`
   (AC-96), `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` (AC-97),
-  `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run` (AC-98), on the
-  real session host behind a test host that can drop requests to end, refuse to terminate
-  and leave the look unanswered.
+  `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run` (AC-98),
+  `task_done::a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first`,
+  `task_done::a_run_that_exits_as_its_switch_gives_it_up_rests_the_task` and
+  `task_done::a_run_that_exits_before_a_refused_kill_rests_the_task` (AC-99),
+  `task_done::a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched` (AC-100),
+  on the real session host behind a test host that can drop requests to end, refuse to
+  terminate and leave the look unanswered; the orders are made with three pause points
+  (`RunEndTaken`, `SwitchWaitOver`, `SwitchEndsRun`).
 
 ## Decisions
 
@@ -1368,18 +1388,28 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
-- Slice 17 (no decision record: END-001 and STW-006 applied where they were not). After
-  a switch's wait the killed run is lost and no new session starts. The other way was
-  weighed: go on with the switch once the host is proven gone, which keeps an autonomous
-  task working. It was what the code tried, and it could not be had without a second way
-  to record a run's end: the run's reader sees the loss too, and whichever of the two
-  recorded it first decided the outcome. A session that ignores its end for a minute after
-  the host's own escalation is broken, and a broken run rests the task as every other loss
-  does. The wait is a setting (`switch_end_ms`) only so that tests need not wait a minute.
+- Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
+  where they were not). After a switch's wait the run that had to be killed ends the
+  switch, and no new session starts. The other way was weighed: go on with the switch once
+  the host is proven gone, which keeps an autonomous task working. It was what the code
+  tried, and three recorders see that run's end (the switch, the run's reader, the run's
+  own exit): going on needs all three to agree that the next run starts, resting needs
+  only that each of them rests the task. A session that ignores its end for a minute after
+  the host's own escalation is broken, and the state machine already had the status for
+  it. The first version of this slice cleared the switch's intent before the kill and so
+  left two orders in which the task stayed `switching` with no run (the review, finding
+  1): the intent slot now says "given up" instead of nothing, each recorder reads it, and
+  a run whose end was already taken is waited for instead of killed. The orders are tested
+  with pause points, as the stop's and the close's are (SPEC-250). The wait is a setting
+  (`switch_end_ms`) only so that tests need not wait a minute.
+  A finished (`Done`) task whose idle session is moved and has to be given up rests as
+  stopped, not closed: RBT-001 closes only a running task, and its domain test says why
+  for this very case ("a switch or a stop in flight was cut"); the review asked for
+  `Closed`, which would change that rule for every loss during a switch, not only this one.
   The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
-  task's intent before it knows it is the first to record), is not changed: after this
-  slice no path records a run's end while its reader still serves it and then starts
-  another run, and a test of it needs a host that reports a killed session as ended.
+  task's intent before it knows it is the first to record), is not changed: no path
+  records a run's end while its reader still serves it and then starts another run.
+  The test starter takes its two waits as a pair, not a struct: it has two callers.
 - Slice 16 (no decision record): the loopback listener takes the public table as it is,
   422 for an invalid request included; nothing in the repository reads its 400 (the hook
   client takes any 5xx for "try again while held" and any other error for none, the
