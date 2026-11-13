@@ -1181,6 +1181,53 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     Ok(())
 }
 
+/// SPEC-484 AC-11, the plan task #465 could not keep (2026-11-13: "Step 6/6" with a full bar
+/// while its spec named the slices still ahead): a spec whose Plan lists every slice of the
+/// task, 18 of them with their parts nested, five ticked, gives 18 steps from the start. The
+/// briefing reads 5/18 and tells nobody to merge slices.
+#[tokio::test]
+async fn a_plan_of_every_slice_shows_all_of_them_from_the_start() -> TestResult {
+    let f = fixture().await?;
+    let plan: String = (1..=18)
+        .map(|n| {
+            format!(
+                "- [{}] Slice {n}: the findings of area {n} fixed and reviewed\n  - [{0}] its fixes, test-first\n  - [{0}] its review answered\n",
+                if n <= 5 { "x" } else { " " }
+            )
+        })
+        .collect();
+    let spec = format!(
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Audit\n\n\
+         ## Goal\n\nEvery finding fixed.\n\n## Context\n\nEighteen slices, one pull request each.\n\n\
+         ## Requirements\n\n- Each finding has a failing test first.\n\n## Plan\n\n{plan}\n\
+         ## Acceptance Criteria\n\nThe ledger is empty.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- One pull request per slice.\n"
+    );
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    // The fixture's task spec.
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), spec)?;
+    let body = hook(&f, "SessionStart", json!({"session_id": "s2"})).await?;
+    let steps = f.h.app.deps.store.steps(&f.task).await?;
+    assert_eq!(steps.len(), 18, "every slice is a step; its parts are not");
+    assert_eq!(steps.iter().filter(|s| s.status == "done").count(), 5);
+    assert_eq!(
+        steps[17].title,
+        "Slice 18: the findings of area 18 fixed and reviewed"
+    );
+    let briefing = body["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .ok_or("briefing")?;
+    assert!(
+        briefing.contains("Steps (5/18 done, 27 %; current: 6. Slice 6:"),
+        "{briefing}"
+    );
+    assert!(
+        !briefing.contains("Merge related steps") && !briefing.contains("Every step is finished"),
+        "{briefing}"
+    );
+    Ok(())
+}
+
 /// SPEC-341 LSS-002: the spec sync now also runs while a turn goes on, next to the agent's step
 /// tools. It waits for the task's steps lock and reads the steps only then, so a status changed
 /// while it waited is kept, never written back to the one before.
