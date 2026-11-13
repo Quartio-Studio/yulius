@@ -418,6 +418,24 @@ impl LiveHome {
         &self,
         args: &[String],
     ) -> Result<(usize, Vec<String>), Box<dyn std::error::Error>> {
+        self.session_until(args, || true).await
+    }
+
+    /// Whether Claude Code has registered the marketplace `m` in this home.
+    fn registered(&self) -> bool {
+        std::fs::read_to_string(self.config.join("plugins/known_marketplaces.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|known| known.get("m").is_some())
+    }
+
+    /// [`Self::session`], the process kept until `done` holds too: Claude Code goes on working
+    /// after it has said what it loaded (it registers a repository's marketplace only then).
+    async fn session_until(
+        &self,
+        args: &[String],
+        done: impl Fn() -> bool,
+    ) -> Result<(usize, Vec<String>), Box<dyn std::error::Error>> {
         self.runs.set(self.runs.get() + 1);
         let log = self.root.join(format!("debug-{}.log", self.runs.get()));
         let mut child = tokio::process::Command::new("claude")
@@ -445,7 +463,7 @@ impl LiveHome {
         let loaded = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let text = tokio::fs::read_to_string(&log).await.unwrap_or_default();
-                if let Some(loaded) = language_servers_loaded(&text) {
+                if let Some(loaded) = language_servers_loaded(&text).filter(|_| done()) {
                     return loaded;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -453,10 +471,9 @@ impl LiveHome {
         })
         .await;
         child.kill().await?;
-        Ok(
-            loaded
-                .map_err(|_| "the CLI's debug log never said which language servers it loaded")?,
-        )
+        Ok(loaded.map_err(
+            |_| "the CLI never said which language servers it loaded, or never got as far as asked",
+        )?)
     }
 
     /// The `--settings` Yulius plans for a task run of this home and worktree, written where the
@@ -610,7 +627,13 @@ async fn a_runs_settings_keep_the_real_cli_from_loading_a_language_server() -> T
         !home.config.join("plugins/known_marketplaces.json").exists(),
         "nothing is registered when the run is planned"
     );
-    assert_eq!(home.session(&[]).await?.0, 0, "this session registers");
+    // The registering session is kept until the registration is written: Claude Code writes
+    // it after it has said what it loaded, and a session ended in between registers nothing.
+    assert_eq!(
+        home.session_until(&[], || home.registered()).await?.0,
+        0,
+        "this session registers"
+    );
     assert_eq!(
         home.session(&[]).await?,
         all_three,

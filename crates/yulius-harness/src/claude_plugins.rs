@@ -158,17 +158,18 @@ impl<'a> Lookup<'a> {
             }
         }
         let mut ids: BTreeSet<String> = copies.keys().cloned().collect();
-        // Marketplaces a settings file names as a folder, by name.
+        // Marketplaces a settings file names as a folder, by name: the worktree's local settings
+        // before the repository's before the home's, as Claude Code ranks them.
         let mut named: BTreeMap<String, PathBuf> = BTreeMap::new();
-        self.settings(&config, "settings.json", worktree, &mut ids, &mut named);
         if let Some(project) = self
             .below_anchor(worktree)
             .and_then(|worktree| open_dir_at(&worktree, OsStr::new(".claude"), false).ok())
         {
-            for name in ["settings.json", "settings.local.json"] {
+            for name in ["settings.local.json", "settings.json"] {
                 self.settings(&project, name, worktree, &mut ids, &mut named);
             }
         }
+        self.settings(&config, "settings.json", worktree, &mut ids, &mut named);
         // An id is `name@marketplace` of names as Claude Code takes them. That also bounds what a
         // run's settings grow by: JSON escapes none of their characters.
         let (taken, odd): (Vec<String>, Vec<String>) = ids.into_iter().partition(|id| {
@@ -838,6 +839,24 @@ mod tests {
                 ["the folder of marketplace m cannot be opened"]
             );
         }
+        // Two files name the marketplace as different folders: the worktree's local settings win
+        // over the repository's, and those over the home's, as Claude Code registers the
+        // repository's (measured on 2.1.323: the home naming a folder without the plugin and the
+        // repository one with it, a terminal session loads the server).
+        let without = sandbox.join("work/without");
+        catalog_at(&without, &json!([{ "name": "p" }]), json!({}))?;
+        let with = json!({ "source": "directory", "path": market });
+        let bare = json!({ "source": "directory", "path": without });
+        settings(&config.join("settings.json"), bare.clone())?;
+        settings(&project.join("settings.json"), with.clone())?;
+        assert_eq!(found(&config), ["p@m"], "the repository's over the home's");
+        settings(&project.join("settings.local.json"), bare.clone())?;
+        assert!(found(&config).is_empty(), "the local over the repository's");
+        settings(&project.join("settings.local.json"), with)?;
+        settings(&project.join("settings.json"), bare)?;
+        assert_eq!(found(&config), ["p@m"], "the local over both");
+        std::fs::remove_file(project.join("settings.local.json"))?;
+        std::fs::remove_file(project.join("settings.json"))?;
         // Where `known_marketplaces.json` says the marketplace lies comes first.
         let registered = sandbox.join("work/registered");
         catalog_at(&registered, &json!([{ "name": "p" }]), json!({}))?;
