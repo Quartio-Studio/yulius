@@ -2237,3 +2237,18 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   its own (the kept security job is tested for a pull request and for a train; the
   built-in scan is never on in a playground); the reasons a run again gives when nothing
   tests the commit.
+- **Review of slice 13, round 1** (head d733a7edd, request changes; the scheduler, the train
+  and the remote control "behave exactly as before, and the `ci_rerun` fix does what it
+  claims"). One minor finding in own code, in the reviewer's words: "A playground task that
+  fixes a broken `dev` yulius.toml now merges with no test at all." Answered by the rule
+  itself (`Head::Merged`, Decisions) and AC-82. Four nits answered: the Decisions sentence
+  about the playground's merge base; the reasons a run again gives; two sentences of
+  `docs/changes.md` and `docs/api.md`; a playground test where a task changes a job
+  (AC-81). A sixth point is D5's (the verdict of a head that brings its own jobs before
+  any run exists) and stays with it.
+- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
+  failed its tests): the six above, and a merge not tested while the integration branch's
+  configuration is broken.
+- **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
