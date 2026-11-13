@@ -3117,7 +3117,7 @@ fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
 /// SPEC-483 SWT-002 (review, round 2): the run's exit is being recorded (its recorder took the
 /// given-up intent) when the kill is refused and the switch puts the task back to running. The
 /// switch waits for that record before it asks whether the run lives: the run ended, so nothing
-/// says a session could not be ended, and the task rests as after the timeout.
+/// says a session could not be ended, and the task rests as after the timeout, finished or not.
 #[test]
 fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -3125,6 +3125,12 @@ fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> Test
     let rt = runtime()?;
     rt.block_on(async {
         let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        // A finished task: its run's exit rests it stopped all the same, as from `switching`
+        // (a lost idle session of a running finished task would close it, RBT-001).
+        wait_for("the goal's end", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
         let mut watch = app.runtime(&id).hub.watch();
         host.refuse_ends(true);
         let (taken, end_taken) = std::sync::mpsc::channel::<()>();
