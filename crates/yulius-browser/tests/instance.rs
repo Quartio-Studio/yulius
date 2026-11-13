@@ -2268,6 +2268,14 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
         matches!(&astray, Err(BrowserError::SecretFrameAstray(host)) if host == "evil.example"),
         "{astray:?}"
     );
+    // Whatever is not a field of the page afterwards (the host of a closed shadow root whose
+    // frame took the focus): the same.
+    fake.queue_secret_probes(vec![probe("field"), probe("other")]);
+    let astray = instance.tool_type_secret(&secret, &bank_only).await;
+    assert!(
+        matches!(&astray, Err(BrowserError::SecretFrameAstray(host)) if host == "evil.example"),
+        "{astray:?}"
+    );
     // A fenced frame afterwards: no site to name.
     fake.set_child_frames(&[]);
     fake.queue_secret_probes(vec![probe("field"), probe("sealed")]);
@@ -2276,9 +2284,16 @@ async fn a_secret_is_not_typed_into_a_page_that_changed_since_the_look() -> Test
         matches!(&astray, Err(BrowserError::SecretFrameAstray(site)) if site == "an unknown site"),
         "{astray:?}"
     );
-    // The focus in a frame of a site the secret is for, or still in the field: no report.
+    // The focus in a frame of a site the secret is for: no report. Nor when it left the field
+    // for something else on a page without a frame of another site, or stayed in the field
+    // beside one.
     fake.set_child_frames(&["https://bank.example/widget"]);
     fake.queue_secret_probes(vec![probe("field"), probe("frame")]);
+    instance.tool_type_secret(&secret, &bank_only).await?;
+    fake.queue_secret_probes(vec![probe("field"), probe("other")]);
+    instance.tool_type_secret(&secret, &bank_only).await?;
+    fake.set_child_frames(&["https://evil.example/collect"]);
+    fake.queue_secret_probes(vec![probe("field"), probe("field")]);
     instance.tool_type_secret(&secret, &bank_only).await?;
     Ok(())
 }

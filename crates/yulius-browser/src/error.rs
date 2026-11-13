@@ -145,10 +145,11 @@ pub enum BrowserError {
         "nothing was typed: the focus is not in a field of this page itself, and the page holds a frame of {0}, which is not a site this secret may be typed into"
     )]
     SecretFrameRefused(String),
-    /// The focus went into a frame of a site the secret may not be typed into while it was
-    /// typed: part of the secret may be in that frame.
+    /// After a secret was typed the focus is not in a text field of the page, and the page
+    /// holds a frame of a site the secret may not be typed into (it took the focus, or came,
+    /// while the keys were sent): part of the secret may be in that frame.
     #[error(
-        "the focus went into a frame of {0} while the secret was typed, so part of it may be in that frame: tell the secret's person, who may want to replace it"
+        "the focus left this page's field while the secret was typed, and the page holds a frame of {0}, which is not a site this secret may be typed into: part of the secret may be in that frame. Tell the secret's person, who may want to replace it"
     )]
     SecretFrameAstray(String),
     /// The tab's document changed while a secret was typed, to a page it may not be typed

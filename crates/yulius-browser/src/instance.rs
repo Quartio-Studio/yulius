@@ -884,12 +884,8 @@ struct PageText {
     shown: Vec<Zeroizing<String>>,
     /// The values of password fields (drawn as dots).
     masked: Vec<Zeroizing<String>>,
-    /// The value of the focused element when it is a password field (`None`: it is not, or it
-    /// is a frame the probe cannot read).
+    /// The value of the focused element when it is a password field (`None`: it is not).
     focused_password: Option<Zeroizing<String>>,
-    /// The focused element holds a document the probe cannot read (a frame, an object or an
-    /// embed of another site, a fenced frame).
-    focused_frame: bool,
     /// The focused element is one no list of the page's frames names (a fenced frame).
     focus_sealed: bool,
     /// The focus is in a text field of a document the probe read: the page's own, or a frame's
@@ -921,7 +917,6 @@ impl PageText {
         let kind = focus
             .and_then(|focus| focus.get("kind"))
             .and_then(Value::as_str);
-        let focused_frame = matches!(kind, Some("frame" | "sealed"));
         let focus_sealed = kind == Some("sealed");
         let focus_in_page = matches!(kind, Some("field" | "password"));
         let frames = value
@@ -932,7 +927,6 @@ impl PageText {
             shown: strings("shown")?,
             masked: strings("masked")?,
             focused_password,
-            focused_frame,
             focus_sealed,
             focus_in_page,
             frames,
@@ -962,11 +956,22 @@ impl PageText {
 /// a secret typed meanwhile would land in the page that arrives.
 #[derive(Default)]
 struct Leaving {
-    /// By session and frame: where the frame is going, and since when. At most
-    /// [`LEAVING_MAX`]; one older than [`LEAVING_STANDS`] no longer counts.
-    going: HashMap<(String, String), (String, Instant)>,
-    /// Announcements were lost (events skipped, or more frames on their way than are kept):
-    /// for [`LEAVING_STANDS`] from then, where a frame is going is not known.
+    /// By session (a tab's).
+    sessions: HashMap<String, LeavingFrames>,
+    /// Announcements of every session were lost (events skipped): for [`LEAVING_STANDS`] from
+    /// then, where a frame is going is not known.
+    lost: Option<Instant>,
+}
+
+/// One session's frames on their way.
+#[derive(Default)]
+struct LeavingFrames {
+    /// By frame: where it is going, and since when. At most [`LEAVING_MAX`]; one older than
+    /// [`LEAVING_STANDS`] no longer counts. An address too long to keep is kept as none (the
+    /// empty one, which no secret is for).
+    going: HashMap<String, (String, Instant)>,
+    /// More frames were on their way than are kept: for [`LEAVING_STANDS`] from then, where
+    /// this session's frames are going is not known.
     lost: Option<Instant>,
 }
 
@@ -982,50 +987,65 @@ enum Going {
 impl Leaving {
     /// Chrome announced that `frame` of `session` set out for `url`.
     fn announce(&mut self, session: &str, frame: &str, url: &str, now: Instant) {
-        let key = (session.to_owned(), frame.to_owned());
-        if !self.going.contains_key(&key) && self.going.len() >= LEAVING_MAX {
-            self.going
+        let frames = self.sessions.entry(session.to_owned()).or_default();
+        if !frames.going.contains_key(frame) && frames.going.len() >= LEAVING_MAX {
+            frames
+                .going
                 .retain(|_, (_, since)| now.duration_since(*since) < LEAVING_STANDS);
         }
-        if !self.going.contains_key(&key) && self.going.len() >= LEAVING_MAX {
-            self.lose(now);
+        if !frames.going.contains_key(frame) && frames.going.len() >= LEAVING_MAX {
+            // More than are kept, in this tab: none of its frames is known from here.
+            frames.going.clear();
+            frames.lost = Some(now);
             return;
         }
-        // What is asked of the address is its site: its beginning says it.
-        let mut end = url.len().min(LEAVING_ADDRESS_MAX);
-        while !url.is_char_boundary(end) {
-            end -= 1;
-        }
-        self.going.insert(key, (url[..end].to_owned(), now));
+        // A cut address can read as another site's (its end as the host, when what comes
+        // before the host is long): one too long is kept as no address.
+        let kept = if url.len() > LEAVING_ADDRESS_MAX {
+            ""
+        } else {
+            url
+        };
+        frames
+            .going
+            .insert(frame.to_owned(), (kept.to_owned(), now));
     }
 
     /// `frame` of `session` arrived, stopped loading or is gone.
     fn settled(&mut self, session: &str, frame: &str) {
-        self.going.remove(&(session.to_owned(), frame.to_owned()));
+        if let Some(frames) = self.sessions.get_mut(session) {
+            frames.going.remove(frame);
+        }
     }
 
     fn session_ended(&mut self, session: &str) {
-        self.going.retain(|(of, _), _| of != session);
+        self.sessions.remove(session);
     }
 
     /// Announcements were lost: nothing kept says where a frame is going now.
     fn lose(&mut self, now: Instant) {
-        self.going.clear();
+        self.sessions.clear();
         self.lost = Some(now);
     }
 
     /// Where `frames` of `session` are going.
     fn going(&self, session: &str, frames: &[String], now: Instant) -> Going {
-        if self
-            .lost
-            .is_some_and(|at| now.duration_since(at) < LEAVING_STANDS)
-        {
+        let recent =
+            |at: Option<Instant>| at.is_some_and(|at| now.duration_since(at) < LEAVING_STANDS);
+        let Some(of) = self.sessions.get(session) else {
+            return if recent(self.lost) {
+                Going::Unknown
+            } else {
+                Going::To(Vec::new())
+            };
+        };
+        if recent(self.lost) || recent(of.lost) {
             return Going::Unknown;
         }
         Going::To(
             frames
                 .iter()
-                .filter_map(|frame| self.going.get(&(session.to_owned(), frame.clone())))
+                .filter_map(|frame| of.going.get(frame))
                 .filter(|(_, since)| now.duration_since(*since) < LEAVING_STANDS)
                 .map(|(url, _)| url.clone())
                 .collect(),
@@ -1200,10 +1220,10 @@ struct PolicyCheck {
 /// How long a navigation Chrome announced and never finished keeps a secret from being typed
 /// into its frame.
 const LEAVING_STANDS: Duration = Duration::from_secs(30);
-/// Frames on their way that are kept at once, in all tabs of a browser; past it none is known
-/// for [`LEAVING_STANDS`].
+/// Frames on their way that are kept at once per tab; past it none of the tab's is known for
+/// [`LEAVING_STANDS`].
 const LEAVING_MAX: usize = 256;
-/// Bytes of an announced address that are kept.
+/// The longest announced address that is kept, in bytes.
 const LEAVING_ADDRESS_MAX: usize = 2048;
 /// The site named when an address has no host (`about:srcdoc`, `data:`).
 const UNKNOWN_SITE: &str = "an unknown site";
@@ -3221,8 +3241,9 @@ impl BrowserInstance {
             Some(document) => self.read_page(&session, &document.frame).await,
             None => None,
         };
-        // Typed into a frame the probe cannot read: the frames' hosts are where it went.
-        let into_frame = page.as_ref().is_some_and(|page| page.focused_frame);
+        // The focus is not in a field of the page now (a frame took it, or it left the field):
+        // as before the keys, the frames the page holds are where the text may have gone.
+        let into_frame = page.as_ref().is_some_and(|page| !page.focus_in_page);
         let mut frames_known = true;
         if into_frame && let Some(document) = after.as_mut() {
             match self.cdp.call("Target.getTargets", json!({})).await {
@@ -3238,9 +3259,9 @@ impl BrowserInstance {
             .as_ref()
             .filter(|document| moved && !allowed(&document.address))
             .map(|document| BrowserError::SecretAstray(shown_as(document)));
-        // So is a frame that has the focus now: the look before the keys found it in a field
-        // of the page, or every frame allowed, so one of another site took the focus (its
-        // script, as the page's field got it) or came since.
+        // So are the frames, by the rule asked before the keys: then the focus was in a field
+        // of the page or every frame was allowed, so a frame of another site took the focus
+        // since (its script, as the page's field got it), or came since.
         let astray = astray.or_else(|| {
             let document = after.as_ref().filter(|_| into_frame)?;
             let sealed = page.as_ref().is_some_and(|page| page.focus_sealed);
@@ -3800,6 +3821,10 @@ mod tests {
         ids.iter().map(|id| (*id).to_owned()).collect()
     }
 
+    fn kept(leaving: &Leaving) -> usize {
+        leaving.sessions.values().map(|of| of.going.len()).sum()
+    }
+
     /// SPEC-483 E9: what Chrome announced stands until the frame settled, its session ended
     /// or [`LEAVING_STANDS`] passed, and only for the frames asked about.
     #[test]
@@ -3842,12 +3867,12 @@ mod tests {
             leaving.going("s2", &frames(&["main"]), now),
             Going::To(Vec::new())
         );
-        assert_eq!(leaving.going.len(), 1, "only s1's child is kept");
+        assert_eq!(kept(&leaving), 1, "only s1's child is kept");
     }
 
-    /// Bounded: past [`LEAVING_MAX`] frames on their way, old ones go first; when none is old,
-    /// nothing is known for [`LEAVING_STANDS`] (a fill is refused, not typed blind). So when
-    /// events were skipped. A long address is kept by its beginning.
+    /// Bounded per tab: past [`LEAVING_MAX`] frames on their way, old ones go first; when none
+    /// is old, nothing of that tab is known for [`LEAVING_STANDS`] (a fill is refused, not
+    /// typed blind) while other tabs are. Skipped events lose every tab's.
     #[test]
     fn announcements_are_bounded_and_losing_them_is_not_knowing() {
         let start = Instant::now();
@@ -3855,6 +3880,7 @@ mod tests {
         for n in 0..LEAVING_MAX {
             leaving.announce("s1", &format!("f{n}"), "https://a.example/", start);
         }
+        leaving.announce("s2", "main", "https://d.example/", start);
         // An announcement for a frame already kept replaces it at the bound.
         leaving.announce("s1", "f0", "https://b.example/", start);
         assert_eq!(
@@ -3864,23 +3890,24 @@ mod tests {
         // The old ones make room.
         let later = start + LEAVING_STANDS;
         leaving.announce("s1", "new", "https://c.example/", later);
-        assert_eq!(leaving.going.len(), 1);
+        assert_eq!(kept(&leaving), 2, "s1's new one and s2's");
         assert_eq!(
             leaving.going("s1", &frames(&["new"]), later),
             Going::To(vec!["https://c.example/".to_owned()])
         );
-        // None is old: one more than are kept loses them all.
+        // None is old: one more than are kept loses the tab's, and only that tab's.
+        leaving.announce("s2", "main", "https://d.example/", later);
         for n in 0..LEAVING_MAX {
             leaving.announce("s1", &format!("g{n}"), "https://a.example/", later);
         }
-        assert!(leaving.going.is_empty());
+        assert_eq!(kept(&leaving), 1, "s2's");
         assert_eq!(
             leaving.going("s1", &frames(&["new"]), later),
             Going::Unknown
         );
         assert_eq!(
             leaving.going(
-                "s9",
+                "s1",
                 &frames(&["x"]),
                 later + LEAVING_STANDS - Duration::from_millis(1)
             ),
@@ -3890,21 +3917,64 @@ mod tests {
             leaving.going("s1", &frames(&["new"]), later + LEAVING_STANDS),
             Going::To(Vec::new())
         );
-
-        let mut leaving = Leaving::default();
-        leaving.lose(start);
         assert_eq!(
-            leaving.going("s1", &frames(&["main"]), start),
-            Going::Unknown
+            leaving.going("s2", &frames(&["main"]), later),
+            Going::To(vec!["https://d.example/".to_owned()])
+        );
+        assert_eq!(
+            leaving.going("s3", &frames(&["main"]), later),
+            Going::To(Vec::new())
         );
 
-        let long = format!("https://evil.example/{}", "é".repeat(LEAVING_ADDRESS_MAX));
+        // Skipped events: no tab's is known, one heard of or not.
+        leaving.lose(later);
+        assert_eq!(kept(&leaving), 0);
+        for session in ["s1", "s2", "s3"] {
+            assert_eq!(
+                leaving.going(session, &frames(&["main"]), later),
+                Going::Unknown
+            );
+        }
+        leaving.announce("s2", "main", "https://d.example/", later);
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), later),
+            Going::Unknown
+        );
+        assert_eq!(
+            leaving.going("s2", &frames(&["main"]), later + LEAVING_STANDS),
+            Going::To(Vec::new())
+        );
+    }
+
+    /// An address is never kept cut: its end could read as the host. A link to
+    /// `https://<long>.bank.example@evil.example/` cut inside what comes before the host would
+    /// be an address of `*.bank.example`; kept as none, no secret is for it.
+    #[test]
+    fn an_address_too_long_to_keep_is_no_address() {
+        let now = Instant::now();
+        let filler = "a".repeat(LEAVING_ADDRESS_MAX - "https://.bank.example".len());
+        let cut_reads_as_the_bank = format!("https://{filler}.bank.example@evil.example/");
+        assert_eq!(
+            host_of(&cut_reads_as_the_bank[..LEAVING_ADDRESS_MAX]),
+            Some(format!("{filler}.bank.example")),
+            "the cut address names a host of the bank"
+        );
         let mut leaving = Leaving::default();
-        leaving.announce("s1", "main", &long, start);
-        let Going::To(kept) = leaving.going("s1", &frames(&["main"]), start) else {
-            panic!("known");
-        };
-        assert!(kept[0].len() <= LEAVING_ADDRESS_MAX && long.starts_with(&kept[0]));
-        assert!(kept[0].starts_with("https://evil.example/"));
+        leaving.announce("s1", "main", &cut_reads_as_the_bank, now);
+        assert_eq!(
+            leaving.going("s1", &frames(&["main"]), now),
+            Going::To(vec![String::new()])
+        );
+        // One that fits is kept whole.
+        let fits = format!(
+            "https://evil.example/{}",
+            "a".repeat(LEAVING_ADDRESS_MAX - 21)
+        );
+        assert_eq!(fits.len(), LEAVING_ADDRESS_MAX);
+        leaving.announce("s1", "main", &fits, now);
+        assert_eq!(
+            leaving.going("s1", &frames(&["main"]), now),
+            Going::To(vec![fits])
+        );
     }
 }
