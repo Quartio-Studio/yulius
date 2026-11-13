@@ -591,7 +591,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
-- [ ] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
+- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
 
 ## Acceptance criteria
 
@@ -2138,3 +2138,6 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Noted, not a defect:** a clone between two folders now copies the objects where it
   linked them (the source is read-only to the confined Git, and a link needs more); more
   disk and time for a playground's first clone of a large repository.
+- **Review of slice 12, round 2** (head 5e30be1ed): "None open in own code"; approve. The
+  commit after it ticks this slice in the Plan and adds this line; the reviewer was shown
+  that delta.
