@@ -384,7 +384,15 @@ itself that the host's managed policy, which switches those windows off, is in f
 (`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
 blocks; `yulius_browser::policy`, written by `yulius host setup`;
 [ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
-The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. The two Superagents drive it with the same tools: the
+The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. Chrome is on the
+host's network, not its sandbox's, so each browser is started behind a proxy of its own
+(`BrowserNetwork`; `--proxy-server` for every address, the loopback included), a listener the
+egress proxy serves as that sandbox's browser (`EgressProxy::handle_browser`, wired by
+`BrowserProxies`): it connects where the sandbox's processes could, plus the sandbox's own
+dev-server ports on the loopback and the welcome page, and never intercepts, injects or
+redacts; without its proxy a browser is not started
+([ADR-0321](decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md)).
+The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label

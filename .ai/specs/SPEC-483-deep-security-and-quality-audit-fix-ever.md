@@ -44,8 +44,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
      DevTools and `file:` pages on the host (E1): merged, pull request #1245;
   7. the sandbox browser's secret typing (E3): merged, pull request #1247;
   8. what a secret's keys can still reach: a focused frame of another site, a navigation
-     under way, and its user name and one-time code typed without the rule (E8, E9, E10);
-  9. the sandbox browser's network (E2, W1b, C4);
+     under way, and its user name and one-time code typed without the rule (E8, E9, E10):
+     merged, pull request #1248;
+  9. the sandbox browser's network (E2);
   10. the host's own Git in a clone its agents write (G1);
   11. production secrets decided once (V6);
   12. delivery and CI decided once (D4-D6, QB1);
@@ -53,7 +54,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
-  17. efficiency (QA8, QB5, QC1, QC6).
+  17. efficiency (QA8, QB5, QC1, QC6);
+  18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
+      changes of their own, taken out of slice 9, which is one concern.
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -202,6 +205,20 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `tool_browser_fill_secret` types the fields `username` and `totp` with `browser.tool_type`:
   only the cached address of `browser.tabs()` is checked (E3's pattern), and none of this
   slice's checks apply. A one-time code is a credential while it lasts.
+
+### Slice 9: the sandbox browser's network
+
+- **E2 (high).** A sandbox's Chrome runs on the host (`BrowserManager::launch` spawns it as
+  the service user) and connects by itself. Its only limit is BRW-008's `UrlDenyList`: URL
+  patterns for Yulius's public origin and listed loopback spellings of its listeners, matched
+  by Chrome's `Fetch` interception. Through `browser_open` and `browser_navigate`, a page's
+  own requests or a viewer's address bar it reaches what no process of the sandbox reaches:
+  another sandbox's dev servers (the host relays every sandbox's port range from its
+  loopback), services on the host's loopback, `169.254.169.254`, and the internal listener by
+  a name that resolves to it. The egress proxy already has the rule for agent runs
+  (`egress_destination_allowed`, applied to what it resolved itself). Chrome 157 sends
+  `localhost` past `--proxy-server` unless `--proxy-bypass-list=<-loopback>` is given
+  (measured with a logging proxy, `target/audit/slice9/probe_proxy.py`).
 
 ## Requirements
 
@@ -363,6 +380,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **FSR-009** A secret's user name and one-time code are typed under FSR-001..008, and are
   not remembered as typed secrets (finding E10).
 
+- **BNR-001** With a network configured (`BrowserConfig::network`), a browser is started
+  behind a proxy opened for it, with the switches that send every address through it (the
+  loopback too), resolve no name locally and send no UDP past it; the proxy is closed when
+  the browser stopped, crashed and was replaced, or failed to start; a browser whose proxy
+  cannot be opened is not started.
+- **BNR-002** The server configures it for every sandbox browser: a listener of its own per
+  browser, served by the egress proxy with the sandbox's port range read from its record; a
+  browser asked for before the egress proxy runs is not started.
+- **BNR-003** Through its proxy a browser reaches, by the addresses the proxy resolved: what
+  the egress proxy lets an agent run reach; on the loopback its sandbox's ports only; of the
+  internal listener the plain paths of the welcome page only (no other path, no tunnel).
+  Anything else is refused before a connection is made: 403 naming the sandbox's ports for a
+  plain request, 403 to `CONNECT`.
+- **BNR-004** A browser's requests are neither intercepted nor changed nor redacted, need no
+  credential, never ask the policy of agent runs, and count toward the sandbox's share of the
+  proxy's connections.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -375,7 +409,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
-- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one, reviewed
+- [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
+- [ ] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches, reviewed
 
 ## Acceptance criteria
 
@@ -542,6 +577,33 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-47** Through the MCP tool, the field `username` is typed neither with the focus in
   another site's frame, nor into a tab on its way to another site, nor into a tab that moved
   on unheard; it is typed on the bound page, and a frame that took the focus is reported.
+- **AC-48** The proxy's rule (`BrowserEgress::reaches`): the sandbox's ports on `127.0.0.1`,
+  `::1` and `127.0.0.2` yes; a port outside, `0.0.0.0`, link-local and IPv4-mapped loopback
+  and link-local addresses no; a public and a private address yes; the pages' listener only
+  for a plain request whose path begins as the welcome page's, also bound to every address
+  and with its port inside the sandbox's range.
+- **AC-49** Over real sockets: a plain request and a tunnel to the sandbox's port arrive (by
+  address and by `localhost`, the host header as asked); to another loopback port
+  (`127.0.0.1`, `localhost`, `[::1]`, `127.0.0.2`, `0.0.0.0`), `169.254.169.254`, `[fe80::1]`
+  and `[::ffff:127.0.0.1]` both are answered 403 and nothing arrives; the welcome page is
+  served, other paths of its listener and a tunnel to it are not.
+- **AC-50** A browser's request arrives with its body and its own headers, without the
+  proxy's hop headers and without a credential an agent's proxy would add; the answer comes
+  back with the secret value its origin echoed and its `content-encoding`; the policy of
+  agent runs was not asked once; with a share of one connection a second tunnel is refused.
+- **AC-51** `chromium_args` with a proxy hold the five switches before an operator's extra
+  ones and none without; with a network, each browser's arguments name its own proxy, which
+  is open while it runs and closed after a stop, a crash's restart and a failed start; a
+  failing network starts nothing (`BrowserError::Network`).
+- **AC-52** As the server wires it: before the egress proxy is bound no proxy opens; `s1`'s
+  proxy reaches a server in `s1`'s ports and not one in `s2`'s, and the other way round;
+  neither reaches a service of the host or the internal listener beyond the welcome page; a
+  lease let go closes its listener; an unknown sandbox's proxy answers nothing.
+- **AC-53** On a real Chrome (opt-in): behind its proxy it shows its sandbox's server by
+  `localhost` and `127.0.0.1` and the welcome page; navigations to another sandbox's port, a
+  host service, the internal API, `169.254.169.254` and both over HTTPS show none of those
+  pages; a page's `fetch`, image and WebSocket to them arrive nowhere while its own server
+  answers.
 
 ## Test plan
 
@@ -640,6 +702,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-42, AC-43, AC-45 and AC-47 through the MCP tool); opt-in, on a real Chrome:
   `real_chromium::a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium` and
   `real_chromium::a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium` (AC-44).
+- Slice 9: `yulius-egress` `browser::tests::a_browser_reaches_its_sandboxes_ports_and_no_other_local_address`
+  and `browser::tests::of_yulius_a_browser_gets_its_pages_only` (AC-48); `tests/browser.rs`
+  `a_browser_loads_its_sandboxes_ports_and_no_other_local_address` and
+  `of_yulius_the_browser_gets_its_welcome_page_only` (AC-49),
+  `nothing_is_added_to_or_taken_from_a_browsers_requests` and
+  `a_browsers_tunnels_count_toward_its_sandboxes_share` (AC-50); `yulius-browser`
+  `manager::tests::chromium_args_send_everything_through_the_browsers_proxy` and
+  `manager::a_browser_runs_behind_its_own_proxy_or_not_at_all` (AC-51); `yulius`
+  `browser_network::each_browsers_proxy_reaches_its_own_sandboxes_ports` (AC-52) and, opt-in,
+  `browser_network::a_real_chromium_reaches_its_sandboxes_ports_and_no_other_local_address`
+  (AC-53). The nits left by slice 8's review:
+  `instance::tests::an_address_too_long_to_keep_is_kept_by_its_site`.
 
 ## Decisions
 
@@ -689,6 +763,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   navigation (measured), because nothing promises that. The secret's user name and one-time
   code follow the same rules (E10 is fixed in this slice: it is the same typing path and the
   same rule, and leaving it open would leave the slice's claim false for two of three fields).
+- [ADR-0321](../../docs/decisions/0321-a-sandboxes-browser-goes-out-through-a-proxy-of-its-own.md):
+  each browser behind a proxy of its own, served by the egress proxy with the sandbox's rule;
+  no browser without it. Chrome inside the sandbox's namespaces stays the firmer fix and is
+  not attempted here: it cannot be proven inside a sandbox.
+- From the review of slice 8, round 3 (two nits, answered in slice 9): of an announced address
+  too long to keep, its site is kept, so a sign-in redirect with a long query to a site the
+  secret is for no longer refuses a fill; the report after the keys says what is known ("the
+  focus is not in a field of this page").
 - From the review of slice 8, round 1, not changed and why: the wiring of two lines has no
   test of its own (the record's `session_ended` on a detached session, and `lose` on skipped
   events): a detached session's id is never asked again, so the first only frees memory, and
@@ -734,7 +816,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 9 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 18 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 9 |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
@@ -771,7 +853,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
 | QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
 | QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 17 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 9 |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 18 |
 
 ## Evidence
 
