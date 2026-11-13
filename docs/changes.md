@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
+  #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
+  pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and
+  the task sat until its subscription's reset while others were free. Yulius now follows the
+  workflow agents' transcripts and treats their limit as the session's: the task moves to a
+  subscription that can run it, or reads paused with the reset when none can. The relaunched
+  session is told in one prompt to resume the workflow by its run id (finished agents' results
+  are kept, only the others run again), and a prompt typed at a paused workflow is told not to
+  start it again. A workflow counts as background work, and its agents' tokens count in the
+  run's metrics. Two cases stay where they are: the Superagent (its relaunch types nothing, so
+  Claude Code continues its paused workflow at the reset), and a limit of another model than
+  the session runs, met by a workflow agent the script put on that model.
 - A run again tests a commit with the jobs the scheduler gives it (SPEC-483 slice 13, task
   #465): its own when it changed them, the integration branch's of now otherwise.
   A pull request that changes the CI is tested with its own jobs; run again (Run again, the
