@@ -4478,13 +4478,15 @@ async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
     assert!(saved().contains("\"t1\""));
     becomes(TaskStatus::Closed).await?;
     f.h.github.set_checks(&t.head, ChecksState::Success);
+    // The restore itself forgets it; nothing is left for a pass to decide.
+    next_server().restore_armed_merges().await;
+    assert!(!saved().contains("\"t1\""), "{}", saved());
     next_server().resume_armed_merges().await;
     assert_eq!(
         f.delivery("t1").await?["stage"],
         "pr_open",
         "not merged at the start"
     );
-    assert!(!saved().contains("\"t1\""), "{}", saved());
     Ok(())
 }
 
