@@ -495,7 +495,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
-- [ ] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed
+- [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed
 
 ## Acceptance criteria
 
@@ -1647,3 +1647,46 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   HTTPS from the confined adapter (HTTPS was run by hand through this sandbox's proxy; the
   suite's "GitHub" is folders, with the shell). Git builds whose helpers live outside their
   `exec-path`. macOS, where Git runs unconfined as before.
+
+### Slice 11 (2026-11-13)
+
+- **The hole, on the code as merged in slice 10** (`target/audit/slice11/mutations-b.log`,
+  the courier switched off): with the clone naming a proxy for the remote and no certificate
+  check, the server's fetch connected to that proxy
+  (`git_confined::a_transfer_with_the_token_is_not_shaped_by_the_clone`: "the clone's proxy
+  was asked for the server's connection"). The precedence itself:
+  `target/audit/slice10/urlmatch-proof.log`.
+- **The loader, by hand** (`target/audit/slice10/loader-gadget.log`): a confined bare
+  `git diff` with `diff.external` set to the loader executed a new file of the clone that was
+  a copy of `env` ("added.bin: '/dev/null': Permission denied" is that program trying to run
+  its argument); with `--no-ext-diff --no-textconv` it did not. The adapter's own diff
+  commands carried those options already, so its attack test passed before the change too;
+  the runner now adds them itself (the unit test failed first: "left: [diff, --stat, HEAD]").
+- **Tests failing without their fix** (`target/audit/slice11/mutate.py`, 13 cases,
+  `mutations.log` and `mutations-b.log`): each failed its tests: transfers with the token in
+  the clone as before (alone, and with its configuration given there), a command in a
+  sandbox's folder given the adapter's configuration, a courier's transfer allowed between
+  folders, the courier left behind, the clone not taking the result, no pruning of the
+  clone, a forcing push, no diff options from the runner, the `ssh` transport kept, signing
+  kept, an editor allowed, a sandbox being made given the folder of all sandboxes. One step
+  has no test of its own: the courier learning what the clone has of the remote before it
+  fetches. Without it the fetch still arrives; it only asks GitHub for more than it needs.
+- **The binary's whole suite**: 2246 of 2246 with the courier and the stricter runner; three
+  tests of `yulius-git` whose stand-in Git read its subcommand by position were adjusted to
+  the longer list of constant options.
+- **Slice 10's delivery.** Its first CI run failed in one e2e test of a page it does not
+  touch (`cd.e2e.ts` "a refusal after its view was left is a toast…", the known flake of
+  issue #1171); the run was repeated once at the same head and passed.
+- **Review of slice 10, round 1** (head cdfab7d11): "No critical, major, or minor own-code
+  finding is open — only nits plus the documented, deferred pre-existing G2." Approve; the
+  four nits are answered here; merged as pull request #1251.
+- **Gate.** `scripts/dev ci` at `1f7cee192`: exit 0; `4192 tests run: 4192 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed (the run before it stopped at rustdoc: a public comment linked a private
+  item).
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested here.** A transfer with the real GitHub through a courier (the tests' remote
+  is a folder the address is rewritten to, or an address where nothing listens); how much a
+  courier's fetch asks of a large repository; a proxy that would really read the header
+  (the test's proxy counts connections). macOS and other unconfined Git: unchanged.
