@@ -210,7 +210,12 @@ impl SubagentTails {
         if self.workflow_tails.len() >= MAX_WORKFLOW_FILES {
             return Ok(());
         }
-        let Some(entries) = list(&self.dir.join("workflows"))? else {
+        // The folder is the agent's to write: a link in its place is not followed.
+        let workflows = self.dir.join("workflows");
+        if !fs::symlink_metadata(&workflows).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+        let Some(entries) = list(&workflows)? else {
             return Ok(());
         };
         let mut runs = Vec::new();
@@ -509,6 +514,16 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("agent-x.jsonl"), run.join("agent-l.jsonl"))?;
         std::os::unix::fs::symlink(&outside, workflows.join("wf_link"))?;
         let mut tails = SubagentTails::new(&transcript, None);
+        assert!(tails.poll()?.is_empty());
+        assert_eq!(tails.files(), 0);
+        // A link where the runs' folder would be, to a folder with a run in it.
+        let other = dir.path().join("s2.jsonl");
+        let runs = outside.join("wf_2");
+        fs::create_dir_all(&runs)?;
+        fs::write(runs.join("agent-y.jsonl"), &text)?;
+        fs::create_dir_all(subagent_dir(&other))?;
+        std::os::unix::fs::symlink(&outside, workflow_dir(&other))?;
+        let mut tails = SubagentTails::new(&other, None);
         assert!(tails.poll()?.is_empty());
         assert_eq!(tails.files(), 0);
         Ok(())
