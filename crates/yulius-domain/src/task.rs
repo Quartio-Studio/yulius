@@ -415,8 +415,9 @@ pub struct AttentionFacts {
     pub goal_unfinished: bool,
     /// The idle agent left background shells running: it wakes by itself when they report.
     pub background_shells: bool,
-    /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge): it
-    /// goes on by itself when Yulius has news (SPEC-085 STT-002).
+    /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge), or
+    /// Yulius has news of its pull request for it (an armed merge, a merge not said yet;
+    /// SPEC-487 CHN-001): it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub yulius_wait: bool,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,

@@ -258,7 +258,7 @@ impl App {
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
             yulius_wait: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
-                && self.agent_waits_on_yulius(&task.id),
+                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             goal_unfinished: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.goal_unfinished(&task.id),

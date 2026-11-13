@@ -158,7 +158,8 @@ impl App {
                 && self
                     .background_shells_of(&task.id)
                     .is_some_and(|count| count > 0),
-            yulius_wait: finished && self.agent_waits_on_yulius(&task.id),
+            yulius_wait: finished
+                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
         }
         .group())

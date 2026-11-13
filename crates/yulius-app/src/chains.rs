@@ -2,7 +2,9 @@
 //! another task of its sandbox to be Done, then starts by itself.
 //!
 //! Rules, in full: a chained task starts when its predecessor is Done (the sidebar's rule: a
-//! finished turn and a pull request merged, or open and tested). When the predecessor ends any
+//! finished turn and a pull request merged, or open and tested, with no news of that pull
+//! request left for its agent: an armed merge, or a merge it was not told of yet; SPEC-487
+//! CHN-001). When the predecessor ends any
 //! other way (stopped, failed, closed before it was done, deleted) the chained task needs a
 //! person — Start now or Cancel — and never starts by itself; continuing the predecessor puts
 //! it back to waiting. A chained task starts from its predecessor's branch until that branch is

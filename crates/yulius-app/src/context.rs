@@ -292,6 +292,9 @@ pub struct App {
     pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
+    /// What the pull request watch told each task, as its file has it (SPEC-444 PRN-007); read
+    /// from the file on first use.
+    pub(crate) pr_told: crate::pr_watch::ToldCache,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
     pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
     /// The Superagents' requests to start tasks in other sandboxes, waiting for their person
@@ -365,6 +368,7 @@ impl App {
             isolation: OnceLock::new(),
             agent_cli: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
+            pr_told: crate::pr_watch::ToldCache::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
             supertask_holds: crate::supertask::Holds::default(),

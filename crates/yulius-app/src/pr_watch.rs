@@ -363,6 +363,10 @@ fn short(sha: &str) -> &str {
 }
 
 /// The saved notices; none when the file is missing or unreadable.
+/// What the watch told each task, kept beside [`PR_NOTICES_FILE`] so that a question about one
+/// task reads no file.
+pub(crate) type ToldCache = std::sync::Mutex<Option<BTreeMap<String, Told>>>;
+
 fn read_notices(path: &std::path::Path) -> BTreeMap<String, Told> {
     std::fs::read(path)
         .ok()
@@ -400,12 +404,7 @@ impl App {
     /// was not told yet; returns the tasks and what was typed.
     pub async fn watch_prs(self: &Arc<Self>, bounds: &WatchBounds) -> Vec<(TaskId, String)> {
         let path = self.config.data_dir.join(PR_NOTICES_FILE);
-        let saved = {
-            let _guard = NOTICES_FILE_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            read_notices(&path)
-        };
+        let saved = self.pr_notices();
         let attempts = match self.deps.store.live_attempts().await {
             Ok(attempts) => attempts,
             Err(err) => {
@@ -521,8 +520,69 @@ impl App {
         typed
     }
 
+    /// What the watch told each task: as saved, read from the file once per server.
+    fn pr_notices(&self) -> BTreeMap<String, Told> {
+        let mut cache = self
+            .pr_told
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .get_or_insert_with(|| {
+                let _guard = NOTICES_FILE_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                read_notices(&self.config.data_dir.join(PR_NOTICES_FILE))
+            })
+            .clone()
+    }
+
+    /// Whether Yulius still has news of `task`'s pull request for its agent (SPEC-487 CHN-001,
+    /// CHN-002): a merge is armed or being decided (Yulius merges and says so), an armed merge
+    /// ended without merging and the watch has not said how, or the pull request is merged and
+    /// the watch, which saw it open, has not said so. Its agent goes on by itself once told, so
+    /// the task is neither Done nor a person's turn until then.
+    pub(crate) async fn pr_news_due(&self, task: &TaskRecord) -> bool {
+        if task.status != TaskStatus::Running {
+            return false;
+        }
+        let (armed, outcome) = self.armed_view(&task.id);
+        if armed {
+            return true;
+        }
+        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
+        let Some(pr) = record.pr_number else {
+            return false;
+        };
+        let told = self
+            .pr_notices()
+            .remove(task.id.as_str())
+            .unwrap_or_default();
+        if past_merge(&record.stage) {
+            // The watch tells a merge only to a task it saw with the pull request open.
+            return told.pr == pr && !told.keys.contains_key("merged");
+        }
+        let Some((head, text)) = outcome.filter(|_| record.stage == DeliveryStage::PrOpen) else {
+            return false;
+        };
+        let key = format!("{}:{}", short(&head), fingerprint(&text));
+        if told.keys.get("outcome") == Some(&key) {
+            return false;
+        }
+        // A playground's tasks are told nothing by the watch.
+        !matches!(
+            self.deps.store.sandbox(&task.sandbox_id).await,
+            Ok(Some(sandbox)) if sandbox.is_playground()
+        )
+    }
+
     /// Writes what each task was told (whole, then renamed into place); failures are logged.
     fn save_notices(&self, path: &std::path::Path, notices: &BTreeMap<String, Told>) {
+        *self
+            .pr_told
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(notices.clone());
         let _guard = NOTICES_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
