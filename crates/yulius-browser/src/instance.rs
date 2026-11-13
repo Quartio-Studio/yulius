@@ -3999,6 +3999,6 @@ mod tests {
             "a".repeat(LEAVING_ADDRESS_MAX - 21)
         );
         assert_eq!(fits.len(), LEAVING_ADDRESS_MAX);
-        assert_eq!(going(&fits), [fits.clone()]);
+        assert_eq!(going(&fits), std::slice::from_ref(&fits));
     }
 }
