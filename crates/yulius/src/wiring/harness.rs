@@ -102,6 +102,29 @@ fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)
     (servers, secrets)
 }
 
+/// The plugins a session with the config dir `config_dir`, started in `worktree`, would load a
+/// language server from, which its run switches off (SPEC-485 LSP-003). Said in the log, with
+/// what the lookup could not read: a plugin behind that is not known to bring none.
+fn language_server_plugins(config_dir: &Path, sandbox_dir: &Path, worktree: &Path) -> Vec<String> {
+    let found =
+        yulius_harness::claude_plugins::language_server_plugins(config_dir, sandbox_dir, worktree);
+    if !found.plugins.is_empty() {
+        tracing::info!(
+            config_dir = %config_dir.display(),
+            plugins = ?found.plugins,
+            "switching off the plugins that bring a language server for this run"
+        );
+    }
+    if !found.unread.is_empty() {
+        tracing::warn!(
+            config_dir = %config_dir.display(),
+            unread = ?found.unread,
+            "could not read everything about this session's plugins; a language server may still start"
+        );
+    }
+    found.plugins
+}
+
 impl HarnessPort for HarnessAdapter {
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let (mcp_servers, extra_secrets) = mcp_specs(&l.mcp);
@@ -143,8 +166,10 @@ impl HarnessPort for HarnessAdapter {
             // outrank the files a session, a `/plugin` or Claude Code's install dialog writes
             // (SPEC-485 LSP-003, ADR-0327).
             disabled_plugins: match l.harness {
-                Harness::ClaudeCode => yulius_harness::claude_plugins::language_server_plugins(
+                Harness::ClaudeCode => language_server_plugins(
                     &l.sandbox_home.join(".claude"),
+                    l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
+                    &l.worktree,
                 ),
             },
         };
@@ -207,9 +232,7 @@ impl HarnessPort for HarnessAdapter {
             bypass_permissions: l.contained,
             only_yulius: l.only_yulius.clone(),
             // As a task run: no plugin's language server (SPEC-485 LSP-003).
-            disabled_plugins: yulius_harness::claude_plugins::language_server_plugins(
-                &l.config_dir_host,
-            ),
+            disabled_plugins: language_server_plugins(&l.config_dir_host, &l.sandbox_dir, &l.cwd),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).

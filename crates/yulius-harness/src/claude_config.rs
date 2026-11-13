@@ -458,7 +458,7 @@ fn read_regular(dir: &OwnedFd, name: &str) -> Option<String> {
 
 /// The regular file `name` in `dir` when it fits in [`MAX_CONFIG_BYTES`]; `None` when it is
 /// missing or larger. Anything but a regular file is an error ([`open_regular`]).
-pub(crate) fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
+fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
     dir: impl AsFd,
     name: &P,
 ) -> io::Result<Option<String>> {
