@@ -138,10 +138,11 @@ fn step_view(s: &StepRecord) -> StepView {
     }
 }
 
-/// Step progress from a step list (effort-weighted, STP-006).
+/// Step progress from a step list (effort-weighted, STP-006), without the plan's first size
+/// (`App::step_progress` adds it for what people and agents read).
 #[must_use]
 pub fn progress(steps: &[StepRecord]) -> StepProgress {
-    crate::discipline::progress_view(steps)
+    crate::discipline::progress_view(steps, None)
 }
 
 impl App {
@@ -217,7 +218,7 @@ impl App {
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),
             working_since: times.and_then(|t| t.working_since).map(rfc3339),
-            steps: progress(&steps),
+            steps: self.step_progress(&task.id, &steps).await?,
             archived: task.archived_at.is_some(),
             account_label,
             account_id,

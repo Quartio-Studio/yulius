@@ -8,7 +8,7 @@ import { h, icon, setChildren, placeholder, statusMark, prChip, loadError, bar }
 import { href } from '../router.js';
 import { relLong, dateTime, duration, compact, int, plural, accountRef } from '../format.js';
 import { taskTime } from '../tasktime.js';
-import { taskInfo, activityLine, isLive, limitCause } from '../status.js';
+import { taskInfo, activityLine, isLive, limitCause, planGrowth } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel, findEffort } from '../models.js';
@@ -129,6 +129,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const git = ctx.store.gitRowOf(sandbox.id, current.id);
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
     const stepsCount = current.steps || { done: 0, total: 0 };
+    const planFirst = planGrowth(stepsCount);
     const tokens = [m.input_tokens, m.output_tokens].every((v) => v === null || v === undefined) ? null : (m.input_tokens || 0) + (m.output_tokens || 0);
     const login = current.created_by && current.created_by.login;
     const ownerLogin = (current.owner && current.owner.login) || login;
@@ -144,7 +145,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       tile('Created', relLong(current.created_at), dateTime(current.created_at)),
       tile('Now', state.text, state.since === null ? null : `since ${dateTime(new Date(state.since).toISOString())}`),
       tile('Agent work', m.active_ms ? duration(m.active_ms) : '—', `${m.turns ? `${plural(m.turns, 'turn')} · ` : ''}sessions open ${duration(m.wall_ms)}${isLive(current.status) ? ' so far' : ''}`),
-      tile('Plan', stepsCount.total ? `${stepsCount.done}/${stepsCount.total}` : '—', stepsCount.current || (stepsCount.total && stepsCount.done === stepsCount.total ? 'All steps done' : null),
+      tile('Plan', stepsCount.total ? [`${stepsCount.done}/${stepsCount.total}`, planFirst ? h('span', { class: 'step-first', title: planFirst.title }, ` · ${planFirst.text}`) : null] : '—', stepsCount.current || (stepsCount.total && stepsCount.done === stepsCount.total ? 'All steps done' : null),
         stepsCount.total ? h('span', { class: 'ti-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': stepsCount.total, 'aria-valuenow': stepsCount.done, 'aria-label': 'Plan steps done' }, h('span', { class: 'ti-progress-fill', style: { width: `${Math.round((stepsCount.done / stepsCount.total) * 100)}%` } })) : null),
       tile('Changes', git && git.files_changed ? h('span', { class: 'gt-stat' }, h('span', { class: 'gt-add' }, `+${git.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${git.deletions ?? 0}`)) : '—',
         noWorktree ? [files, noWorktree].filter(Boolean).join(' · ')

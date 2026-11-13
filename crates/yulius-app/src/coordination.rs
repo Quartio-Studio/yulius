@@ -9,7 +9,6 @@ use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
 use crate::model::{AttemptRecord, StepRecord, TaskRecord};
-use crate::tasks::progress;
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
 /// Step statuses.
@@ -111,7 +110,7 @@ impl App {
 
     pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
         let steps = self.deps.store.steps(&task.id).await?;
-        let p = progress(&steps);
+        let p = self.step_progress(&task.id, &steps).await?;
         Ok(json!({
             "task_id": task.id.as_str(),
             "number": task.number,
@@ -121,7 +120,7 @@ impl App {
             "activity": task.activity.map(|a| a.as_str()),
             "branch": task.branch,
             "spec_path": task.spec_path,
-            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
+            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
             // A chained task runs after this task number (TSK-012).
             "runs_after": self.deps.store.chain(&task.id).await?.map(|c| c.after_number),
             "created_at": rfc3339(task.created_at),
@@ -359,10 +358,10 @@ impl App {
         let records = self.deps.store.steps(&ctx.task.id).await?;
         let timings = self.deps.store.step_timings(&ctx.task.id).await?;
         let states = step_states(&records, &timings);
-        let p = progress(&records);
+        let p = self.step_progress(&ctx.task.id, &records).await?;
         let nudges = self.step_nudges(&ctx.task, &states).await;
         Ok(json!({
-            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
+            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
             "steps": records.iter().zip(&states).map(|(s, st)| json!({
                 "id": s.id.as_str(),
                 "ordinal": s.ordinal,

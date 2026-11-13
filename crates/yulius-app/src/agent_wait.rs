@@ -850,12 +850,10 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
+                let next = self.after_merge_of(task, PROFILE_ASKS).await;
                 Verdict::Decided(format!(
                     "Yulius merged pull request #{number} into `{base}` at {}: its checks \
-                     passed. Finish what the delivery profile still asks for this stage \
-                     (`delivery_status`; deploy and verify an integration environment with \
-                     `delivery_deploy`), then end with your summary. Do not promote unless \
-                     the task asks for it.",
+                     passed. {next}",
                     short(&armed.head)
                 ))
             }
@@ -936,6 +934,7 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
+                // A playground squashes a task once, with its whole plan: nothing is ahead.
                 Verdict::Decided(format!(
                     "Yulius squashed your branch into `{integration}` at {}: its checks passed on \
                      it merged into `{integration}`. End with your summary.",
@@ -1112,6 +1111,15 @@ impl App {
         }
     }
 
+    /// [`after_merge`] for `task` as its plan is now (a store failure reads as nothing ahead).
+    pub(crate) async fn after_merge_of(&self, task: &TaskRecord, asks: &str) -> String {
+        let ahead = match self.deps.store.steps(&task.id).await {
+            Ok(steps) => crate::delivery::steps_ahead_note(&steps),
+            Err(_) => String::new(),
+        };
+        after_merge(&ahead, asks)
+    }
+
     /// What a merge of `task`'s pull request `number` counts as (SPEC-441 MQ-009): the merged
     /// head and whether its own Yulius CI run passed there, whoever merged it.
     pub(crate) async fn merged_note(
@@ -1122,6 +1130,11 @@ impl App {
         next: bool,
     ) -> String {
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        // A merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
+        let ahead = match self.deps.store.steps(&task.id).await {
+            Ok(steps) if next => crate::delivery::steps_ahead_note(&steps),
+            _ => String::new(),
+        };
         let head = match self.task_github_token(task, sandbox).await {
             Ok(token) => self
                 .deps
@@ -1145,6 +1158,7 @@ impl App {
             &head,
             self.ci_gate_result(sandbox, &head).await,
             next,
+            &ahead,
         )
     }
 
@@ -1267,33 +1281,38 @@ impl App {
 
 /// What a merge of pull request `number` into `integration` at `head` counts as, from Yulius
 /// CI's result there (SPEC-441 MQ-009): merged on green when its own run passed, whoever merged
-/// it. With `next`, what the agent does now follows.
+/// it. With `next`, what the agent does now follows: the end of the task, or, with steps of its
+/// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on
+/// (SPEC-484 PLN-003).
 pub(crate) fn merged_text(
     number: u64,
     integration: &str,
     head: &str,
     gate: yulius_domain::ci::GateResult,
     next: bool,
+    ahead: &str,
 ) -> String {
     use yulius_domain::ci::{GateResult, RunState};
     let at = format!(
         "Pull request #{number} is merged into `{integration}` at {}",
         short(head)
     );
-    let finish = "Finish what the delivery profile still asks for this stage \
-                  (`delivery_status`), then end with your summary. Do not promote unless the \
-                  task asks for it.";
+    let ahead = ahead.trim();
+    let finish = after_merge(
+        ahead,
+        "Finish what the delivery profile still asks for this stage (`delivery_status`)",
+    );
     let (fact, then) = match gate {
         GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => (
             format!(
                 "{at}, whose own Yulius CI run passed: it counts as merged on green Yulius CI, \
                  whoever merged it."
             ),
-            finish.to_owned(),
+            finish,
         ),
         GateResult::NotConfigured => (
             format!("{at}; the project has no Yulius CI, so no run had to pass."),
-            finish.to_owned(),
+            finish,
         ),
         GateResult::Run(Some(state @ (RunState::Queued | RunState::Running))) => (
             format!(
@@ -1301,9 +1320,16 @@ pub(crate) fn merged_text(
                  that run passes.",
                 state.as_str()
             ),
-            "Wait for that run with `yulius wait` (run_in_background), then end with your \
-             summary."
-                .to_owned(),
+            if ahead.is_empty() {
+                "Wait for that run with `yulius wait` (run_in_background), then end with your \
+                 summary."
+                    .to_owned()
+            } else {
+                format!(
+                    "Wait for that run with `yulius wait` (run_in_background), then go on with \
+                     the next step. {ahead}"
+                )
+            },
         ),
         GateResult::Run(state) => (
             format!(
@@ -1318,6 +1344,27 @@ pub(crate) fn merged_text(
         ),
     };
     if next { format!("{fact} {then}") } else { fact }
+}
+
+/// What the delivery profile may still ask after a merge Yulius made, for [`after_merge`].
+pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still asks for this stage \
+                                       (`delivery_status`; deploy and verify an integration \
+                                       environment with `delivery_deploy`)";
+
+/// What an agent does after a merge of its pull request: what the delivery profile still asks
+/// for the merged part (`asks`, a clause), and then the end of the task, or, with steps of its
+/// plan still ahead (`ahead`, [`crate::delivery::steps_ahead_note`]), the work that goes on: a
+/// merge of one part of the plan is not the task's end (SPEC-484 PLN-003).
+pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
+    let ahead = ahead.trim();
+    if ahead.is_empty() {
+        format!("{asks}, then end with your summary. Do not promote unless the task asks for it.")
+    } else {
+        format!(
+            "{asks}, then go on with the next step: the finished part of your plan is delivered. \
+             {ahead} Do not promote unless the task asks for it."
+        )
+    }
 }
 
 /// The task's [`ArmedSlot`], also after a panic elsewhere held it (its values stay consistent:
@@ -1457,6 +1504,7 @@ mod tests {
             "abcdef0123",
             GateResult::Run(Some(RunState::Passed)),
             true,
+            "",
         );
         assert!(
             green.starts_with("Pull request #7 is merged into `dev` at abcdef012, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
@@ -1469,13 +1517,63 @@ mod tests {
             "abcdef0123",
             GateResult::Run(Some(RunState::Failed)),
             false,
+            "",
         );
         assert_eq!(
             red,
             "Pull request #7 is merged into `dev` at abcdef012, but Yulius CI did not pass at \
              that head (failed): it does not count as merged on green."
         );
-        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false);
+        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false, "");
         assert!(none.contains("(no run)"), "{none}");
+    }
+
+    /// SPEC-484 PLN-003: a merge of one part of the plan is not the task's end.
+    #[test]
+    fn a_merge_with_steps_ahead_says_the_task_goes_on() {
+        use yulius_domain::ci::{GateResult, RunState};
+        let ahead = " 2 step(s) of your plan are still ahead (next: \"Slice 2\"): they stay \
+                     open, and the work you commit for them on this branch is delivered next, \
+                     by a `delivery_merge` of its own.";
+        for gate in [
+            GateResult::Run(Some(RunState::Passed)),
+            GateResult::NotConfigured,
+            GateResult::Run(Some(RunState::Running)),
+        ] {
+            let text = merged_text(7, "dev", "abcdef0123", gate, true, ahead);
+            assert!(
+                text.contains("2 step(s) of your plan are still ahead (next: \"Slice 2\")"),
+                "{text}"
+            );
+            assert!(text.contains("the next step"), "{text}");
+            assert!(!text.contains("end with your summary"), "{text}");
+            assert!(!text.contains("  "), "{text}");
+        }
+        // What the merge counts as is said without a next step, steps ahead or not.
+        let fact = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            GateResult::Run(Some(RunState::Passed)),
+            false,
+            ahead,
+        );
+        assert!(!fact.contains("ahead"), "{fact}");
+        // What the profile asks for the merged part stays; only the task's end gives way.
+        assert_eq!(
+            after_merge(ahead, PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then go on \
+             with the next step: the finished part of your plan is delivered. 2 step(s) of your \
+             plan are still ahead (next: \"Slice 2\"): they stay open, and the work you commit \
+             for them on this branch is delivered next, by a `delivery_merge` of its own. Do not \
+             promote unless the task asks for it."
+        );
+        assert_eq!(
+            after_merge("", PROFILE_ASKS),
+            "Finish what the delivery profile still asks for this stage (`delivery_status`; \
+             deploy and verify an integration environment with `delivery_deploy`), then end with \
+             your summary. Do not promote unless the task asks for it."
+        );
     }
 }

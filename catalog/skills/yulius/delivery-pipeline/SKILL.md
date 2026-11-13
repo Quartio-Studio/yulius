@@ -39,10 +39,15 @@ version of it.
 
 ## 1. Spec (features and fixes)
 
-Use `om-spec-writing`. The Plan is 3-12 steps of **similar effort**, each a slice that leaves the
-project working and is named by what it delivers ("Store drafts per user", not "Implement").
-Those steps are the task's progress: 9 of 10 done must mean about 90 %. A fix's spec can be
-short: symptom, root cause (`om-root-cause`), the failing test, the fix.
+Use `om-spec-writing`. The Plan is steps of **similar effort**, each a slice that leaves the
+project working and is named by what it delivers ("Store drafts per user", not "Implement"):
+3-12 for one pull request. It holds **all the work you know of**: when the task will deliver
+several pull requests (the slices of an audit, the phases of a migration), every one of them is
+a step from the start, at most 60, and a step is added later only for work found later. Those
+steps are the task's progress: 9 of 10 done must mean about 90 %, and "6 of 6" must mean that
+nothing known is left. A step is done once nothing of it remains: the review step when the
+reviewer approved, not when its first round is answered. A fix's spec can be short: symptom,
+root cause (`om-root-cause`), the failing test, the fix.
 
 ## 2. Slices, test first
 
@@ -85,7 +90,8 @@ and the tests separately, runs the gates, and returns a verdict for the exact he
 ## 5. Pull request
 
 Small: one concern, about 400 changed lines outside tests and generated files; split larger work
-into chained tasks. The body says what changes for whom, links the spec and the issue
+into chained tasks, or, when its slices share one spec and one reviewer's context, into several
+pull requests of one task, each slice a step from the start. The body says what changes for whom, links the spec and the issue
 (`Fixes #N`), and lists the evidence: commands run and their results, the review verdict and its
 head. (In Yulius the pull request is opened for you when your work is ready.)
 
@@ -93,8 +99,12 @@ head. (In Yulius the pull request is opened for you when your work is ready.)
 
 A pull request merges when, on its **exact head**: the project's gate passed on our own CI (no
 GitHub Actions, no paid rulesets: Yulius CI runs the gate and records it, see `ci_status`), the
-independent review approved, the spec is valid when one is required, every step is done, and the
-branch is up to date with the integration branch. Features are squash-merged into the
+independent review approved, the spec is valid when one is required, the steps of what it
+delivers are done with none in progress, and the branch is up to date with the integration
+branch. A merge delivers the finished part of the plan: steps still ahead stay open, and the
+task goes on with them as its next pull request, begun once this one is merged (a commit on
+the branch drops an armed merge; a Yulius playground delivers a task once, with its whole
+plan). Features are squash-merged into the
 integration branch; nobody else will press the button (in Yulius: `delivery_merge`, which
 refuses anything that is not green).
 

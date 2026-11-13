@@ -6,6 +6,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A task's steps show all the work it knows of (SPEC-484, task #466, ADR-0325). Task #465 read
+  "Step 6/6" with a full bar while its spec named 15 slices: a merge was refused while any step
+  was open, so a task that delivers one pull request per slice kept every later slice out of
+  its plan and added each one after the merge before it. Now a pull request delivers the
+  finished part of the plan: a merge is refused only while no step is finished (and
+  `delivery_merge` while a step is in progress, when it has a new head to deliver), the steps
+  still ahead stay open, and every message about a merge names them instead of ending the
+  task; their work starts after the merge, since a commit on the branch still drops an armed
+  merge. The end of a turn still opens a pull request only when every step is finished, and a
+  playground still squashes a task once, with its whole plan. A plan has up to 60 steps (it was 30) and is no
+  longer told that more than 12 is "too fine"; the briefing, the step tools, the
+  `delivery-pipeline` and `om-spec-writing` skills, the Feature workflow and the templates ask
+  for all the known work as steps from the start, a step added later only for work found
+  later. When every step is finished the agent is asked once more whether work it knows of is
+  left out. A plan that grew since its first step was finished says so: "Step 6/11 · 4 at
+  first" in the task strip, the same on the task page and in the tools (API
+  `steps.first_total`, schema version 56).
 - Sessions no longer show Claude Code's "Language server … couldn't start" notice, and are not
   asked to install a language server (SPEC-485, task #467, ADR-0327). The cause, measured with
   Claude Code 2.1.323: when a session writes a file of a language whose server is on `PATH`,

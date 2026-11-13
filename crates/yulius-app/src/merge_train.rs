@@ -939,12 +939,12 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of a train merge failed");
                 }
+                let next = self
+                    .after_merge_of(task, crate::agent_wait::PROFILE_ASKS)
+                    .await;
                 let text = format!(
                     "Yulius merged pull request #{} into `{integration}` at {} in a merge train \
-                     with {}: Yulius CI passed on their combined result. Finish what the delivery \
-                     profile still asks for this stage (`delivery_status`; deploy and verify an \
-                     integration environment with `delivery_deploy`), then end with your \
-                     summary. Do not promote unless the task asks for it.",
+                     with {}: Yulius CI passed on their combined result. {next}",
                     member.pr,
                     short(&head),
                     listed(&others)
