@@ -40,7 +40,7 @@ impl Git {
 
     /// Clones `url` into the absolute `dest` (network timeout applies). A clone from elsewhere
     /// into a sandbox's folder is made in a repository of the server's own first
-    /// ([`Git::clone_through`], ADR-0323).
+    /// (`clone_through`, ADR-0323).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
