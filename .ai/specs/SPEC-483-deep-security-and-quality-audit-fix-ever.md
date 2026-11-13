@@ -648,7 +648,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
-- [ ] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer
+- [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer
 
 ## Acceptance criteria
 
@@ -2309,3 +2309,34 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
   skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
   rustdoc passed.
+
+### Slice 14 (2026-11-13)
+
+- **Slice 13's delivery.** Pull request #1254 merged into `dev` at e3c85c345. Its first
+  Yulius CI run failed in one test of another area
+  (`task_done::a_stop_settles_a_run_no_server_holds`, "the run's host still runs": the
+  known flake of issue #1190, where this occurrence is noted); the run was repeated once
+  at the same head and passed. Its review approved that head in its second round; the two
+  nits left (a sentence about playgrounds, an arm that cannot be reached) are answered
+  here.
+- **The defects, by their tests on the code before** (`target/audit/slice14/mutations.log`,
+  the first two cases, which are the old code): with the promotion pull request's check
+  gone, `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr` failed; with
+  the fast-forward's check gone,
+  `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out` failed
+  (it promoted past a failed run).
+- **Tests failing without their fix** (`target/audit/slice14/mutate.py`, 5 cases, each
+  failed its tests): a promotion pull request reading no checks; a fast-forward promotion
+  reading none; GitHub's checks deciding where Yulius CI ran; failing checks allowing what
+  requires them; a commit that brings CI without checks before its first run.
+- **The suites:** `2679 tests run: 2679 passed` for the app and the binary
+  (`target/audit/slice14-suite1.log`).
+- **Gate.** `scripts/dev ci` at `8689e89fc`: exit 0; `4212 tests run: 4212 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A promotion in a project without Yulius CI whose GitHub checks fail
+  (pending and unreadable are tested, as before); an automatic promotion (`auto_promote`)
+  past a failed run (it goes through the same function; its test promotes on a head
+  without a run); the cost of the extra read in a project without CI.
