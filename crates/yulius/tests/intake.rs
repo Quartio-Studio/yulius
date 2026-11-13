@@ -1391,7 +1391,7 @@ fn git(dir: &Path, args: &[&str]) -> TestResult {
 #[tokio::test]
 async fn redirect_reverts_only_with_confirmation_and_keeps_the_work() -> TestResult {
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(yulius::wiring::git::GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         configure: Some(Box::new(|c| c.max_live_sessions = 0)),
         ..HarnessOptions::default()
     })?;

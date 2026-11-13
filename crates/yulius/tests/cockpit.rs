@@ -132,7 +132,7 @@ async fn fixture_full(
     ));
     let h = harness_with(HarnessOptions {
         // Real Git: the Superagent's `.env` copies ask whether Git ignores the file (SPEC-186).
-        git: Some(Arc::new(yulius::wiring::git::GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         harness: Some(harness),
         browser,

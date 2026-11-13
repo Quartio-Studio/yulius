@@ -137,10 +137,13 @@ impl Git {
                 detail: format!("not a commit id: {commit:?}"),
             });
         }
+        let push = Invocation::new(self, "push", Some(worktree)).args(["push", "--quiet", "--"]);
+        let push = match self.local_remote(worktree, remote) {
+            Some(origin) => push.arg(&origin).local(&origin),
+            None => push.arg(remote),
+        };
         self.run_ok(
-            Invocation::new(self, "push", Some(worktree))
-                .args(["push", "--quiet", "--", remote])
-                .arg(format!("{commit}:refs/heads/{branch}"))
+            push.arg(format!("{commit}:refs/heads/{branch}"))
                 .timeout(self.network_timeout),
         )?;
         Ok(SquashLanding::Landed(commit))

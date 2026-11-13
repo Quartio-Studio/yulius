@@ -133,7 +133,10 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
         let attach = app
             .terminal_open(&ctx, id.as_str(), Some((120, 40)))
             .await?;
-        app.terminal_input(&ctx, &attach, b"note\r", false).await?;
+        // A key that is not sent as a prompt: the terminal's echo is its next output. A prompt
+        // would start a turn of the agent, whose own states (working, then waiting) replace a
+        // flag whenever they arrive, before or after the one this test is about.
+        app.terminal_input(&ctx, &attach, b"n", false).await?;
         wait_for("the withheld screen", Duration::from_secs(30), || async {
             screen(&app, &id).contains("the screen is withheld")
         })
@@ -165,6 +168,28 @@ fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
             .filter(|n| n.contains("screen was withheld and Yulius typed nothing"))
             .count();
         assert_eq!(told, 1, "said once");
+
+        // The agent's own state replaces a flag whenever it arrives (its turn ended): the next
+        // message kept out raises the flag again, with its reason, and the terminal is not told
+        // twice.
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
+        assert!(app.tool_task_message(&caller, &message).await.is_err());
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let why = support::attention(&app, id.as_str()).await?;
+        assert!(
+            why["problem"]
+                .as_str()
+                .is_some_and(|problem| problem.contains("screen was withheld")),
+            "{why}"
+        );
+        let told = notices(&mut watch)
+            .iter()
+            .filter(|n| n.contains("screen was withheld and Yulius typed nothing"))
+            .count();
+        assert_eq!(told, 0, "not said again");
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
     })?;

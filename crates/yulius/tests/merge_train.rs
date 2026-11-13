@@ -18,7 +18,6 @@ use support::{
     Creds, FakeRemote, HarnessOptions, call, configure_github_app, harness_with, perms,
     seed_github_user, seed_sandbox,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::CiRunRecord;
 use yulius_app::context::App;
@@ -188,7 +187,7 @@ async fn fixture_with(project: Project, lanes: Option<u32>) -> BoxResult<Fixture
     let _ = Command::new(&exe).arg("version").output();
     let h = harness_with(HarnessOptions {
         session_host: Some(Arc::new(PtySessionHost::new(exe))),
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.ci.job_timeout = Duration::from_secs(60);

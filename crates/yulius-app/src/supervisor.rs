@@ -2089,16 +2089,17 @@ impl App {
     }
 
     /// The terminal's screen is not what the program drew (agent secrets could not be read,
-    /// ADR-0317): nothing was typed, and the task needs a person. Said once per attached run,
-    /// however many typists are refused (a first message, messages from agents and Yulius).
+    /// ADR-0317): nothing was typed, and the task needs a person. The terminal is told once per
+    /// attached run, however many typists are refused (a first message, messages from agents
+    /// and Yulius). The flag is raised each time: one that stands stays as it is, and one the
+    /// agent's own state replaced meanwhile (its turn ended) comes back with its reason.
     pub(crate) async fn screen_withheld(&self, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
-        if runtime.screen_flagged.swap(true, Ordering::SeqCst) {
-            return;
+        if !runtime.screen_flagged.swap(true, Ordering::SeqCst) {
+            runtime
+                .hub
+                .notice(format!("{SCREEN_WITHHELD}. {SCREEN_WITHHELD_ANSWER}."));
         }
-        runtime
-            .hub
-            .notice(format!("{SCREEN_WITHHELD}. {SCREEN_WITHHELD_ANSWER}."));
         self.flag_task(
             task_id,
             AttentionRecord::yulius(

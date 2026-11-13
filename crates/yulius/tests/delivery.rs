@@ -174,12 +174,12 @@ impl GitPort for RealGit {
         _token: Option<&Secret>,
     ) -> AppResult<String> {
         let origin = self.origin.to_string_lossy().into_owned();
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .mirror_fetch_head(mirror, &origin, branch, None)
             .await
     }
     async fn export_tree(&self, mirror: &Path, sha: &str, dest: &Path) -> AppResult<()> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .export_tree(mirror, sha, dest)
             .await
     }
@@ -268,7 +268,7 @@ impl GitPort for RealGit {
         worktree: &Path,
         base: &str,
     ) -> AppResult<yulius_app::ports::git::ReviewChanges> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .review_changes(worktree, base)
             .await
     }
@@ -280,14 +280,14 @@ impl GitPort for RealGit {
         head: &str,
         limit: u32,
     ) -> AppResult<Vec<yulius_contracts::api::git::TaskCommit>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .review_commits(repo, base, head, limit)
             .await
     }
 
     /// The production adapter (SPEC-083): record numbers, review carry-over, merge attributes.
     async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .list_dir(repo, rev, dir)
             .await
     }
@@ -300,13 +300,13 @@ impl GitPort for RealGit {
         integration: &str,
         limit: usize,
     ) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .only_clean_merges_since(worktree, reviewed, head, integration, limit)
             .await
     }
 
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .resolve_commit(repo, rev)
             .await
     }
@@ -318,19 +318,19 @@ impl GitPort for RealGit {
         since: &str,
         head: &str,
     ) -> AppResult<Option<bool>> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .adds_to(worktree, base, since, head)
             .await
     }
 
     async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .is_ancestor(repo, ancestor, descendant)
             .await
     }
 
     async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
-        yulius::wiring::git::GitAdapter::new("git")
+        crate::support::confined_git()
             .set_merge_attributes(repo, lines)
             .await
     }

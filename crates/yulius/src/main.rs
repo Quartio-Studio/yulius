@@ -99,6 +99,23 @@ enum Command {
         #[command(subcommand)]
         action: yulius::sandbox_cli::HostAction,
     },
+    /// Internal: exec Git confined to its own programs and the given folders (ADR-0322).
+    #[cfg(target_os = "linux")]
+    #[command(name = "git-confined", hide = true)]
+    GitConfined {
+        /// A folder Git may read and write below (repeatable).
+        #[arg(long = "rw")]
+        writable: Vec<std::path::PathBuf>,
+        /// A folder or file Git may also read (repeatable).
+        #[arg(long = "ro")]
+        readable: Vec<std::path::PathBuf>,
+        /// Git may start the system's shell (a transfer between two local repositories).
+        #[arg(long)]
+        shell: bool,
+        /// The Git executable and its arguments.
+        #[arg(last = true, required = true)]
+        argv: Vec<std::ffi::OsString>,
+    },
     /// Internal: exec `bwrap` with the sandbox's seccomp filter.
     #[command(name = "sandbox-exec", hide = true)]
     SandboxExec {
@@ -723,6 +740,26 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SandboxHost { action } => yulius::sandbox_cli::host(action),
+        #[cfg(target_os = "linux")]
+        Command::GitConfined {
+            writable,
+            readable,
+            shell,
+            argv,
+        } => {
+            let Some((git, args)) = argv.split_first() else {
+                return ExitCode::from(2);
+            };
+            let error = yulius_git::confine::exec_confined(
+                &writable,
+                &readable,
+                shell,
+                std::path::Path::new(git),
+                args,
+            );
+            eprintln!("yulius: {error}");
+            ExitCode::from(126)
+        }
         Command::SandboxExec {
             engine,
             cgroup,

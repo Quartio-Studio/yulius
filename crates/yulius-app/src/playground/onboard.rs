@@ -259,7 +259,7 @@ impl App {
                     )
                     .await?;
                 if committed {
-                    git.push(&work, branch, branch, &no_token()).await?;
+                    git.push_to_folder(&work, &origin, branch, branch).await?;
                 }
                 Some(AppliedSnapshot {
                     sha256: file.sha256.clone(),
@@ -274,7 +274,7 @@ impl App {
             }
             None => None,
         };
-        let profile = self.seed_profile(&work, branch).await?;
+        let profile = self.seed_profile(&work, &origin, branch).await?;
         self.clone_playground(id, &origin).await?;
         Ok((profile, snapshot))
     }

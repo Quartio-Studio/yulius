@@ -65,6 +65,9 @@ unicode-width = "0.2.2"
 command-fds = { version = "0.3.3", default-features = false, features = ["tokio"] }
 nix = { version = "0.31.3", features = ["signal", "process", "fs", "dir", "user", "resource"] }
 rustix = { version = "1.1.5", default-features = false, features = ["std", "fs", "mount"] }
+# Confines the host's own Git (ADR-0322): what it may execute, read and write, without our own
+# `unsafe` (the system calls are the dependency's).
+landlock = "0.4.7"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 sha2 = "0.11.0"
 hex = "0.4.3"

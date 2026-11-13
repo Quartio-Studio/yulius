@@ -12,7 +12,6 @@ use std::sync::atomic::Ordering;
 use axum::http::Method;
 use serde_json::json;
 use support::{Creds, Harness, TestResult, call, harness_with_git};
-use yulius::wiring::git::GitAdapter;
 use yulius_app::hub::HubFrame;
 use yulius_app::model::{
     AttemptRecord, GitHubTokenRecord, LaunchKind, MessageRecord, SandboxRecord, TaskOrigin,
@@ -66,7 +65,7 @@ async fn fixture_with_task(
     workflow: Option<(&str, bool)>,
     tweak: impl FnOnce(&mut TaskRecord),
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
-    let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
+    let h = harness_with_git(Arc::new(crate::support::confined_git()))?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
     let worktree = repo.path().join("wt");

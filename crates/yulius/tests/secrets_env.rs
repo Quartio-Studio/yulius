@@ -14,7 +14,6 @@ use support::{
     Creds, TestResult, call, harness_with_git, perms, seed_github_user, seed_live_attempt,
     seed_sandbox, seed_task,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
 use yulius_domain::task::TaskStatus;
 
@@ -48,7 +47,7 @@ struct World {
 /// real repository inside the sandbox directory whose `.gitignore` ignores `.env` and `.env.*`
 /// but keeps `.env.example`; the agent secret `STRIPE_KEY` applies to s1.
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
-    let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
+    let h = harness_with_git(Arc::new(crate::support::confined_git()))?;
     let writer = seed_github_user(&h, "u-alice", "alice").await?;
     let reader = seed_github_user(&h, "u-bob", "bob").await?;
     seed_sandbox(&h, "s1", "app", "u-alice").await?;

@@ -20,7 +20,6 @@ use support::{
     Creds, HarnessOptions, admit_and_sign_in, call, configure_github_app, harness_with,
     seed_github_user, seed_sandbox, seed_task, seed_task_with_prompt, setup_superadmin_creds,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::leftovers::Leftover;
 use yulius_app::ports::isolation::{SandboxIsolation, SandboxJoin, SandboxRef};
@@ -112,7 +111,7 @@ fn write(path: &Path, text: &str) -> BoxResult<()> {
 
 async fn world() -> BoxResult<World> {
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         ..HarnessOptions::default()
     })?;
     let data = h.app.config.data_dir.clone();

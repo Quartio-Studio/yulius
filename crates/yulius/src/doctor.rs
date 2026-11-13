@@ -200,6 +200,8 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     checks.push(browser_policy_check(|path| {
         std::fs::read_to_string(path).ok()
     }));
+    #[cfg(target_os = "linux")]
+    checks.push(git_confinement_check(confined_git_runs()));
     checks.extend(containment_visibility(contained, extra));
     if cfg!(target_os = "linux") {
         if contained {
@@ -542,6 +544,43 @@ fn browser_policy_check(read: impl Fn(&Path) -> Option<String>) -> Check {
     }
 }
 
+/// Whether this program's `git-confined` starts Git on this host (ADR-0322): `Err` with what
+/// it said when it does not (no Landlock in the kernel, no Git).
+#[cfg(target_os = "linux")]
+fn confined_git_runs() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let ran = std::process::Command::new(exe)
+        .args(["git-confined", "--", "git", "--version"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if ran.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&ran.stderr).trim().to_owned())
+    }
+}
+
+/// The server's own Git is confined by the kernel's Landlock (ADR-0322); where that cannot be
+/// done, Yulius runs no Git in a sandbox's repository.
+#[cfg(target_os = "linux")]
+fn git_confinement_check(runs: Result<(), String>) -> Check {
+    match runs {
+        Ok(()) => check(
+            "git confinement",
+            Level::Ok,
+            "the server's Git runs confined (Landlock): only its own programs, only its sandbox's folders",
+        ),
+        Err(why) => check(
+            "git confinement",
+            Level::Fail,
+            format!(
+                "the server's Git cannot be confined, so clones, worktrees, fetches and merges fail: {why}"
+            ),
+        ),
+    }
+}
+
 /// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and
 /// libx264. Without them the sandbox browser runs headless and shows JPEG frames.
 fn browser_display_checks() -> Vec<Check> {
@@ -724,6 +763,26 @@ mod tests {
         restart_check("yulius.service", &facts)
             .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
             .unwrap_or_default()
+    }
+
+    /// ADR-0322: a host whose kernel cannot confine the server's Git fails the doctor, with
+    /// what the launcher said.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_host_that_cannot_confine_git_fails() {
+        let fine = super::git_confinement_check(Ok(()));
+        assert_eq!(
+            (fine.name, fine.level),
+            ("git confinement", super::Level::Ok)
+        );
+        let refused =
+            super::git_confinement_check(Err("this kernel does not enforce Landlock".into()));
+        assert_eq!(refused.level, super::Level::Fail);
+        assert!(
+            refused.detail.contains("does not enforce Landlock"),
+            "{}",
+            refused.detail
+        );
     }
 
     /// SPEC-483 E1 (ADR-0318): the doctor says whether the sandbox browsers' policy is where

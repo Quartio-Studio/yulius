@@ -127,9 +127,17 @@ async fn origin(
                     .skip(1)
                     .filter(|line| {
                         let line = line.to_ascii_lowercase();
-                        ["host:", "authorization:", "proxy-", "x-kept:", "x-drop:"]
-                            .iter()
-                            .any(|name| line.starts_with(name))
+                        [
+                            "host:",
+                            "authorization:",
+                            "proxy-",
+                            "x-kept:",
+                            "x-drop:",
+                            "transfer-encoding:",
+                            "content-length:",
+                        ]
+                        .iter()
+                        .any(|name| line.starts_with(name))
                     })
                     .collect();
                 let text = format!(
@@ -412,7 +420,7 @@ async fn of_yulius_the_browser_gets_its_welcome_page_only() -> TestResult {
 /// is not judged, a body goes through, and of the request only one hop's headers stay behind.
 #[tokio::test]
 async fn nothing_is_added_to_or_taken_from_a_browsers_requests() -> TestResult {
-    let (own, seen) = origin("own").await?;
+    let (own, seen_by_own) = origin("own").await?;
     let setup = setup(Options::new(own.port()..=own.port())).await?;
     // The address carries a user and a password, as a link may: neither goes on as the host.
     let url = format!("http://user:pw@127.0.0.1:{}/form", own.port());
@@ -438,7 +446,7 @@ async fn nothing_is_added_to_or_taken_from_a_browsers_requests() -> TestResult {
     // The answer as the origin gave it: the value it echoed, the encoding it claimed.
     assert!(answer.contains(&format!("x-secret: {VALUE}")), "{answer}");
     assert!(answer.contains("content-encoding: gzip"), "{answer}");
-    let seen = seen.lock().map_err(|_| "lock")?.clone();
+    let seen = seen_by_own.lock().map_err(|_| "lock")?.clone();
     assert_eq!(seen.len(), 1);
     assert!(seen[0].contains("[POST /form HTTP/1.1]"), "{}", seen[0]);
     assert!(seen[0].contains("[name=demo]"), "{}", seen[0]);
@@ -454,6 +462,34 @@ async fn nothing_is_added_to_or_taken_from_a_browsers_requests() -> TestResult {
         "the host without what stood before it: {}",
         seen[0]
     );
+    // A request without a body goes on without one: no length, no chunked framing (a CORS
+    // preflight, a `DELETE`).
+    for method in ["OPTIONS", "DELETE"] {
+        let answer = ask(
+            setup.proxy,
+            &format!(
+                "{method} http://127.0.0.1:{0}/api HTTP/1.1\r\nHost: 127.0.0.1:{0}\r\nConnection: close\r\n\r\n",
+                own.port()
+            ),
+        )
+        .await?;
+        assert_eq!(status(&answer), "HTTP/1.1 200 OK", "{answer}");
+    }
+    let bodiless: Vec<String> = seen_by_own
+        .lock()
+        .map_err(|_| "lock")?
+        .iter()
+        .filter(|line| line.contains(" /api "))
+        .cloned()
+        .collect();
+    assert_eq!(bodiless.len(), 2, "{bodiless:?}");
+    for line in &bodiless {
+        let lower = line.to_ascii_lowercase();
+        assert!(
+            !lower.contains("transfer-encoding") && !lower.contains("content-length"),
+            "{line}"
+        );
+    }
     assert_eq!(
         setup.policy.asked.load(Ordering::SeqCst),
         0,

@@ -13,7 +13,6 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::repos::git;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
-use yulius::wiring::git::GitAdapter;
 use yulius_app::ci::CiRunRecord;
 use yulius_app::model::{AttemptRecord, LaunchKind, StepRecord};
 use yulius_app::ports::github::GhRepo;
@@ -44,7 +43,9 @@ async fn world() -> BoxResult<World> {
     let github_dir = tempfile::tempdir()?;
     let github = github_dir.path().canonicalize()?;
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git").with_github_base(&github))),
+        git: Some(Arc::new(
+            crate::support::confined_git().with_github_base(&github),
+        )),
         ..HarnessOptions::default()
     })?;
     let superadmin = support::setup_superadmin_creds(&h).await?;
@@ -342,7 +343,7 @@ async fn only_who_could_import_the_repository_moves_a_playground() -> TestResult
 #[tokio::test]
 async fn a_move_needs_github_connected() -> TestResult {
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         ..HarnessOptions::default()
     })?;
     let superadmin = support::setup_superadmin_creds(&h).await?;

@@ -23,7 +23,6 @@ use support::{
     HarnessOptions, TestResult, call, harness_with, perms, seed_github_user, seed_sandbox,
     setup_superadmin_creds,
 };
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::model::{AccountRecord, AccountStatus, WebSessionRecord};
 use yulius_app::ports::store::{AccountStore, SessionStore, UserStore};
@@ -186,7 +185,7 @@ async fn files_dragged_from_disk_reach_the_repository_and_the_agent() -> TestRes
     let addr = listener.local_addr()?;
     let dir = tempfile::Builder::new().prefix("ylf").tempdir_in("/tmp")?;
     let h = harness_with(HarnessOptions {
-        git: Some(Arc::new(GitAdapter::new("git"))),
+        git: Some(Arc::new(crate::support::confined_git())),
         session_host: Some(Arc::new(PtySessionHost::new(exe.clone()))),
         harness: Some(Arc::new(FakeAgentHarness::new(
             exe,

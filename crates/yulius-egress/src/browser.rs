@@ -15,9 +15,11 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::TryStreamExt;
-use http_body_util::{BodyExt, BodyStream, StreamBody};
-use hyper::body::{Body, Bytes, Incoming};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use http_body_util::BodyExt;
+use hyper::body::{Body, Bytes, Frame, Incoming, SizeHint};
 use hyper::http::{HeaderValue, Method, Request, Response, StatusCode, header};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
@@ -32,6 +34,38 @@ use crate::proxy::{
 const BROWSER_RUN: &str = "browser";
 /// Wait after a failed accept (no file descriptor left) before the next one.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// A request's body as it came, marking each piece sent on (SPEC-369's progress). It says what
+/// the body it wraps says of its end and its length: a request without a body goes on as one
+/// (hyper frames a body of unknown length as chunked).
+struct SentOn<B> {
+    body: B,
+    progress: Progress,
+}
+
+impl<B: Body<Data = Bytes> + Unpin> Body for SentOn<B> {
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        let polled = Pin::new(&mut self.body).poll_frame(cx);
+        if matches!(polled, Poll::Ready(Some(Ok(_)))) {
+            self.progress.touch();
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
+}
 
 /// One sandbox's browser as the proxy sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,7 +190,7 @@ impl EgressProxy {
         mut request: Request<B>,
     ) -> Response<EgressBody>
     where
-        B: Body<Data = Bytes> + Send + 'static,
+        B: Body<Data = Bytes> + Send + Unpin + 'static,
         B::Error: Into<BoxError>,
     {
         if request.method() == Method::CONNECT {
@@ -239,7 +273,7 @@ impl EgressProxy {
         request: Request<B>,
     ) -> Response<EgressBody>
     where
-        B: Body<Data = Bytes> + Send + 'static,
+        B: Body<Data = Bytes> + Send + Unpin + 'static,
         B::Error: Into<BoxError>,
     {
         let unreachable = || text(502, &format!("Yulius: {named} could not be reached"));
@@ -277,11 +311,10 @@ impl EgressProxy {
             return text(400, "Yulius: the request names no valid host");
         };
         let progress = Progress::default();
-        let sent_on = progress.clone();
-        let body = StreamBody::new(
-            TryStreamExt::map_err(BodyStream::new(body), Into::<BoxError>::into)
-                .inspect_ok(move |_| sent_on.touch()),
-        );
+        let body = SentOn {
+            body,
+            progress: progress.clone(),
+        };
         let Ok(onward) = onward.header(header::HOST, host).body(body) else {
             return text(400, "Yulius: the request could not be sent on");
         };

@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
-use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::auth::AuthContext;
 use yulius_app::context::{App, AppConfig, Deps};
@@ -212,7 +211,7 @@ fn build_served_tuned(
             inner: yulius::wiring::harness::HarnessAdapter::new(exe.clone(), internal_url),
             ..FakeAgentHarness::new(exe, fake.to_path_buf(), agent)
         }),
-        git: Arc::new(GitAdapter::new("git")),
+        git: Arc::new(crate::support::confined_git()),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
         usage,

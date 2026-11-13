@@ -62,7 +62,8 @@ impl Git {
                     "--",
                 ])
                 .arg(from)
-                .arg(&refspec),
+                .arg(&refspec)
+                .local(from),
         )?;
         let fetched = self.rev_parse(mirror, &format!("refs/heads/{branch}"))?;
         if !fetched.eq_ignore_ascii_case(sha) {
@@ -121,6 +122,7 @@ impl Git {
                     source,
                     &refspec,
                 ])
+                .local_if_path(source)
                 .timeout(self.network_timeout),
         )?;
         self.rev_parse(mirror, &format!("refs/heads/{branch}"))
@@ -170,7 +172,8 @@ impl Git {
                 .env("GIT_ATTR_NOSYSTEM", "1")
                 .env("GIT_INDEX_FILE", index_text.clone())
                 .args(["read-tree", "--end-of-options"])
-                .arg(&tree),
+                .arg(&tree)
+                .touching(&index),
         );
         let checkout = read.and_then(|_| {
             self.run_ok(
@@ -182,7 +185,9 @@ impl Git {
                     .env("GIT_INDEX_FILE", index_text)
                     .arg("--work-tree")
                     .arg(dest)
-                    .args(["checkout-index", "--all", "--force"]),
+                    .args(["checkout-index", "--all", "--force"])
+                    .touching(dest)
+                    .touching(&index),
             )
         });
         let _ = std::fs::remove_file(&index);

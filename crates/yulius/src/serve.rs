@@ -362,6 +362,21 @@ pub fn parse_port_range(text: &str) -> Result<std::ops::RangeInclusive<u16>, Str
     Ok(first..=last)
 }
 
+/// The Git adapter: on Linux every command confined to Git's own programs and the folders it
+/// works in, by the `git-confined` command of this program (`exe`; ADR-0322).
+fn git_adapter(exe: &Path, data_dir: &Path) -> GitAdapter {
+    let adapter = GitAdapter::new("git");
+    #[cfg(target_os = "linux")]
+    let adapter = adapter.confined(
+        exe.to_path_buf(),
+        std::path::absolute(data_dir).unwrap_or_else(|_| data_dir.to_path_buf()),
+        0,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let _ = (exe, data_dir);
+    adapter
+}
+
 /// The browser adapter for the data directory (profiles live in each sandbox directory), and
 /// the browsers' way out, to be bound to the egress proxy once that runs (ADR-0321).
 fn browser_port(
@@ -548,7 +563,7 @@ pub fn build_app(
             config.yulius_exe.clone(),
             config.internal_url.clone(),
         )),
-        git: Arc::new(GitAdapter::new("git")),
+        git: Arc::new(git_adapter(&config.yulius_exe, &args.data_dir)),
         system: Arc::new(SysinfoProbe::new()),
         browser,
         usage: Arc::new(crate::wiring::usage::ProviderUsage::new()?),
@@ -740,6 +755,31 @@ mod tests {
     struct Serve {
         #[command(flatten)]
         args: ServeArgs,
+    }
+
+    /// SPEC-483 G1 (ADR-0322): the server's Git adapter is confined by this program's own
+    /// `git-confined`, to the sandboxes of its data folder, with no shell of its own.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_servers_git_is_confined_to_its_data_folders_sandboxes() {
+        let adapter = git_adapter(
+            Path::new("/usr/local/bin/yulius"),
+            Path::new("/var/lib/yulius"),
+        );
+        let confinement = adapter.confinement();
+        assert_eq!(
+            confinement,
+            Some(&yulius_git::Confinement {
+                launcher: "/usr/local/bin/yulius".into(),
+                data: "/var/lib/yulius".into(),
+                data_depth: 0,
+                shared: Vec::new(),
+                shell: false,
+            })
+        );
+        // A data folder given by a relative path is one of the folder the server runs in.
+        let relative = git_adapter(Path::new("yulius"), Path::new("data"));
+        assert!(relative.confinement().is_some_and(|c| c.data.is_absolute()));
     }
 
     /// SPEC-483 E2 (ADR-0321): the server's browsers always get a way out of their own (none
