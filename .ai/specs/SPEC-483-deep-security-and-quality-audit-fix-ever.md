@@ -48,8 +48,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
      merged, pull request #1248;
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
-  11. production secrets decided once (V6): slice 12 of the Plan;
-  12. delivery and CI decided once (D4-D6, QB1);
+  11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
+  12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan, the others
+      follow one by one;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -315,6 +316,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   sandbox's clone, the copy of an upload's refs and a refresh of branches outside a sandbox
   got write access to the folder they only read.
 
+### Slice 13: which jobs test a commit
+
+- **D4 (medium).** "Which jobs test this head" was answered in five places: the scheduler
+  for a pull request (`ci_sync_sandbox`: its own jobs when it changed them, with the trusted
+  security job kept; its own when the integration branch has no CI and no broken
+  configuration), a merge train (`form_train`: a copy), a playground task's merge
+  (`ci/playground.rs`: a copy without the security job and without the broken-configuration
+  case), a change from the remote control (`remote_files.rs`: "does it bring CI"), and a run
+  again (`ci_rerun`), which took the integration branch's jobs whenever that branch has CI.
+  A pull request that tightens a job and fails with it passed when run again (by a person,
+  by the agent's `ci_rerun`, or by Yulius after an errored run), and `ci_gate_result` takes
+  the newest run of a head as its verdict.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -574,6 +588,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   name alike; a push reaches its destination read-write. A command without a folder of its
   own that takes from a sandbox's folder counts as one in a sandbox's folder (no token, no
   shell).
+- **CGR-001** `App::ci_gate_for_head(sandbox, view, (head, what))` answers which jobs test a
+  commit on its way into the integration branch: that branch's; the commit's own when it
+  changed them since it branched off and they can be read, with the trusted security job
+  kept; the commit's own when the integration branch has no CI, and, while that branch's
+  configuration is broken, only for a commit that is the branch with a change merged
+  (`Head::Merged`: a train's commit, a playground task's merge), not for a pull request's
+  head (`Head::Proposed`); else none.
+- **CGR-002** The scheduler (pull requests), a merge train, a playground task's merge, a run
+  again of a run that is no branch's, and the remote control's "will Yulius CI test this
+  pull request" use CGR-001. A run again of a branch's run takes the integration branch's
+  jobs. A run again that nothing tests says why: the integration branch's broken
+  configuration, the commit's own that cannot be read, or that the sandbox (a branch's run)
+  or the commit has no CI.
 
 ## Plan
 
@@ -591,7 +618,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches (merged, #1250)
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
-- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one
+- [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
+- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask
 
 ## Acceptance criteria
 
@@ -918,6 +946,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   repository of the server's own with a folder for its origin, through a launcher that notes
   its words: the clone, the fetch by the remote's name and the listing reach the origin with
   `--ro` and never `--rw`; the push with `--rw`.
+- **AC-77** A pull request that changes one job's command and adds a job is tested with
+  both; run again through the API, the new run has the same jobs and the changed command.
+- **AC-78** The existing tests of a pull request's own jobs, of the security job it cannot
+  drop, of a pull request that adds CI, of a merge train with its own jobs, of a playground
+  task's checks and of the remote control's merge pass unchanged.
+- **AC-79** With the integration branch's `yulius.toml` unreadable and a pull request that
+  brings a job of its own: no run of the pull request's head, and the CI overview says what
+  is broken.
+- **AC-80** A pull request that changes no job, after the integration branch changed its
+  job's command: its run has the integration branch's command of now.
+- **AC-81** In a playground whose `dev` has CI: a task that changes the job's command arms
+  its merge, and its run shows the task's command, not `dev`'s.
+- **AC-82** In a playground whose `dev` has a `yulius.toml` that cannot be read (the CI
+  overview says so): a task that brings a readable one arms its merge (`dev` does not move
+  before the run), and its run shows the task's job.
 
 ## Test plan
 
@@ -1074,6 +1117,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   production secret’s Edit dialog offers no hosts and says why" (AC-75); `yulius-git`
   `runner::tests::a_local_transfer_gets_the_shell_and_no_credential` and `yulius`
   `git_confined::a_folder_is_written_only_by_a_push` (AC-76).
+- Slice 13: `yulius` `local_ci::a_run_again_tests_a_pull_request_with_its_own_jobs` (AC-77);
+  `local_ci`, `merge_train`, `playground`, `remote_mcp` and `ci_setup` as they are (AC-78);
+  `local_ci::nothing_is_tested_while_the_integration_branchs_configuration_is_broken`
+  (AC-79) and `local_ci::a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now`
+  (AC-80): two parts of the rule that only a unit test of its comparison, or nothing, held;
+  `playground::a_task_that_changes_the_jobs_is_tested_with_its_own` (AC-81) and
+  `playground::a_task_that_repairs_a_broken_configuration_is_tested_with_its_own` (AC-82).
 
 ## Decisions
 
@@ -1137,6 +1187,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 13 (no decision record: an existing rule, CI-110 and SPEC-217, given one place):
+  the rule lives in `ci_gate_for_head` and takes the commit and what it is (a proposal or
+  the branch with a change merged); what the commit branched off is the merge base with the
+  integration branch for every caller. For a train's merge commit that is the integration
+  head it was built on, as its own copy had it. For a playground's it is that head too,
+  where its copy compared with the task's fork point: the answers differ when `dev` changed
+  its jobs since the task began and the task did not, and the new one (the jobs of `dev` as
+  it is, since the task changed nothing) is the rule's. A playground task that changes its
+  jobs now keeps the trusted security job: the copy that lacked it was the odd one. A
+  playground task's merge is still tested with its own jobs while `dev`'s configuration is
+  broken (the review of this slice: without it the repairing task would land untested, and
+  a playground has no other checks); a pull request beside a broken branch is not, as
+  before. A run again asks the
+  rule anew instead of storing the first run's jobs: the answer for a commit changes only
+  when the integration branch's CI does, and then the scheduler would give the new answer
+  too.
 - [ADR-0324](../../docs/decisions/0324-a-production-secret-reaches-no-run-and-has-no-hosts.md):
   one rule for a production secret at the egress proxy (no client gets it), the hosts old
   rows kept removed by a migration with an audit line, the pair refused at insert; the
@@ -1271,8 +1337,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
 | V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 12 |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 12 |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 13 |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
@@ -2141,3 +2207,48 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Review of slice 12, round 2** (head 5e30be1ed): "None open in own code"; approve. The
   commit after it ticks this slice in the Plan and adds this line; the reviewer was shown
   that delta.
+
+### Slice 13 (2026-11-13)
+
+- **Slice 12's delivery.** Pull request #1253 merged into `dev` at 0f04251be, whose own
+  Yulius CI run passed.
+- **The defect, by its test on the code before** (`target/audit/slice13/mutations.log`, the
+  first case, which is the old line of `ci_rerun`):
+  `local_ci::a_run_again_tests_a_pull_request_with_its_own_jobs` failed; the rerun ran the
+  integration branch's `echo plain` and no `added` job.
+- **Tests failing without their fix** (`target/audit/slice13/mutate.py`, 6 cases, each
+  failed its tests): a run again given the integration branch's jobs; a commit's own jobs
+  never applied; a commit that brings CI not tested; own jobs tested while the integration
+  branch's configuration is broken; own jobs without the trusted security job; a branch
+  behind given the jobs it still carries. The fourth and the sixth passed at first: no
+  integration test held those two parts of the rule (the sixth had the unit test of the
+  comparison only); AC-79 and AC-80 are their tests now.
+- **The suites:** `2674 tests run: 2674 passed` for the app and the binary before the two
+  added tests (`target/audit/slice13-suite1.log`); the trains', the playground's and the
+  remote control's tests unchanged.
+- **Gate.** `scripts/dev ci` at `f1279d914`: exit 0; `4209 tests run: 4209 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A run again of a merge train's run (refused, as before) and of a
+  playground task's run (the rule is the same function; its checks' tests pass, none
+  reruns one); a playground task that changes its jobs while `dev` has a scanning job of
+  its own (the kept security job is tested for a pull request and for a train; the
+  built-in scan is never on in a playground); the reasons a run again gives when nothing
+  tests the commit.
+- **Review of slice 13, round 1** (head d733a7edd, request changes; the scheduler, the train
+  and the remote control "behave exactly as before, and the `ci_rerun` fix does what it
+  claims"). One minor finding in own code, in the reviewer's words: "A playground task that
+  fixes a broken `dev` yulius.toml now merges with no test at all." Answered by the rule
+  itself (`Head::Merged`, Decisions) and AC-82. Four nits answered: the Decisions sentence
+  about the playground's merge base; the reasons a run again gives; two sentences of
+  `docs/changes.md` and `docs/api.md`; a playground test where a task changes a job
+  (AC-81). A sixth point is D5's (the verdict of a head that brings its own jobs before
+  any run exists) and stays with it.
+- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
+  failed its tests): the six above, and a merge not tested while the integration branch's
+  configuration is broken.
+- **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
