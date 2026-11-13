@@ -710,7 +710,13 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `running` again, the switch is recorded `failed`, the task says in its terminal and to a
   person that the session could not be ended, and the next turn's end does not try the
   switch again within the cooldown; a run that ended by itself meanwhile rests the task
-  instead. No intent of the switch stays in the task's slot.
+  instead, as `stopped_switch_timeout` from either status, and an end that is being
+  recorded then is waited for before the run is asked about. No intent of the switch stays
+  in the task's slot. A run that ends by itself before the switch has claimed its end
+  (the task already reads `switching`) ends the task as it does without a switch, and the
+  switch gives way. A stop that lands after the switch gave the run up rests the task
+  too; whether it then reads `stopped_switch_timeout`, `stopped_lost` or
+  `stopped_cancelled` follows who recorded the run's end.
 
 ## Plan
 
@@ -1129,7 +1135,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   session that leaves by itself afterwards ends as `exited` and closes the task (no intent
   of the switch was left for it).
 - **AC-98** A switch of a task whose session does not hear the request to end and whose
-  host can be terminated ends with "it did not end in time during the switch": the task
+  host can be terminated ends with "the session did not end in time during the switch": the task
   has its one run, lost, and is `stopped_switch_timeout`; the switch is recorded `failed`.
 - **AC-99** The same outcome when the run's reader records the loss before the switch
   does (the host is killed after the switch gave the run up, before it terminates it), and
@@ -1138,6 +1144,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-100** A run whose end is being recorded when the switch's wait runs out (held
   after its recorder took the switch's intent) is switched: the old run ended `switched`,
   the new run is live, the task runs.
+- **AC-101** A session that leaves by itself after its task became `switching`, before
+  the switch claims the run's end: the task is `closed` with its one run `exited`, the
+  switch ends with "the task was closed during the switch", and nothing says a session
+  did not end in time.
+- **AC-102** A run whose exit is being recorded (its recorder holds the given-up intent)
+  when the kill is refused and the task is put back to `running`: the switch waits for
+  the record; the task is `stopped_switch_timeout`, its run ended `switch_timeout`, and
+  nothing says a session could not be ended.
 
 ## Test plan
 
@@ -1322,9 +1336,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `task_done::a_run_that_exits_as_its_switch_gives_it_up_rests_the_task` and
   `task_done::a_run_that_exits_before_a_refused_kill_rests_the_task` (AC-99),
   `task_done::a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched` (AC-100),
-  on the real session host behind a test host that can drop requests to end, refuse to
-  terminate and leave the look unanswered; the orders are made with three pause points
-  (`RunEndTaken`, `SwitchWaitOver`, `SwitchEndsRun`).
+  `task_done::a_run_that_ends_before_its_switch_claims_it_closes_the_task` (AC-101),
+  `task_done::a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task`
+  (AC-102), on the real session host behind a test host that can drop requests to end,
+  refuse to terminate and leave the look unanswered; the orders are made with pause
+  points (`SwitchDecided`, and three new ones: `RunEndTaken`, `SwitchWaitOver`,
+  `SwitchEndsRun`).
 
 ## Decisions
 
@@ -1399,9 +1416,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   it. The first version of this slice cleared the switch's intent before the kill and so
   left two orders in which the task stayed `switching` with no run (the review, finding
   1): the intent slot now says "given up" instead of nothing, each recorder reads it, and
-  a run whose end was already taken is waited for instead of killed. The orders are tested
-  with pause points, as the stop's and the close's are (SPEC-250). The wait is a setting
-  (`switch_end_ms`) only so that tests need not wait a minute.
+  a run whose end was already taken is waited for instead of killed. The second round
+  found the order before all of that: a run that ends by itself between the task's change
+  to `switching` and the switch's claim of its end met a status with no way out (before
+  this slice the switch recovered it by starting the next run a minute later). Such an end
+  now ends the task as from `running`, which is what "the task follows its session" says,
+  and the switch finds a resting task. The orders are tested with pause points, as the
+  stop's and the close's are (SPEC-250). The wait is a setting (`switch_end_ms`) only so
+  that tests need not wait a minute. The status's text in the web UI says "Restarting the
+  session took too long": a restart on a newer Claude Code ends there too.
   A finished (`Done`) task whose idle session is moved and has to be given up rests as
   stopped, not closed: RBT-001 closes only a running task, and its domain test says why
   for this very case ("a switch or a stop in flight was cut"); the review asked for

@@ -3146,10 +3146,11 @@ impl App {
             }
             Some(EndIntent::SwitchTimeout) => {
                 // The run ended while the switch that gave it up was ending it: the task rests
-                // as it does when that switch records the loss itself (SPEC-483 SWT-002).
+                // as it does when that switch records the loss itself, from `Switching` or, after
+                // a refused kill, from `Running` (SPEC-483 SWT-002).
                 self.settle_ended(task_id, now, |task| {
                     task.status
-                        .after_loss(task.activity, StopReason::SwitchTimeout)
+                        .apply(TaskEvent::Lost(StopReason::SwitchTimeout))
                         .ok()
                 })
                 .await;
@@ -3189,9 +3190,21 @@ impl App {
                 .await;
             }
             None => {
+                // A run that ends by itself while a switch that has not claimed its end yet
+                // holds the task `Switching` ends the task as from `Running`: the switch finds
+                // it resting and gives way (SPEC-483 SWT-002).
                 let event = exit_event(&exit, session_end.as_deref());
-                self.settle_ended(task_id, now, |task| task.status.apply(event).ok())
-                    .await;
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(event)
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::SwitchCompleted)
+                                .and_then(|running| running.apply(event))
+                        })
+                        .ok()
+                })
+                .await;
             }
         }
         // A paused run that ended (the user left the session, or it was stopped) is no longer
@@ -4081,10 +4094,19 @@ impl App {
                 self.now(),
             )
             .await?;
-        if let Ok(mut intent) = runtime.intent.lock()
-            && matches!(*intent, Some(EndIntent::SwitchTimeout))
-        {
-            *intent = None;
+        let given_up = runtime.intent.lock().is_ok_and(|mut intent| {
+            let still = matches!(*intent, Some(EndIntent::SwitchTimeout));
+            if still {
+                *intent = None;
+            }
+            still
+        });
+        // Someone took the slot: the run's end is being recorded (or a stop owns it). The
+        // record is waited for, so that a run which ended is not asked about too early.
+        if !given_up {
+            let mut finalizing = runtime.finalizing.subscribe();
+            let bound = Duration::from_millis(self.config.switch_end_ms);
+            let _ = tokio::time::timeout(bound, finalizing.wait_for(|count| *count == 0)).await;
         }
         // The run ended by itself while its host was asked to go: nothing is left to say.
         if !matches!(store.attempt(&attempt.id).await, Ok(Some(run)) if !run.state.is_terminal()) {
@@ -4172,7 +4194,7 @@ impl App {
             .unwrap_or(None);
         // What overtook it says so; without word, the status and the intent tell.
         let why = match (told, status, intent) {
-            (Some(SwitchEnd::TimedOut), _, _) => "it did not end in time",
+            (Some(SwitchEnd::TimedOut), _, _) => "the session did not end in time",
             (Some(SwitchEnd::Closed), _, _)
             | (None, Some(TaskStatus::Closed), _)
             | (None, _, Some(true)) => "the task was closed",

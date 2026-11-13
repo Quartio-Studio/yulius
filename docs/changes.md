@@ -12,7 +12,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   had left running; it reads as running now, as it does everywhere else, and the session
   moves at a later turn's end. And a switch whose old session did not end in time no
   longer starts a second session beside it: a session that had to be killed rests the task
-  as stopped ("continuing on another subscription took too long"), whoever sees its end
+  as stopped ("restarting the session took too long"), whoever sees its end
   first, and one that cannot be killed keeps the task running in the session it had,
   flagged for a person.
 - A failure inside Yulius no longer reads as an outage to `yulius wait` (SPEC-483 slice 16,

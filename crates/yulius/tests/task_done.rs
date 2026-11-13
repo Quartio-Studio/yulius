@@ -2878,7 +2878,7 @@ async fn timed_out_switch(
     let states = run_states(app, id).await;
     assert_eq!(
         outcome,
-        &Err("it did not end in time during the switch".to_owned()),
+        &Err("the session did not end in time during the switch".to_owned()),
         "{states}"
     );
     let runs = app.deps.store.attempts(id).await?;
@@ -3011,7 +3011,8 @@ fn a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched() -> TestR
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        // Long enough for the session to end at the switch's request before the wait is over.
+        // Long enough for the session to end at the switch's request before the wait is over:
+        // the test's one assumption about time (a session slower than that fails it).
         let (app, _host, id) = gated_goal_task_ending(&data, &fake, 5_000).await?;
         let (waited, wait_over) = std::sync::mpsc::channel::<()>();
         let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3046,6 +3047,141 @@ fn a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched() -> TestR
         assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
         stop(&app, &id).await?;
         expect_stopped(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 SWT-002 (review, round 2): the session leaves by itself after the switch made the
+/// task `switching` and before the switch claims the run's end. Its end closes the task, as it
+/// does without a switch, and the switch gives way: the task is not left switching with no run,
+/// and nothing says a session did not end in time.
+#[test]
+fn a_run_that_ends_before_its_switch_claims_it_closes_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::SwitchDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let ended = wait_in_hook(&handle, async {
+                        app.send_input(&id, b"/exit\r").await?;
+                        wait_for("the run's end", Duration::from_secs(30), || async {
+                            matches!(
+                                app.deps.store.attempt(&run.id).await,
+                                Ok(Some(a)) if a.state.is_terminal()
+                            )
+                        })
+                        .await
+                    });
+                    if let Err(err) = ended {
+                        eprintln!("{err}");
+                    }
+                },
+            );
+        }
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        let states = run_states(&app, &id).await;
+        assert_eq!(
+            outcome,
+            Err("the task was closed during the switch".to_owned()),
+            "{states}"
+        );
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Closed,
+            "{states}"
+        );
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1, "{states}");
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("exited"), "{states}");
+        let said = notices_of(&mut watch);
+        assert!(
+            !said.iter().any(|line| line.contains("in time")),
+            "{said:?}"
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 SWT-002 (review, round 2): the run's exit is being recorded (its recorder took the
+/// given-up intent) when the kill is refused and the switch puts the task back to running. The
+/// switch waits for that record before it asks whether the run lives: the run ended, so nothing
+/// says a session could not be ended, and the task rests as after the timeout.
+#[test]
+fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        host.refuse_ends(true);
+        let (taken, end_taken) = std::sync::mpsc::channel::<()>();
+        {
+            // The run's recorder holds the intent it took until the task runs again.
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunEndTaken,
+                Path::new(key.as_str()),
+                move || {
+                    let _ = taken.send(());
+                    let running = wait_in_hook(&handle, async {
+                        wait_for(
+                            "the task running again",
+                            Duration::from_secs(30),
+                            || async {
+                                task(&app, &id)
+                                    .await
+                                    .is_ok_and(|t| t.status == TaskStatus::Running)
+                            },
+                        )
+                        .await
+                    });
+                    if let Err(err) = running {
+                        eprintln!("{err}");
+                    }
+                },
+            );
+        }
+        {
+            // The session leaves once the switch gave it up; the kill is tried (and refused)
+            // once the run's recorder has taken the intent.
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::SwitchEndsRun,
+                Path::new(key.as_str()),
+                move || {
+                    let sent = wait_in_hook(&handle, app.send_input(&id, b"/exit\r"));
+                    let seen = tokio::task::block_in_place(|| {
+                        end_taken.recv_timeout(Duration::from_secs(30))
+                    });
+                    if sent.is_err() || seen.is_err() {
+                        eprintln!("the run's end was not taken");
+                    }
+                },
+            );
+        }
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        timed_out_switch(&app, &id, &outcome, "switch_timeout").await?;
+        let said = notices_of(&mut watch);
+        assert!(
+            !said.iter().any(|line| line.contains("could not")),
+            "{said:?}"
+        );
+        Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
