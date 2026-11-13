@@ -23,6 +23,10 @@
 //! root could still open the browser's `/proc/<pid>/fd`; that user already owns the profile. Agents use the browser through Yulius's browser tools.
 //! The virtual display is not reachable from containment at all
 //! (no TCP or abstract socket, a private `/tmp`, a cookie outside the sandbox directories).
+//! A viewer's input on it is real X input, which reaches Chrome's own windows as well as the
+//! page: [`policy`] is the lock-down that switches those off, and a browser takes viewers'
+//! clicks and keys only while it answers that it loaded it
+//! ([`BrowserInstance::viewer_input_allowed`], ADR-0318).
 //!
 //! The `fake` feature adds [`fake`]: an in-process fake CDP server, a fake Chromium launcher
 //! and a fake display for tests.
@@ -36,6 +40,7 @@ pub mod flv;
 mod instance;
 mod keys;
 mod manager;
+pub mod policy;
 mod process;
 mod snapshot;
 mod url_policy;

@@ -108,6 +108,9 @@ struct FakeState {
     screenshot_base64_len: usize,
     ax_nodes: Value,
     emit_load_events: bool,
+    /// Whether the host's managed policy is in force: the policy probe's navigation is
+    /// blocked by the administrator (ADR-0318).
+    browser_policy: bool,
     selection: String,
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
@@ -304,6 +307,7 @@ impl FakeCdpServer {
                 screenshot_base64_len: 0,
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
+                browser_policy: true,
                 selection: String::new(),
                 pages: HashMap::new(),
                 password_fields: HashSet::new(),
@@ -460,6 +464,13 @@ impl FakeCdpServer {
     /// Whether `Page.navigate` is followed by `Page.loadEventFired` (default true).
     pub fn set_emit_load_events(&self, emit: bool) {
         lock(&self.shared.state).emit_load_events = emit;
+    }
+
+    /// Whether the host's managed browser policy is in force (default true): the navigation to
+    /// its marker address fails as blocked by the administrator, or as a name that does not
+    /// resolve.
+    pub fn set_browser_policy(&self, in_force: bool) {
+        lock(&self.shared.state).browser_policy = in_force;
     }
 
     /// The text pages report as the user's selection (the copy expression's result).
@@ -986,6 +997,14 @@ fn respond(
                 return Ok(
                     json!({"frameId": "frame-1", "errorText": "net::ERR_NAME_NOT_RESOLVED"}),
                 );
+            }
+            if url.contains("yulius-browser-policy-v") {
+                let error = if state.browser_policy {
+                    "net::ERR_BLOCKED_BY_ADMINISTRATOR"
+                } else {
+                    "net::ERR_NAME_NOT_RESOLVED"
+                };
+                return Ok(json!({"frameId": "frame-1", "errorText": error}));
             }
             let target_id = session_id.and_then(|s| state.sessions.get(s)).cloned();
             if let Some(target) = state

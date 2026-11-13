@@ -392,6 +392,9 @@ pub enum ViewerErrorCode {
     NotFound,
     /// Tab or resource limit reached.
     Capacity,
+    /// Clicks and keys are off: the host's browser policy is not in force (ADR-0318). Said
+    /// once by the page, not at every key.
+    InputLocked,
     /// The browser failed or did not answer.
     Upstream,
     /// Unexpected server failure.

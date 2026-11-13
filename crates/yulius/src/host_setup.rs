@@ -244,8 +244,11 @@ pub const HELPER_DROP_IN: &str =
     "/etc/systemd/system/yulius-update.service.d/10-yulius-host-check.conf";
 /// Its content.
 pub const HELPER_DROP_IN_TEXT: &str = "# Written by `yulius host setup`: the re-check after an \
-update (`yulius host check`) may\n# write the kernel modules list and the needrestart rule.\n\
-[Service]\nReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d\n";
+update (`yulius host check`) may\n# write the kernel modules list, the needrestart rule and \
+the browser policy.\n\
+[Service]\nReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d \
+-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed \
+-/etc/chromium-browser/policies/managed\n";
 /// Where the setup writes a missing `yulius.service`.
 pub const UNIT_FILE: &str = "/etc/systemd/system/yulius.service";
 /// The first subordinate id the setup gives out.
@@ -536,6 +539,7 @@ impl<'a> Run<'a> {
         // Sandboxes need it before anything of the instance (SPEC-456): a move proves the
         // host with it before the copy.
         self.bwrap_namespaces();
+        self.browser_policy();
         true
     }
 
@@ -656,6 +660,54 @@ impl<'a> Run<'a> {
             &format!(
                 "write {NEEDRESTART_RULE_FILE} so package installs never restart yulius.service"
             ),
+        );
+    }
+
+    /// ADR-0318: Chrome's managed policy for the sandbox browsers. A viewer's clicks and keys
+    /// are real input in a Chrome that runs on this host; the policy switches off Chrome's own
+    /// file dialogs and file pages, and a browser takes viewers' input only once it answers
+    /// that it loaded it. Safe and idempotent: the update's re-check writes a newer version
+    /// into the directories the setup made.
+    fn browser_policy(&mut self) {
+        const ITEM: &str = "browser policy";
+        let policy = yulius_browser::policy::managed_policy();
+        let stale: Vec<PathBuf> = yulius_browser::policy::POLICY_DIRS
+            .iter()
+            .map(|dir| Path::new(dir).join(yulius_browser::policy::POLICY_FILE))
+            .filter(|path| self.host.read(path).as_deref() != Some(policy.as_str()))
+            .collect();
+        if stale.is_empty() {
+            return self.ok(
+                ITEM,
+                "Chrome's own file dialogs and file pages are off in the sandbox browsers \
+                 (yulius.json in the managed policy directories)",
+            );
+        }
+        if self.may(true) {
+            for path in &stale {
+                if let Err(why) = self.host.write(path, &policy, 0o644) {
+                    let fix = if self.mode == Mode::Check {
+                        "; run `sudo yulius host setup`"
+                    } else {
+                        ""
+                    };
+                    return self.failed(
+                        ITEM,
+                        format!(
+                            "cannot write {}: {why}{fix}; until it is there, viewers' clicks \
+                             and keys in the sandbox browsers are off",
+                            path.display()
+                        ),
+                    );
+                }
+            }
+        }
+        self.changed(
+            ITEM,
+            "wrote Chrome's managed policy (yulius.json): its own file dialogs and file pages \
+             are off in the sandbox browsers",
+            "write Chrome's managed policy (yulius.json), so its own file dialogs and file \
+             pages are off in the sandbox browsers",
         );
     }
 

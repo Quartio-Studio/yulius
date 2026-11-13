@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A viewer of a sandbox browser could read the host's files (SPEC-483 slice 6, task #465,
+  ADR-0318). The browser runs on the host and viewers' clicks are real input there: a click on
+  a page's upload button opened Chrome's own file chooser, in which any path the service user
+  reads could be picked for the page to read (reproduced on Chrome 157). `yulius host setup`
+  now writes a managed Chrome policy that switches off Chrome's own file dialogs, downloads,
+  printing and `file:` pages, and a browser on a virtual display takes clicks and keys only
+  once it answers that the policy is in force. **After this update run `sudo yulius host
+  setup` once on the host**: until then the sandbox browsers show and scroll, the agents'
+  tools work, and the panel says that clicks and keys are off. `yulius doctor` reports the
+  policy. Chrome's own pages are no longer listed as tabs. Also: a message kept out of a task
+  whose terminal screen was withheld now flags the task, once, so its person learns to stop
+  and continue it (from the review of slice 5).
 - The vault's rules hold on every path (SPEC-483 slice 5, task #465, ADR-0317). Reading an
   agent secret needs your two-factor code, but sending it to a server of your choice read it
   too, with write access alone, also by an API token. For a secret you allow use by use ("Let

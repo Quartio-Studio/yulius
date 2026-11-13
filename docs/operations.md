@@ -15,6 +15,7 @@ been performed or verified** as part of the implementation work.
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
+| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). It applies to every Chrome on the host: no file dialogs, downloads, printing, `file:` or `chrome:` pages, extensions. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
@@ -587,7 +588,17 @@ local`), only on `/tmp/.X11-unix/X<n>`, which contained agents and users' shells
 Xvfb, Chrome and ffmpeg are children of the service and share its `/tmp`, so `PrivateTmp=yes` in
 the unit works too.
 
-Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab.
+Real input also reaches Chrome's own windows (the file chooser of a page's upload button, Save
+as, printing to a file, the developer tools), and that Chrome runs on the host. So a browser on
+a virtual display takes viewers' clicks and keys only while it answers that the host's managed
+policy is in force (`yulius host setup` writes it; ADR-0318): the policy switches those windows
+off for every tab. Until then the browser shows, scrolls and serves the agents' tools, and the
+panel says what to run. After an update that changes the policy, the update's host check
+rewrites the files; on a host that never ran the setup with this version, run
+`sudo yulius host setup` once.
+
+Check with `yulius doctor`: it reports Xvfb, ffmpeg, libx264 and x11grab, and the browser
+policy.
 
 ### Sandbox isolation
 

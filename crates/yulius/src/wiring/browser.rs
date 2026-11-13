@@ -29,6 +29,7 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::UrlRefused(_) => BrowserFailureKind::UrlRefused,
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
         BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
+        BrowserError::InputLocked => BrowserFailureKind::InputLocked,
         BrowserError::InvalidInput(_)
         | BrowserError::ToolParams(_)
         | BrowserError::InvalidSelector(_)

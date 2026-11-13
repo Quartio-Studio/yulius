@@ -1700,6 +1700,65 @@ fn an_import_makes_only_the_user_and_its_ids() {
     assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
 }
 
+/// SPEC-483 E1 (ADR-0318): the setup writes Chrome's managed policy into the policy directories
+/// of Google Chrome and Chromium and leaves an equal one alone; a dry run says so and writes
+/// nothing; the update's re-check writes it too (a newer version of it), and says what to run
+/// when it cannot.
+#[test]
+fn the_browser_policy_is_written_where_it_is_missing_or_differs() {
+    use yulius_browser::policy::{POLICY_DIRS, POLICY_FILE, managed_policy};
+    const ITEM: &str = "browser policy";
+    let files: Vec<String> = POLICY_DIRS
+        .iter()
+        .map(|dir| format!("{dir}/{POLICY_FILE}"))
+        .collect();
+    let policy = managed_policy();
+
+    let mut fake = Fake::fresh();
+    let dry = run(&mut fake, Mode::DryRun);
+    assert_eq!(outcome(&dry, ITEM), HostOutcome::Changed, "{dry:#?}");
+    assert!(
+        line(&dry, ITEM).detail.starts_with("would write"),
+        "{dry:#?}"
+    );
+    assert!(files.iter().all(|file| !fake.has(file)), "{:#?}", fake.log);
+
+    let first = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&first, ITEM), HostOutcome::Changed, "{first:#?}");
+    for file in &files {
+        assert_eq!(fake.text(file), Some(policy.as_str()), "{file}");
+    }
+    let again = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&again, ITEM), HostOutcome::Ok, "{again:#?}");
+
+    // An older version's file (another marker): the update's re-check replaces it.
+    fake.file(
+        &files[0],
+        "{\"URLBlocklist\": [\"yulius-browser-policy-v0.invalid\"]}\n",
+    );
+    let checked = run(&mut fake, Mode::Check);
+    assert_eq!(
+        outcome(&checked, ITEM),
+        HostOutcome::Changed,
+        "{checked:#?}"
+    );
+    assert_eq!(fake.text(&files[0]), Some(policy.as_str()));
+
+    // Where the re-check cannot write (the directory is not there yet, read-only to it), it
+    // says what to run and what is off until then.
+    fake.file(&files[1], "{}\n");
+    fake.read_only.insert(PathBuf::from(&files[1]));
+    let refused = run(&mut fake, Mode::Check);
+    assert_eq!(outcome(&refused, ITEM), HostOutcome::Failed, "{refused:#?}");
+    let said = &line(&refused, ITEM).detail;
+    assert!(
+        said.contains(&files[1])
+            && said.contains("sudo yulius host setup")
+            && said.contains("clicks and keys"),
+        "{said}"
+    );
+}
+
 /// SPEC-460 MIG-024: a move runs the host's items before the copy, the rest before it starts the
 /// service itself, and the running service's items after; together they are the whole setup.
 #[test]
@@ -1713,7 +1772,7 @@ fn a_move_runs_the_setup_in_three_parts() {
     let host = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).host_items();
     assert!(passed(&host), "{host:#?}");
     let names: Vec<&str> = host.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names.last(), Some(&"bwrap namespaces"), "{names:?}");
+    assert_eq!(names.last(), Some(&"browser policy"), "{names:?}");
     assert!(!names.contains(&"yulius.service") && !names.contains(&"sandbox base"));
     // Nothing of the instance yet: no unit, no base, no start.
     assert!(!fake.has(UNIT_FILE), "{:#?}", fake.log);

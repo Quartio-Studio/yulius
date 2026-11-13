@@ -1225,6 +1225,74 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
     .await
 }
 
+/// SPEC-483 E1 (ADR-0318): on a virtual display a viewer's clicks and keys are real input that
+/// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
+/// refused, with what an administrator runs, until the browser itself answers that the host's
+/// managed policy is in force; moving the pointer passes; the probe's tab is nobody's tab; and
+/// once the policy appears input is taken without a restart.
+#[tokio::test]
+async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
+
+        for refused in [&down, &key] {
+            send(&mut socket, refused.clone()).await?;
+            let error = loop {
+                let message = next_json(&mut socket).await?;
+                assert!(
+                    message["tabs"].as_array().is_none_or(|tabs| tabs.len() == 1),
+                    "the probe's tab was listed: {message}"
+                );
+                if message["type"] == "error" {
+                    break message;
+                }
+            };
+            assert_eq!(error["code"], "input_locked", "{error}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("sudo yulius host setup")),
+                "{error}"
+            );
+        }
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": 30, "y": 40})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Motion { x: 30, y: 40 }, WAIT).await);
+        assert!(
+            !display
+                .inputs()
+                .iter()
+                .any(|i| matches!(i, DisplayInput::Button { .. } | DisplayInput::Key { .. })),
+            "{:?}",
+            display.inputs()
+        );
+        // One probe for both refusals (the answer stands for a moment), its tab closed again.
+        assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
+        assert_eq!(f.fake.target_ids().len(), 1);
+
+        // An administrator ran host setup: the running browser takes input.
+        f.fake.set_browser_policy(true);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            if display.wait_for_input(pressed, Duration::from_millis(500)).await {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "input stayed off");
+        }
+        Ok(())
+    })
+    .await
+}
+
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.
@@ -1305,6 +1373,45 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
         drop(socket);
         assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318: a page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
+/// `chrome://omnibox-popup.top-chrome/`, as a page): viewers are never shown it, and it never
+/// becomes the shown tab; the page opened after it is.
+#[tokio::test]
+async fn chromes_own_pages_are_no_tabs() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake
+            .open_from_page(&first, "chrome://omnibox-popup.top-chrome/")
+            .await;
+        let popup = f
+            .fake
+            .open_from_page(&first, "https://accounts.example/oauth")
+            .await;
+        // Every tab list on the way to the real popup's has no page of Chrome's.
+        let shown = loop {
+            let message = next_json(&mut socket).await?;
+            let Some(tabs) = message["tabs"].as_array() else {
+                continue;
+            };
+            assert!(
+                tabs.iter()
+                    .all(|t| !t["url"].as_str().unwrap_or_default().starts_with("chrome:")),
+                "{message}"
+            );
+            if tabs.iter().any(|t| t["id"] == popup.as_str()) {
+                break message;
+            }
+        };
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
         Ok(())
     })
     .await
