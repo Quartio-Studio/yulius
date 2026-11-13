@@ -55,8 +55,8 @@ pub(crate) fn probe_url() -> String {
 ///
 /// - no file selection dialog at all (uploads, Save as, the File System Access pickers);
 /// - no downloads, no printing (a print dialog saves to a file);
-/// - only web addresses: every address is blocked but `http:`, `https:`, `about:`, `data:`,
-///   `blob:` and Chrome's built-in extensions (its PDF viewer). So no `file:`, `view-source:`
+/// - only web addresses: every address is blocked but `http:`, `https:`, `ws:`, `wss:`,
+///   `about:`, `data:`, `blob:` and Chrome's built-in extensions (its PDF viewer). So no `file:`, `view-source:`
 ///   or `chrome:` page, no `devtools:` page (the developer tools' own window is one), and no
 ///   address of another program (Chrome would offer to run `xdg-open` on the host for it);
 ///   and the marker host, which stays blocked as the more specific rule;
@@ -77,6 +77,8 @@ pub fn managed_policy() -> String {
         "URLAllowlist": [
             "http://*",
             "https://*",
+            "ws://*",
+            "wss://*",
             "about:*",
             "data:*",
             "blob:*",

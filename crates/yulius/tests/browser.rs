@@ -1424,6 +1424,50 @@ async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
     .await
 }
 
+/// ADR-0318 (review of slice 6, round 2): what Chrome announces while a probe waits for the id
+/// of its own tab is listed once the id is known, unless it is the probe's; and a tab that
+/// goes to a page of Chrome's own stays a tab (Chrome still shows it).
+#[tokio::test]
+async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays() -> TestResult
+{
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake.create_alongside_next_target("https://beside.example/");
+        // A press asks for the probe, whose tab and the other are announced before its id.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        let listed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter().any(|t| t["url"] == "https://beside.example/")
+                })
+        })
+        .await?;
+        let urls: Vec<&str> = listed["tabs"]
+            .as_array()
+            .map(|tabs| tabs.iter().filter_map(|t| t["url"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(urls.len(), 2, "the probe's tab was listed: {urls:?}");
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+
+        f.fake.set_target_url(&first, "chrome://settings/").await;
+        let stayed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == first.as_str() && t["url"] == "chrome://settings/")
+                })
+        })
+        .await?;
+        assert_eq!(stayed["tabs"].as_array().map(Vec::len), Some(2), "{stayed}");
+        Ok(())
+    })
+    .await
+}
+
 /// ADR-0318: a page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
 /// `chrome://omnibox-popup.top-chrome/`, as a page): viewers are never shown it, and it never
 /// becomes the shown tab; the page opened after it is.

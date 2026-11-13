@@ -32,7 +32,7 @@ browser with.
 - **The policy.** `yulius_browser::policy::managed_policy` is a file `yulius.json`: no file
   selection dialog, no downloads, no printing, the File System Access API blocked, no
   extension installs, and only web addresses: every address is blocked but `http:`, `https:`,
-  `about:`, `data:`, `blob:` and Chrome's built-in extensions (its PDF viewer). That leaves no
+  `ws:`, `wss:`, `about:`, `data:`, `blob:` and Chrome's built-in extensions (its PDF viewer). That leaves no
   `file:`, `view-source:` or `chrome:` page, no `devtools:` page (the developer tools' window
   is one) and no address of another program, for which Chrome offers to run `xdg-open` on the
   host (on Chrome 157 a click on such a link kept the page and handed the address over; under
@@ -51,8 +51,10 @@ browser with.
   (`BrowserInstance::viewer_input_allowed`). The marker carries the policy's version, so an
   older Yulius's file, without what a newer one adds, does not pass. The probe's tab is known
   by the id Chrome gives it, never by its address (a page can open the same address: such a
-  window is an ordinary tab); a tab announced before its id is known waits for it. The probe
-  is given 3 seconds.
+  window is an ordinary tab). While the probe waits for that id, a new page no page opened
+  is not listed yet; once the id is known, or the probe is given up or dropped, what waited is
+  listed unless it is the probe's. The probe is given 3 seconds for its tab and 3 for the
+  navigation.
 - **No policy, no clicks and keys.** While the answer is no, a viewer's button presses and key
   presses on the display are refused (`BrowserError::InputLocked`, `input_locked` on the
   viewer's socket) and the page tells the viewer why and what an administrator runs, once a

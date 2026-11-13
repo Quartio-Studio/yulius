@@ -929,9 +929,9 @@ struct State {
     pointer: Pointer,
     /// The policy probe's own tabs (ADR-0318), by the ids Chrome gave them: never listed.
     probe_tabs: HashSet<TabId>,
-    /// A policy probe asked Chrome for its tab and has no id for it yet: a page created
-    /// meanwhile that looks like it (blank at the probe's address, opened by no page) waits
-    /// here until the id says whether it is the probe's or a page's own.
+    /// A policy probe asked Chrome for its tab and has no id for it yet: what is announced
+    /// meanwhile of a page no page opened (the probe's own tab is one, however Chrome first
+    /// names it) waits here until the id says whether it is the probe's.
     probing: bool,
     probe_held: Vec<CdpEvent>,
 }
@@ -1034,6 +1034,42 @@ pub struct BrowserInstance {
     policy: Mutex<PolicyCheck>,
     /// One probe at a time.
     policy_lock: tokio::sync::Mutex<()>,
+}
+
+/// A policy probe's wait for the id of its tab. Dropping it ends the wait: the id (when Chrome
+/// gave one) marks the probe's tab, which is taken off the tab list should it be on it, and
+/// what was announced meanwhile is listed, unless it is the probe's own or listed already by a
+/// newer event.
+struct ProbeWait<'a> {
+    browser: &'a BrowserInstance,
+    target: Option<TabId>,
+}
+
+impl Drop for ProbeWait<'_> {
+    fn drop(&mut self) {
+        let held = {
+            let mut state = lock(&self.browser.state);
+            state.probing = false;
+            if let Some(target) = &self.target {
+                state.probe_tabs.insert(target.clone());
+            }
+            std::mem::take(&mut state.probe_held)
+        };
+        if let Some(target) = &self.target {
+            self.browser.forget_tab(target);
+        }
+        for event in held {
+            let id = event
+                .params
+                .get("targetInfo")
+                .and_then(page_entry)
+                .map(|(id, _, _)| id);
+            let stale = id.is_some_and(|id| lock(&self.browser.state).has(&id));
+            if !stale {
+                self.browser.on_event(&event);
+            }
+        }
+    }
 }
 
 /// What the browser last answered about the host's managed policy, and when.
@@ -1439,13 +1475,9 @@ impl BrowserInstance {
                         return;
                     }
                     let known = state.has(&id);
-                    // The probe's tab may be announced before Chrome answers with its id: what
-                    // looks like it waits for the id.
-                    if !known
-                        && state.probing
-                        && url == crate::policy::PROBE_BLANK
-                        && !opened_by_a_page
-                    {
+                    // The probe's tab may be announced before Chrome answers with its id, under
+                    // whatever address: a new page no page opened waits for the id.
+                    if !known && state.probing && !opened_by_a_page {
                         state.probe_held.push(event.clone());
                         return;
                     }
@@ -2139,34 +2171,31 @@ impl BrowserInstance {
     /// the address the policy blocks, and the navigation fails as blocked, or otherwise.
     async fn probe_policy(&self) -> Result<bool, BrowserError> {
         lock(&self.state).probing = true;
-        let created = self
-            .cdp
-            .call(
+        // Ends the wait for the tab's id however this future ends, a drop included (it runs in
+        // a viewer's connection).
+        let mut wait = ProbeWait {
+            browser: self,
+            target: None,
+        };
+        let created = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            self.cdp.call(
                 "Target.createTarget",
                 json!({"url": crate::policy::PROBE_BLANK, "background": true}),
-            )
-            .await
-            .map_err(BrowserError::from)
-            .and_then(|created| {
-                created
-                    .get("targetId")
-                    .and_then(Value::as_str)
-                    .and_then(|id| TabId::parse(id).ok())
-                    .ok_or_else(|| malformed("Target.createTarget", "missing targetId"))
-            });
-        // The id tells the probe's tab from a page's own that only looks like it: what waited
-        // for it is listed now, the probe's never.
-        let held = {
-            let mut state = lock(&self.state);
-            state.probing = false;
-            if let Ok(target) = &created {
-                state.probe_tabs.insert(target.clone());
-            }
-            std::mem::take(&mut state.probe_held)
-        };
-        for event in held {
-            self.on_event(&event);
-        }
+            ),
+        )
+        .await
+        .map_err(|_| BrowserError::NavigationFailed("the policy probe got no tab in time".into()))
+        .and_then(|created| created.map_err(BrowserError::from))
+        .and_then(|created| {
+            created
+                .get("targetId")
+                .and_then(Value::as_str)
+                .and_then(|id| TabId::parse(id).ok())
+                .ok_or_else(|| malformed("Target.createTarget", "missing targetId"))
+        });
+        wait.target = created.as_ref().ok().cloned();
+        drop(wait);
         let target = created?;
         let asked = async {
             let attached = self
