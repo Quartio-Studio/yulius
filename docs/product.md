@@ -299,7 +299,9 @@ watching, steering and unblocking.
 - **Delivery discipline**: spec when it matters (a task that needs one is refused code edits with
   Claude Code's edit tools until its spec has a Plan, SPEC-426; Bash edits and the spec's validity
   are the turn-end gate's),
-  effort-weighted steps, independent review
+  effort-weighted steps that hold all the work the agent knows of (a pull request delivers the
+  finished part, and a plan that grew says how many steps it had at first, SPEC-484),
+  independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`

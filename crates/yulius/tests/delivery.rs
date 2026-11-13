@@ -1317,14 +1317,12 @@ async fn an_automatic_promotion_stops_at_a_failed_head() -> TestResult {
         )
         .await?;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
-    assert!(
-        confirmed
-            .body
-            .to_string()
-            .contains("Automatic promotion did not happen"),
-        "{}",
-        confirmed.body
-    );
+    let said = confirmed.body.to_string();
+    let why = said
+        .split_once("Automatic promotion did not happen:")
+        .map(|(_, why)| why)
+        .ok_or_else(|| format!("no such note: {said}"))?;
+    assert!(why.contains("fail"), "the reason: {why}");
     assert_eq!(
         f.origin_sha("main")?,
         main_before,
@@ -2654,6 +2652,16 @@ async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
             exit_reason: None,
         })
         .await?;
+    // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+    f.h.store
+        .transition_task(
+            &TaskId::parse(task)?,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
     Ok(Creds {
         bearer: Some(token.into()),
         ..Creds::default()
@@ -3770,6 +3778,16 @@ impl ArmedTask {
                 exit_reason: None,
             })
             .await?;
+        // A live run is a running task (an armed merge lives with it, SPEC-483 D6).
+        f.h.store
+            .transition_task(
+                &TaskId::parse("t1")?,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                f.h.app.now(),
+            )
+            .await?;
         let internal = yulius_server::internal_router(f.h.app.clone())
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
         let agent = Creds {
@@ -4406,6 +4424,95 @@ async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResu
     Ok(())
 }
 
+/// SPEC-483 D6: an armed merge lives with the run that armed it, by one rule with and without
+/// a restart. A task whose run only waits (no capacity, a subscription switch) keeps its armed
+/// merge across a restart. A task that was closed loses it: the next pass says so instead of
+/// merging the pull request behind the person's back once its checks pass, and a new server
+/// does not merge it either.
+#[tokio::test]
+async fn an_armed_merge_ends_with_its_tasks_run() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let (task, sandbox) = (TaskId::parse("t1")?, SandboxId::parse("s1")?);
+    let becomes = |status: TaskStatus| {
+        f.h.store
+            .transition_task(&task, None, status, Some(Activity::Waiting), f.h.app.now())
+    };
+    t.arm().await?;
+    let next_server =
+        || yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = || std::fs::read_to_string(&file).unwrap_or_default();
+
+    // Held, or queued to start again by itself (a held run goes through the queue when its
+    // capacity returns while every slot is taken): armed in this process and for the next.
+    for held in [
+        TaskStatus::WaitingCapacity,
+        TaskStatus::Switching,
+        TaskStatus::Queued,
+    ] {
+        becomes(held).await?;
+        f.h.app.merge_armed(&sandbox).await;
+        assert_eq!(t.wait(Value::Null).await?["merge_armed"], true, "{held:?}");
+        next_server().restore_armed_merges().await;
+        assert!(saved().contains("\"t1\""), "{held:?}: {}", saved());
+    }
+
+    // Closed by its person: the armed merge ends, and says why.
+    becomes(TaskStatus::Closed).await?;
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("dropped") && outcome.contains("run ended (closed)"),
+        "{outcome}"
+    );
+    assert!(!saved().contains("\"t1\""), "{}", saved());
+    // Its checks pass afterwards: nothing merges, here or in a new server.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    next_server().resume_armed_merges().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // The same for a merge that a server finds saved for a task closed while it was down.
+    becomes(TaskStatus::Running).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Pending);
+    t.arm().await?;
+    assert!(saved().contains("\"t1\""));
+    becomes(TaskStatus::Closed).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    // The restore itself forgets it; nothing is left for a pass to decide.
+    next_server().restore_armed_merges().await;
+    assert!(!saved().contains("\"t1\""), "{}", saved());
+    next_server().resume_armed_merges().await;
+    assert_eq!(
+        f.delivery("t1").await?["stage"],
+        "pr_open",
+        "not merged at the start"
+    );
+
+    // A pull request a person merged while it was armed, in a task closed afterwards: what
+    // the pass says is that it is merged, not that a merge was dropped.
+    becomes(TaskStatus::Running).await?;
+    f.h.github.set_checks(&t.head, ChecksState::Pending);
+    t.arm().await?;
+    let by_hand = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(by_hand.status, StatusCode::OK, "{}", by_hand.body);
+    becomes(TaskStatus::Closed).await?;
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("merged") && !outcome.contains("dropped"),
+        "{outcome}"
+    );
+    Ok(())
+}
+
 /// DLV-205 with SPEC-064 WAI-002: a restore that read the saved merges before a merge was armed
 /// and decided in this process does not bring that merge back (it would be decided again, as
 /// "dropped", over the real outcome).
@@ -4484,7 +4591,10 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
     let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
     assert_eq!(blocked["isError"], true, "{blocked}");
     let why = blocked["content"][0]["text"].as_str().unwrap_or_default();
-    assert!(why.contains("is in_progress"), "{why}");
+    assert!(
+        why.contains("step \"Step 1\" is in progress: finish it if this delivery includes it"),
+        "{why}"
+    );
     assert_eq!(pulls_opened(), 0, "nothing opened");
     assert_eq!(
         wait_state(&f, &agent, &head).await?["merge_armed"],
@@ -4536,6 +4646,343 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
         follow_up,
         "not forced"
     );
+    Ok(())
+}
+
+/// SPEC-484 PLN-001 to PLN-003, the way task #465 ran on 2026-11-13 (one pull request per slice;
+/// it read "Step 6/6" with nine slices ahead, because a merge was refused while a later slice
+/// was a step): a task keeps every slice as a step from the start. The end of a turn delivers
+/// nothing while slices are ahead and says how to deliver the finished part; `delivery_merge`
+/// delivers and merges it, refused while a step is in progress and the call has a head to
+/// deliver; the answers name what is ahead; the task is not Done, so the task chained after it
+/// waits; the next slice goes out as a new pull request. Its armed merge is not undone by a
+/// step marked in progress, and is dropped, as any armed merge, by a commit on the branch,
+/// which is why the armed answers tell the agent to start the next step after the merge.
+#[tokio::test]
+async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResult {
+    use yulius_app::ports::store_ext::IntakeStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    git(&wt, &["config", "user.name", "Bob"])?;
+    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
+    commit_file(&wt, "feature.txt", FEATURE, "Slice 1")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let slice1 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&slice1, ChecksState::Success);
+    let said = |result: &Value| {
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let progress = async || -> BoxResult<(u64, u64)> {
+        let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+        assert_eq!(task.status, StatusCode::OK, "{}", task.body);
+        Ok((
+            task.body["steps"]["done"].as_u64().ok_or("done")?,
+            task.body["steps"]["total"].as_u64().ok_or("total")?,
+        ))
+    };
+
+    // A task chained after this one: it starts when this one is Done.
+    f.add_task("t2", "Docs of the API", "feat/2-docs", "dev")
+        .await?;
+    let t2 = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(&t2, None, TaskStatus::Chained, None, Timestamp(5))
+        .await?;
+    f.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: t2.clone(),
+            after_task_id: Some(t1.clone()),
+            after_number: 1,
+            blocked_reason: None,
+            created_at: Timestamp(5),
+            rule: None,
+        })
+        .await?;
+    // What the chain does when this task's turn has ended (its agent idle): the successor's
+    // status afterwards.
+    let successor = async || -> BoxResult<String> {
+        f.h.store
+            .transition_task(
+                &t1,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                Timestamp(6),
+            )
+            .await?;
+        f.h.app.advance_chains(&t1).await;
+        let task = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
+        Ok(task.body["status"].as_str().unwrap_or_default().to_owned())
+    };
+
+    // Three slices, the first finished. A turn's end delivers the whole plan only.
+    set_steps(&f, "t1", &["done", "pending", "pending"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 0, "{:?}", f.h.github.writes());
+    let waiting = wait_state(&f, &agent, &slice1).await?;
+    let note = waiting["push_problem"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("2 step(s) are still ahead (next: \"Step 1\")")
+            && note.contains("call `delivery_merge` with its reviewed head"),
+        "{waiting}"
+    );
+
+    // The work under way is finished first.
+    set_steps(&f, "t1", &["done", "in_progress", "pending"]).await?;
+    let merge = json!({"reviewed_head": slice1, "review_summary": "approve"});
+    let held = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert_eq!(held["isError"], true, "{held}");
+    assert!(
+        said(&held).contains(
+            "step \"Step 1\" is in progress: finish it if this delivery includes it, or set it \
+             back to pending"
+        ),
+        "{held}"
+    );
+    assert_eq!(pulls_opened(&f), 0, "nothing opened");
+
+    // The finished part goes out and merges with two slices ahead, and the answer says so.
+    set_steps(&f, "t1", &["done", "pending", "pending"]).await?;
+    let merged = agent_tool(&f, &agent, "delivery_merge", merge).await?;
+    assert_eq!(merged["isError"], false, "{merged}");
+    let answer = said(&merged);
+    assert!(
+        answer.contains("2 step(s) of your plan are still ahead (next: \"Step 1\")"),
+        "{answer}"
+    );
+    assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    assert_eq!(progress().await?, (1, 3), "the plan is the whole task");
+    // Merged, and not Done: the task chained after it goes on waiting.
+    assert_eq!(successor().await?, "chained");
+
+    // The second slice, on the branch brought up to date: committed and finished, with the
+    // third ahead.
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    commit_file(&wt, "slice2.txt", "second", "Slice 2")?;
+    let slice2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&slice2, ChecksState::Pending);
+    set_steps(&f, "t1", &["done", "done", "pending"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1, "a turn's end still waits for the plan");
+    // Armed, and told that the step ahead waits for the merge; so is a second call.
+    let wait_first = "1 step(s) of your plan are still ahead (next: \"Step 2\"): they stay open. \
+                      Start their work once `yulius wait` reports this merge: a commit on this \
+                      branch before that drops the armed merge.";
+    let armed = arm_merge(&f, &agent, &slice2).await?;
+    assert_eq!(armed["armed"], true, "{armed}");
+    assert!(
+        armed["next"]
+            .as_str()
+            .is_some_and(|next| next.contains(wait_first)),
+        "{armed}"
+    );
+    assert_eq!(pulls_opened(&f), 2, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, slice2, "pushed");
+    assert_eq!(f.delivery("t1").await?["pr"]["number"], 2);
+    let again = arm_merge(&f, &agent, &slice2).await?;
+    assert!(
+        again["next"]
+            .as_str()
+            .is_some_and(|next| next.contains("armed already") && next.contains(wait_first)),
+        "{again}"
+    );
+
+    // The turn ends with the part delivered and armed: nothing is "not delivered", so the
+    // `yulius wait` the agent started goes on waiting for the merge.
+    f.h.app.auto_open_pr(&t1).await;
+    let waiting = wait_state(&f, &agent, &slice2).await?;
+    assert_eq!(waiting["push_problem"], Value::Null, "{waiting}");
+    assert_eq!(waiting["merge_armed"], true, "{waiting}");
+
+    // A commit for the step ahead, made all the same: it is not pushed under the armed head
+    // (the note says what is missing and why), and, as for any armed merge, the reviewed head
+    // is no longer the branch's: the merge is dropped.
+    commit_file(&wt, "slice3.txt", "third, begun", "Slice 3, begun")?;
+    let begun = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, slice2, "not pushed");
+    let note = wait_state(&f, &agent, &begun).await?;
+    assert!(
+        note["push_problem"].as_str().is_some_and(|text| {
+            text.contains("(not pushed to its open pull request)")
+                && text.contains("1 step(s) are still ahead (next: \"Step 2\")")
+        }),
+        "{note}"
+    );
+    f.h.github.set_checks(&slice2, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let dropped = wait_state(&f, &agent, &begun).await?;
+    assert!(
+        dropped["merge_outcome"]
+            .as_str()
+            .is_some_and(|text| text.contains("The merge you armed was dropped")),
+        "{dropped}"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open", "{dropped}");
+
+    // The commit taken back, the reviewed head is armed again, although the agent has marked
+    // the step ahead in progress meanwhile: the pull request already has this head, so the
+    // call has nothing to deliver that the step could be part of. Its checks pass and the
+    // armed merge lands; its message names the step ahead instead of the task's end.
+    git(&wt, &["reset", "--quiet", "--hard", &slice2])?;
+    set_steps(&f, "t1", &["done", "done", "in_progress"]).await?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        wait_state(&f, &agent, &slice2).await?["push_problem"],
+        Value::Null,
+        "the note of the commit taken back is gone"
+    );
+    f.h.github.set_checks(&slice2, ChecksState::Pending);
+    let rearmed = arm_merge(&f, &agent, &slice2).await?;
+    assert_eq!(rearmed["armed"], true, "{rearmed}");
+    f.h.github.set_checks(&slice2, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let landed = wait_state(&f, &agent, &slice2).await?;
+    assert_eq!(
+        f.delivery("t1").await?["stage"],
+        "merged_integration",
+        "{landed}"
+    );
+    assert!(
+        f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with("merge_pull #2")),
+        "{:?}",
+        f.h.github.writes()
+    );
+    let outcome = landed["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.starts_with("Yulius merged pull request #2 into `dev`")
+            && outcome.contains("then go on with the next step")
+            && outcome.contains("1 step(s) of your plan are still ahead (next: \"Step 2\")")
+            && outcome.contains("is delivered next, by a `delivery_merge` of its own")
+            && !outcome.contains("end with your summary"),
+        "{landed}"
+    );
+    assert_eq!(progress().await?, (2, 3));
+    assert_eq!(successor().await?, "chained", "two of three slices");
+
+    // Work found later adds steps, and the task says what its plan had at first (PLN-010).
+    let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(
+        task.body["steps"]["first_total"],
+        Value::Null,
+        "{}",
+        task.body
+    );
+    set_steps(
+        &f,
+        "t1",
+        &["done", "done", "in_progress", "pending", "pending"],
+    )
+    .await?;
+    let task = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(
+        (
+            &task.body["steps"]["total"],
+            &task.body["steps"]["first_total"]
+        ),
+        (&json!(5), &json!(3)),
+        "{}",
+        task.body
+    );
+
+    // Every step finished on the merged head: the task is Done, and the one chained after it
+    // no longer waits.
+    set_steps(&f, "t1", &["done", "done", "done", "skipped", "skipped"]).await?;
+    assert_ne!(successor().await?, "chained");
+    Ok(())
+}
+
+/// SPEC-484 PLN-002: the hold of a step in progress belongs to delivering a head. A head the
+/// open pull request already has is merged whatever step was started since, by the agent's call
+/// and by a person's merge alike, and the delivery view offers the merge it will get.
+#[tokio::test]
+async fn a_head_the_pull_request_already_has_merges_whatever_step_was_started_since() -> TestResult
+{
+    for by_person in [false, true] {
+        let f = fixture(&DeliveryProfile::standard()).await?;
+        let wt = f
+            .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+            .await?;
+        commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+        commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+        let head = git(&wt, &["rev-parse", "HEAD"])?;
+        f.h.github.set_checks(&head, ChecksState::Success);
+        let agent = live_agent(&f, "t1", "tok-agent").await?;
+        set_steps(&f, "t1", &["done", "done"]).await?;
+        f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+        assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
+
+        // A step added and started after the pull request opened.
+        set_steps(&f, "t1", &["done", "done", "in_progress"]).await?;
+        let view = f.delivery("t1").await?;
+        assert_eq!(
+            (&view["next_actions"], &view["blocked"]),
+            (&json!(["merge"]), &json!([])),
+            "{view}"
+        );
+        if by_person {
+            let merged = f
+                .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+                .await?;
+            assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        } else {
+            let merged = agent_tool(
+                &f,
+                &agent,
+                "delivery_merge",
+                json!({"reviewed_head": head, "review_summary": "approve"}),
+            )
+            .await?;
+            assert_eq!(merged["isError"], false, "{merged}");
+        }
+        assert_eq!(
+            f.delivery("t1").await?["stage"],
+            "merged_integration",
+            "by a person: {by_person}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-484 PLN-002: a plan none of whose steps is finished has no finished part to deliver.
+#[tokio::test]
+async fn a_merge_call_delivers_nothing_while_no_step_is_finished() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    set_steps(&f, "t1", &["pending", "blocked"]).await?;
+    let refused = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let why = refused["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        why.contains("no step of the plan is finished: mark done what this delivery includes"),
+        "{why}"
+    );
+    assert_eq!(pulls_opened(&f), 0, "{:?}", f.h.github.writes());
     Ok(())
 }
 
@@ -4739,7 +5186,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = merge_call(fix.clone()).await?;
     assert_eq!(blocked["isError"], true, "{blocked}");
-    assert!(merge_text(&blocked).contains("is in_progress"), "{blocked}");
+    assert!(merge_text(&blocked).contains("is in progress"), "{blocked}");
     assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
     set_steps(&f, "t1", &["done", "done"]).await?;
 
@@ -5343,7 +5790,7 @@ async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult 
 
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
-    assert!(refusal(&blocked).contains("is in_progress"), "{blocked}");
+    assert!(refusal(&blocked).contains("is in progress"), "{blocked}");
 
     // Resolved without a new commit; the next call fails reading the branch.
     set_steps(&f, "t1", &["done", "done"]).await?;
@@ -5351,7 +5798,7 @@ async fn a_merge_call_answers_its_own_failure_not_an_older_note() -> TestResult 
     let failed = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
     let why = refusal(&failed);
     assert!(
-        why.contains("the object store is busy") && !why.contains("in_progress"),
+        why.contains("the object store is busy") && !why.contains("in progress"),
         "{why}"
     );
     f.git.fail_ahead_behind(None);
@@ -5665,6 +6112,48 @@ fn fail_retitles(f: &Fixture, errors: Vec<AppError>) {
     if let Ok(mut failures) = f.h.github.retitle_errors.lock() {
         failures.extend(errors);
     }
+}
+
+/// SPEC-484 PLN-003: the merge call whose merge GitHub cannot take just now (its new title, a
+/// 502) arms it for the next pass, and with a step of the plan still ahead says that the step
+/// waits for the merge, as every armed answer does.
+#[tokio::test]
+async fn a_merge_left_for_the_next_pass_says_the_step_ahead_waits() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_, head) = open_after_the_spec(
+        &f,
+        "t1",
+        "yulius doctor warns about a GitHub CLI older than 2.82.1",
+        "feat/1-doctor-gh",
+        "docs(spec): SPEC-088 doctor warns about a GitHub CLI older than 2.82.1",
+        &["feat(doctor): warn about a GitHub CLI older than 2.82.1 (SPEC-088)"],
+    )
+    .await?;
+    let agent = live_agent(&f, "t1", "tok-t1").await?;
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    fail_retitles(
+        &f,
+        vec![AppError::Upstream(
+            "GitHub: GitHub upstream error (HTTP 502)".into(),
+        )],
+    );
+    let later = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(
+        (&later["merged"], &later["armed"]),
+        (&json!(false), &json!(true)),
+        "{later}"
+    );
+    let next = later["next"].as_str().unwrap_or_default();
+    assert!(
+        next.contains("Yulius merges this exact head by itself on its next pass")
+            && next.contains(
+                "1 step(s) of your plan are still ahead (next: \"Step 1\"): they stay open. \
+                 Start their work once `yulius wait` reports this merge"
+            ),
+        "{later}"
+    );
+    Ok(())
 }
 
 /// SPEC-069 BPL-008 (#381, #382): a pull request Yulius opened after the spec commit alone reads

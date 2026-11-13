@@ -585,8 +585,11 @@ impl PrState {
 pub struct DeliveryFacts {
     /// The task spec exists and validates.
     pub spec_valid: bool,
-    /// Steps neither done nor skipped.
+    /// Steps neither done nor skipped: the work still ahead. They do not hold a merge by
+    /// themselves: a pull request delivers the finished part of the plan (SPEC-484 PLN-001).
     pub steps_open: usize,
+    /// Steps done or skipped.
+    pub steps_finished: usize,
     /// Checks on the pull request head.
     pub checks: ChecksState,
     /// Pull request state.
@@ -720,9 +723,9 @@ pub enum DeliveryError {
     /// Missing or invalid spec.
     #[error("the task spec is missing or invalid; fix it (spec_check) first")]
     SpecInvalid,
-    /// Steps remain open.
-    #[error("{0} step(s) are still open; finish or skip them before merging")]
-    StepsOpen(usize),
+    /// The plan has steps and none of them is finished: there is no finished part to deliver.
+    #[error("{}", crate::steps::NOTHING_FINISHED)]
+    NoStepFinished,
     /// Checks failed.
     #[error("checks failed on the pull request")]
     ChecksFailing,
@@ -843,7 +846,8 @@ fn action_name(action: &DeliveryAction) -> &'static str {
 /// Validates one transition and returns the resulting stage.
 ///
 /// Enforced: a pull request needs a valid spec; a merge needs a user, an open pull request
-/// with a current head, a valid spec, no open steps and — when the profile requires checks —
+/// with a current head, a valid spec, a finished step of the plan (steps still ahead do not hold
+/// it, SPEC-484) and — when the profile requires checks —
 /// checks that are neither pending nor failing; environments run in order, each run needs an
 /// explicit user confirmation, and manual environments need a person's confirmation;
 /// promotion needs the merged change with all integration environments done, a user (or
@@ -981,8 +985,9 @@ fn check_merge(
     if !facts.spec_valid {
         return Err(DeliveryError::SpecInvalid);
     }
-    if facts.steps_open > 0 {
-        return Err(DeliveryError::StepsOpen(facts.steps_open));
+    // Steps still ahead wait for a later pull request of the task (SPEC-484 PLN-001).
+    if facts.steps_open > 0 && facts.steps_finished == 0 {
+        return Err(DeliveryError::NoStepFinished);
     }
     if profile.require_checks {
         match facts.checks {
@@ -1099,6 +1104,7 @@ mod tests {
         DeliveryFacts {
             spec_valid: true,
             steps_open: 0,
+            steps_finished: 3,
             checks: ChecksState::Success,
             pr_state: PrState::Absent,
             head_current: true,
@@ -1318,9 +1324,10 @@ mod tests {
             (
                 DeliveryFacts {
                     steps_open: 2,
+                    steps_finished: 0,
                     ..open.clone()
                 },
-                DeliveryError::StepsOpen(2),
+                DeliveryError::NoStepFinished,
             ),
         ];
         for (observed, error) in cases {
@@ -1331,6 +1338,23 @@ mod tests {
             let blocked = blocked_actions(&stage, &profile, &observed);
             assert_eq!(blocked, vec![(NextAction::Merge, error)]);
         }
+        // A pull request delivers the finished part of the plan: the steps still ahead do not
+        // hold its merge (SPEC-484 PLN-001; task #465 kept nine slices out of its plan for it).
+        let part = DeliveryFacts {
+            steps_open: 9,
+            steps_finished: 1,
+            ..open.clone()
+        };
+        assert_eq!(
+            user(&stage, &DeliveryAction::Merge, &profile, &part)?,
+            DeliveryStage::MergedIntegration
+        );
+        assert!(blocked_actions(&stage, &profile, &part).is_empty());
+        assert_eq!(
+            DeliveryError::NoStepFinished.to_string(),
+            "no step of the plan is finished: mark done what this delivery includes \
+             (`step_update`)"
+        );
         // No CI at all: nothing can fail, so the merge may proceed.
         let no_ci = DeliveryFacts {
             checks: ChecksState::None,

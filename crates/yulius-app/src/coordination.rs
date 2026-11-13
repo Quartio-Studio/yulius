@@ -9,7 +9,6 @@ use crate::context::App;
 use crate::discipline::{step_by_title, step_states};
 use crate::error::{AppError, AppResult};
 use crate::model::{AttemptRecord, StepRecord, TaskRecord};
-use crate::tasks::progress;
 use yulius_domain::steps::{self as rules, By, PlannedStep, StepStatus};
 
 /// Step statuses.
@@ -111,7 +110,7 @@ impl App {
 
     pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
         let steps = self.deps.store.steps(&task.id).await?;
-        let p = progress(&steps);
+        let p = self.step_progress(&task.id, &steps).await?;
         let chain = self.deps.store.chain(&task.id).await?;
         let waits = task.status == yulius_domain::task::TaskStatus::Chained;
         Ok(json!({
@@ -123,11 +122,11 @@ impl App {
             "activity": task.activity.map(|a| a.as_str()),
             "branch": task.branch,
             "spec_path": task.spec_path,
-            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
+            "steps": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
             // How it waits to start, as stored (SPEC-487 CHN-004): after one task (TSK-012), or
             // on its whole start rule (SPEC-017), never the rule's first task alone.
             "runs_after": chain.as_ref().filter(|c| c.rule.is_none()).map(|c| c.after_number),
-            "start_rule": chain.as_ref().and_then(|c| c.rule.clone()),
+            "start_rule": chain.as_ref().filter(|_| waits).and_then(|c| c.rule.clone()),
             // Why it will not start by itself any more, while it waits.
             "start_blocked": chain.as_ref().filter(|_| waits).and_then(|c| c.blocked_reason.clone()),
             "created_at": rfc3339(task.created_at),
@@ -365,10 +364,10 @@ impl App {
         let records = self.deps.store.steps(&ctx.task.id).await?;
         let timings = self.deps.store.step_timings(&ctx.task.id).await?;
         let states = step_states(&records, &timings);
-        let p = progress(&records);
+        let p = self.step_progress(&ctx.task.id, &records).await?;
         let nudges = self.step_nudges(&ctx.task, &states).await;
         Ok(json!({
-            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current},
+            "progress": {"done": p.done, "total": p.total, "percent": p.percent, "current": p.current, "first_total": p.first_total},
             "steps": records.iter().zip(&states).map(|(s, st)| json!({
                 "id": s.id.as_str(),
                 "ordinal": s.ordinal,
