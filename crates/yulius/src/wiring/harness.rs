@@ -138,6 +138,15 @@ impl HarnessPort for HarnessAdapter {
             yulius_url: self.yulius_url.clone(),
             mcp_servers,
             credential,
+            // A run's language servers are Yulius's to decide, and they are off: the plugins of
+            // the sandbox home that bring one are switched off in the run's own settings, which
+            // outrank the files a session, a `/plugin` or Claude Code's install dialog writes
+            // (SPEC-485 LSP-003, ADR-0327).
+            disabled_plugins: match l.harness {
+                Harness::ClaudeCode => yulius_harness::claude_plugins::language_server_plugins(
+                    &l.sandbox_home.join(".claude"),
+                ),
+            },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         if l.harness == Harness::ClaudeCode {
@@ -197,6 +206,10 @@ impl HarnessPort for HarnessAdapter {
             redaction_exe: l.only_yulius.is_none().then(|| self.yulius_exe.clone()),
             bypass_permissions: l.contained,
             only_yulius: l.only_yulius.clone(),
+            // As a task run: no plugin's language server (SPEC-485 LSP-003).
+            disabled_plugins: yulius_harness::claude_plugins::language_server_plugins(
+                &l.config_dir_host,
+            ),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
@@ -602,8 +615,98 @@ mod tests {
             yulius_url: "http://127.0.0.1:1".into(),
             mcp_servers: servers,
             credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+            disabled_plugins: Vec::new(),
         };
         launch::plan_launch(&request)?;
+        Ok(())
+    }
+
+    /// SPEC-485 LSP-003 (ADR-0327): a task run and a Superagent switch off, in their own settings,
+    /// the plugins of their config dir that bring a language server, though the home's
+    /// `settings.json` switches them on; another plugin is left as the home has it.
+    #[test]
+    fn every_claude_code_launch_switches_its_language_server_plugins_off()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::Secret;
+        // A home as Claude Code's install dialog leaves it: the plugin installed, its language
+        // server named in the marketplace's entry, and switched on for every session.
+        let seed = |config: &Path| -> std::io::Result<()> {
+            let plugins = config.join("plugins");
+            let catalog = plugins.join("marketplaces/official/.claude-plugin");
+            std::fs::create_dir_all(&catalog)?;
+            std::fs::write(
+                catalog.join("marketplace.json"),
+                r#"{"name":"official","plugins":[
+                    {"name":"x-lsp","lspServers":{"x":{"command":"x-language-server"}}},
+                    {"name":"skills"}]}"#,
+            )?;
+            std::fs::write(
+                plugins.join("installed_plugins.json"),
+                r#"{"version":2,"plugins":{"x-lsp@official":[{"scope":"user"}],"skills@official":[{"scope":"user"}]}}"#,
+            )?;
+            std::fs::write(
+                config.join("settings.json"),
+                r#"{"enabledPlugins":{"x-lsp@official":true,"skills@official":true}}"#,
+            )
+        };
+        let off = serde_json::json!({ "x-lsp@official": false });
+        let dir = tempfile::tempdir()?;
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let home = dir.path().join("home");
+        seed(&home.join(".claude"))?;
+        let planned = adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: dir.path().to_path_buf(),
+            sandbox_home: home.clone(),
+            run_dir: dir.path().join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("token".into()),
+        })?;
+        let settings = planned
+            .plan
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("claude-settings.json"))
+            .ok_or("the run's settings file")?;
+        let settings: serde_json::Value = serde_json::from_slice(&settings.contents)?;
+        assert_eq!(settings["enabledPlugins"], off);
+        // The home's file is the person's and Claude Code's: it stays as it was.
+        let kept: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+            home.join(".claude/settings.json"),
+        )?)?;
+        assert_eq!(kept["enabledPlugins"]["x-lsp@official"], true);
+
+        let config = dir.path().join("user").join(".claude");
+        seed(&config)?;
+        let plan = adapter.plan_cockpit(&CockpitLaunch {
+            cwd: dir.path().to_path_buf(),
+            sandbox_dir: dir.path().to_path_buf(),
+            config_dir: PathBuf::from("/home/person/.claude"),
+            config_dir_host: config,
+            resume: None,
+            continue_interrupted: false,
+            model: None,
+            credential: Secret("token".into()),
+            yulius: None,
+            project_mcp_servers: Vec::new(),
+            mcp: Vec::new(),
+            contained: false,
+            only_yulius: None,
+        })?;
+        let settings = plan
+            .argv
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .ok_or("the Superagent's --settings")?;
+        let settings: serde_json::Value = serde_json::from_str(&settings[1])?;
+        assert_eq!(settings["enabledPlugins"], off);
         Ok(())
     }
 
