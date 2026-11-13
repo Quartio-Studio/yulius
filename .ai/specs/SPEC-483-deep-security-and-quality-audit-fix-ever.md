@@ -615,7 +615,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 10: the host's own Git runs confined: it executes Git's programs only and touches only its sandbox's folders (merged, #1251)
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
-- [ ] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask
+- [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask
 
 ## Acceptance criteria
 
@@ -2189,3 +2189,31 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Review of slice 12, round 2** (head 5e30be1ed): "None open in own code"; approve. The
   commit after it ticks this slice in the Plan and adds this line; the reviewer was shown
   that delta.
+
+### Slice 13 (2026-11-13)
+
+- **Slice 12's delivery.** Pull request #1253 merged into `dev` at 0f04251be, whose own
+  Yulius CI run passed.
+- **The defect, by its test on the code before** (`target/audit/slice13/mutations.log`, the
+  first case, which is the old line of `ci_rerun`):
+  `local_ci::a_run_again_tests_a_pull_request_with_its_own_jobs` failed; the rerun ran the
+  integration branch's `echo plain` and no `added` job.
+- **Tests failing without their fix** (`target/audit/slice13/mutate.py`, 6 cases, each
+  failed its tests): a run again given the integration branch's jobs; a commit's own jobs
+  never applied; a commit that brings CI not tested; own jobs tested while the integration
+  branch's configuration is broken; own jobs without the trusted security job; a branch
+  behind given the jobs it still carries. The fourth and the sixth passed at first: no
+  integration test held those two parts of the rule (the sixth had the unit test of the
+  comparison only); AC-79 and AC-80 are their tests now.
+- **The suites:** `2674 tests run: 2674 passed` for the app and the binary before the two
+  added tests (`target/audit/slice13-suite1.log`); the trains', the playground's and the
+  remote control's tests unchanged.
+- **Gate.** `scripts/dev ci` at `f1279d914`: exit 0; `4209 tests run: 4209 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A run again of a merge train's run (refused, as before) and of a
+  playground task's run (the rule is the same function; its checks' tests pass, none
+  reruns one); a playground task that changes its jobs while a scanner is configured (the
+  kept security job is tested for a pull request and for a train).
