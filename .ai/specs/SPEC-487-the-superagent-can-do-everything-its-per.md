@@ -13,8 +13,9 @@ be able to do everything its person intended. That is what the Superagent is for
 cannot: it hands the job back as steps to click, or does it through a slow workaround. Fix that
 in Yulius. Also decide, for each ability below, whether a normal task's agent should have it
 too." Amends SPEC-001 TSK-012 and TSK-016, SPEC-037 (MGT), SPEC-017 (RUL) and SPEC-085 STT-002;
-decision in
-[ADR-0328](../../docs/decisions/0328-the-superagent-does-what-its-person-may-do.md).
+slice 1's decision is
+[ADR-0328](../../docs/decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md);
+the rule for the Superagent gets its record with slice 2.
 
 ## Goal
 
@@ -70,7 +71,7 @@ under way; a slice is added to it when the one before is merged.
 | Slice | Delivers | Closes |
 | --- | --- | --- |
 | 1 | A chained task starts when its predecessor really finished; the rule is shown as stored; "after all current tasks" | wall 3 |
-| 2 | The rule (ADR-0328) and the person's project tools served to the Superagent: restart, pause, resume, start now, a task's delivery, CI read / run again / cancel, CD status and dev deploy; `COCKPIT_INSTRUCTIONS` and the tool descriptions rewritten | walls 2 and 4 (part), 12 |
+| 2 | The rule (its decision record) and the person's project tools served to the Superagent: restart, pause, resume, start now, a task's delivery, CI read / run again / cancel, CD status and dev deploy; `COCKPIT_INSTRUCTIONS` and the tool descriptions rewritten | walls 2 and 4 (part), 12 |
 | 3 | Task control that had no function: rename, edit of a prompt not started, order in the queue, close out, bulk stop / pause / message | wall 2 |
 | 4 | Tasks' questions: list open ones, why a task needs attention, answer or dismiss for the person, the end of a session (`session_read` tail) | wall 7 |
 | 5 | Merges: arm or re-arm a task's merge for the person, the merge queue of the sandbox, why a green pull request is not merging; CI order and hold | wall 4 |
