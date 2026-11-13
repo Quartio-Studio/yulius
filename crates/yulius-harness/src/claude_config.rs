@@ -8,7 +8,8 @@
 //! by itself (SPEC-024). A linked git worktree is trusted under its main repository too: Claude
 //! Code 2.1.292 looks a worktree's trust up there when `.claude/settings.json` pre-approves tools
 //! (SPEC-106, verified live). It also defaults the user settings (`settings.json`) to the Concise
-//! output style (SPEC-210).
+//! output style (SPEC-210), and switches off Claude Code's question whether to install a language
+//! server's plugin (SPEC-485).
 //!
 //! The config dir belongs to the agent, which can replace anything in it, or the dir itself, with
 //! a link at any moment. The host opens it once from the folder above the agent's home and reads
@@ -33,6 +34,8 @@ pub const CLAUDE_USER_SETTINGS: &str = "settings.json";
 const OUTPUT_STYLE: (&str, &str) = ("outputStyle", "Concise");
 /// Claude Code's preference for its diff side panel; `false` keeps the panel from opening itself.
 const DIFF_SIDEBAR_OPEN: &str = "diffSidebarOpen";
+/// Claude Code's switch for its "LSP plugin recommendation" dialog; `true` keeps it from asking.
+const LSP_RECOMMENDATION_DISABLED: &str = "lspRecommendationDisabled";
 /// Store ids of the built-in diff plugin: the current one, then the legacy one Claude Code carries
 /// into it when the current store is missing.
 const DIFF_PLUGIN_STORE_IDS: [&str; 2] = ["cc-plugin-diff@builtin", "diff@builtin"];
@@ -103,6 +106,12 @@ pub fn ensure_claude_config(
     // 110 once it was opened by hand), squeezing the transcript in the task view (SPEC-024).
     // `false` stops the auto-open on every launch; the panel still opens by hand in a session.
     root.insert(DIFF_SIDEBAR_OPEN.into(), Value::Bool(false));
+    // When a session writes a file of a language whose server's program is on `PATH`, Claude Code
+    // asks in the terminal whether to install that server's plugin, yes by default: one Enter
+    // installs it and switches it on for every session of this home (measured on 2.1.323,
+    // SPEC-485 LSP-001, ADR-0327). A run's language servers are Yulius's to decide, so nobody is
+    // asked.
+    root.insert(LSP_RECOMMENDATION_DISABLED.into(), Value::Bool(true));
     if bypass_permissions {
         root.insert("bypassPermissionsModeAccepted".into(), Value::Bool(true));
     }
@@ -680,6 +689,33 @@ mod tests {
         let value = read(&config)?;
         assert_eq!(value["diffSidebarOpen"], json!(false));
         assert_eq!(value["userID"], "abc");
+        Ok(())
+    }
+
+    /// SPEC-485 LSP-001: Claude Code asks in the terminal whether to install a language server's
+    /// plugin when a session writes a file of a language whose server is on `PATH`; one Enter
+    /// installs it for every session of the home. Every launch switches the question off.
+    #[test]
+    fn no_launch_is_asked_to_install_a_language_server_plugin() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let read = |config: &std::path::Path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&std::fs::read_to_string(
+                config.join(CLAUDE_GLOBAL_CONFIG),
+            )?)?)
+        };
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
+        assert_eq!(read(&config)?["lspRecommendationDisabled"], json!(true));
+        // A session that switched the question on again, with Claude Code's other state of it.
+        std::fs::write(
+            config.join(CLAUDE_GLOBAL_CONFIG),
+            r#"{"lspRecommendationDisabled":false,"lspRecommendationIgnoredCount":1,"lspRecommendationNeverPlugins":["a@b"]}"#,
+        )?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
+        let value = read(&config)?;
+        assert_eq!(value["lspRecommendationDisabled"], json!(true));
+        assert_eq!(value["lspRecommendationIgnoredCount"], json!(1));
+        assert_eq!(value["lspRecommendationNeverPlugins"], json!(["a@b"]));
         Ok(())
     }
 
