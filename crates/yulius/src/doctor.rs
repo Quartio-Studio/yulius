@@ -202,6 +202,9 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     }));
     #[cfg(target_os = "linux")]
     checks.push(git_confinement_check(confined_git_runs()));
+    if let Some(left_missing) = git_leaves_a_missing_object_missing(Path::new("git")) {
+        checks.push(git_missing_objects_check(left_missing));
+    }
     checks.extend(containment_visibility(contained, extra));
     if cfg!(target_os = "linux") {
         if contained {
@@ -581,6 +584,78 @@ fn git_confinement_check(runs: Result<(), String>) -> Check {
     }
 }
 
+/// Whether `git`, told not to (`GIT_NO_LAZY_FETCH=1`, as the server tells it, ADR-0323), leaves
+/// a missing object missing: asked for one in a repository that names a "promisor" remote
+/// with a command for the other side, it does not start that command. `None`: the probe
+/// could not be set up (no Git, no temporary folder).
+fn git_leaves_a_missing_object_missing(git: &Path) -> Option<bool> {
+    let dir = nix::unistd::mkdtemp(&std::env::temp_dir().join("yulius-doctor-XXXXXX")).ok()?;
+    let left_missing = missing_object_probe(git, &dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    left_missing
+}
+
+/// [`git_leaves_a_missing_object_missing`] in the empty folder `dir`.
+fn missing_object_probe(git: &Path, dir: &Path) -> Option<bool> {
+    let (repo, ran) = (dir.join("probe"), dir.join("ran"));
+    let run = |args: &[&str]| {
+        Command::new(git)
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()
+    };
+    let probe = repo.to_str()?;
+    run(&["init", "--quiet", probe])?.success().then_some(())?;
+    let command = format!("echo ran > '{}'; false", ran.display());
+    for (key, value) in [
+        ("extensions.partialClone", "probe"),
+        ("remote.probe.promisor", "true"),
+        ("remote.probe.url", probe),
+        ("remote.probe.uploadpack", command.as_str()),
+    ] {
+        run(&["-C", probe, "config", key, value])?
+            .success()
+            .then_some(())?;
+    }
+    // No repository has this object.
+    run(&[
+        "-C",
+        probe,
+        "cat-file",
+        "-e",
+        "1234567890123456789012345678901234567890",
+    ])?;
+    Some(!ran.exists())
+}
+
+/// A sandbox's clone can name a remote to fetch missing objects from, with a command of its
+/// own: a Git that fetches them all the same (one older than the releases of May 2024, 2.45.1
+/// and the maintenance releases beside it) runs that command in a transfer between two
+/// folders.
+fn git_missing_objects_check(left_missing: bool) -> Check {
+    if left_missing {
+        check(
+            "git missing objects",
+            Level::Ok,
+            "the server's Git fetches no missing object from a remote a clone names",
+        )
+    } else {
+        check(
+            "git missing objects",
+            Level::Fail,
+            "this Git does not know GIT_NO_LAZY_FETCH: a sandbox's clone can make the server's \
+             Git run a command of its own; update Git (2.45.1 or a patched release of your system)",
+        )
+    }
+}
+
 /// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and
 /// libx264. Without them the sandbox browser runs headless and shows JPEG frames.
 fn browser_display_checks() -> Vec<Check> {
@@ -783,6 +858,45 @@ mod tests {
             "{}",
             refused.detail
         );
+    }
+
+    /// ADR-0323: the doctor asks the host's Git whether it leaves a missing object missing
+    /// when told to, and fails a host whose Git fetches it from the remote a clone names.
+    #[test]
+    fn a_git_that_fetches_missing_objects_fails() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(std::path::Path::new("git")),
+            Some(true),
+            "this machine's Git"
+        );
+        // A Git that does not know the switch: this machine's, with the switch taken away.
+        let dir = tempfile::tempdir()?;
+        let old = dir.path().join("old-git");
+        std::fs::write(
+            &old,
+            "#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec git \"$@\"\n",
+        )?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755))?;
+        }
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(&old),
+            Some(false)
+        );
+        assert_eq!(
+            super::git_leaves_a_missing_object_missing(&dir.path().join("none")),
+            None
+        );
+        let fine = super::git_missing_objects_check(true);
+        assert_eq!(
+            (fine.name, fine.level),
+            ("git missing objects", super::Level::Ok)
+        );
+        let old = super::git_missing_objects_check(false);
+        assert_eq!(old.level, super::Level::Fail);
+        assert!(old.detail.contains("GIT_NO_LAZY_FETCH"), "{}", old.detail);
+        Ok(())
     }
 
     /// SPEC-483 E1 (ADR-0318): the doctor says whether the sandbox browsers' policy is where
