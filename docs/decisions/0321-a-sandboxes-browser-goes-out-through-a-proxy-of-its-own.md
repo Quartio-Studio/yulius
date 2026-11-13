@@ -121,6 +121,11 @@ What Chrome does with a proxy was measured on Chrome 157: `--proxy-server` alone
   loopback, not the rest of the machine's.
 - A dev server reached by a name that points at `127.0.0.1` (a wildcard DNS service, an entry
   in a DNS zone) no longer loads; `localhost`, a name below it or the address does.
+- The same trick with a name still works for the addresses the rule allows: a public page
+  whose name's owner answers an address of the host's private network next can read what a
+  server there gives without asking who calls, as a sandbox's own process can ask it. That
+  follows from letting the browser reach what its sandbox reaches; refusing every answer
+  that is not public for a name would close it, at the price of names for private servers.
 - A managed Chrome policy on the host that sets a proxy (`ProxyMode`, `ProxySettings`) wins
   over the switches and would undo this; Yulius's own policy file sets none, and
   `docs/operations.md` says not to add one.
