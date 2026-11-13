@@ -4234,7 +4234,7 @@ async fn nothing_is_tested_while_the_integration_branchs_configuration_is_broken
     };
     assert!(!tested(&overview), "{overview}");
     assert!(
-        overview["problem"]
+        overview["gate_problem"]
             .as_str()
             .is_some_and(|why| !why.is_empty()),
         "what is broken is said: {overview}"
