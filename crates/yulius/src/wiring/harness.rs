@@ -11,6 +11,7 @@ use yulius_app::ports::harness::{
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{LimitScope, ModelFamily};
 use yulius_harness::launch::{
     self, Credential, LaunchMode, LaunchRequest, McpServerSpec, McpTransport,
 };
@@ -378,67 +379,132 @@ struct Watch {
 /// A usage limit met by a dynamic workflow's agent is the session's (SPEC-486 WFL-002): Claude
 /// Code writes it to that agent's transcript only, pauses the workflow and does not wake the
 /// session's thread. It is reported once the session's own transcript is read to its end, and
-/// only while it is news: not when the thread did something later than it (a limit the session went
-/// on past is history, SPEC-072 LRS-001), not while the thread's own limit stands (that one was
-/// reported), and once until the thread does something again.
+/// only while it is news:
+/// - not when a prompt recorded later than it was worked on by the session's thread (the
+///   model answered after the refusal: a limit the session went on past is history, SPEC-072
+///   LRS-001); an answer that was under way when the agent was refused belongs to an earlier
+///   prompt and changes nothing;
+/// - not while the thread's own limit stands (that one was reported);
+/// - not when its reset has passed (Claude Code continues the workflow by itself then);
+/// - once, until a prompt reaches the thread again.
 #[derive(Debug, Default)]
 struct WorkflowLimits {
-    /// The latest limit a workflow's agent met that is not reported yet, and when.
-    held: Option<(Option<Timestamp>, Observation)>,
-    /// When the session's own thread last did something: a prompt, work, an answer, an interrupt.
-    thread_at: Option<Timestamp>,
+    /// The latest limit a workflow's agent met that is not reported yet.
+    held: Option<HeldLimit>,
+    /// When the thread's last prompt was recorded.
+    prompt_at: Option<Timestamp>,
+    /// When the last prompt the thread worked on was recorded.
+    answered_at: Option<Timestamp>,
     /// The thread's own limit stands, or a workflow agent's was reported: nothing more to say
-    /// until the thread does something.
+    /// until a prompt reaches the thread.
     said: bool,
 }
 
+/// A workflow agent's limit and what decides whether it is news.
+#[derive(Debug)]
+struct HeldLimit {
+    at: Option<Timestamp>,
+    resets_at: Option<Timestamp>,
+    limit: Observation,
+}
+
 impl WorkflowLimits {
-    /// A line of a workflow agent's transcript said `observed`.
-    fn side(&mut self, observed: Observed) {
-        let Observed::LimitReached { at, .. } = &observed else {
+    /// A line of the workflow agent's transcript `agent` said `observed`.
+    fn side(&mut self, agent: &Path, observed: Observed) {
+        let Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            scope,
+            at,
+        } = observed
+        else {
             return;
         };
-        let at = *at;
-        if self.held.as_ref().is_none_or(|(held, _)| *held <= at)
-            && let Some(limit) = limit_observation(observed)
-        {
-            self.held = Some((at, limit));
+        if self.held.as_ref().is_some_and(|held| held.at > at) {
+            return;
         }
+        // A limit of "the model that runs" is that agent's model's (WFL-002).
+        let Some(scope) = agent_scope(agent, scope) else {
+            return;
+        };
+        self.held = Some(HeldLimit {
+            at,
+            resets_at,
+            limit: Observation::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            },
+        });
     }
 
     /// The session's own thread said `observation`.
     fn thread(&mut self, observation: &Observation) {
         match observation {
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => self.said = true,
-            Observation::UserTurn { at, .. }
-            | Observation::TurnInterrupted { at }
-            | Observation::AgentWork { at }
-            | Observation::TurnComplete { at } => {
-                // A sub-agent's turn end (no time) is not the thread's.
-                if let Some(at) = at {
-                    self.thread_at = self.thread_at.max(Some(*at));
-                    self.said = false;
-                }
+            Observation::UserTurn { at: Some(at), .. } => {
+                self.prompt_at = self.prompt_at.max(Some(*at));
+                self.said = false;
+            }
+            // A sub-agent's turn end (no time) is not the thread's.
+            Observation::AgentWork { at: Some(_) } | Observation::TurnComplete { at: Some(_) } => {
+                self.answered_at = self.answered_at.max(self.prompt_at);
             }
             _ => {}
         }
     }
 
-    /// The held limit, when it is news and the session's transcript is read to its end.
-    fn report(&mut self, caught_up: bool) -> Option<Observation> {
+    /// The held limit, at `now`, when it is news and the session's transcript is read to its
+    /// end.
+    fn report(&mut self, caught_up: bool, now: Timestamp) -> Option<Observation> {
         if !caught_up {
             return None;
         }
-        let (at, limit) = self.held.take()?;
-        if self.said || at.is_some_and(|at| self.thread_at > Some(at)) {
+        let held = self.held.take()?;
+        let answered_since = held
+            .at
+            .is_some_and(|at| self.answered_at.is_some_and(|answered| answered > at));
+        let reset = held.resets_at.is_some_and(|resets| resets <= now);
+        if self.said || answered_since || reset {
             return None;
         }
         self.said = true;
-        Some(limit)
+        Some(held.limit)
     }
 }
 
-/// A limit record as the application hears it.
+/// Longest `agent-<id>.meta.json` read.
+const AGENT_META_BYTES: u64 = 64 * 1024;
+
+/// What a limit of scope `scope`, met by the workflow agent whose transcript is `agent`, binds
+/// (SPEC-486 WFL-002). A limit of "the model that runs" (`LimitScope::Model(None)`) is of that
+/// agent's model, which its `agent-<id>.meta.json` names when the workflow's script gave it one
+/// (`model`, an id or an alias) and leaves out when the agent runs the session's. `None` when
+/// that cannot be told (the file cannot be read, or names a model of no known family): such a
+/// limit is not reported.
+fn agent_scope(agent: &Path, scope: LimitScope) -> Option<LimitScope> {
+    if scope != LimitScope::Model(None) {
+        return Some(scope);
+    }
+    let meta = agent.with_extension("meta.json");
+    let file = tail::open_regular(&meta).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, AGENT_META_BYTES), &mut text)
+        .ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&text).ok()?;
+    match meta.get("model") {
+        None | Some(serde_json::Value::Null) => Some(LimitScope::Model(None)),
+        Some(model) => match ModelFamily::of(model.as_str()) {
+            ModelFamily::Any => None,
+            family => Some(LimitScope::Model(Some(family))),
+        },
+    }
+}
+
+/// A limit record of the session's own thread as the application hears it.
 fn limit_observation(observed: Observed) -> Option<Observation> {
     match observed {
         Observed::LimitReached {
@@ -468,8 +534,8 @@ impl TranscriptWatch for Watch {
                 for side in side {
                     for observed in claude::observe_line(&side.line) {
                         self.acc.observe_side(&observed);
-                        if side.workflow {
-                            self.limits.side(observed);
+                        if let Some(agent) = &side.agent {
+                            self.limits.side(agent, observed);
                         }
                     }
                 }
@@ -557,7 +623,15 @@ impl TranscriptWatch for Watch {
             }
             heard = out.len();
         }
-        out.extend(self.limits.report(self.tail.at_end()));
+        let now = Timestamp(
+            i64::try_from(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_millis()),
+            )
+            .unwrap_or(i64::MAX),
+        );
+        out.extend(self.limits.report(self.tail.at_end(), now));
         Ok(out)
     }
 
@@ -613,10 +687,11 @@ mod tests {
         Ok(())
     }
 
-    /// The limit record of a workflow's agent, as Claude Code 2.1.323 writes it (synthetic).
+    /// The limit record of a workflow's agent, as Claude Code 2.1.323 writes it (synthetic), with
+    /// a reset far ahead (one that has passed is not news).
     fn refusal(at: &str) -> String {
         format!(
-            r#"{{"isSidechain":true,"agentId":"a8a9","type":"assistant","timestamp":"{at}","message":{{"id":"e-{at}","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}},"content":[{{"type":"text","text":"You've hit your 5-hour limit"}}]}},"apiError":"usage_limit_reached","apiErrorParams":{{"rate_limit_info":{{"status":"rejected","resetsAt":1794598079,"rateLimitType":"five_hour"}}}},"error":"rate_limit","isApiErrorMessage":true}}"#
+            r#"{{"isSidechain":true,"agentId":"a8a9","type":"assistant","timestamp":"{at}","message":{{"id":"e-{at}","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{{"input_tokens":0,"output_tokens":0}},"content":[{{"type":"text","text":"You've hit your 5-hour limit"}}]}},"apiError":"usage_limit_reached","apiErrorParams":{{"rate_limit_info":{{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}}}},"error":"rate_limit","isApiErrorMessage":true}}"#
         )
     }
 
@@ -631,10 +706,18 @@ mod tests {
         })
     }
 
-    fn limits_in(seen: &[Observation]) -> usize {
-        seen.iter()
-            .filter(|one| matches!(one, Observation::LimitReached { .. }))
-            .count()
+    /// The limits in `seen`: the thread's own, and those of a workflow's agents.
+    fn limits_in(seen: &[Observation]) -> (usize, usize) {
+        let count = |own: bool| {
+            seen.iter()
+                .filter(|one| match one {
+                    Observation::LimitReached { .. } => own,
+                    Observation::WorkflowLimitReached { .. } => !own,
+                    _ => false,
+                })
+                .count()
+        };
+        (count(true), count(false))
     }
 
     /// SPEC-486 WFL-002: the limit a workflow's agent met is written to that agent's file only,
@@ -664,15 +747,20 @@ mod tests {
         assert!(
             matches!(
                 seen.last(),
-                Some(Observation::LimitReached {
-                    resets_at: Some(Timestamp(1_794_598_079_000)),
+                Some(Observation::WorkflowLimitReached {
+                    resets_at: Some(Timestamp(4_102_444_800_000)),
                     at: Some(Timestamp(1_794_587_279_360)),
+                    scope: LimitScope::Account,
                     ..
                 })
             ),
             "{seen:?}"
         );
-        assert_eq!(limits_in(&seen), 1);
+        assert_eq!(
+            limits_in(&seen),
+            (0, 1),
+            "as the agents', not the thread's own"
+        );
         assert!(seen.contains(&Observation::WorkflowLaunched {
             task: "wtx0s195j".into(),
             run: "wf_13b2b557-e88".into(),
@@ -688,7 +776,7 @@ mod tests {
         let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
         writeln!(file, "{}", refusal("2026-11-13T16:28:01.000Z"))?;
         let seen = watch.poll().map_err(|err| err.to_string())?;
-        assert_eq!(limits_in(&seen), 0, "{seen:?}");
+        assert_eq!(limits_in(&seen), (0, 0), "{seen:?}");
 
         // A sub-agent's own refusal, outside a workflow, is not reported.
         let plain = dir.path().join("s2.jsonl");
@@ -700,80 +788,207 @@ mod tests {
             format!("{}\n", refusal("2026-11-13T16:27:59.360Z")),
         )?;
         let seen = watch_of(&plain)?.poll().map_err(|err| err.to_string())?;
-        assert_eq!(limits_in(&seen), 0, "{seen:?}");
+        assert_eq!(limits_in(&seen), (0, 0), "{seen:?}");
         assert!(sub.exists());
         Ok(())
     }
 
-    /// SPEC-486 WFL-002: a workflow agent's limit is news only while the session's thread did
-    /// nothing after it, while the thread's own limit does not stand, and once the session's
-    /// transcript is read to its end (a replay judges it against all that came later).
+    /// SPEC-486 WFL-002: a workflow agent's limit is news only while no prompt recorded later
+    /// than it was worked on, while the thread's own limit does not stand, before its reset,
+    /// and once the session's transcript is read to its end (a replay judges it against all
+    /// that came later).
     #[test]
     fn a_workflow_agent_s_limit_is_reported_only_while_it_is_news() {
-        let side = |ms: i64| Observed::LimitReached {
-            resets_at: None,
+        let agent = Path::new("/nowhere/agent-a.jsonl");
+        let side_until = |ms: i64, resets: Option<i64>| Observed::LimitReached {
+            resets_at: resets.map(Timestamp),
             message: "limit".into(),
             window_minutes: None,
-            scope: yulius_domain::usage::LimitScope::Account,
+            scope: LimitScope::Account,
             at: Some(Timestamp(ms)),
         };
+        let side = |ms: i64| side_until(ms, None);
         let own = Observation::LimitReached {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
-            scope: yulius_domain::usage::LimitScope::Account,
+            scope: LimitScope::Account,
             at: Some(Timestamp(5)),
         };
         let work = |ms: i64| Observation::AgentWork {
             at: Some(Timestamp(ms)),
         };
+        let prompt = |ms: i64| Observation::UserTurn {
+            at: Some(Timestamp(ms)),
+            wake: false,
+        };
+        let now = Timestamp(100);
         // Held while the transcript is being caught up on, then said; the latest one.
         let mut limits = WorkflowLimits::default();
-        limits.side(side(10));
-        limits.side(side(12));
-        limits.side(side(11));
-        assert_eq!(limits.report(false), None);
+        limits.side(agent, side(10));
+        limits.side(agent, side(12));
+        limits.side(agent, side(11));
+        assert_eq!(limits.report(false, now), None);
         assert!(matches!(
-            limits.report(true),
-            Some(Observation::LimitReached {
+            limits.report(true, now),
+            Some(Observation::WorkflowLimitReached {
                 at: Some(Timestamp(12)),
                 ..
             })
         ));
-        assert_eq!(limits.report(true), None, "once");
-        // The thread worked after it: history. Work before it, or at its very time (the end of
-        // the turn that launched the workflow), leaves it news.
+        assert_eq!(limits.report(true, now), None, "once");
+        // More refusals of the same pause say nothing, also after the launch turn's answer
+        // (which was under way) is read; a prompt that reaches the thread makes one news again.
+        limits.side(agent, side(13));
+        limits.thread(&work(14));
+        assert_eq!(limits.report(true, now), None);
+        limits.thread(&prompt(20));
+        limits.side(agent, side(30));
+        assert!(limits.report(true, now).is_some());
+
+        // A prompt recorded later than the refusal and worked on: the model answered, history.
         let mut limits = WorkflowLimits::default();
-        limits.side(side(10));
-        limits.thread(&work(11));
-        assert_eq!(limits.report(true), None);
-        for before in [9, 10] {
-            let mut limits = WorkflowLimits::default();
-            limits.thread(&work(before));
-            limits.side(side(10));
-            assert!(limits.report(true).is_some(), "{before}");
-        }
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
+        limits.thread(&work(12));
+        assert_eq!(limits.report(true, now), None);
+        // That prompt refused (no work after it), or not worked on yet: still news.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
+        assert!(limits.report(true, now).is_some());
+        // The answer of the turn that launched the workflow, written after the refusal: its
+        // prompt is older than the refusal, so it changes nothing.
+        let mut limits = WorkflowLimits::default();
+        limits.thread(&prompt(5));
+        limits.side(agent, side(10));
+        limits.thread(&Observation::TurnComplete {
+            at: Some(Timestamp(11)),
+        });
+        assert!(limits.report(true, now).is_some());
         // A sub-agent's turn end (no time) is not the thread's.
         let mut limits = WorkflowLimits::default();
-        limits.side(side(10));
+        limits.side(agent, side(10));
+        limits.thread(&prompt(11));
         limits.thread(&Observation::TurnComplete { at: None });
-        assert!(limits.report(true).is_some());
+        assert!(limits.report(true, now).is_some());
         // The thread's own limit stands: that one was reported.
         let mut limits = WorkflowLimits::default();
         limits.thread(&own);
-        limits.side(side(10));
-        assert_eq!(limits.report(true), None);
-        // After the thread did something again, a new limit is news again.
-        limits.thread(&Observation::UserTurn {
-            at: Some(Timestamp(20)),
-            wake: false,
-        });
-        limits.side(side(30));
-        assert!(limits.report(true).is_some());
+        limits.side(agent, side(10));
+        assert_eq!(limits.report(true, now), None);
+        // Its reset has passed (Claude Code continues the workflow by itself): not news.
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side_until(10, Some(100)));
+        assert_eq!(limits.report(true, now), None);
+        let mut limits = WorkflowLimits::default();
+        limits.side(agent, side_until(10, Some(101)));
+        assert!(limits.report(true, now).is_some());
         // Something else in a workflow agent's file is nothing to report.
         let mut limits = WorkflowLimits::default();
-        limits.side(Observed::AgentWork { at: None });
-        assert_eq!(limits.report(true), None);
+        limits.side(agent, Observed::AgentWork { at: None });
+        assert_eq!(limits.report(true, now), None);
+    }
+
+    /// SPEC-486 WFL-002: a limit of "the model that runs", met by a workflow's agent, is of
+    /// that agent's model. Its `agent-<id>.meta.json` names the model the script gave it (an
+    /// id or an alias, as Claude Code 2.1.323 writes it) and nothing when it runs the
+    /// session's. A limit of the subscription, or one that names its family, is what it says.
+    #[test]
+    fn a_model_s_limit_met_by_a_workflow_agent_is_of_that_agent_s_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let unnamed = LimitScope::Model(None);
+        let with_meta = |name: &str, meta: Option<&str>| -> std::io::Result<PathBuf> {
+            let agent = dir.path().join(format!("agent-{name}.jsonl"));
+            if let Some(meta) = meta {
+                std::fs::write(dir.path().join(format!("agent-{name}.meta.json")), meta)?;
+            }
+            Ok(agent)
+        };
+        // The session's model: no `model` in the file.
+        let inherits = with_meta(
+            "a",
+            Some(
+                r#"{"agentType":"workflow-subagent","description":"alpha","pickedEffortModel":"claude-sonnet-4-5"}"#,
+            ),
+        )?;
+        assert_eq!(agent_scope(&inherits, unnamed), Some(unnamed));
+        // A model of its own, as an id and as an alias.
+        let opus = with_meta(
+            "b",
+            Some(
+                r#"{"agentType":"workflow-subagent","model":"claude-opus-4-5","pickedEffortModel":"claude-sonnet-4-5"}"#,
+            ),
+        )?;
+        assert_eq!(
+            agent_scope(&opus, unnamed),
+            Some(LimitScope::Model(Some(ModelFamily::Opus)))
+        );
+        let alias = with_meta("c", Some(r#"{"model":"sonnet"}"#))?;
+        assert_eq!(
+            agent_scope(&alias, unnamed),
+            Some(LimitScope::Model(Some(ModelFamily::Sonnet)))
+        );
+        // Whose model cannot be told: a model of no known family, no file, a file that is not
+        // one, a link.
+        for (name, meta) in [
+            ("d", Some(r#"{"model":"haiku"}"#)),
+            ("e", None),
+            ("f", Some("[")),
+        ] {
+            assert_eq!(
+                agent_scope(&with_meta(name, meta)?, unnamed),
+                None,
+                "{name}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let linked = with_meta("g", None)?;
+            std::os::unix::fs::symlink(
+                dir.path().join("agent-b.meta.json"),
+                dir.path().join("agent-g.meta.json"),
+            )?;
+            assert_eq!(agent_scope(&linked, unnamed), None, "a link is not read");
+        }
+        // What the record itself says is kept, file or not.
+        let named = LimitScope::Model(Some(ModelFamily::Fable));
+        for scope in [LimitScope::Account, named] {
+            assert_eq!(agent_scope(&with_meta("e", None)?, scope), Some(scope));
+            assert_eq!(agent_scope(&opus, scope), Some(scope));
+        }
+        // Through the watch's rules: one whose model cannot be told is not held.
+        let mut limits = WorkflowLimits::default();
+        limits.side(
+            &with_meta("e", None)?,
+            Observed::LimitReached {
+                resets_at: None,
+                message: "out of usage credits".into(),
+                window_minutes: None,
+                scope: unnamed,
+                at: Some(Timestamp(10)),
+            },
+        );
+        assert_eq!(limits.report(true, Timestamp(100)), None);
+        limits.side(
+            &opus,
+            Observed::LimitReached {
+                resets_at: None,
+                message: "out of usage credits".into(),
+                window_minutes: None,
+                scope: unnamed,
+                at: Some(Timestamp(10)),
+            },
+        );
+        assert!(matches!(
+            limits.report(true, Timestamp(100)),
+            Some(Observation::WorkflowLimitReached {
+                scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                ..
+            })
+        ));
+        Ok(())
     }
 
     #[test]

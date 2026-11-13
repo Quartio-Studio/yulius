@@ -130,6 +130,30 @@ fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
     seen.is_none_or(|(path, len)| transcript_len(path) == len)
 }
 
+/// The usage limit `observation` says the Cockpit's own thread met, and when. A limit that
+/// refused the agents of a dynamic workflow is not one (SPEC-486): the Cockpit's relaunch types
+/// nothing (SPEC-074), so it could not tell the Superagent to resume the workflow the old
+/// process takes with it; the paused workflow stays, and Claude Code continues it at the reset.
+fn own_limit(observation: Observation) -> Option<(ReportedLimit, Option<Timestamp>)> {
+    match observation {
+        Observation::LimitReached {
+            resets_at,
+            window_minutes,
+            scope,
+            at,
+            ..
+        } => Some((
+            ReportedLimit {
+                scope,
+                window_minutes,
+                resets_at,
+            },
+            at,
+        )),
+        _ => None,
+    }
+}
+
 impl TurnState {
     fn observe(&mut self, observation: &Observation, now: Timestamp) {
         match observation {
@@ -564,24 +588,11 @@ impl App {
             let handled = runtime.limit_handled_ms.load(Ordering::SeqCst);
             // Several read at once count as one, the newest (transcript order): its reset is the
             // subscription's, and the mark passes them all.
-            let mut limit = observations.into_iter().filter_map(|o| match o {
-                Observation::LimitReached {
-                    resets_at,
-                    window_minutes,
-                    scope,
-                    at,
-                    ..
-                } if at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
-                    && resets_at.is_none_or(|resets| resets.0 > now.0) =>
-                {
-                    let limit = ReportedLimit {
-                        scope,
-                        window_minutes,
-                        resets_at,
-                    };
-                    Some((limit, at))
-                }
-                _ => None,
+            let mut limit = observations.into_iter().filter_map(|o| {
+                let (limit, at) = own_limit(o)?;
+                (at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
+                    && limit.resets_at.is_none_or(|resets| resets.0 > now.0))
+                .then_some((limit, at))
             });
             let limit = limit.next_back();
             history_read = history_read || watch.caught_up();
@@ -1102,7 +1113,38 @@ impl Drop for CockpitStartSlot<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Observation, Timestamp, TurnState};
+    use super::{Observation, ReportedLimit, Timestamp, TurnState, own_limit};
+
+    /// SPEC-486: the Cockpit acts on its own thread's limit, not on one that refused a
+    /// workflow's agents (it could not have the workflow resumed after a move).
+    #[test]
+    fn a_workflow_agent_s_limit_is_not_the_cockpit_s_to_act_on() {
+        let resets_at = Some(Timestamp(9_000));
+        let at = Some(Timestamp(5_000));
+        let scope = yulius_domain::usage::LimitScope::Account;
+        let own = Observation::LimitReached {
+            resets_at,
+            message: "limit".into(),
+            window_minutes: Some(300),
+            scope,
+            at,
+        };
+        let agents = Observation::WorkflowLimitReached {
+            resets_at,
+            message: "limit".into(),
+            window_minutes: Some(300),
+            scope,
+            at,
+        };
+        let limit = ReportedLimit {
+            scope,
+            window_minutes: Some(300),
+            resets_at,
+        };
+        assert_eq!(own_limit(own), Some((limit, at)));
+        assert_eq!(own_limit(agents), None);
+        assert_eq!(own_limit(Observation::ContextFull), None);
+    }
 
     /// SPEC-186 SAV-006: a conversation is idle with no turn open and no background work Claude
     /// Code waits for; a Monitor stops counting once it expires.

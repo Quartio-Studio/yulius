@@ -185,6 +185,25 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// A usage limit refused an agent of one of the session's dynamic workflows (SPEC-486
+    /// WFL-002): Claude Code wrote it to that agent's transcript only, paused the workflow and
+    /// did not wake the session's thread. A task's session is at that limit when it binds the
+    /// model the session runs; a session whose relaunch cannot tell its agent to resume the
+    /// workflow (the Superagent's) leaves it to Claude Code's own continuation at the reset.
+    WorkflowLimitReached {
+        /// When the limit resets, if the record says so.
+        resets_at: Option<Timestamp>,
+        /// What Claude Code said.
+        message: String,
+        /// The window the limit is of, in minutes, if known.
+        window_minutes: Option<u32>,
+        /// What it binds: the subscription, or one model family (that of the agent's model
+        /// when the record names none and the agent runs a model of its own; `Model(None)`
+        /// when the agent runs the session's).
+        scope: LimitScope,
+        /// When it was recorded, if known.
+        at: Option<Timestamp>,
+    },
     /// The session launched a dynamic workflow (Claude Code's Workflow tool; SPEC-486 WFL-003),
     /// beside the [`Observation::BackgroundStarted`] of the same `task`.
     WorkflowLaunched {

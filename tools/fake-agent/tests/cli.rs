@@ -1305,6 +1305,18 @@ fn a_workflow_is_launched_paused_by_a_limit_and_resumed() -> TestResult {
     }
     assert_eq!(agents.len(), 2, "a finished agent and a refused one");
     assert!(agents.iter().all(|r| r["isSidechain"] == true));
+    // Each has its meta file, which names no model: they run the session's.
+    let metas: Vec<Value> = std::fs::read_dir(&run_dir)?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with(".meta.json"))
+        .filter_map(|path| serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok())
+        .collect();
+    assert_eq!(metas.len(), 2);
+    assert!(
+        metas.iter().all(|meta| meta.get("model").is_none()),
+        "{metas:?}"
+    );
     let refused: Vec<&Value> = agents
         .iter()
         .filter(|r| r["apiError"] == "usage_limit_reached")
@@ -1325,6 +1337,12 @@ fn a_workflow_is_launched_paused_by_a_limit_and_resumed() -> TestResult {
         stdout(&idle)
     );
     let notice = read_jsonl(&transcript)?;
+    // Handed on from the queue like a prompt, then written for the transcript only.
+    let handed: Vec<&str> = notice[notice.len().saturating_sub(3)..]
+        .iter()
+        .map(|r| r["operation"].as_str().unwrap_or("-"))
+        .collect();
+    assert_eq!(handed, ["enqueue", "dequeue", "-"]);
     let notice = notice.last().ok_or("records")?;
     assert_eq!(notice["queueTranscriptOnly"], true);
     assert_eq!(notice["promptSource"], "system");
@@ -1394,5 +1412,60 @@ fn a_workflow_is_launched_paused_by_a_limit_and_resumed() -> TestResult {
     // Nothing is unfinished any more.
     let after = run(&args, "/exit\n")?;
     assert!(!stdout(&after).contains("ORPHANED"), "{}", stdout(&after));
+    Ok(())
+}
+
+/// SPEC-486 WFL-007: with `--workflow-limit-model` the refused agent's record is the refusal of
+/// a model's usage credits, which names no family; its meta file names the model the agent
+/// runs, or none when that is the session's.
+#[test]
+fn a_workflow_agent_s_model_refusal_names_its_model_in_the_meta_file() -> TestResult {
+    for (model, named) in [
+        ("claude-opus-5-5", Some("claude-opus-5-5")),
+        ("session", None),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s-wf.jsonl");
+        let path = transcript.to_str().ok_or("a path")?;
+        let output = run(
+            &[
+                "--session-id",
+                "s-wf",
+                "--transcript",
+                path,
+                "--transcript-kind",
+                "claude",
+                "--workflow-limit",
+                "--workflow-limit-model",
+                model,
+            ],
+            "/workflow\n/exit\n",
+        )?;
+        assert!(stdout(&output).contains("PAUSED"), "{}", stdout(&output));
+        let runs = dir.path().join("s-wf/subagents/workflows");
+        let run_dir = std::fs::read_dir(&runs)?.next().ok_or("a run")??.path();
+        let mut refused = None;
+        for entry in std::fs::read_dir(&run_dir)? {
+            let path = entry?.path();
+            let name = path.to_string_lossy().into_owned();
+            if name.ends_with(".jsonl")
+                && name.contains("agent-")
+                && std::fs::read_to_string(&path)?.contains("model_requires_usage_credits")
+            {
+                refused = Some(path);
+            }
+        }
+        let refused = refused.ok_or("the refused agent's file")?;
+        let record = &read_jsonl(&refused)?[0];
+        assert_eq!(record["isApiErrorMessage"], true);
+        assert!(
+            record.get("apiErrorParams").is_none(),
+            "no family, no reset"
+        );
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(
+            refused.with_extension("meta.json"),
+        )?)?;
+        assert_eq!(meta.get("model").and_then(Value::as_str), named, "{model}");
+    }
     Ok(())
 }

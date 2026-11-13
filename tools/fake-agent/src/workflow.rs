@@ -6,10 +6,15 @@
 //!   then ends with a `turn_duration` that counts it (`pendingWorkflowCount`).
 //! - The run's agents write to `<session>/subagents/workflows/<run>/agent-<id>.jsonl`, beside
 //!   the run's `journal.jsonl` (each finished agent's result).
+//! - Each agent has an `agent-<id>.meta.json`, which names its model when the script gave it
+//!   one (`model`) and nothing when it runs the session's.
 //! - A usage limit that refuses an agent is written to that agent's file only: the workflow
-//!   pauses and the session's own thread is not woken (`--workflow-limit`).
+//!   pauses and the session's own thread is not woken (`--workflow-limit`). The refusal of a
+//!   model's usage credits names no family: it is of the model that agent runs
+//!   (`--workflow-limit-model`).
 //! - A process that resumes the session finds the run unfinished and says so in a notification
-//!   for the transcript only (`queueTranscriptOnly`); nothing resumes the run by itself.
+//!   for the transcript only (`queueTranscriptOnly`, handed on from its queue with an
+//!   `enqueue` and a `dequeue` record); nothing resumes the run by itself.
 //! - `Workflow({scriptPath, resumeFromRunId})` relaunches it under a new task id: only the
 //!   unfinished agents run, then the run's snapshot (`<session>/workflows/<run>.json`) is
 //!   written and a task notification wakes the session's thread.
@@ -113,9 +118,30 @@ fn agent_record(session: &str, agent: &str, message: &Value) -> Value {
     })
 }
 
+/// The `agent-<id>.meta.json` of an agent of `run`; `model` when the script gave it one.
+fn agent_meta(
+    layout: &Layout,
+    run: &str,
+    agent: &str,
+    label: &str,
+    model: Option<&str>,
+) -> io::Result<()> {
+    let mut meta = json!({"agentType": "workflow-subagent", "isBuiltIn": true,
+        "description": label, "workflowPhase": "Wave", "spawnDepth": 1,
+        "pickedEffortModel": "fake-model"});
+    if let Some(model) = model {
+        meta["model"] = json!(model);
+    }
+    std::fs::write(
+        layout.run(run).join(format!("agent-{agent}.meta.json")),
+        meta.to_string(),
+    )
+}
+
 /// An agent of `run` that finished with `label done`: its transcript and the journal's lines.
 fn agent_finishes(layout: &Layout, session: &str, run: &str, label: &str) -> io::Result<()> {
     let agent = format!("a{label}{:x}", now_ms());
+    agent_meta(layout, run, &agent, label, None)?;
     let answer = format!("{label} done");
     let message = json!({
         "id": format!("msg_fake_{agent}"), "type": "message", "role": "assistant",
@@ -141,25 +167,49 @@ fn agent_finishes(layout: &Layout, session: &str, run: &str, label: &str) -> io:
 }
 
 /// An agent of `run` that the usage limit refuses: the record is in its file only, and the
-/// journal has its start without a result.
-fn agent_is_refused(layout: &Layout, session: &str, run: &str, label: &str) -> io::Result<()> {
+/// journal has its start without a result. With `model` the refusal is of the usage credits of
+/// the model the agent runs, as Claude Code 2.1.311 writes it (no family named, no reset):
+/// `model` itself, named in the agent's meta file, or the session's own for `session`.
+fn agent_is_refused(
+    layout: &Layout,
+    session: &str,
+    run: &str,
+    label: &str,
+    model: Option<&str>,
+) -> io::Result<()> {
     let agent = format!("a{label}{:x}", now_ms());
-    let resets_at = now_ms() / 1000 + 3600;
-    let info = json!({"status": "rejected", "resetsAt": resets_at, "rateLimitType": "five_hour",
-        "overageStatus": "rejected", "overageDisabledReason": "org_level_disabled",
-        "isUsingOverage": false});
+    agent_meta(
+        layout,
+        run,
+        &agent,
+        label,
+        model.filter(|model| *model != "session"),
+    )?;
+    let text = if model.is_some() {
+        "You're out of usage credits. /model to switch models."
+    } else {
+        "You've hit your 5-hour limit · resets in 1 hour"
+    };
     let message = json!({
         "id": format!("msg_fake_{agent}"), "type": "message", "role": "assistant",
         "model": "<synthetic>",
-        "content": [{"type": "text", "text": "You've hit your 5-hour limit · resets in 1 hour"}],
+        "content": [{"type": "text", "text": text}],
         "stop_reason": "stop_sequence", "stop_sequence": "",
         "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0, "output_tokens": 0},
     });
     let mut record = agent_record(session, &agent, &message);
-    record["apiError"] = json!("usage_limit_reached");
-    record["apiErrorParams"] = json!({"rate_limit_info": info.clone()});
-    record["quotaLimits"] = info;
+    if model.is_some() {
+        record["apiError"] = json!("model_requires_usage_credits");
+    } else {
+        let resets_at = now_ms() / 1000 + 3600;
+        let info = json!({"status": "rejected", "resetsAt": resets_at,
+            "rateLimitType": "five_hour", "overageStatus": "rejected",
+            "overageDisabledReason": "org_level_disabled", "isUsingOverage": false});
+        record["apiError"] = json!("usage_limit_reached");
+        record["apiErrorParams"] = json!({"rate_limit_info": info.clone()});
+        record["quotaLimits"] = info;
+    }
     record["error"] = json!("rate_limit");
     record["isApiErrorMessage"] = json!(true);
     record["apiErrorStatus"] = json!(429);
@@ -250,6 +300,9 @@ pub(super) fn orphaned(transcript: &Arc<Mutex<Transcript>>) -> io::Result<()> {
     };
     let layout = Layout::of(&t.path);
     for (run, task) in layout.unfinished() {
+        // Claude Code hands the notice on from its queue, then writes it for the transcript.
+        t.queue_operation("enqueue", Some("<task-notification>"))?;
+        t.queue_operation("dequeue", None)?;
         t.workflow_notified(
             &task,
             &format!(
@@ -324,7 +377,8 @@ pub(super) fn launch(
     agent_finishes(&layout, &session, &run, "alpha")?;
     if options.workflow_limit {
         std::thread::sleep(AGENT_TIME);
-        agent_is_refused(&layout, &session, &run, "beta")?;
+        let model = options.workflow_limit_model.as_deref();
+        agent_is_refused(&layout, &session, &run, "beta", model)?;
         say(&format!("WORKFLOW {run} PAUSED"))?;
     }
     Ok(())
@@ -455,7 +509,7 @@ mod tests {
         std::fs::create_dir_all(layout.run(run))?;
         std::fs::write(layout.run(run).join(TASK_FILE), "w1")?;
         agent_finishes(&layout, "s1", run, "alpha")?;
-        agent_is_refused(&layout, "s1", run, "beta")?;
+        agent_is_refused(&layout, "s1", run, "beta", None)?;
         assert_eq!(layout.unfinished(), [(run.to_owned(), "w1".to_owned())]);
         let refused = std::fs::read_dir(layout.run(run))?
             .flatten()

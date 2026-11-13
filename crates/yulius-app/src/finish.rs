@@ -220,8 +220,11 @@ impl TranscriptFacts {
                 self.goal_unfinished = goal_unfinished(*outcome);
                 self.fold_goal(*outcome);
             }
-            // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
-            Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
+            // A refused subscription cuts the turn like a limit: the task goes on elsewhere. A
+            // limit that refused a workflow's agents leaves the session at it too (SPEC-486).
+            Observation::LimitReached { .. }
+            | Observation::WorkflowLimitReached { .. }
+            | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
                 self.limit_goal_pause = None;
                 // Work before the limit answers no request made at it: its goal pause's (the

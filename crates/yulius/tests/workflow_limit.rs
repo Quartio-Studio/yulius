@@ -373,3 +373,252 @@ fn a_move_while_a_workflow_runs_tells_the_agent_to_resume_it() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// What `account`'s stored usage says of the models of `family` this week.
+async fn model_week(app: &App, account: &str, family: &str) -> serde_json::Value {
+    let stored = app
+        .deps
+        .store
+        .account(&AccountId::parse(account).unwrap_or_else(|_| unreachable!()))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|record| record.usage_json)
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_default();
+    stored[format!("weekly_{family}")].clone()
+}
+
+/// WFL-002 (review round 1): a workflow's agent that runs another model than the session's is
+/// refused for that model's usage credits. The limit is that model's: the subscription's reading
+/// keeps it, and the task, whose own model still runs, is neither moved nor paused, nor is its
+/// own model's allowance marked used up.
+#[test]
+fn a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            workflow_limit_model: Some("claude-opus-5-5".into()),
+            ..workflow_agent(true)
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Audit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            on_screen(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?[0]
+            .account_id
+            .clone()
+            .ok_or("the run's subscription")?;
+        app.send_input(&id, b"/workflow\r").await?;
+        // The limit is read: the subscription's Opus allowance reads used up.
+        wait_for(
+            "the model's limit, kept",
+            Duration::from_secs(30),
+            || async { model_week(&app, first.as_str(), "opus").await["used_percent"] == 100.0 },
+        )
+        .await?;
+        assert!(
+            model_week(&app, first.as_str(), "fable").await.is_null(),
+            "the session's own model is not at a limit"
+        );
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "not moved");
+        assert!(app.deps.store.switches(&id).await?.is_empty());
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        stop(&app, &id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// WFL-002: the same refusal met by an agent that runs the session's model (its meta file names
+/// none) is the session's: the task moves, and the limit is kept as its model's.
+#[test]
+fn a_limit_of_the_session_s_model_met_by_a_workflow_s_agent_moves_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            workflow_limit_model: Some("session".into()),
+            ..workflow_agent(true)
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Audit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            on_screen(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"/workflow\r").await?;
+        wait_for(
+            "the move to the other subscription",
+            Duration::from_secs(90),
+            || second_run_lives(&app, &id),
+        )
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let first = attempts[0].account_id.clone().ok_or("the first run's")?;
+        assert_ne!(attempts[0].account_id, attempts[1].account_id);
+        assert_eq!(
+            model_week(&app, first.as_str(), "fable").await["used_percent"],
+            100.0
+        );
+        let (launch, run) = relaunch(&attempts[1].run_dir)?;
+        let problems = resume_prompt_problems(&launch);
+        assert!(problems.is_empty(), "{problems:?}");
+        let completed = format!("WORKFLOW {run} COMPLETED");
+        wait_for("the workflow's end", Duration::from_secs(60), || {
+            on_screen(&app, &id, &completed)
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// WFL-004 (review round 1): the unfinished runs are still known when the relaunch past the
+/// limit fails after the old process ended. The task stops ("switch failed"), and the launch
+/// that continues it afterwards still tells its session to resume the workflow.
+#[test]
+fn a_relaunch_that_fails_still_knows_the_workflow_at_the_next_one() -> TestResult {
+    use yulius_app::supervisor::RunStart;
+    use yulius_domain::task::StopReason;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let broken = data.join("launch-fails");
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            fail_launch_file: Some(broken.clone()),
+            ..workflow_agent(true)
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Audit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            on_screen(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        // The next launch cannot be planned.
+        std::fs::write(&broken, "")?;
+        app.send_input(&id, b"/workflow\r").await?;
+        wait_for("the failed move", Duration::from_secs(90), || {
+            has_status(&app, &id, TaskStatus::Stopped(StopReason::SwitchFailed))
+        })
+        .await?;
+        let run = app.dynamic_workflows(&id);
+        assert_eq!(run.len(), 1, "still known: {run:?}");
+        std::fs::remove_file(&broken)?;
+        app.start_run(&id, RunStart::Resume { prompt: None }, None)
+            .await?;
+        wait_for(
+            "the run that continues it",
+            Duration::from_secs(60),
+            || async {
+                app.deps
+                    .store
+                    .attempts(&id)
+                    .await
+                    .is_ok_and(|a| a.last().is_some_and(|a| a.state == AttemptState::Live))
+            },
+        )
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let last = attempts.last().ok_or("a run")?;
+        let (launch, named) = relaunch(&last.run_dir)?;
+        assert_eq!(named, run[0]);
+        assert!(launch.contains("resumeFromRunId"), "{launch}");
+        let completed = format!("WORKFLOW {named} COMPLETED");
+        wait_for("the workflow's end", Duration::from_secs(60), || {
+            on_screen(&app, &id, &completed)
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// WFL-003 (review round 1): the unfinished runs and the limit that paused them are known
+/// after a Yulius restart, from the replay of the run's transcript and its workflow agents'.
+/// The task that waited at the limit still waits, and its resume tells the session to resume
+/// the workflow.
+#[test]
+fn a_workflow_paused_at_a_limit_is_known_after_a_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let first = runtime()?;
+    let (user, id) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), workflow_agent(true))?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Audit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            on_screen(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"/workflow\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        Ok::<_, BoxError>((user, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), workflow_agent(true))?;
+        app.reconcile().await?;
+        // The new server knows nothing but what the transcripts say.
+        wait_for(
+            "the workflow, read again",
+            Duration::from_secs(30),
+            || async { app.dynamic_workflows(&id).len() == 1 },
+        )
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::WaitingCapacity,
+            "still paused"
+        );
+        let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
+        assert_eq!(pause.kind, PauseKind::Limit);
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let _ = app.resume_round().await;
+        wait_for("the resumed run", Duration::from_secs(60), || {
+            second_run_lives(&app, &id)
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let (launch, run) = relaunch(&attempts[1].run_dir)?;
+        let problems = resume_prompt_problems(&launch);
+        assert!(problems.is_empty(), "{problems:?}");
+        let completed = format!("WORKFLOW {run} COMPLETED");
+        wait_for("the workflow's end", Duration::from_secs(60), || {
+            on_screen(&app, &id, &completed)
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, BoxError>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

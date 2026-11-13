@@ -10,6 +10,8 @@
 //! says so to the session's agent when it relaunches the session past a limit, or when a
 //! prompt reaches a session whose workflow is paused at one.
 
+use yulius_domain::time::Timestamp;
+
 use crate::ports::harness::Observation;
 
 /// Most unfinished runs remembered for one session: the oldest go first.
@@ -20,13 +22,20 @@ pub const MAX_RUNS: usize = 8;
 pub struct Unfinished {
     /// Claude Code's task id of each launch and its run id, oldest first.
     runs: Vec<(String, String)>,
-    /// A usage limit was met while they were unfinished, and nothing relaunched them since.
-    at_limit: bool,
+    /// A usage limit was met while they were unfinished and nothing showed it over since: the
+    /// reset it named, if it named one.
+    limit: Option<Option<Timestamp>>,
 }
 
 impl Unfinished {
-    /// Folds one observation of the session's transcript, in its order: a launch (a relaunch of
-    /// a run by its id is the run going on), the notification that ends a launch, a limit.
+    /// Folds one observation of the session's transcript, in its order.
+    /// - A launch adds its run (a relaunch of a run by its id is the run going on), and the
+    ///   notification that ends a launch removes it.
+    /// - A turn record says how much background work the session still waits for: a run that
+    ///   ended with no notification (stopped in the terminal, which leaves no record) is over
+    ///   once that is less than the runs known, the oldest first.
+    /// - A limit met while runs are unfinished pauses them, until a launch, their end or the
+    ///   thread's own work (the model answers again).
     pub fn observe(&mut self, observation: &Observation) {
         match observation {
             Observation::WorkflowLaunched { task, run } => {
@@ -35,16 +44,28 @@ impl Unfinished {
                 if self.runs.len() > MAX_RUNS {
                     self.runs.remove(0);
                 }
-                self.at_limit = false;
+                self.limit = None;
             }
-            Observation::BackgroundEnded { id } => {
-                self.runs.retain(|(task, _)| task != id);
-                self.at_limit &= !self.runs.is_empty();
+            Observation::BackgroundEnded { id } => self.runs.retain(|(task, _)| task != id),
+            Observation::TurnEnded {
+                background_agents, ..
+            } => {
+                let pending = usize::try_from(background_agents.unwrap_or(0)).unwrap_or(MAX_RUNS);
+                let over = self.runs.len().saturating_sub(pending);
+                self.runs.drain(..over);
             }
-            Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
-                self.at_limit = !self.runs.is_empty();
+            Observation::LimitReached { resets_at, .. }
+            | Observation::WorkflowLimitReached { resets_at, .. } => {
+                self.limit = Some(*resets_at);
+            }
+            Observation::AccessLost { .. } => self.limit = Some(None),
+            Observation::AgentWork { at: Some(_) } | Observation::TurnComplete { at: Some(_) } => {
+                self.limit = None;
             }
             _ => {}
+        }
+        if self.runs.is_empty() {
+            self.limit = None;
         }
     }
 
@@ -60,17 +81,19 @@ impl Unfinished {
         out
     }
 
-    /// The runs a usage limit paused, when one did and nothing relaunched them since.
+    /// The runs a usage limit paused, at `now`: a limit was met, its reset (when it named one)
+    /// has not passed, and nothing relaunched or ended them or showed the limit over since.
     #[must_use]
-    pub fn paused(&self) -> Option<Vec<String>> {
-        (self.at_limit && !self.runs.is_empty()).then(|| self.runs())
+    pub fn paused(&self, now: Timestamp) -> Option<Vec<String>> {
+        let resets_at = self.limit?;
+        (resets_at.is_none_or(|resets| resets > now) && !self.runs.is_empty()).then(|| self.runs())
     }
 
-    /// The unfinished runs, forgotten: the session's process ends, and they with it.
-    pub fn take(&mut self) -> Vec<String> {
-        let runs = self.runs();
-        *self = Self::default();
-        runs
+    /// The session is relaunched and told to resume its runs: they are not paused at a limit
+    /// any more. They stay known until the new process's transcript is read (its own notice
+    /// ends the old launches), so a launch that fails still knows them.
+    pub fn relaunched(&mut self) {
+        self.limit = None;
     }
 }
 
@@ -124,6 +147,7 @@ pub const RESUMED_NOTICE: &str = " Its agent is asked to resume the unfinished d
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yulius_domain::usage::LimitScope;
 
     fn launched(task: &str, run: &str) -> Observation {
         Observation::WorkflowLaunched {
@@ -136,12 +160,29 @@ mod tests {
         Observation::BackgroundEnded { id: id.into() }
     }
 
-    fn limit() -> Observation {
+    fn turn_end(pending: Option<u32>) -> Observation {
+        Observation::TurnEnded {
+            background_agents: pending,
+            at: None,
+        }
+    }
+
+    fn limit(resets_ms: Option<i64>) -> Observation {
         Observation::LimitReached {
-            resets_at: None,
+            resets_at: resets_ms.map(Timestamp),
             message: "limit".into(),
             window_minutes: None,
-            scope: yulius_domain::usage::LimitScope::Account,
+            scope: LimitScope::Account,
+            at: None,
+        }
+    }
+
+    fn agents_limit(resets_ms: Option<i64>) -> Observation {
+        Observation::WorkflowLimitReached {
+            resets_at: resets_ms.map(Timestamp),
+            message: "limit".into(),
+            window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         }
     }
@@ -154,13 +195,15 @@ mod tests {
         unfinished
     }
 
+    const NOW: Timestamp = Timestamp(1_000);
+
     /// WFL-003: a launch is unfinished until the notification of its end; another task's end
     /// (an agent's, a Monitor's) leaves it.
     #[test]
     fn a_run_is_unfinished_from_its_launch_to_its_end() {
         let one = fold(&[launched("w1", "wf_a")]);
         assert_eq!(one.runs(), ["wf_a"]);
-        assert_eq!(one.paused(), None, "no limit was met");
+        assert_eq!(one.paused(NOW), None, "no limit was met");
         assert_eq!(
             fold(&[launched("w1", "wf_a"), ended("a7")]).runs(),
             ["wf_a"]
@@ -179,35 +222,100 @@ mod tests {
         );
     }
 
-    /// WFL-006: a limit met while a run is unfinished pauses it, until the run is relaunched or
-    /// ends; a limit with no unfinished run pauses nothing.
+    /// WFL-003: a run stopped in the terminal leaves no notification; the next turn record,
+    /// which counts what the session still waits for, ends it. While it counts enough, the
+    /// runs stay.
     #[test]
-    fn a_limit_pauses_the_unfinished_runs_until_they_go_on() {
-        assert_eq!(fold(&[limit()]).paused(), None);
+    fn a_turn_record_that_waits_for_less_ends_the_oldest_runs() {
+        let launch_turn = [launched("w1", "wf_a"), turn_end(Some(1))];
+        assert_eq!(fold(&launch_turn).runs(), ["wf_a"]);
+        for none in [Some(0), None] {
+            let stopped = fold(&[launched("w1", "wf_a"), turn_end(Some(1)), turn_end(none)]);
+            assert!(stopped.runs().is_empty(), "{none:?}");
+        }
+        let one_left = fold(&[
+            launched("w1", "wf_a"),
+            launched("w2", "wf_b"),
+            turn_end(Some(2)),
+            turn_end(Some(1)),
+        ]);
         assert_eq!(
-            fold(&[launched("w1", "wf_a"), ended("w1"), limit()]).paused(),
+            one_left.runs(),
+            ["wf_b"],
+            "the newest launch is the one left"
+        );
+        // A paused run is still counted by the turn records after the limit.
+        let paused = fold(&[
+            launched("w1", "wf_a"),
+            agents_limit(None),
+            turn_end(Some(1)),
+        ]);
+        assert_eq!(paused.paused(NOW), Some(vec!["wf_a".to_owned()]));
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), agents_limit(None), turn_end(None)]).paused(NOW),
             None
         );
-        let paused = fold(&[launched("w1", "wf_a"), limit()]);
-        assert_eq!(paused.paused(), Some(vec!["wf_a".to_owned()]));
+    }
+
+    /// WFL-006: a limit met while a run is unfinished pauses it, until the run is relaunched
+    /// or ends, the thread's model answers again, or the limit's reset passes; a limit with no
+    /// unfinished run pauses nothing.
+    #[test]
+    fn a_limit_pauses_the_unfinished_runs_until_they_go_on() {
+        let run = Some(vec!["wf_a".to_owned()]);
+        assert_eq!(fold(&[limit(None)]).paused(NOW), None);
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), ended("w1"), limit(None)]).paused(NOW),
+            None
+        );
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), limit(None)]).paused(NOW),
+            run
+        );
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), agents_limit(None)]).paused(NOW),
+            run,
+            "the agents' limit pauses it as the thread's own does"
+        );
         let relaunched = fold(&[
             launched("w1", "wf_a"),
-            limit(),
+            limit(None),
             ended("w1"),
             launched("w2", "wf_a"),
         ]);
         assert_eq!(
-            (relaunched.paused(), relaunched.runs()),
+            (relaunched.paused(NOW), relaunched.runs()),
             (None, vec!["wf_a".to_owned()])
         );
         assert_eq!(
-            fold(&[launched("w1", "wf_a"), limit(), ended("w1")]).paused(),
+            fold(&[launched("w1", "wf_a"), limit(None), ended("w1")]).paused(NOW),
             None
         );
-        // The process ends: nothing is unfinished in the next one.
-        let mut taken = paused;
-        assert_eq!(taken.take(), ["wf_a"]);
-        assert_eq!(taken, Unfinished::default());
+        // The thread's model answers again: the limit is over. A sub-agent's answer (no time)
+        // says nothing.
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(5)),
+        };
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), limit(None), work]).paused(NOW),
+            None
+        );
+        let side = Observation::TurnComplete { at: None };
+        assert_eq!(
+            fold(&[launched("w1", "wf_a"), limit(None), side]).paused(NOW),
+            run
+        );
+        // The reset it named: paused before it, not from it on.
+        let until = fold(&[launched("w1", "wf_a"), agents_limit(Some(2_000))]);
+        assert_eq!(until.paused(Timestamp(1_999)), run);
+        assert_eq!(until.paused(Timestamp(2_000)), None);
+        // Relaunched by Yulius: not paused any more, still known until the new process says so.
+        let mut told = fold(&[launched("w1", "wf_a"), limit(None)]);
+        told.relaunched();
+        assert_eq!(
+            (told.paused(NOW), told.runs()),
+            (None, vec!["wf_a".to_owned()])
+        );
     }
 
     #[test]

@@ -393,6 +393,12 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "queueTranscriptOnly") {
         let mut out = background_notified(&text);
         out.extend(session);
+        // Claude Code hands it on from its queue like a prompt (`enqueue`, `dequeue`): the
+        // hand-over ends here, with no turn.
+        out.push(Observed::Queue {
+            change: QueueChange::Written,
+            at,
+        });
         return out;
     }
     let turn = if is_interrupt(message) {
@@ -1204,7 +1210,17 @@ mod tests {
         let ended = Observed::BackgroundEnded {
             id: "wb4g8gwer".into(),
         };
-        assert_eq!(notice("queueTranscriptOnly"), vec![ended.clone()]);
+        // It ends the old launch and the hand-over Claude Code's queue made of it.
+        assert_eq!(
+            notice("queueTranscriptOnly"),
+            vec![
+                ended.clone(),
+                Observed::Queue {
+                    change: QueueChange::Written,
+                    at: Some(Timestamp(1_794_587_370_522)),
+                }
+            ]
+        );
         // The same words as a wake-up of the session's thread do start a turn.
         assert_eq!(
             notice("otherKey"),

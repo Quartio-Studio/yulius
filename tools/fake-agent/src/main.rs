@@ -28,7 +28,7 @@
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
 //!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]
 //!            [--pause-hold-file PATH]]
-//!            [--no-response-line] [--workflow-limit]
+//!            [--no-response-line] [--workflow-limit [--workflow-limit-model MODEL]]
 //! ```
 //!
 //! Modes:
@@ -78,7 +78,9 @@
 //! tool, `workflow.rs`; SPEC-486): the launch in the session's transcript, the run's agents in
 //! `<session>/subagents/workflows/<run>/`, and the turn's end that still waits for it. With
 //! `--workflow-limit` the run's second agent is refused by a usage limit, written to that
-//! agent's file only (`WORKFLOW <run> PAUSED`). A resumed process says which runs the ended one
+//! agent's file only (`WORKFLOW <run> PAUSED`); with `--workflow-limit-model MODEL` that
+//! refusal is of the model the agent runs (its usage credits, no family named): MODEL, which
+//! the agent's `.meta.json` then names, or the session's own with `session`. A resumed process says which runs the ended one
 //! left unfinished (`WORKFLOW <run> ORPHANED`), and a `--prompt` that names their ids and
 //! `resumeFromRunId` resumes them (`WORKFLOW <run> RESUMED`, `WORKFLOW <run> COMPLETED`). A
 //! prompt hook's additional context is printed as `PROMPT CONTEXT: <text>`.
@@ -410,6 +412,7 @@ struct Options {
     idle_compact_ms: Option<u64>,
     trust_prompt: bool,
     workflow_limit: bool,
+    workflow_limit_model: Option<String>,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -482,6 +485,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         idle_compact_ms: None,
         trust_prompt: false,
         workflow_limit: false,
+        workflow_limit_model: None,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -664,6 +668,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             "--workflow-limit" => options.workflow_limit = true,
+            "--workflow-limit-model" => {
+                options.workflow_limit_model =
+                    Some(args.next().ok_or("--workflow-limit-model needs a model")?);
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }

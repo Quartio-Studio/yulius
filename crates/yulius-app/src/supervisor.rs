@@ -1629,11 +1629,21 @@ impl App {
         // them by their run ids, which Claude Code does not do by itself. Past a limit that
         // prompt is the turn the launch opens with, in place of the silent continuation
         // (SPEC-486 WFL-004).
+        // They stay known until the new process's transcript is read, so a launch that fails
+        // here, or runs again for another subscription, still tells its session. A fresh
+        // session has none: a run is resumed in its own session only.
         let unfinished = match (&start, &previous) {
-            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => self
-                .runtime(&task.id)
-                .with_workflows(crate::dynamic_workflow::Unfinished::take),
-            _ => Vec::new(),
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => {
+                self.runtime(&task.id).with_workflows(|workflows| {
+                    workflows.relaunched();
+                    workflows.runs()
+                })
+            }
+            _ => {
+                self.runtime(&task.id)
+                    .with_workflows(|workflows| *workflows = Default::default());
+                Vec::new()
+            }
         };
         let resumes = |prompt: Option<&str>| {
             Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
@@ -3891,6 +3901,8 @@ impl App {
                     && task.status == TaskStatus::Running
                     && task.mode == TaskMode::Prompt
                     && matches!(start, RunStart::Resume { prompt: None })
+                    // A session told to resume its workflow opens with that turn (SPEC-486).
+                    && runtime.with_workflows(|workflows| workflows.runs().is_empty())
             })
             .map(|activity| IdleRest {
                 activity,
@@ -4705,7 +4717,9 @@ impl App {
                 if let Some(limit) = observations.into_iter().rfind(|o| {
                     matches!(
                         o,
-                        Observation::LimitReached { .. } | Observation::AccessLost { .. }
+                        Observation::LimitReached { .. }
+                            | Observation::WorkflowLimitReached { .. }
+                            | Observation::AccessLost { .. }
                     )
                 }) {
                     replayed_limit = Some(limit);
@@ -4783,26 +4797,41 @@ impl App {
                 at,
             } => {
                 tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
-                runtime.end_turn(self.now());
-                runtime.limit_cut_the_turn(at);
                 let limit = ReportedLimit {
                     scope,
                     window_minutes,
                     resets_at,
                 };
-                let blind = limit.without_an_end(self.now());
-                if let Some(account) = &attempt.account_id {
-                    // The limit of the model this run was launched with (SPEC-482 FBK-006).
-                    let family = self.run_family_of(attempt).await;
-                    self.record_limit(account, limit, family).await;
+                self.limit_met(task_id, attempt, limit, at).await;
+            }
+            Observation::WorkflowLimitReached {
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+                at,
+            } => {
+                let limit = ReportedLimit {
+                    scope,
+                    window_minutes,
+                    resets_at,
+                };
+                let family = self.run_family_of(attempt).await;
+                // A limit of another model than the session runs is that agent's alone
+                // (SPEC-486 WFL-002): the subscription's reading keeps it, and the session
+                // stays where its own model still runs.
+                if matches!(scope, yulius_domain::usage::LimitScope::Model(Some(other)) if other != family)
+                {
+                    tracing::info!(task = %task_id, %message, ?scope, "a workflow agent's model is at its limit");
+                    if let Some(account) = &attempt.account_id {
+                        self.record_limit(account, limit, family).await;
+                    }
+                } else {
+                    // The session cannot go on here either: it is at that limit, whatever its
+                    // own thread is doing (its next request would be refused).
+                    tracing::info!(task = %task_id, %message, ?scope, "usage limit reached by a workflow's agent");
+                    self.limit_met(task_id, attempt, limit, at).await;
                 }
-                let app = self.clone();
-                let tid = task_id.clone();
-                let account = attempt.account_id.clone();
-                tokio::spawn(async move {
-                    app.rotate_at(&tid, account, Trigger::LimitReached, blind)
-                        .await;
-                });
             }
             Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
@@ -4970,6 +4999,34 @@ impl App {
             Observation::Session { .. } => {}
         }
         runtime.with_queue(|queue| queue.work_seen(worked));
+    }
+
+    /// The session of `task_id` is at the usage limit `limit`, recorded at `at`: its turn is
+    /// over, the subscription's reading keeps the limit, and the pool decides where the task
+    /// goes on (SPEC-034, SPEC-464).
+    async fn limit_met(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        limit: ReportedLimit,
+        at: Option<Timestamp>,
+    ) {
+        let runtime = self.runtime(task_id);
+        runtime.end_turn(self.now());
+        runtime.limit_cut_the_turn(at);
+        let blind = limit.without_an_end(self.now());
+        if let Some(account) = &attempt.account_id {
+            // The limit of the model this run was launched with (SPEC-482 FBK-006).
+            let family = self.run_family_of(attempt).await;
+            self.record_limit(account, limit, family).await;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        let account = attempt.account_id.clone();
+        tokio::spawn(async move {
+            app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+                .await;
+        });
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -5180,7 +5237,9 @@ fn keeps_subscription(reason: &str) -> bool {
 
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
 /// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
-/// automatic switches come while the agent is idle.
+/// automatic switches come while the agent is idle, or at a usage limit, where its turn can go
+/// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
+/// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
     matches!(reason, "manual" | "handover" | "removed")
 }

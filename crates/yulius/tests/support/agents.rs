@@ -148,6 +148,9 @@ pub struct FakeAgentOptions {
     /// A workflow the agent launches (`/workflow`) has its second agent refused by a usage
     /// limit, written to that agent's transcript only (`--workflow-limit`, SPEC-486).
     pub workflow_limit: bool,
+    /// That refusal is of the usage credits of the model the agent runs: this model, or the
+    /// session's own for `session` (`--workflow-limit-model`).
+    pub workflow_limit_model: Option<String>,
     /// Planning a launch fails while this file exists: the run cannot be started at all (a
     /// harness, MCP or isolation error), after a switch's preflight passed.
     pub fail_launch_file: Option<PathBuf>,
@@ -397,6 +400,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.workflow_limit {
             argv.push("--workflow-limit".into());
+        }
+        if let Some(model) = &self.options.workflow_limit_model {
+            argv.extend(["--workflow-limit-model".into(), model.clone()]);
         }
         // The prompt of a resume that tells the agent to resume its workflows reaches it, as
         // `claude --resume <id> <prompt>` gives it (SPEC-486 WFL-004).
