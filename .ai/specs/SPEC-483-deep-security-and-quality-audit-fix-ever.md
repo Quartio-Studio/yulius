@@ -1922,4 +1922,60 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after round 2's answers.** `scripts/dev ci` at `3e200cfce`: exit 0; `4199 tests run: 4199
   passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
   cargo-shear and rustdoc passed.
-- **Open after this slice:** G5 (the ledger), taken next.
+- **Open after round 2:** G5 (the ledger), then meant for the next slice.
+- **Review of slice 11, round 3** (head 6a385ee61, request changes): both findings of round
+  2 answered; one new major one, in the reviewer's words: "a fetch that may start the
+  shell, run in the clone, downloads the clone's `fetch.bundleURI` over HTTP despite
+  `protocol.http(s).allow=never`. On a 401, Git starts the clone's credential helper
+  through `/bin/sh`", in "the clone's fetch from a courier, and the folder fetch". Its
+  fix as proposed (three more pins) is applied as depth; the finding itself is answered by
+  the rule (Decisions, round 3).
+- **The new test against the code of round 2**
+  (`target/audit/slice11/n3-before.log`: the Git crate of head 6a385ee61 under the tests of
+  this head): `git_confined::a_clones_transfer_settings_reach_no_transfer` failed with "the
+  clone's bundle address was connected to", `left: 4`.
+- **Git's part, by hand before the code** (`target/audit/slice11/y`, `sh`; Git 2.53.0): a
+  fetch in a bare repository with `GIT_OBJECT_DIRECTORY` set to another repository's
+  objects wrote the objects there and none into its own; it sent `have` lines for refs
+  written into its `packed-refs`; it made the tag of an old commit that the other side had
+  newly (v2) without a download; `update-ref --no-deref --stdin -z` set, made and deleted
+  refs in one go, a missing ref's deletion included; `checkout -B <branch> --track
+  origin/<branch>` checked the branch out in a repository without a commit, under the same
+  and under another name; with the courier's `shallow` a link to the clone's, a fetch with
+  `--update-shallow` from a shallow repository wrote the clone's `shallow` file through the
+  link, the clone passed `git fsck`, and a second fetch kept it.
+- **Tests failing without their fix, the slice as it is now**
+  (`target/audit/slice11/mutate3.py`, `mutations-f.log`, 41 cases, each failed its test).
+  The rule on the shell: a command in a sandbox's folder given the shell; a transfer
+  between folders made there. The token: a command in a sandbox's folder, and one that
+  writes a new repository into one, given the configuration; every `GIT_CONFIG_` variable
+  withheld; a remote without an address named to Git. Every command: a program asked for a
+  password, a missing object fetched, an editor, a signed push, either submodule key, a
+  credential helper, a bundle address, a negotiating push, the `ssh` transport, signing,
+  the diff options and their copy past the options' end, a command's input not written.
+  The courier: objects anywhere, folders compared as written, a listing on the objects,
+  the courier left behind, no pruning, a dropped branch kept, branches not set, a tag made
+  again, no tag with a fetch, tags with a refresh of the branches, a forcing push, no link
+  to the clone's `shallow`, no `--update-shallow`, no note of the default branch, the note
+  made over the clone's own, the default branch not checked out, a clone made by a
+  transfer in the sandbox's folder. And: a `..` part naming a sandbox, a sandbox without a
+  folder given all sandboxes' folder, a doctor that takes any Git, the first commit made
+  in the sandbox's folder. The earlier scripts (`mutate.py`, `mutate2.py`) are of code
+  that is gone; their cases are in this one where the rule they check still exists.
+- **The binary's and the two crates' suites with the new routing:** `2776 tests run: 2776
+  passed` (`suite-y2.log`); on the first run two failed and showed what the design had
+  missed: a playground made of a shallow upload (the clone was not told where the history
+  ends: the link to its `shallow` file), and this slice's own test of a path that needed
+  one line, a rule that went with the alternates file.
+- **Gate.** `scripts/dev ci` at `1796cd4b2`: exit 0; `4203 tests run: 4203 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Not tested, the slice as it is now.** A transfer with the real GitHub through a courier
+  (the tests' remote is a folder the address is rewritten to, or an address where nothing
+  listens); what the courier is told the clone has (it only saves the remote work: no test
+  fails without it); that the courier's fetch runs no maintenance on the clone's objects
+  (the options are given; Git's automatic maintenance needs thousands of loose objects to
+  start, and no test makes them); a Git that really lacks `GIT_NO_LAZY_FETCH` (the doctor's
+  test takes the variable away from this machine's Git); a repository of SHA-256 objects
+  (the courier is made with the host's default, as a playground's origin is; GitHub has
+  none); macOS and other unconfined Git: unchanged, G2 and G5 stay open there.
