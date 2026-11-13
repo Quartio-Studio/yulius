@@ -18,10 +18,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   servers' own values. Sessions that were running across the update keep working: their
   wrapper reads the old format, so Yulius keeps their fingerprint file in it, without the hash
   that told too much. Redacting 1 MB of output takes 126 ms with 10 secrets (460 ms before) and
-  205 ms with 40 (781 ms). **After the update, rotate the agent secrets that untrusted code
-  could have reached**, and make new values 20 random characters or longer: a shorter one can
-  be guessed against its fingerprints (12 letters and digits within minutes on one graphics
-  card, as the ADR tables).
+  205 ms with 40 (781 ms). **After the update, once the sessions that were running across it
+  have ended, rotate the agent secrets that untrusted code could have reached**, and make new
+  values 20 random letters and digits or 32 hexadecimal digits, or longer: a shorter one can be
+  guessed against its fingerprints (12 letters and digits within minutes on one graphics card,
+  as the ADR tables).
 
 ## 2026-11-12
 

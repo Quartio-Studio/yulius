@@ -53,11 +53,13 @@ printing it (ADR-0014, the 8-character minimum). The audit of task #465 found mo
   restarting them, and that wrapper reads only the old format. It cannot read the endpoint's
   answer and falls back on its `scrub.json`. A file in the old format therefore stays in the
   old format, written by this server with `base` 0: the old rolling hash at base 0 is a
-  needle's last byte plus one, which is all it then says. A starting server rewrites every
-  live run's and Superagent's file in place (`App::refresh_fingerprint_files`), and a request
-  from a wrapper that does not name version 2 brings the asking session's file up to date
-  before it is answered. The endpoint itself answers version 2 only. When such a file cannot
-  be rewritten it is emptied.
+  needle's last byte plus one. A starting server rewrites every live run's and Superagent's
+  file in place (`App::refresh_fingerprint_files`), and a request from a wrapper that does not
+  name version 2 brings the asking session's file up to date before it is answered. The
+  endpoint itself answers version 2 only. When such a file's fingerprints cannot be made, one
+  this server wrote stays as it is, and one an older server wrote becomes a bare
+  `{"version":1}`: its wrapper runs nothing with it, and the next rewrite still knows the
+  format.
 
 ## What a holder of a set can compute
 
@@ -76,9 +78,16 @@ that is left for a random value, in SHA-256 computations:
 | 32 hexadecimal digits | 128 | 26 | 2^120 | 2^94 |
 
 One graphics card computes about 2^34 SHA-256 a second: 2^43 is minutes, 2^62 is years of one
-card. A value of 20 random characters or more is out of reach; one of 12 is not, with or without
-the tags. Each line of a key block and each MCP server's value is a needle set of its own, with
-its own tags about its own first 8 bytes; a line of a key has far more bits than those.
+card. A value of 20 random letters and digits, or of 32 hexadecimal digits, is out of reach (20
+hexadecimal digits are not: 2^51); one of 12 letters and digits is not, with or without the
+tags. Each line of a key block and each MCP server's value is a needle set of its own, with its
+own tags about its own first 8 bytes; a line of a key has far more bits than those.
+
+A file in the old format says more, to the session that holds it: the last byte of every form
+of a value, which is its last character and, through the base64 forms, most of the two before
+it (up to about 18 bits). It holds what that session's set holds, also a value added or changed
+while the session lives and a new owner's personal values after a hand-over. With it the search
+for 16 letters and digits falls from 2^62 to about 2^56; 20 stay near 2^80.
 
 ## Alternatives
 
@@ -109,7 +118,8 @@ its own tags about its own first 8 bytes; a line of a key has far more bits than
 - The value of an agent secret cannot be computed from its fingerprints. Weak values stay
   guessable against the digests, as accepted before, and the tags shorten that search by the
   bits in the table. Values that untrusted code could reach before this change may be known to
-  it: rotate them, and make new ones 20 random characters or longer.
+  it: rotate them once the sessions from before the update have ended, and make new ones 20
+  random letters and digits or 32 hexadecimal digits, or longer.
 - Values copied into `.env` in a playground before a guest joined are no longer redacted in
   that sandbox's command output (the guest can read the file); Yulius' own redaction of the
   terminal, transcripts and tool results it serves still covers them.
@@ -118,10 +128,12 @@ its own tags about its own first 8 bytes; a line of a key has far more bits than
   development host, the secrets' lengths spread over 20 values.
 - `POST /internal/scrub/fingerprints` takes `{version}` and answers `{version: 2, salt, names,
   needles: [{secret, len, tag, digest}]}`.
-- A session from before version 2 redacts from its file alone. Uncontained, it runs the new
-  wrapper, which reads version 2 only: while the server cannot be reached its commands do not
-  run, as without a file.
+- A session from before version 2 redacts from its file alone, a little slower than before:
+  its wrapper now confirms every window that ends in a needle's last byte (1 MB: 614 ms with 10
+  secrets, 896 ms with 40, 923 ms with 200). Uncontained, it runs the new wrapper, which reads
+  version 2 only: while the server cannot be reached its commands do not run, as without a
+  file.
 - The old format's writer (`LegacyFingerprintSet`, `legacy_fingerprints_for`) is of use only
-  while a session launched before this change is alive; it goes with a later release.
+  while a session launched before this change is alive; it goes with a later release (#1239).
 - When the workspace secret cannot be saved, the salt changes with each server start; the tags
   do not, so a new start still tells nothing more about a value.

@@ -796,9 +796,8 @@ mod tests {
                 .iter()
                 .map(|m| (m.start, m.end, m.secret))
                 .collect::<Vec<_>>(),
-            [(0, 16, 2), (21, 29, longest[1].secret)]
+            [(0, 16, 2), (21, 29, 0)]
         );
-        assert!(longest[1].secret < 2);
     }
 
     /// A text that shares a needle's tag but not its bytes is left alone, and a fingerprint of

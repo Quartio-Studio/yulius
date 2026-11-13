@@ -1968,8 +1968,7 @@ pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
 /// What the Bash wrapper of a Yulius from before fingerprint version 2 makes of `text` with the
 /// fingerprint file `file` (ADR-0313): that wrapper's own search, a rolling hash of every window
 /// of a needle's length modulo 2^61 - 1 at the file's `base`, confirmed by the salted SHA-256.
-/// `None` when that wrapper could not read the file (it takes version 1 only).
-#[allow(dead_code)]
+/// `None` when that wrapper could not read the file (it takes version 1 only, with every field).
 pub fn old_wrapper_redacts(file: &[u8], text: &str) -> Option<String> {
     use sha2::Digest as _;
     const MODULUS: u128 = (1 << 61) - 1;

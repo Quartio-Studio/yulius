@@ -1314,6 +1314,23 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
         shown.body["notes"],
         format!("User name: docs-admin\nTwo-factor seed: {SEED}\n\nDocs admin login")
     );
+    // ADR-0313: a run's fingerprints hold the value and not the seed, which never enters a
+    // sandbox (Yulius types the code); Yulius' own redaction of the project covers both.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let set =
+        w.h.app
+            .scrub_fingerprints_for(&s1, yulius_app::vault::Holder::Nobody)
+            .await?;
+    let matcher = yulius_harness::scrub_client::matcher(&set).ok_or("matcher")?;
+    let text = format!("pass docs-pass-7731-xyz seed {SEED}");
+    assert_eq!(
+        redact_text(&matcher, &text).0,
+        format!("pass [secret:DOCS_LOGIN] seed {SEED}")
+    );
+    assert_eq!(
+        w.h.app.redact_for_sandbox(&s1, &text).await,
+        "pass [secret:DOCS_LOGIN] seed [secret:DOCS_LOGIN]"
+    );
     Ok(())
 }
 

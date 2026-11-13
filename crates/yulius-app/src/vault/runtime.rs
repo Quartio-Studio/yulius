@@ -480,8 +480,10 @@ impl App {
         sandbox: &SandboxId,
         person: Option<&UserId>,
     ) -> AppResult<()> {
-        if let Ok(ctx) = self.agent_context(token).await {
-            return self.rewrite_run_fingerprints(&ctx.task.id).await;
+        match self.agent_context(token).await {
+            Ok(ctx) => return self.rewrite_run_fingerprints(&ctx.task.id).await,
+            Err(AppError::Unauthenticated) => {}
+            Err(err) => return Err(err),
         }
         let Some(person) = person else {
             return Ok(());
@@ -601,8 +603,10 @@ impl App {
     /// Writes `holder`'s fingerprints of `sandbox` into the fingerprint file of `run_dir`, in
     /// place and only when they differ; a run directory without one is left alone. A file in the
     /// format from before version 2 belongs to a session an older Yulius launched, whose wrapper
-    /// reads only that format: it is written in it (ADR-0313), and emptied when its fingerprints
-    /// cannot be made, since what an older server wrote there says too much about a value.
+    /// reads only that format: it is written in it (ADR-0313). When its fingerprints cannot be
+    /// made, a file this server wrote stays as it is, and one an older server wrote, which says
+    /// too much about a value, becomes a bare `{"version":1}`: that wrapper runs nothing with
+    /// it, and the next rewrite still knows the format.
     async fn rewrite_fingerprint_file(
         &self,
         run_dir: &Path,
@@ -612,10 +616,14 @@ impl App {
         use nix::fcntl::OFlag;
         use std::io::{Read as _, Seek as _, Write as _};
         use std::os::unix::fs::OpenOptionsExt as _;
+        /// What tells the formats apart; `base` is 0 in an old-format file this server wrote.
         #[derive(serde::Deserialize)]
         struct Format {
             version: u32,
+            base: Option<u64>,
         }
+        /// More than any set: 200 secrets of 16 KiB in every form stay far below.
+        const MAX_FILE_BYTES: u64 = 256 << 20;
         let mut file = match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -632,9 +640,15 @@ impl App {
             ));
         }
         let mut current = Vec::new();
-        file.read_to_end(&mut current).map_err(AppError::internal)?;
-        let legacy = serde_json::from_slice::<Format>(&current)
-            .is_ok_and(|format| format.version == LEGACY_FINGERPRINT_VERSION);
+        (&file)
+            .take(MAX_FILE_BYTES)
+            .read_to_end(&mut current)
+            .map_err(AppError::internal)?;
+        let format = serde_json::from_slice::<Format>(&current).ok();
+        let legacy = format
+            .as_ref()
+            .is_some_and(|format| format.version == LEGACY_FINGERPRINT_VERSION);
+        let of_an_older_server = legacy && format.is_some_and(|format| format.base != Some(0));
         let made = if legacy {
             self.legacy_fingerprints_for(sandbox, holder)
                 .await
@@ -647,8 +661,12 @@ impl App {
         let bytes = match made {
             Ok(bytes) => bytes,
             Err(err) => {
-                if legacy {
-                    let _ = file.set_len(0);
+                if of_an_older_server {
+                    let marker = format!("{{\"version\":{LEGACY_FINGERPRINT_VERSION}}}");
+                    let _ = file
+                        .set_len(0)
+                        .and_then(|()| file.rewind())
+                        .and_then(|()| file.write_all(marker.as_bytes()));
                 }
                 return Err(err);
             }

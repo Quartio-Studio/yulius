@@ -97,13 +97,15 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **FPR-007** A session launched before version 2 keeps redacting: its file stays in the old
   format, written with `base` 0 (the old rolling hash is then a needle's last byte plus one),
   at a start, at a guest's join and whenever a wrapper that does not name version 2 asks the
-  endpoint, which itself answers version 2 only. When its fingerprints cannot be made the file
-  is emptied.
+  endpoint, which itself answers version 2 only. When its fingerprints cannot be made, a file
+  this server wrote stays as it is and one an older server wrote becomes a bare
+  `{"version":1}`, with which its wrapper runs nothing and after which the format is still
+  known.
 
 ## Plan
 
 - [x] Fingerprints are fixed per sandbox and carry a tag instead of a rolling hash
-- [x] A playground with guests gets no fingerprints
+- [x] A playground with guests keeps only the fingerprints of its MCP servers' values
 - [x] A starting server rewrites the fingerprint files of live sessions
 - [x] Independent review of slice 1 and its findings answered
 
@@ -146,7 +148,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (AC-1, AC-2), `secrets::agents_list_names_and_read_redacted_results` (AC-3),
   `playground_guests::a_playground_with_guests_gives_no_run_an_agent_secret` (AC-4),
   `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs` (AC-5, AC-6),
-  `secrets_scopes::an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied` (FPR-007),
+  `secrets_scopes::an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format` (FPR-007),
+  `secrets::older_agent_secrets_reveal_their_user_name_and_seed` (FPR-004: no seed in a run's
+  set, the seed still in Yulius' own redaction),
   `cockpit::a_superagent_from_before_version_2_keeps_redacting_from_its_file` (AC-5, AC-6).
   `support::old_wrapper_redacts` is the old wrapper's search written out, so these tests hold
   the old format to what that wrapper computes.
@@ -255,9 +259,12 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   | 40 | 240 | 781 ms | 205 ms |
   | 200 | 1200 | 819 ms | 314 ms |
 
-- **Gate.** `scripts/dev ci` at 6535968fe: exit 0; `4112 tests run: 4112 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
+- **The old wrapper's speed on the file it now gets** (the same probe in the checkout of `dev`,
+  `base` 0 and the last byte as its hash): 614 ms, 896 ms and 923 ms for 10, 40 and 200
+  secrets, against 460, 781 and 819 ms with the file it had.
+- **Gate.** `scripts/dev ci` at GATE_HEAD: exit 0; `GATE_TESTS`; doctor, repository check, lint,
+  the macOS compile, cargo-deny, cargo-shear and rustdoc passed. (At 6535968fe, before round 2:
+  exit 0, `4112 tests run: 4112 passed, 16 skipped`.)
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Review, round 1** (head 4b5e66fdb): request changes, one blocker and four major findings,
   all in this change's code, all taken:
@@ -278,3 +285,22 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
     rolling hash", the matcher's corners are tested, this section exists, a failed rewrite
     empties an old file; nits: `checked_add`, the salt without a silent zero, a window hashed
     once per length.
+- **Review, round 2** (head cb3b3587a): request changes, one major and seven minor findings in
+  this change's code, all taken; every finding of round 1 confirmed as answered, the ADR's table
+  re-derived by the reviewer:
+  - "the two-factor seed exclusion has no test": the fixture with a seed now shows the run's
+    set leaving the seed alone and Yulius' own redaction replacing it;
+  - "an emptied old-format file loses its format": a failed rewrite leaves a file of this
+    server as it is and turns an older server's into `{"version":1}`; the test fails, heals
+    and fails again;
+  - "the ADR understates the base-0 file": the ADR says what it tells (about the last three
+    characters), for which values, and the search that is left; operations and the change log
+    say to rotate once the sessions from before the update have ended;
+  - "20 random characters is wrong for hex": 20 letters and digits or 32 hexadecimal digits;
+  - "the cache bump at a guest's join sits after a fallible call": moved to the join itself;
+  - the Vidoc ignore's line and comment; the run that cannot be rewritten is seeded first and
+    last; the old wrapper's timing is measured (above);
+  - nits: one `agent_context` call decides the branch, the Plan item says what the code does,
+    the read is bounded, the corner test names the secret, and #1239 tracks the removal of
+    the old format's writer. The Global Superagent has no fingerprint file and no test of
+    that absence.

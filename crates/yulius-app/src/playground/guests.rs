@@ -399,7 +399,13 @@ impl App {
             .insert_playground_guest(&invite.id, &user, now, MAX_GUESTS_PER_LINK)
             .await?
         {
-            GuestJoin::Joined => {}
+            // From now on no run of the playground gets an agent secret (GST-004): the
+            // sessions that are running lose the fingerprints of them too (ADR-0313), before
+            // anything that could fail.
+            GuestJoin::Joined => {
+                self.bump_vault_generation();
+                self.refresh_fingerprint_files().await;
+            }
             GuestJoin::Dead => return Err(AppError::NotFound),
             GuestJoin::Full => {
                 return Err(AppError::Conflict(format!(
@@ -416,10 +422,6 @@ impl App {
                 Some(&invite.id),
             )
             .await?;
-        // From now on no run of the playground gets an agent secret (GST-004): the sessions that
-        // are running lose the fingerprints of them too (ADR-0313).
-        self.bump_vault_generation();
-        self.refresh_fingerprint_files().await;
         crate::race::reached(
             crate::race::Point::GuestJoined,
             std::path::Path::new(&invite.id),

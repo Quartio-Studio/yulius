@@ -900,10 +900,17 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
         tempfile::tempdir()?,
         tempfile::tempdir()?,
     );
+    // The run whose file cannot be rewritten comes first and last in the store's order.
+    let broken_too = tempfile::tempdir()?;
     for (task, token, run) in [
+        ("t5a", "scopes-task-token-alice-run-a5b4c3d2e1f0", &broken),
         ("t6", "scopes-task-token-alice-run-fedcba987654", &old),
         ("t7", "scopes-task-token-alice-run-0f1e2d3c4b5a", &new),
-        ("t8", "scopes-task-token-alice-run-a5b4c3d2e1f0", &broken),
+        (
+            "t8",
+            "scopes-task-token-alice-run-1a2b3c4d5e6f",
+            &broken_too,
+        ),
     ] {
         seed_task(&w.h, task, "s1", "u-alice", TaskStatus::Running, None).await?;
         support::seed_live_attempt_at(&w.h, task, token, &run.path().to_string_lossy()).await?;
@@ -924,6 +931,7 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     let elsewhere = broken.path().join("elsewhere.json");
     std::fs::write(&elsewhere, b"not a fingerprint file")?;
     std::os::unix::fs::symlink(&elsewhere, broken.path().join(name))?;
+    std::os::unix::fs::symlink(&elsewhere, broken_too.path().join(name))?;
 
     w.h.app.refresh_fingerprint_files().await;
 
@@ -993,11 +1001,20 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
     Ok(())
 }
 
-/// ADR-0313: when the fingerprints of a session from before version 2 cannot be made, its file
-/// is emptied (its wrapper then runs nothing): what the older server wrote there stays in no file.
+/// ADR-0313: when the fingerprints of a session from before version 2 cannot be made, the file
+/// an older server wrote (which says too much about a value) becomes a bare version 1, with
+/// which the old wrapper runs nothing; the next rewrite still knows the format and the wrapper
+/// redacts again; and a file this server already wrote stays as it is through a later failure.
 #[tokio::test]
-async fn an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied() -> TestResult {
+async fn an_old_fingerprint_file_survives_a_failed_rewrite_in_its_format() -> TestResult {
     let w = world().await?;
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "MY_TOKEN", MINE, HOST),
+    )
+    .await?;
     let run = tempfile::tempdir()?;
     seed_task(&w.h, "t9", "s1", "u-alice", TaskStatus::Running, None).await?;
     support::seed_live_attempt_at(
@@ -1012,9 +1029,11 @@ async fn an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied() -> TestRe
         &file,
         serde_json::to_vec(&file_of_an_older_yulius("MY_TOKEN", MINE))?,
     )?;
-    w.h.store
-        .execute_for_tests("DROP TABLE playground_guests")
-        .await?;
+    let text = format!("TOKEN={MINE}");
+    let breaks = "ALTER TABLE playground_guests RENAME TO playground_guests_away";
+    let heals = "ALTER TABLE playground_guests_away RENAME TO playground_guests";
+
+    w.h.store.execute_for_tests(breaks).await?;
     let s1 = SandboxId::parse("s1")?;
     assert!(
         w.h.app
@@ -1024,7 +1043,36 @@ async fn an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied() -> TestRe
         "no answer about guests is no empty set"
     );
     w.h.app.refresh_fingerprint_files().await;
-    assert_eq!(std::fs::read(&file)?, b"");
+    assert_eq!(std::fs::read(&file)?, br#"{"version":1}"#);
+    assert_eq!(
+        support::old_wrapper_redacts(&std::fs::read(&file)?, &text),
+        None
+    );
+
+    w.h.store.execute_for_tests(heals).await?;
+    w.h.app.refresh_fingerprint_files().await;
+    let written = std::fs::read(&file)?;
+    assert_eq!(
+        support::old_wrapper_redacts(&written, &text).as_deref(),
+        Some("TOKEN=[secret:MY_TOKEN]")
+    );
+
+    // A secret changes while the store fails: the file this server wrote stays.
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret(
+            "personal",
+            "SECOND",
+            "second-personal-token-77aa",
+            "api.second.test",
+        ),
+    )
+    .await?;
+    w.h.store.execute_for_tests(breaks).await?;
+    w.h.app.refresh_fingerprint_files().await;
+    assert_eq!(std::fs::read(&file)?, written);
     Ok(())
 }
 
