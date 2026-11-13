@@ -298,25 +298,34 @@ pub const TAG_WINDOW: usize = super::encode::MIN_NEEDLE_LEN;
 /// Bits of a [`TAG_WINDOW`] hash.
 const HASH_BITS: u32 = 16;
 
-/// How many bits of its beginning's hash a needle of `len` bytes publishes as its tag: 4 for the
+/// How many bits of its beginning's hash a needle of `len` bytes publishes as its tag: 3 for the
 /// shortest, one more each time the length doubles, at most 16. A tag is all a fingerprint says
 /// about a needle besides its length and its salted digest, so few bits keep what a holder of
 /// the fingerprints learns small (at most these bits about the first [`TAG_WINDOW`] bytes of each
 /// form); a longer needle costs more to confirm, so it gets more bits and each needle costs the
-/// redactor less than one hashed byte per byte of output.
+/// redactor less than two hashed bytes per byte of output.
 #[must_use]
 pub fn tag_bits(len: usize) -> u32 {
-    (4 + (len / TAG_WINDOW).max(1).ilog2()).min(HASH_BITS)
+    (3 + (len / TAG_WINDOW).max(1).ilog2()).min(HASH_BITS)
 }
 
-/// A 16-bit hash of the first [`TAG_WINDOW`] bytes of `window` (0 for a shorter one).
+/// A 16-bit hash of the first [`TAG_WINDOW`] bytes of `window` (0 for a shorter one). Letters
+/// count without their case and `-` and `_` as `+` and `/`, so the two hexadecimal forms of a
+/// value, and its base64 and base64url forms, share a tag instead of each saying its own bits.
 fn window_hash(window: &[u8]) -> u16 {
-    let Some(word) = window
+    let Some(mut word) = window
         .get(..TAG_WINDOW)
         .and_then(|w| <[u8; 8]>::try_from(w).ok())
     else {
         return 0;
     };
+    for byte in &mut word {
+        *byte = match *byte {
+            b'-' => b'+',
+            b'_' => b'/',
+            other => other.to_ascii_lowercase(),
+        };
+    }
     let mixed = u64::from_le_bytes(word).wrapping_mul(0x9E37_79B9_7F4A_7C15);
     let mixed = (mixed ^ (mixed >> 32)).wrapping_mul(0xD6E8_FEB8_6659_FD93);
     u16::try_from(mixed >> (u64::BITS - HASH_BITS)).unwrap_or(0)
@@ -395,7 +404,9 @@ impl<V: Fn(&[u8]) -> [u8; 32]> Matcher for HashedMatcher<V> {
                 };
                 for &f in hits {
                     let fp = &self.fingerprints[f];
-                    let end = start + fp.len;
+                    let Some(end) = start.checked_add(fp.len) else {
+                        continue;
+                    };
                     if data
                         .get(start..end)
                         .is_some_and(|candidate| (self.verify)(candidate) == fp.digest)
@@ -707,18 +718,29 @@ mod tests {
     }
 
     /// A tag is a few bits of the hash of a needle's first eight bytes: needles that begin
-    /// alike share it whatever follows, and no tag is wider than its length allows.
+    /// alike share it whatever follows, the two cases of a hexadecimal form and the two base64
+    /// alphabets share it, and no tag is wider than its length allows.
     #[test]
     fn a_tag_says_a_few_bits_about_a_needles_beginning_only() {
         assert_eq!(
             [8, 15, 16, 31, 32, 64, 1024, 16 * 1024, 1 << 20].map(tag_bits),
-            [4, 4, 5, 5, 6, 7, 11, 15, 16]
+            [3, 3, 4, 4, 5, 6, 10, 14, 16]
         );
         assert_eq!(needle_tag(b"short"), None);
         assert_eq!(
             needle_tag(b"sk_live_AAAAAAAA"),
             needle_tag(b"sk_live_BBBBBBBB"),
             "only the first eight bytes count"
+        );
+        assert_eq!(
+            needle_tag(b"736b5f6c6976655f"),
+            needle_tag(b"736B5F6C6976655F"),
+            "the two hexadecimal forms say the same"
+        );
+        assert_eq!(
+            needle_tag(b"a+b/c+d/e+f/"),
+            needle_tag(b"a-b_c-d_e-f_"),
+            "base64 and base64url say the same"
         );
         for needle in needles(VALUE) {
             let tag = needle_tag(&needle).unwrap_or(u16::MAX);
@@ -728,7 +750,42 @@ mod tests {
         let seen: BTreeSet<u16> = (0..4096u32)
             .filter_map(|i| needle_tag(format!("{i:08}").as_bytes()))
             .collect();
-        assert_eq!(seen.len(), 16);
+        assert_eq!(seen.len(), 8);
+    }
+
+    /// The corners of the search: a needle of exactly eight bytes that ends the data, data
+    /// shorter than a tag's window, two secrets with one value, and two needles that begin at
+    /// the same place (the longest wins).
+    #[test]
+    fn hashed_matchers_find_needles_at_the_corners() {
+        let fingerprint = |secret: usize, needle: &[u8]| Fingerprint {
+            secret,
+            len: needle.len(),
+            tag: needle_tag(needle).unwrap_or(0),
+            digest: digest(needle),
+        };
+        let matcher = HashedMatcher::new(
+            vec!["SHORT".into(), "TWIN".into(), "LONG".into()],
+            vec![
+                fingerprint(0, b"12345678"),
+                fingerprint(1, b"12345678"),
+                fingerprint(2, b"12345678ABCDEFGH"),
+            ],
+            digest as Digest,
+        );
+        assert!(matcher.find(b"1234567").is_empty());
+        let at_the_end = matcher.find(b"key=12345678");
+        assert_eq!(at_the_end.len(), 1, "{at_the_end:?}");
+        assert_eq!((at_the_end[0].start, at_the_end[0].end), (4, 12));
+        let longest = matcher.find(b"12345678ABCDEFGH and 12345678ABCDEFG");
+        assert_eq!(
+            longest
+                .iter()
+                .map(|m| (m.start, m.end, m.secret))
+                .collect::<Vec<_>>(),
+            [(0, 16, 2), (21, 29, longest[1].secret)]
+        );
+        assert!(longest[1].secret < 2);
     }
 
     /// A text that shares a needle's tag but not its bytes is left alone, and a fingerprint of

@@ -518,7 +518,8 @@ impl App {
         })
     }
 
-    /// The workspace token secret: read from the data directory, created there on first use. When
+    /// The workspace secret, from which workspace tokens and the salt of a sandbox's redaction
+    /// fingerprints are derived: read from the data directory, created there on first use. When
     /// the file cannot be read or written, a secret for this server's lifetime (tokens then end
     /// with it, as before).
     pub(crate) fn workspace_secret(&self) -> &str {

@@ -20,7 +20,7 @@ use yulius_contracts::api::secrets::{
     ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest,
     VaultActivity,
 };
-use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
+use yulius_contracts::scrub::{FingerprintRequest, FingerprintSet, RedactionReport};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -369,9 +369,12 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 async fn fingerprints(
     State(app): State<AppState>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<FingerprintSet>, StatusCode> {
     let token = bearer(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    app.scrub_fingerprints(token)
+    // A wrapper from before version 2 sends `{}`, or nothing this server reads.
+    let request: FingerprintRequest = serde_json::from_slice(&body).unwrap_or_default();
+    app.scrub_fingerprints(token, request.version)
         .await
         .map(Json)
         .map_err(|err| {

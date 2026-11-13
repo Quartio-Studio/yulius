@@ -868,9 +868,20 @@ async fn a_deleted_tasks_client_resolves_to_no_person() -> TestResult {
     Ok(())
 }
 
-/// ADR-0313: a run that was live across an update keeps the fingerprint file its launch wrote,
-/// in a format this server no longer makes (a rolling hash and its base, which told too much
-/// about a value). A starting server rewrites every live run's file in place.
+/// A fingerprint file as a Yulius from before version 2 wrote it: a rolling hash at a random base.
+fn file_of_an_older_yulius(name: &str, value: &str) -> Value {
+    json!({
+        "version": 1, "base": 912_367, "salt": "00", "names": [name],
+        "needles": [{"secret": 0, "len": value.len(), "rolling": 77, "digest": "00"}],
+    })
+}
+
+/// ADR-0313: a session that was live across the update keeps the wrapper it started with (a
+/// contained session binds the binary), and that wrapper reads only the old format. A starting
+/// server rewrites every live run's file in place: an old one in the old format without what
+/// told too much (base 0, so the "rolling hash" is a needle's last byte plus one), which the old
+/// wrapper still redacts with; one of this server's as this server makes it. A file that cannot
+/// be rewritten does not stop the others.
 #[tokio::test]
 async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> TestResult {
     use std::os::unix::fs::MetadataExt as _;
@@ -882,39 +893,130 @@ async fn a_starting_server_rewrites_the_fingerprint_files_of_live_runs() -> Test
         secret("personal", "MY_TOKEN", MINE, HOST),
     )
     .await?;
+    let s1 = SandboxId::parse("s1")?;
+    let alice_id = UserId::parse("u-alice")?;
+    let (old, new, broken) = (
+        tempfile::tempdir()?,
+        tempfile::tempdir()?,
+        tempfile::tempdir()?,
+    );
+    for (task, token, run) in [
+        ("t6", "scopes-task-token-alice-run-fedcba987654", &old),
+        ("t7", "scopes-task-token-alice-run-0f1e2d3c4b5a", &new),
+        ("t8", "scopes-task-token-alice-run-a5b4c3d2e1f0", &broken),
+    ] {
+        seed_task(&w.h, task, "s1", "u-alice", TaskStatus::Running, None).await?;
+        support::seed_live_attempt_at(&w.h, task, token, &run.path().to_string_lossy()).await?;
+    }
+    let name = yulius_app::vault::FINGERPRINTS_FILE;
+    let old_file = old.path().join(name);
+    std::fs::write(
+        &old_file,
+        serde_json::to_vec(&file_of_an_older_yulius("MY_TOKEN", MINE))?,
+    )?;
+    let inode = std::fs::metadata(&old_file)?.ino();
+    let new_file = new.path().join(name);
+    std::fs::write(&new_file, br#"{"version":2,"salt":"00","names":[],"needles":[]}"#)?;
+    // A link where a run's file should be: refused, and what it points at is not written.
+    let elsewhere = broken.path().join("elsewhere.json");
+    std::fs::write(&elsewhere, b"not a fingerprint file")?;
+    std::os::unix::fs::symlink(&elsewhere, broken.path().join(name))?;
+
+    w.h.app.refresh_fingerprint_files().await;
+
+    let rewritten = std::fs::read(&old_file)?;
+    let legacy: Value = serde_json::from_slice(&rewritten)?;
+    assert_eq!(legacy["version"], 1, "the old wrapper reads version 1 only");
+    assert_eq!(legacy["base"], 0);
+    assert_eq!(legacy["names"], json!(["MY_TOKEN"]));
+    assert_eq!(legacy["needles"][0]["len"], MINE.len());
+    assert_eq!(
+        legacy["needles"][0]["rolling"],
+        u64::from(*MINE.as_bytes().last().ok_or("value")?) + 1,
+        "all the old hash says at base 0 is the last byte"
+    );
+    assert_eq!(
+        support::old_wrapper_redacts(&rewritten, &format!("TOKEN={MINE}\n")).as_deref(),
+        Some("TOKEN=[secret:MY_TOKEN]\n")
+    );
+    assert_eq!(std::fs::metadata(&old_file)?.ino(), inode, "in place");
+
+    let current: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&new_file)?)?;
+    assert_eq!(
+        current,
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&alice_id))
+            .await?,
+        "a run's file holds what the endpoint answers"
+    );
+    let matcher = yulius_harness::scrub_client::matcher(&current).ok_or("matcher")?;
+    let (out, _) = yulius_domain::vault::redact::redact_text(&matcher, &format!("TOKEN={MINE}\n"));
+    assert_eq!(out, "TOKEN=[secret:MY_TOKEN]\n");
+    assert_eq!(std::fs::read(&elsewhere)?, b"not a fingerprint file");
+
+    // The old wrapper cannot read the endpoint's answer and reads its file: asking brings the
+    // file up to date first, so a secret added since is redacted in that session too.
+    add(
+        &w,
+        &w.alice,
+        "s1",
+        secret("personal", "SECOND", "second-personal-token-77aa", "api.second.test"),
+    )
+    .await?;
+    let asked = call(
+        &w.h.internal,
+        Method::POST,
+        "/internal/scrub/fingerprints",
+        Some(json!({})),
+        &Creds {
+            bearer: Some("scopes-task-token-alice-run-fedcba987654".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(asked.status, StatusCode::OK);
+    assert_eq!(asked.body["version"], 2, "the endpoint answers one format");
+    assert_eq!(
+        support::old_wrapper_redacts(&std::fs::read(&old_file)?, "x second-personal-token-77aa y")
+            .as_deref(),
+        Some("x [secret:SECOND] y")
+    );
+    Ok(())
+}
+
+/// ADR-0313: when the fingerprints of a session from before version 2 cannot be made, its file
+/// is emptied (its wrapper then runs nothing): what the older server wrote there stays in no file.
+#[tokio::test]
+async fn an_old_fingerprint_file_that_cannot_be_rewritten_is_emptied() -> TestResult {
+    let w = world().await?;
     let run = tempfile::tempdir()?;
-    seed_task(&w.h, "t6", "s1", "u-alice", TaskStatus::Running, None).await?;
+    seed_task(&w.h, "t9", "s1", "u-alice", TaskStatus::Running, None).await?;
     support::seed_live_attempt_at(
         &w.h,
-        "t6",
-        "scopes-task-token-alice-run-fedcba987654",
+        "t9",
+        "scopes-task-token-alice-run-99887766aabb",
         &run.path().to_string_lossy(),
     )
     .await?;
     let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
-    let old = json!({
-        "version": 1, "base": 912_367, "salt": "00", "names": ["MY_TOKEN"],
-        "needles": [{"secret": 0, "len": MINE.len(), "rolling": 77, "digest": "00"}],
-    });
-    std::fs::write(&file, serde_json::to_vec(&old)?)?;
-    let inode = std::fs::metadata(&file)?.ino();
-
-    w.h.app.refresh_fingerprint_files().await;
-
-    let text = std::fs::read_to_string(&file)?;
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&file_of_an_older_yulius("MY_TOKEN", MINE))?,
+    )?;
+    w.h.store
+        .execute_for_tests("DROP TABLE playground_guests")
+        .await?;
+    let s1 = SandboxId::parse("s1")?;
     assert!(
-        !text.contains("rolling") && !text.contains("base"),
-        "{text}"
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Nobody)
+            .await
+            .is_err(),
+        "no answer about guests is no empty set"
     );
-    let rewritten: yulius_contracts::scrub::FingerprintSet = serde_json::from_str(&text)?;
-    assert_eq!(
-        rewritten.version,
-        yulius_contracts::scrub::FINGERPRINT_VERSION
-    );
-    let matcher = yulius_harness::scrub_client::matcher(&rewritten).ok_or("matcher")?;
-    let (out, _) = yulius_domain::vault::redact::redact_text(&matcher, &format!("TOKEN={MINE}\n"));
-    assert_eq!(out, "TOKEN=[secret:MY_TOKEN]\n");
-    assert_eq!(std::fs::metadata(&file)?.ino(), inode, "in place");
+    w.h.app.refresh_fingerprint_files().await;
+    assert_eq!(std::fs::read(&file)?, b"");
     Ok(())
 }
 

@@ -126,7 +126,15 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     if !in_run {
         return Fingerprints::NotARun;
     }
-    let server = match post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT) {
+    // The version this wrapper reads: a server answers an older one through its file (ADR-0313).
+    let request = format!("{{\"version\":{FINGERPRINT_VERSION}}}");
+    let asked = post_internal(
+        "/internal/scrub/fingerprints",
+        request.as_bytes(),
+        env,
+        FETCH_TIMEOUT,
+    );
+    let server = match asked {
         Ok(body) => match serde_json::from_slice(&body).ok().and_then(valid) {
             Some(set) => return Fingerprints::Set(set),
             None => ServerAnswer::Unusable,

@@ -3554,14 +3554,38 @@ async fn repeated_fingerprint_requests_answer_the_same_set() -> TestResult {
         let len = usize::try_from(needle["len"].as_u64().ok_or("len")?)?;
         let tag = needle["tag"].as_u64().ok_or("tag")?;
         assert!(tag < 1 << tag_bits(len), "{needle}");
-        assert!(tag_bits(len) <= 16);
     }
-    // Another sandbox salts its digests differently, and a changed value changes the set.
+    assert_eq!(tag_bits(STRIPE.len()), 4, "a value of 28 bytes says 4 bits");
+    // Another sandbox salts its digests differently.
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
     let s2 = yulius_domain::ids::SandboxId::parse("s2")?;
     let nobody = yulius_app::vault::Holder::Nobody;
     let first = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
     let other = w.h.app.scrub_fingerprints_for(&s2, nobody).await?;
     assert_ne!(first.salt, other.salt);
+    // The salt is kept with the data directory: a server started again answers the same set.
+    let data_dir = w.h.app.config.data_dir.clone();
+    let again = support::harness_with(support::HarnessOptions {
+        configure: Some(Box::new(move |c| c.data_dir = data_dir)),
+        ..support::HarnessOptions::default()
+    })?;
+    assert_eq!(
+        again.app.scrub_fingerprints_for(&s1, nobody).await?.salt,
+        first.salt
+    );
+    // A changed value changes its fingerprints, and nothing else does.
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let changed = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": concat!("sk_test_", "51NzQ9otherValue9c4b")})),
+        &w.writer,
+    )
+    .await?;
+    assert!(changed.status.is_success(), "{}", changed.body);
+    let after = w.h.app.scrub_fingerprints_for(&s1, nobody).await?;
+    assert_eq!(after.salt, first.salt);
+    assert_ne!(after.needles[0].digest, first.needles[0].digest);
     Ok(())
 }

@@ -29,6 +29,8 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 const FENCE: &str = "a guest reaches only the playground they were let into";
 const ALICE_TASK: &str = "guests-task-token-alice-0123456789abcdef";
 const GUEST_TASK: &str = "guests-task-token-guest-0123456789abcdef";
+/// A value an MCP server of the playground holds itself (no `${secret:...}` reference).
+const MCP_VALUE: &str = "lab-mcp-own-value-4f2e9a7c";
 
 struct World {
     h: Harness,
@@ -662,7 +664,8 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
     .await?;
     assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
     seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
-    seed_live_attempt(&w.h, "t1", ALICE_TASK).await?;
+    let run = tempfile::tempdir()?;
+    support::seed_live_attempt_at(&w.h, "t1", ALICE_TASK, &run.path().to_string_lossy()).await?;
     let p1 = SandboxId::parse("p1")?;
     let granted = ["LAB_TOKEN".to_owned()];
     let ci =
@@ -674,9 +677,23 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
         let before = sent_by(&w, token, host).await.ok_or(who)?;
         assert!(before.contains(value), "{who} gets the project secret");
     }
-    let fingerprints = w.h.app.scrub_fingerprints(ALICE_TASK).await?;
-    assert_eq!(fingerprints.names, ["LAB_TOKEN"]);
-    assert!(!fingerprints.needles.is_empty());
+    // The playground has an MCP server with a value of its own, which its runs keep.
+    let server = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/p1/mcp",
+        Some(json!({"name": "lab", "transport": "stdio", "command": "npx", "args": ["lab-mcp"],
+            "env": {"LAB_KEY": MCP_VALUE}})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(server.status, StatusCode::CREATED, "{}", server.body);
+    let version = Some(yulius_contracts::scrub::FINGERPRINT_VERSION);
+    let fingerprints = w.h.app.scrub_fingerprints(ALICE_TASK, version).await?;
+    assert_eq!(fingerprints.names, ["LAB_TOKEN", "lab.LAB_KEY"]);
+    // The maker's session is running, with the fingerprint file its launch wrote.
+    let file = run.path().join(yulius_app::vault::FINGERPRINTS_FILE);
+    std::fs::write(&file, serde_json::to_vec(&fingerprints)?)?;
 
     let code = link(&w, 7).await?;
     let (_, guest) = join(&w, &code, "Carol").await?;
@@ -705,12 +722,34 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
             "{who} gets no agent secret now: {after}"
         );
     }
-    // Nor the fingerprints of one: its name, its length and something to test guesses against.
+    // Nor the fingerprints of one (its name, its length and something to test guesses against);
+    // what their runs still hold, the MCP server's own value, is redacted as before.
     for token in [ALICE_TASK, GUEST_TASK] {
-        let fingerprints = w.h.app.scrub_fingerprints(token).await?;
-        assert!(fingerprints.names.is_empty(), "{:?}", fingerprints.names);
-        assert!(fingerprints.needles.is_empty());
+        let fingerprints = w.h.app.scrub_fingerprints(token, version).await?;
+        assert_eq!(fingerprints.names, ["lab.LAB_KEY"]);
+        let matcher = yulius_harness::scrub_client::matcher(&fingerprints).ok_or("matcher")?;
+        let (out, _) = yulius_domain::vault::redact::redact_text(
+            &matcher,
+            &format!("{value} {MCP_VALUE}"),
+        );
+        assert_eq!(out, format!("{value} [secret:lab.LAB_KEY]"));
     }
+    // The session that was running when the guest joined lost them at the join.
+    let rewritten: yulius_contracts::scrub::FingerprintSet =
+        serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(rewritten.names, ["lab.LAB_KEY"]);
+    // A store that cannot say whether a guest joined gives no set at all: an empty one would
+    // let every command through unredacted.
+    w.h.store
+        .execute_for_tests("DROP TABLE playground_guests")
+        .await?;
+    let bob = yulius_domain::ids::UserId::parse("u-bob")?;
+    assert!(
+        w.h.app
+            .scrub_fingerprints_for(&p1, yulius_app::vault::Holder::Person(&bob))
+            .await
+            .is_err()
+    );
     // Revoking the link does not bring them back: what guests left in the sandbox stays.
     let listed = get(&w, "/api/sandboxes/p1/guest-invites", &w.alice).await?;
     let id = listed.body["invites"][0]["id"]
