@@ -1853,3 +1853,76 @@ async fn uncommitted_changes_leave_nothing_to_decide() -> TestResult {
     assert!(app.decidable_in(&sandbox).await, "ready for a candidate");
     Ok(())
 }
+
+/// SPEC-487 CHN-001 (13 November 2026: #469 was started "after #465" at 19:57:02, while #465's
+/// green pull request #1257 waited, armed, in the merge queue): a task chained after one whose
+/// pull request is green and armed stays waiting, since Yulius will merge it and tell its agent,
+/// and the task list reads the same; it starts once that pull request is merged.
+#[tokio::test]
+async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    // A person starts a task only with a Claude account connected (SPEC-246).
+    {
+        use yulius_app::model::{AccountRecord, AccountStatus};
+        use yulius_app::ports::store::AccountStore;
+        f.h.store
+            .insert_account(&AccountRecord {
+                id: yulius_domain::ids::AccountId::parse("acc-1")?,
+                provider: yulius_domain::harness::Provider::Anthropic,
+                label: "acc-1".into(),
+                credential: Some(app.deps.crypto.seal(b"oauth-token")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+    }
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "build on change 1", "after_task_id": "t1"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.body["status"], "chained", "{}", created.body);
+    let next = TaskId::parse(created.body["id"].as_str().ok_or("id")?)?;
+    let status = || async {
+        TaskStore::task(&f.h.store, &next)
+            .await
+            .ok()
+            .flatten()
+            .map(|task| task.status)
+    };
+
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // Its turn ended, its plan is complete and its pull request is tested: what read Done.
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status().await,
+        Some(TaskStatus::Chained),
+        "the merge is still to come"
+    );
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(
+        shown.body["yulius_wait"], true,
+        "it goes on by itself: {}",
+        shown.body
+    );
+
+    f.decide_until(&app, || async { f.merged(&app, 1).await })
+        .await?;
+    app.advance_chains(&first).await;
+    assert_ne!(status().await, Some(TaskStatus::Chained), "merged: it starts");
+    Ok(())
+}
