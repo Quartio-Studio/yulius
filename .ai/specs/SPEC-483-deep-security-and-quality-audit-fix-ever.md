@@ -671,7 +671,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
-- [ ] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
+- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
 
 ## Acceptance criteria
 
@@ -2423,3 +2423,34 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after it.** `scripts/dev ci` at `ee36e7c2e`: exit 0; `4214 tests run: 4214 passed, 16
   skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
   rustdoc passed.
+
+### Slice 15 (2026-11-13)
+
+- **Slice 14's delivery.** Pull request #1257 merged into `dev` (through a merge train of
+  one, at c7626f165), its own Yulius CI run passed; its review approved the head in its
+  second round, and its two cosmetic nits are answered here (a long line in
+  `docs/api.md`, the refusal's reason asserted in AC-88's test).
+- **The defect, by its test on the code before** (`target/audit/slice15/mutations.log`, the
+  first two cases, which are the old code): without the pass's rule,
+  `delivery::an_armed_merge_ends_with_its_tasks_run` failed (a closed task's merge stayed
+  armed and merged); with the start's old rule (`== Running`) it failed for the task
+  waiting for capacity.
+- **Tests failing without their fix** (`target/audit/slice15/mutate.py`, 5 cases, each
+  failed its tests): a pass deciding whatever became of the task; a start restoring only a
+  running task's merge; a start restoring every saved merge; a held run losing its armed
+  merge; a closed task keeping it.
+- **What the rule showed in the tests:** eight delivery tests armed a merge for a task that
+  had a live run in the store and was not running; their fixtures (`live_agent`,
+  `ArmedTask::new`) now make the task running, as a live run is.
+- **The suites:** the app's, the domain's and the binary's with the rule: all passed but
+  nine `workflow_limit`/`task_done` tests that timed out on the fake agent of before the
+  merge of `dev` (rebuilt with `cargo build -p fake-agent`, then 9 of 9 passed; the gate
+  builds it itself).
+- **Gate.** `scripts/dev ci` at `9bf5df124`: exit 0; `4249 tests run: 4249 passed, 16 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A member of a merge train under test whose task is closed meanwhile (the
+  pass ends its armed merge by the same line; the train's own handling of a member that
+  left is as before); a playground's armed merge for a closed task (the same function).
