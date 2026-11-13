@@ -918,11 +918,12 @@ reason.` in the terminal.
 - The notice in a session that was started after the update means a plugin brings a language
   server where Yulius does not look. The launch's warning in the server's log, "could not read
   everything about this session's plugins", names what it left unread (a link, a file that is
-  not JSON, a bound). Not read by decision: a marketplace or an installed copy outside the
-  sandbox's folders, a plugin installed or switched on while the session ran (off from the
-  next launch), and a repository's own marketplace in the session that registers it. Anything
-  else: report it. The opt-in check `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main
-  live_claude::a_run -- --ignored` asks the installed Claude Code in seven layouts (no account
+  not JSON, a bound, a marketplace whose folder it could not open). Not read by decision: a
+  marketplace or an installed copy outside the sandbox's folders (for a contained Superagent
+  also one in the person's own home, which its Claude Code names by the path it sees there),
+  and a plugin installed or switched on while the session ran (off from the next launch).
+  Anything else: report it. The opt-in check `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main
+  live_claude::a_run -- --ignored` asks the installed Claude Code in eight layouts (no account
   needed).
 
 ### Messages Yulius types into a session

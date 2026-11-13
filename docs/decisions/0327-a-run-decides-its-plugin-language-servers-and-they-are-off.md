@@ -55,7 +55,9 @@ Measured with Claude Code 2.1.323 run in a terminal against a local stand-in for
   (`plugins/installed_plugins.json`) and the ones the home's `settings.json`, the worktree's
   `.claude/settings.json` or `.claude/settings.local.json` switch on, which Claude Code loads in
   place from a marketplace that is a folder, with no install record. A marketplace lies where
-  `plugins/known_marketplaces.json` says, else at `plugins/marketplaces/<marketplace>`.
+  `plugins/known_marketplaces.json` says, else where one of those settings files names it as a
+  folder (`extraKnownMarketplaces`: in a terminal Claude Code loads from it in the very session
+  that registers it), else at `plugins/marketplaces/<marketplace>`.
 - **"Brings a language server" is read by presence, from the three places Claude Code reads.**
   `lspServers` other than `null` in the plugin's entry of its marketplace's `marketplace.json`,
   the same key in the plugin's manifest, or a file `.lsp.json`, in any of the plugin's folders
@@ -66,7 +68,8 @@ Measured with Claude Code 2.1.323 run in a terminal against a local stand-in for
   above the home ([ADR-0174](0174-host-access-to-agent-owned-folders-goes-through-handles.md));
   a path the agent wrote is opened only below the sandbox directory or that folder. The whole
   lookup reads at most 16 MiB (2 MiB a file) and looks into at most 1024 plugin folders, for
-  at most 256 plugins with ids of at most 200 bytes. What cannot be read brings nothing and is
+  at most 256 plugins with ids of at most 200 bytes, each two names as Claude Code takes
+  them, so that a run's settings cannot outgrow a command line. What cannot be read brings nothing and is
   logged with the launch: this is tidiness, not a boundary, since a language server runs
   inside the session's containment like any program the agent starts.
 - **Nobody is asked to install one.** `ensure_claude_config` sets `"lspRecommendationDisabled":
@@ -104,18 +107,21 @@ Measured with Claude Code 2.1.323 run in a terminal against a local stand-in for
   in the layouts the lookup reads. Agents have no go-to-definition from a language server; they
   read and search code as before.
 - Not covered, where a server can still start: a marketplace or an installed copy outside the
-  sandbox's folders (the host does not open a path the agent names there); a repository's own
-  marketplace in the session that registers it (Claude Code loads nothing from it then); plugins
-  given on a command line (`--plugin-dir`, which Yulius does not pass). The launch's log line
-  about what was left unread and the operations guide say how to see it.
+  sandbox's folders (the host does not open a path the agent names there), which for a
+  contained Superagent includes one in the person's own home, named by the path its Claude Code
+  sees (`/home/<login>/…`); a plugin installed or switched on while a session runs (off from
+  the next launch); plugins given on a command line (`--plugin-dir`, which Yulius does not
+  pass). The launch's warning names a marketplace whose folder it did not open, and
+  the operations guide says how to see the rest.
 - A plugin a person installs by hand in a terminal that brings a language server works until
   that session ends and is off in the next launch. Who wants one for a project asks for the
   alternative above.
 - An existing instance needs the update only. Sessions get the change at their next launch;
   nothing in a sandbox's home has to be changed, and an installed plugin may stay.
 - The opt-in live check (`YULIUS_LIVE_CLAUDE=1`, no account) keeps it true against the installed
-  Claude Code: in seven layouts (cloned and folder marketplaces, with and without install
-  records, switched on by the home, the repository or the worktree) the real CLI loads three
+  Claude Code: in eight layouts (cloned and folder marketplaces, with and without install
+  records, switched on by the home, the repository or the worktree, a marketplace the
+  repository brings) the real CLI loads three
   plugins' servers with the files alone and none with a run's settings. A later Claude Code
   that loads a layout differently shows there, as a control that no longer loads or a server
   that still does.

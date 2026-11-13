@@ -87,7 +87,10 @@ sandbox's own plugin folder copied; scripts and logs are in the Evidence section
     `settings.json`, the worktree's `.claude/settings.json` or its `.claude/settings.local.json`
     switch on (`enabledPlugins`, any value but `false`): Claude Code loads such a plugin in place
     from a marketplace that is a folder, with no install record.
-  - A marketplace lies where `plugins/known_marketplaces.json` says (`installLocation`), else at
+  - A marketplace lies where `plugins/known_marketplaces.json` says (`installLocation`); else
+    where one of those three settings files names it as a folder (`extraKnownMarketplaces`,
+    source `directory`, a relative path being the worktree's), which Claude Code registers
+    during a session and, in a terminal, loads from in that same session; else at
     `plugins/marketplaces/<marketplace>`.
   - A plugin brings a language server when its entry in the marketplace's
     `.claude-plugin/marketplace.json` names `lspServers` with a value other than `null`, or one
@@ -98,12 +101,16 @@ sandbox's own plugin folder copied; scripts and logs are in the Evidence section
   - Reading: through handles opened one name at a time without following a link, from the
     folder above the home (as ADR-0174 does). A path the agent wrote (`installLocation`,
     `installPath`, the worktree) is opened only below the sandbox directory or the folder above
-    the home; `..` in a `source` is not walked; an id whose name or marketplace is not a plain
-    file name is skipped. Nothing is created or written.
-  - Bounds, for the whole lookup: 16 MiB read, 2 MiB a file, 1024 plugin folders, 256 plugins
-    of at most 200 bytes each, 16 version folders a plugin; `.lsp.json` is not read.
-  - What cannot be read (a link, a special file, not JSON, past a bound) brings nothing and is
-    named in the result's `unread`; a missing file is no note. The function never fails a
+    the home; `..` in a `source` is not walked; an id is taken only when its name and its
+    marketplace are names as Claude Code takes them (letters, digits, `.`, `_`, `-`), each one
+    plain file name. Nothing is created or written.
+  - Bounds, for the whole lookup: 16 MiB read (whatever a file holds), 2 MiB a file, 1024
+    plugin folders, 256 plugins of at most 200 bytes each, 16 version folders a plugin;
+    `.lsp.json` is not read. The ids' bound and characters keep what a run's settings grow by
+    (about 54 kB) below what one argument of a command line may have.
+  - What cannot be read (a link, a special file, not JSON, past a bound, a marketplace whose
+    folder cannot be opened, an id that is not two such names) brings nothing and is named in
+    the result's `unread` (at most 8 notes); a missing file is no note. The function never fails a
     launch.
 - LSP-003 (off in every run). `LaunchRequest` and `CockpitRequest` carry `disabled_plugins`; the
   task run's settings file and the Superagent's `--settings` then hold
@@ -115,11 +122,13 @@ sandbox's own plugin folder copied; scripts and logs are in the Evidence section
   plugin that brings a language server and other things (skills, commands) is switched off
   whole: Claude Code has no switch for a plugin's language server alone.
 - LSP-004 (the check with the real tool). An opt-in live test (`YULIUS_LIVE_CLAUDE=1`, as the
-  other checks of the real CLI) runs the installed `claude` in seven layouts: a cloned
+  other checks of the real CLI) runs the installed `claude` in eight layouts: a cloned
   marketplace with installed plugins; a marketplace that is a folder (as `claude plugin
   marketplace add <folder>` leaves it); plugins switched on with no install record; switched on
   by the repository's settings and by the worktree's local settings; installed copies outside
-  the cache; a marketplace the repository brings (`extraKnownMarketplaces`). In each, three
+  the cache that alone say two plugins bring a server; a marketplace the repository brings
+  (`extraKnownMarketplaces`) by an absolute and by a relative path, the run's settings planned
+  before it is registered. In each, three
   plugins bring a server by the three ways and a fourth brings none. The control shows that the
   CLI loads the three servers (its debug log); with the `--settings` Yulius plans for a run of
   that home and worktree it loads none, and `claude plugin list --json` shows the fourth still
@@ -226,12 +235,19 @@ found for them); Claude Code's own notices about limits and goals (listed under 
   boundary: a language server runs inside the session's containment like any program the agent
   starts. An agent that hides a plugin behind a link gets a server only for its own sandbox.
   What was left unread is logged with the launch, so a notice that still appears can be traced.
+- **A repository's own marketplace is read from the settings that bring it** (review round 2).
+  The first rework waited for Claude Code to register it, on a headless measurement ("the
+  first session loads nothing"). In a terminal, which is what Yulius runs, the registering
+  session loads its language servers too (`Total LSP servers loaded: 0`, then `3`), and so
+  does the first session of each new worktree.
 - **Not covered, by decision.** A marketplace or an installed copy outside the sandbox's folders
-  (the host does not open a path the agent names there); a plugin installed or switched on
-  while a session runs (off from the next launch); a repository's own marketplace in the very
-  session that registers it (Claude Code loads nothing from it in that session); plugins given
-  on a command line (`--plugin-dir`: Yulius passes none). In these a server can still start;
-  the operations guide says how to see it.
+  (the host does not open a path the agent names there); for a contained Superagent that
+  includes a folder marketplace or a copy in the person's own home, which its Claude Code
+  names by the path it sees there (`/home/<login>/…`), not by the host's; a plugin installed
+  or switched on while a session runs (off from the next launch); plugins given on a command
+  line (`--plugin-dir`: Yulius passes none). In these a server can still start; a
+  marketplace whose folder was not opened is named in the launch's warning, and the
+  operations guide says how to see the rest.
 - **The dialog is switched off by Claude Code's own key**, in `.claude.json` where it keeps it,
   merged like the other keys of `ensure_claude_config`.
 - **The installed plugin stays in this sandbox's home.** Removing it would bring the dialog back

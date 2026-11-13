@@ -18,7 +18,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the worktree's settings) are switched off in the run's own settings, which outrank the
   home's, a repository's and a worktree's, and the offer is switched off
   (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a sandbox's home needs
-  changing. Checked against the real CLI in seven layouts by an opt-in test that needs no
+  changing. Checked against the real CLI in eight layouts by an opt-in test that needs no
   account; what the lookup does not read (a marketplace outside the sandbox's folders) is in
   ADR-0327 and the operations guide.
 - A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
