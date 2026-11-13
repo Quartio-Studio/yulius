@@ -348,8 +348,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **FSR-005** The browser keeps the address of a navigation to another document Chrome
   announced for a frame (`Page.frameStartedNavigating`; `Page.frameRequestedNavigation` for
   this tab) until the frame arrived, stopped loading or was detached, the tab's session ended
-  or 30 s passed; at most 256 frames and 2048 bytes of an address. A same-document navigation
-  is not kept. Past the bound, and when events were skipped, nothing is known for 30 s.
+  or 30 s passed; at most 256 frames per tab; an address over 2048 bytes is kept as none (no
+  secret is for it). A same-document navigation is not kept. Past the bound nothing is known
+  of that tab for 30 s, and when events were skipped, of none.
 - **FSR-006** The refusals reach the application as a page the secret is not for (403), the
   reports as a secret gone astray (with its activity entry).
 - **FSR-007** Before the keys, after the focus: the document is read again, and one that is
@@ -357,8 +358,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   Then, last, a page with a frame (the main one or one in its tree) on its way to an address
   the rule refuses gets nothing typed and that site is named; when where they are going is
   not known, nothing is typed either.
-- **FSR-008** After the keys, a focus in a document the page cannot read, on a page holding a
-  frame the rule refuses (or on a fenced frame), fails the tool naming that site.
+- **FSR-008** After the keys, a focus that is not in a text field of the page, on a page
+  holding a frame the rule refuses (or on a fenced frame), fails the tool naming that site.
 - **FSR-009** A secret's user name and one-time code are typed under FSR-001..008, and are
   not remembered as typed secrets (finding E10).
 
@@ -530,11 +531,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   link to another site types nothing.
 - **AC-45** A document that changed between the look at the page and the keys gets nothing
   typed (`SecretPageRefused` with the new site, or "try again" within the secret's sites). A
-  frame of a refused site that has the focus after the keys answers `SecretFrameAstray` with
-  its site; through the MCP tool a `vault.agent.fill` activity entry names it.
+  focus outside the page's fields after the keys (a frame, something else, a fenced frame),
+  on a page holding a frame of a refused site, answers `SecretFrameAstray` with that site;
+  with only allowed frames, or still in the field, it does not; through the MCP tool a
+  `vault.agent.fill` activity entry names it.
 - **AC-46** The record of announced navigations: an entry counts for 30 s, a settled frame's
-  and an ended session's are gone, past 256 frames (none older than 30 s) and after lost
-  events nothing is known for 30 s, an address is kept by its first 2048 bytes.
+  and an ended session's are gone, past 256 frames of a tab (none older than 30 s) nothing
+  is known of that tab for 30 s while other tabs' are, after lost events of none, and an
+  address over 2048 bytes is kept as none (one that would read as a bound host when cut).
 - **AC-47** Through the MCP tool, the field `username` is typed neither with the focus in
   another site's frame, nor into a tab on its way to another site, nor into a tab that moved
   on unheard; it is typed on the bound page, and a frame that took the focus is reported.
@@ -629,8 +633,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 8: `yulius-browser` `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for`
   (AC-42), `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` (AC-43),
   `instance::a_secret_is_not_typed_into_a_page_that_changed_since_the_look` (AC-45), the unit
-  tests `instance::tests::an_announced_navigation_stands_until_it_settled_or_is_old` and
-  `instance::tests::announcements_are_bounded_and_losing_them_is_not_knowing` (AC-46),
+  tests `instance::tests::an_announced_navigation_stands_until_it_settled_or_is_old`,
+  `instance::tests::announcements_are_bounded_and_losing_them_is_not_knowing` and
+  `instance::tests::an_address_too_long_to_keep_is_no_address` (AC-46),
   `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
   (AC-42, AC-43, AC-45 and AC-47 through the MCP tool); opt-in, on a real Chrome:
   `real_chromium::a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium` and
@@ -1208,3 +1213,20 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested here, added by the review's answers.** A fenced frame on a real Chrome (the
   probe names the element; no page with one was built). The loss of announcements on skipped
   events, end to end (the function is unit-tested).
+- **Review of slice 8, round 2** (head 2c1af3d04): request changes; "All nine round 1
+  findings are answered as the coordinator described, and I checked each in the code." Four
+  new ones in the new code, all answered test-first:
+  1. (minor) an announced address cut to 2048 bytes could read as a host of a wildcard
+     binding (`https://<long>.bank.example@evil.example/`): one too long is kept as no
+     address, which no secret is for.
+  2. (minor) a frame inside a closed shadow root that took the focus during the keys was not
+     reported: after the keys the frames are asked by the rule asked before them (the focus
+     not in a field of the page), and screenshots follow the same condition.
+  3. (nit) an announcement sent a moment before the keys may not have been read: named in
+     ADR-0320 (the report afterwards covers it).
+  4. (nit) more than 256 frames on their way in one tab stopped fills in every tab: the bound
+     and its loss are per tab; skipped events still lose every tab's.
+- **Tests failing without their fix, after round 2** (`mutate.py`, 32 cases,
+  `mutations3.log` and `mutations3b.log`): all 32 failed their tests; new: a cut address
+  kept, one tab's loss not asked, after the keys only a fenced frame reported.
+- **Real browser after round 2** (Chrome 157): the four opt-in tests passed.
