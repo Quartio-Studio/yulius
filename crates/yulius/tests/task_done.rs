@@ -125,7 +125,7 @@ async fn start_on(
         agent,
         port,
         host,
-        escalation_ms,
+        (escalation_ms, None),
         attach_late,
         sessions,
         None,
@@ -158,6 +158,7 @@ struct TurnHooks {
 /// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
 /// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
 /// hook client gave up waiting (SPEC-346); with `turn_hooks` the test follows the turn hooks.
+/// The pair shortens the stop and close escalation, and a switch's wait for its old session.
 #[allow(clippy::too_many_arguments)]
 async fn start_holding(
     data: &Path,
@@ -165,7 +166,7 @@ async fn start_holding(
     agent: FakeAgentOptions,
     port: u16,
     host: Option<Arc<dyn SessionHost>>,
-    escalation_ms: Option<u64>,
+    (escalation_ms, switch_end_ms): (Option<u64>, Option<u64>),
     attach_late: bool,
     sessions: Option<u32>,
     late_goal: Option<LateHook>,
@@ -183,6 +184,9 @@ async fn start_holding(
     config.contained = false;
     if let Some(ms) = escalation_ms {
         config.stop_escalation_ms = ms;
+    }
+    if let Some(ms) = switch_end_ms {
+        config.switch_end_ms = ms;
     }
     if let Some(sessions) = sessions {
         config.max_live_sessions = sessions;
@@ -1046,7 +1050,7 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             agent,
             0,
             None,
-            None,
+            (None, None),
             false,
             None,
             Some(late.clone()),
@@ -1091,8 +1095,19 @@ async fn start_following(
         prompts_lost: Arc::default(),
     };
     let hooks = Some(turn.clone());
-    let (app, _) =
-        start_holding(data, fake, agent, 0, None, None, false, None, None, hooks).await?;
+    let (app, _) = start_holding(
+        data,
+        fake,
+        agent,
+        0,
+        None,
+        (None, None),
+        false,
+        None,
+        None,
+        hooks,
+    )
+    .await?;
     Ok((app, turn, answered))
 }
 
@@ -2338,6 +2353,137 @@ fn a_monitor_that_never_reports_counts_until_it_expires() -> TestResult {
     a_monitor_counts_until_it_ends_or_expires(false)
 }
 
+/// A second subscription, `a-claude-2`, with room.
+async fn spare_subscription(app: &App) -> TestResult {
+    app.deps
+        .store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("a-claude-2")?,
+            provider: Provider::Anthropic,
+            label: "Claude spare".into(),
+            credential: Some(
+                app.deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "spare-credential").as_bytes())?,
+            ),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    Ok(())
+}
+
+/// The first subscription, `a-claude`, reaches the threshold at which a turn's end moves its
+/// session to another one.
+async fn first_subscription_nearly_full(app: &App) -> TestResult {
+    let near = yulius_domain::usage::AccountUsage {
+        primary: Some(yulius_domain::usage::UsageWindow {
+            used_percent: Some(99.0),
+            window_minutes: Some(300),
+            resets_at: Some(Timestamp(4_000_000_000_000)),
+        }),
+        ..yulius_domain::usage::AccountUsage::default()
+    };
+    let near = yulius_app::usage_json::to_json(&near);
+    app.deps
+        .store
+        .set_account_state(
+            &AccountId::parse("a-claude")?,
+            AccountStatus::Ok,
+            Some(&near),
+            None,
+            app.now(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Whether the task's newest run is live on the spare subscription.
+async fn runs_on_the_spare(app: &App, id: &TaskId) -> bool {
+    app.deps
+        .store
+        .attempts(id)
+        .await
+        .unwrap_or_default()
+        .last()
+        .is_some_and(|a| {
+            a.account_id.as_ref().map(AccountId::as_str) == Some("a-claude-2")
+                && !a.state.is_terminal()
+        })
+}
+
+/// SPEC-483 SWT-001: the look at the session's background work gives no answer (the probe timed
+/// out, the process table could not be read) at a turn's end that would move the session to
+/// another subscription. Work that cannot be told is taken as running, as everywhere else that
+/// asks: the session stays and is answered, and moves at a later turn's end, once the look
+/// answers.
+#[test]
+fn a_switch_waits_while_the_background_work_cannot_be_told() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_delay_ms: Some(3_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            agent,
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        spare_subscription(&app).await?;
+        host.silence_probe(true);
+        let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
+        wait_for("the goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        first_subscription_nearly_full(&app).await?;
+        let runs = || async { app.deps.store.attempts(&id).await.unwrap_or_default().len() };
+        // The turn's end is answered (the task is done) or the session is moved.
+        wait_for("the goal turn's end", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done) || runs().await >= 2
+        })
+        .await?;
+        assert_eq!(
+            runs().await,
+            1,
+            "no move while the background work cannot be told: {}",
+            run_states(&app, &id).await
+        );
+        // The look answers again: the next turn's end moves the session (a turn longer than
+        // the time in which its prompt's record may still be unread, SPEC-471 CCQ-004).
+        host.silence_probe(false);
+        app.send_input(&id, b"/work 3000 go on\r").await?;
+        wait_for("the move", Duration::from_secs(60), || {
+            runs_on_the_spare(&app, &id)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-079 BGW-004 (#271): the goal turn launches a background agent while the task's
 /// subscription is at its threshold. The Stop decides a proactive switch, which would end the
 /// agent: it waits while the agent is pending and is made at the Stop after the agent finished.
@@ -2357,26 +2503,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let store = &app.deps.store;
-        store
-            .insert_account(&AccountRecord {
-                id: AccountId::parse("a-claude-2")?,
-                provider: Provider::Anthropic,
-                label: "Claude spare".into(),
-                credential: Some(
-                    app.deps
-                        .crypto
-                        .seal(concat!("sk-ant-oat01-", "spare-credential").as_bytes())?,
-                ),
-                status: AccountStatus::Ok,
-                usage_json: None,
-                last_error: None,
-                created_at: Timestamp(1),
-                updated_at: Timestamp(1),
-                email: None,
-                email_checked_at: None,
-                email_typed: false,
-            })
-            .await?;
+        spare_subscription(&app).await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
         wait_for("the goal", Duration::from_secs(90), || {
             screen_contains(&app, &id, "GOAL SET")
@@ -2388,24 +2515,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
             Some("a-claude")
         );
         // The task's subscription reaches the switch threshold before the turn ends.
-        let near = yulius_domain::usage::AccountUsage {
-            primary: Some(yulius_domain::usage::UsageWindow {
-                used_percent: Some(99.0),
-                window_minutes: Some(300),
-                resets_at: Some(Timestamp(4_000_000_000_000)),
-            }),
-            ..yulius_domain::usage::AccountUsage::default()
-        };
-        let near = yulius_app::usage_json::to_json(&near);
-        store
-            .set_account_state(
-                &AccountId::parse("a-claude")?,
-                AccountStatus::Ok,
-                Some(&near),
-                None,
-                app.now(),
-            )
-            .await?;
+        first_subscription_nearly_full(&app).await?;
         let switched = || async { store.attempts(&id).await.unwrap_or_default().len() >= 2 };
         wait_for("the goal turn's end", Duration::from_secs(90), || async {
             screen_contains(&app, &id, "Goal achieved").await || switched().await
@@ -2421,16 +2531,8 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
         })
         .await?;
         // The wake-up turn's Stop makes the switch.
-        wait_for("the switch", Duration::from_secs(60), || async {
-            store
-                .attempts(&id)
-                .await
-                .unwrap_or_default()
-                .last()
-                .is_some_and(|a| {
-                    a.account_id.as_ref().map(AccountId::as_str) == Some("a-claude-2")
-                        && !a.state.is_terminal()
-                })
+        wait_for("the switch", Duration::from_secs(60), || {
+            runs_on_the_spare(&app, &id)
         })
         .await?;
         stop(&app, &id).await
@@ -2633,6 +2735,155 @@ async fn gated_goal_task(
     })
     .await?;
     Ok((app, host, id))
+}
+
+/// [`gated_goal_task`] on a server whose switch waits `switch_end_ms` for the old session's end.
+async fn gated_goal_task_ending(
+    data: &Path,
+    fake: &Path,
+    switch_end_ms: u64,
+) -> Result<(Arc<App>, Arc<support::gated::GatedHost>, TaskId), BoxError> {
+    let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+        "CARGO_BIN_EXE_yulius"
+    ))));
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+    let (app, _) = start_holding(
+        data,
+        fake,
+        agent,
+        0,
+        Some(host.clone()),
+        (None, Some(switch_end_ms)),
+        false,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let (sandbox, user) = seed(&app, data).await?;
+    let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+    wait_for("the launch goal", Duration::from_secs(60), || {
+        screen_contains(&app, &id, "GOAL SET")
+    })
+    .await?;
+    Ok((app, host, id))
+}
+
+/// SPEC-483 SWT-002: the session a switch asked to end does not end in time, and its host cannot
+/// be terminated (a process that survives the kill). No new session starts beside it: the run
+/// stays the task's live run, the task runs and says so to a person, and the switch failed.
+/// The run's end is no longer the switch's: a session that leaves by itself afterwards ends as
+/// one that left, and closes its task.
+#[test]
+fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        let mut watch = app.runtime(&id).hub.watch();
+        host.refuse_ends(true);
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(
+            outcome,
+            Err("the session could not be ended, so it was not switched".to_owned()),
+            "{}",
+            run_states(&app, &id).await
+        );
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1, "{}", run_states(&app, &id).await);
+        assert_eq!(runs[0].state, AttemptState::Live);
+        assert_eq!(
+            app.deps.store.live_attempt(&id).await?.map(|a| a.id),
+            Some(run.id)
+        );
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        let why = support::attention(&app, id.as_str()).await?;
+        assert!(
+            why["problem"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("Yulius could not end this session")),
+            "{why}"
+        );
+        assert_eq!(why["action"], "Stop the task again to retry.");
+        let switches = app.deps.store.switches(&id).await?;
+        assert_eq!(
+            switches.last().map(|s| s.outcome.as_str()),
+            Some("failed"),
+            "the switch is recorded as failed"
+        );
+        let mut said = Vec::new();
+        while let Ok(frame) = watch.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter()
+                .any(|line| line == "↻ The session was not switched: it could not be ended."),
+            "{said:?}"
+        );
+        assert!(
+            app.switch_cooling(&id),
+            "the next turn's end stays on this subscription"
+        );
+        host.refuse_ends(false);
+        app.send_input(&id, b"/exit\r").await?;
+        wait_for("the task at rest", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Closed,
+            "{}",
+            run_states(&app, &id).await
+        );
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("exited"));
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
+/// terminated. The run is lost, as any run whose host had to be killed, and a switch whose old
+/// run is lost starts no new run (SPEC-250 STW-006): the task rests with its one run ended.
+#[test]
+fn a_switch_whose_old_run_had_to_be_killed_starts_no_new_run() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
+        host.deafen(true);
+        let outcome = switch_result(switch_on_worker(&app, &id)).await?;
+        assert_eq!(
+            outcome,
+            Err("the session ended during the switch".to_owned()),
+            "{}",
+            run_states(&app, &id).await
+        );
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1, "{}", run_states(&app, &id).await);
+        assert_eq!(runs[0].state, AttemptState::Lost);
+        assert_eq!(runs[0].exit_reason.as_deref(), Some("lost"));
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::Lost)
+        );
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// Stops `id` on a runtime worker, so a pause point's hook can wait there.
