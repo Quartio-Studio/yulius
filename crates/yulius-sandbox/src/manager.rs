@@ -177,6 +177,77 @@ fn upper_has(_upper: &Path, _relative: &str) -> Option<bool> {
     None
 }
 
+/// The most a sandbox's `/etc/passwd` or `/etc/group` may hold to be read.
+const MAX_SYSTEM_FILE_BYTES: u64 = 1 << 20;
+
+/// The text of `etc/<name>` of a sandbox's system (ADR-0315): its overlay `upper` layer's file
+/// where that layer has one, else its `base`'s. The upper layer is the sandbox's to write (root
+/// in it owns `/etc`), so it is walked from one handle to the next without following a link,
+/// the file is opened without following a link or waiting, and only a regular file of at most
+/// 1 MiB is read. Anything else at the name or over `etc` (a link, which
+/// would resolve inside the sandbox and not on the host; a whiteout; a larger file) gives
+/// nothing, as it hides the base's.
+#[must_use]
+pub fn system_file_text(base: &Path, upper: &Path, name: &str) -> Option<String> {
+    let in_base = || bounded_text(std::fs::File::open(base.join("etc").join(name)).ok()?);
+    match upper_file(upper, name) {
+        UpperFile::Regular(file) => bounded_text(file),
+        UpperFile::Hidden => None,
+        UpperFile::Absent => in_base(),
+    }
+}
+
+/// What a sandbox's upper layer holds at `etc/<name>`.
+enum UpperFile {
+    /// A regular file, opened.
+    Regular(std::fs::File),
+    /// Something else there, or over `etc`: the base's file does not show.
+    Hidden,
+    /// No entry: the base's file shows.
+    Absent,
+}
+
+fn upper_file(upper: &Path, name: &str) -> UpperFile {
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    let walk = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let Ok(root) = open(upper, walk, Mode::empty()) else {
+        return UpperFile::Absent;
+    };
+    let etc = match openat(&root, "etc", walk, Mode::empty()) {
+        Ok(etc) => etc,
+        Err(Errno::ENOENT) => return UpperFile::Absent,
+        Err(_) => return UpperFile::Hidden,
+    };
+    let read = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    match openat(&etc, name, read, Mode::empty()) {
+        Ok(fd) => {
+            let file = std::fs::File::from(fd);
+            if file.metadata().is_ok_and(|meta| meta.is_file()) {
+                UpperFile::Regular(file)
+            } else {
+                UpperFile::Hidden
+            }
+        }
+        Err(Errno::ENOENT) => UpperFile::Absent,
+        Err(_) => UpperFile::Hidden,
+    }
+}
+
+/// The text of `file` when it is UTF-8 of at most [`MAX_SYSTEM_FILE_BYTES`].
+fn bounded_text(file: std::fs::File) -> Option<String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    file.take(MAX_SYSTEM_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SYSTEM_FILE_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Idle handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdleConfig {
@@ -246,10 +317,10 @@ pub struct Joined {
     pub join: SandboxJoin,
     /// The cgroup CI jobs join instead of `join.cgroup` (SPEC-053 CPU-203).
     pub ci_cgroup: Option<PathBuf>,
-    /// Host path of the sandbox system's `/etc/passwd` (upper layer, else base).
-    pub system_passwd: Option<PathBuf>,
-    /// Host path of its `/etc/group`.
-    pub system_group: Option<PathBuf>,
+    /// The text of the sandbox system's `/etc/passwd` ([`system_file_text`]).
+    pub system_passwd: Option<String>,
+    /// The text of its `/etc/group`.
+    pub system_group: Option<String>,
 }
 
 /// Why `prepare` refused.
@@ -1092,12 +1163,11 @@ impl Manager {
         state.last_used = Some(Instant::now());
         let groups = self.cgroup_of(&request.id);
         let system_file = |name: &str| {
-            [
-                self.sysroot(&request.id).join("upper/etc").join(name),
-                self.bases.path(&record.base_id).join("etc").join(name),
-            ]
-            .into_iter()
-            .find(|p| p.is_file())
+            system_file_text(
+                &self.bases.path(&record.base_id),
+                &self.sysroot(&request.id).join("upper"),
+                name,
+            )
         };
         Ok(Some(Joined {
             ci_cgroup: groups.as_ref().map(|g| g.ci.clone()),
@@ -2867,6 +2937,67 @@ while True:
         );
         entry.lock().await.live = Some(Live::new(live_record(true), Vec::new()));
         assert!(manager.docker_for("s1").await);
+        Ok(())
+    }
+
+    /// ADR-0315: root in the sandbox owns `/etc` of its upper layer. Its `passwd` is read
+    /// without following a link (the server would read a host file into people's
+    /// `/etc/passwd`), without waiting on a FIFO, and only up to a megabyte; what hides the
+    /// base's file there gives nothing, and a layer without one gives the base's.
+    #[test]
+    fn a_sandbox_s_passwd_is_read_without_following_a_link()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let (base, upper) = (data.path().join("base"), data.path().join("upper"));
+        std::fs::create_dir_all(base.join("etc"))?;
+        std::fs::write(base.join("etc/passwd"), "root:x:0:0::/root:/bin/sh\n")?;
+        let text = |name: &str| system_file_text(&base, &upper, name);
+        assert_eq!(
+            text("passwd").as_deref(),
+            Some("root:x:0:0::/root:/bin/sh\n")
+        );
+        assert_eq!(text("group"), None);
+
+        std::fs::create_dir_all(upper.join("etc"))?;
+        assert_eq!(
+            text("passwd").as_deref(),
+            Some("root:x:0:0::/root:/bin/sh\n")
+        );
+        std::fs::write(upper.join("etc/passwd"), "app:x:999:999::/:/bin/false\n")?;
+        assert_eq!(
+            text("passwd").as_deref(),
+            Some("app:x:999:999::/:/bin/false\n")
+        );
+
+        // A link to a file of the host: not read, and the base's is hidden as in the sandbox.
+        let host = data.path().join("workspace-token.key");
+        std::fs::write(&host, "a secret of the host\n")?;
+        std::fs::remove_file(upper.join("etc/passwd"))?;
+        std::os::unix::fs::symlink(&host, upper.join("etc/passwd"))?;
+        assert_eq!(text("passwd"), None);
+
+        // A FIFO nobody writes, and more than the bound.
+        std::fs::remove_file(upper.join("etc/passwd"))?;
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(upper.join("etc/passwd"))
+                .status()?
+                .success()
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(text("passwd"), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::fs::remove_file(upper.join("etc/passwd"))?;
+        std::fs::write(upper.join("etc/passwd"), vec![b'a'; (1 << 20) + 1])?;
+        assert_eq!(text("passwd"), None);
+
+        // `etc` itself a link out of the layer.
+        std::fs::remove_dir_all(upper.join("etc"))?;
+        let outside = data.path().join("outside");
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("passwd"), "outside:x:1:1::/:/bin/sh\n")?;
+        std::os::unix::fs::symlink(&outside, upper.join("etc"))?;
+        assert_eq!(text("passwd"), None);
         Ok(())
     }
 

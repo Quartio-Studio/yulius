@@ -1160,6 +1160,51 @@ fn the_push_guard_follows_no_link_an_agent_planted() -> TestResult {
         "the guard works"
     );
 
+    // A worktree whose `.git` file was rewritten to name a directory elsewhere of the same
+    // shape: refused, nothing written there and no hooks path set to it.
+    let elsewhere = fx.path("elsewhere");
+    fs::create_dir_all(elsewhere.join("worktrees"))?;
+    let copy = |from: &Path, to: &Path| -> TestResult {
+        let copied = Command::new("cp").arg("-r").arg(from).arg(to).status()?;
+        assert!(copied.success(), "{}", from.display());
+        Ok(())
+    };
+    copy(
+        &repo.join(".git/worktrees/task-l"),
+        &elsewhere.join("worktrees/task-l"),
+    )?;
+    for part in ["HEAD", "config", "objects", "refs"] {
+        copy(&repo.join(".git").join(part), &elsewhere.join(part))?;
+    }
+    let pointer = fs::read_to_string(task.join(".git"))?;
+    fs::write(
+        task.join(".git"),
+        format!("gitdir: {}\n", elsewhere.join("worktrees/task-l").display()),
+    )?;
+    assert!(matches!(
+        fx.git.install_pre_push_guard(&repo, &task, &protected),
+        Err(GitError::InvalidInput { .. })
+    ));
+    let before = fs::read_to_string(elsewhere.join("worktrees/task-l/yulius-hooks/pre-push"))?;
+    fs::write(task.join(".git"), pointer)?;
+    fx.git
+        .install_pre_push_guard(&repo, &task, &["release".to_owned()])?;
+    assert_eq!(
+        fs::read_to_string(elsewhere.join("worktrees/task-l/yulius-hooks/pre-push"))?,
+        before,
+        "nothing was written elsewhere"
+    );
+    // A set-user-id bit on a hook's old file is not carried over.
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(hooks.join("pre-push"), fs::Permissions::from_mode(0o4755))?;
+        fx.git.install_pre_push_guard(&repo, &task, &protected)?;
+        assert_eq!(
+            fs::metadata(hooks.join("pre-push"))?.permissions().mode() & 0o7777,
+            0o755
+        );
+    }
+
     // The hooks folder itself a link out of the repository: refused, nothing written there.
     fs::remove_dir_all(&hooks)?;
     let outside = fx.path("outside-hooks");
@@ -1837,7 +1882,7 @@ fn managed_attributes_follow_no_link_an_agent_planted() -> TestResult {
     fs::remove_file(&attributes)?;
     symlink(&host_file, &attributes)?;
     assert!(matches!(
-        fx.git.set_managed_attributes(&repo, &[]),
+        fx.git.set_managed_attributes(&repo, &lines),
         Err(GitError::InvalidInput { .. })
     ));
     assert!(fs::symlink_metadata(&attributes)?.file_type().is_symlink());

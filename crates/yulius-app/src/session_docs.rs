@@ -364,10 +364,15 @@ impl App {
             .iter()
             .map(|doc| PathBuf::from(&doc.transcript_path))
             .collect();
+        let anchor = self.sandbox_dir(sandbox);
+        // The size of what would be read: a transcript that is no regular file has none.
         let sizes: Vec<Option<u64>> = blocking(move || {
             Ok(paths
                 .iter()
-                .map(|path| fs::metadata(path).ok().map(|meta| meta.len()))
+                .map(|path| {
+                    let file = transcripts::open(&anchor, path).ok()?;
+                    file.metadata().ok().map(|meta| meta.len())
+                })
                 .collect())
         })
         .await?;
@@ -406,9 +411,13 @@ impl App {
                 continue;
             }
             let path = PathBuf::from(&doc.transcript_path);
+            let anchor = self.sandbox_dir(&doc.sandbox_id);
             let (from_byte, from_line) = (doc.indexed_bytes, doc.indexed_lines);
             let batch = match blocking(move || {
-                transcripts::read_for_index(&path, from_byte, from_line, allowed, usize::MAX)
+                transcripts::open(&anchor, &path)
+                    .and_then(|file| {
+                        transcripts::read_for_index(file, from_byte, from_line, allowed, usize::MAX)
+                    })
                     .map_err(AppError::internal)
             })
             .await
@@ -703,16 +712,18 @@ impl App {
             .doc_view(&doc, &tasks, &mut HashMap::new(), Some((&ctx.user, level)))
             .await;
         let path = PathBuf::from(&doc.transcript_path);
-        let page =
-            blocking(
-                move || match transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS) {
-                    Ok(page) => Ok(Some(page)),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(err) => Err(AppError::internal(err)),
-                },
-            )
-            .await?
-            .unwrap_or_default();
+        let anchor = self.sandbox_dir(&doc.sandbox_id);
+        let page = blocking(move || {
+            let read = transcripts::open(&anchor, &path)
+                .and_then(|file| transcripts::read_page(file, from, limit, MAX_PAGE_CHARS));
+            match read {
+                Ok(page) => Ok(Some(page)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(AppError::internal(err)),
+            }
+        })
+        .await?
+        .unwrap_or_default();
         let mut entries = page.entries;
         self.redact_page_secrets(&doc.sandbox_id, &mut entries)
             .await;
@@ -750,18 +761,20 @@ impl App {
             .seen
             .filter(|_| from.is_some() && read.session.as_deref() == Some(session_id.as_str()));
         let limit = read.limit;
+        let anchor = self.sandbox_dir(&task.sandbox_id);
         let found = blocking(move || {
-            let bytes = match fs::metadata(&path) {
-                Ok(meta) => meta.len(),
+            let file = match transcripts::open(&anchor, &path) {
+                Ok(file) => file,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                 Err(err) => return Err(AppError::internal(err)),
             };
+            let bytes = file.metadata().map_err(AppError::internal)?.len();
             if unchanged == Some(bytes) {
                 return Ok(Some((bytes, None)));
             }
             let page = match from {
-                Some(from) => transcripts::read_page(&path, from, limit, MAX_PAGE_CHARS),
-                None => transcripts::read_tail(&path, limit, MAX_PAGE_CHARS),
+                Some(from) => transcripts::read_page(file, from, limit, MAX_PAGE_CHARS),
+                None => transcripts::read_tail(file, limit, MAX_PAGE_CHARS),
             };
             match page {
                 Ok(page) => Ok(Some((bytes, Some(page)))),
@@ -1337,14 +1350,17 @@ impl App {
             })
             .clamp(1_000, READ_CHARS_MAX);
         let path = PathBuf::from(&doc.transcript_path);
+        let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
-            transcripts::read_page(&path, from, limit, max_chars * 2).map_err(|err| {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    AppError::Invalid("this session's transcript is not on the server".into())
-                } else {
-                    AppError::internal(err)
-                }
-            })
+            transcripts::open(&anchor, &path)
+                .and_then(|file| transcripts::read_page(file, from, limit, max_chars * 2))
+                .map_err(|err| {
+                    if err.kind() == std::io::ErrorKind::NotFound {
+                        AppError::Invalid("this session's transcript is not on the server".into())
+                    } else {
+                        AppError::internal(err)
+                    }
+                })
         })
         .await?;
         let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);

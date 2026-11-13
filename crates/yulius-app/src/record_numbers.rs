@@ -64,19 +64,28 @@ fn directory(text: &str) -> Option<&str> {
     .then_some(dir)
 }
 
-/// File names directly in `dir` of a checkout on disk (bounded); none when it is missing.
-async fn names_on_disk(checkout: &Path, dir: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(checkout.join(dir)).await else {
-        return names;
+/// File names directly in `dir` of a checkout on disk (bounded); none when it is missing. The
+/// checkout and `dir` are the agents' to write, so every folder from the sandbox directory down
+/// is opened from its parent without following a link (ADR-0315): a link on the way, which
+/// would list a folder of the host, gives no names.
+async fn names_on_disk(sandbox_dir: &Path, checkout: &Path, dir: &str) -> Vec<String> {
+    // A checkout outside the sandbox directory is in a folder of the server's own.
+    let (anchor, below) = match checkout.strip_prefix(sandbox_dir) {
+        Ok(below) => (sandbox_dir.to_path_buf(), below.to_path_buf()),
+        Err(_) => (checkout.to_path_buf(), std::path::PathBuf::new()),
     };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if names.len() >= MAX_ENTRIES {
-            break;
-        }
-        names.push(entry.file_name().to_string_lossy().into_owned());
-    }
-    names
+    let dir = dir.to_owned();
+    crate::projects::blocking(move || {
+        let parts: Vec<&std::ffi::OsStr> = below.iter().chain(Path::new(&dir).iter()).collect();
+        Ok(crate::files::open_dirs_below(&anchor, &parts, false)
+            .and_then(|folder| crate::files::names_in(&folder, MAX_ENTRIES))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect())
+    })
+    .await
+    .unwrap_or_default()
 }
 
 impl App {
@@ -131,7 +140,9 @@ impl App {
         // Every live task's files: its checkout (uncommitted files too), else its pushed branch.
         for other in self.deps.store.tasks(&task.sandbox_id, false).await? {
             let mut found = match other.worktree_path.as_deref().map(Path::new) {
-                Some(worktree) if worktree.is_dir() => names_on_disk(worktree, dir).await,
+                Some(worktree) if worktree.is_dir() => {
+                    names_on_disk(&self.sandbox_dir(&task.sandbox_id), worktree, dir).await
+                }
                 _ => match other.branch.as_deref() {
                     Some(branch) => self
                         .deps
@@ -278,7 +289,45 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::directory;
+    use super::{directory, names_on_disk};
+
+    /// ADR-0315: a numbered directory is listed from the sandbox directory down without
+    /// following a link, so a link an agent put in its worktree lists no folder of the host.
+    #[tokio::test]
+    async fn a_linked_directory_lists_no_names() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let sandbox = data.path().join("sandbox");
+        let checkout = sandbox.join("worktrees/t1");
+        std::fs::create_dir_all(checkout.join("docs/decisions"))?;
+        std::fs::write(checkout.join("docs/decisions/0007-x.md"), "")?;
+        let host = data.path().join("host");
+        std::fs::create_dir_all(host.join("docs"))?;
+        std::fs::write(host.join("docs/0042-secret-plan.md"), "")?;
+        std::os::unix::fs::symlink(host.join("docs"), checkout.join("docs/linked"))?;
+        let linked_checkout = sandbox.join("worktrees/t2");
+        std::os::unix::fs::symlink(&host, &linked_checkout)?;
+
+        assert_eq!(
+            names_on_disk(&sandbox, &checkout, "docs/decisions").await,
+            ["0007-x.md"]
+        );
+        for (checkout, dir) in [
+            (&checkout, "docs/linked"),
+            (&linked_checkout, "docs"),
+            (&checkout, "docs/missing"),
+        ] {
+            assert!(
+                names_on_disk(&sandbox, checkout, dir).await.is_empty(),
+                "{dir}"
+            );
+        }
+        // A checkout in a folder of the server's own is listed from there.
+        assert_eq!(
+            names_on_disk(&sandbox, &host, "docs").await,
+            ["0042-secret-plan.md"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn directories_are_repository_relative() {

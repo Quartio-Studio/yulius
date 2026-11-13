@@ -34,7 +34,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **Slices.** The fixes are delivered as pull requests of one concern each, most harmful first:
   1. the redaction fingerprints (V1, V2): merged, pull request #1240;
   2. what the host runs and writes where an agent can write: `bwrap` found on a run's PATH, the
-     Git attributes and hook files written by path (C1, D1, D2);
+     Git attributes and hook files written by path (C1, D1, D2): merged, pull request #1241;
   3. what the host reads where an agent can write: transcripts, `upper/etc/passwd`, numbered
      directories, disk usage (C2, C3, C5, I4);
   4. access rules of the public API and the merge gate (A1-A4, W1, D3, P8);
@@ -91,6 +91,28 @@ no code path reaches; documents, texts shown to agents and people, and code that
   files through fixed temporary names into the new worktree's Git directory, which exists
   before the checkout ends.
 
+### Slice 3: what the host reads where an agent can write
+
+- **C3 (medium): transcripts by path.** A session's transcript is
+  `<sandbox>/home/.claude/projects/<slug>/<session>.jsonl`. `transcripts::read_page`,
+  `read_tail` and `read_for_index` (`yulius-app`: the transcript pages, the agents'
+  `session_read`, the search index) and the harness's `TranscriptTail` (the run watcher)
+  opened it with `File::open`: a FIFO there blocks the opening thread for good, a link or a
+  linked folder on the way is read as the session's transcript.
+- **C2 (high): `upper/etc/passwd`.** `Manager::prepare` took the system layer's `passwd` and
+  `group` when `is_file()` said so and `identity.rs` read them whole before looking at their
+  size, then merged the lines into the identity files of the next shell or Cockpit.
+- **I4 (low): `record_number`.** `names_on_disk` listed `<worktree>/<dir>` by path; `dir` is
+  the agent's argument and may pass through a link.
+- **C5 (low): disk usage.** `usage::measure` walked by path (`symlink_metadata`, then
+  `read_dir` of the same path).
+- **D2's sibling: the review.** `review.rs` read an untracked file by path after a
+  `symlink_metadata` check.
+- **From the review of slice 2** (minor, taken here because the files are the same):
+  `git_dir_below` did not compare the common directory Git reports with the clone's `.git`;
+  `handles::read_in` kept set-user-id bits for the file that replaces it; one test case could
+  not fail; the change log's claim was wider than the fix.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -132,13 +154,33 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **HWR-004** The union merge and the guard work as before for a task (SPEC-083 MRG-001,
   DSC-007).
 
+- **HRD-001** A transcript is opened from its sandbox directory through folder handles opened
+  with `O_NOFOLLOW`, the file with `O_NOFOLLOW | O_NONBLOCK`, and only a regular file is read;
+  its size comes from the same handle. A path outside the sandbox directory (the server's own
+  copy) is opened the same way at its name. The harness's tail opens its file that way at its
+  name on every poll.
+- **HRD-002** The sandbox adapter reads `upper/etc/<name>` through handles (no link followed,
+  never waiting), at most 1 MiB of a regular UTF-8 file, else the base's; what hides the base's
+  file in the sandbox gives nothing. The join record carries the text.
+- **HRD-003** `record_number` lists a numbered directory from the sandbox directory down with
+  `open_dirs_below`; a link on the way lists nothing; a checkout in a folder of the server's
+  own is listed from there.
+- **HRD-004** `usage::measure` opens each folder from its parent's handle and looks at its
+  entries from that handle; the counts and the largest consumers are as before.
+- **HRD-005** The review reads an untracked file through handles from the worktree's folder;
+  a link at its name or on the way, a FIFO, `..` and an absolute path are listed without lines.
+- **HRD-006** `install_pre_push_guard` refuses a worktree whose common directory is not the
+  clone's `.git` (same device and inode) and sets `core.hooksPath` to a path made from the
+  clone's; a file replaced through `handles` gets the permission bits only.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
 its change is reviewed and ready to merge, and the next is added when it is merged.
 
 - [x] Slice 1: redaction fingerprints say a few bits and are fixed per sandbox (merged, #1240)
-- [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles, reviewed
+- [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles (merged, #1241)
+- [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting, reviewed
 
 ## Acceptance criteria
 
@@ -176,6 +218,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   keep their target, the hooks are regular files and the guard refuses a push to a protected
   branch; a hooks folder that is a link out of the repository is refused with nothing written.
 
+- **AC-11** `transcripts::open`: a regular transcript is read; a link at its name, a FIFO (within
+  seconds), a linked folder on the way are `InvalidInput`; a missing one is `NotFound`; a file
+  outside the sandbox directory is read. `TranscriptTail`: a FIFO and a link fail `poll` and
+  `open_at_end` at once.
+- **AC-12** `system_file_text`: the upper layer's regular file wins over the base's; a link to
+  a host file, a FIFO, a file over 1 MiB and `etc` as a link give nothing; no `etc` or no file
+  gives the base's.
+- **AC-13** `names_on_disk`: a real directory lists its names; a linked directory, a linked
+  checkout and a missing directory list none; a checkout outside the sandbox lists its own.
+- **AC-14** `usage::measure`: a linked folder and a linked root are not walked; the existing
+  counts and largest-consumer tests pass.
+- **AC-15** `untracked_start`: a regular file is read; a link, a linked folder, a FIFO, a
+  missing file, `..` and an absolute path give nothing.
+- **AC-16** The guard refuses a worktree whose `.git` file names a directory of the same shape
+  elsewhere and writes nothing there; a set-user-id bit on a hook is gone after a reinstall.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -207,6 +265,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `the_push_guard_follows_no_link_an_agent_planted` (AC-10), the existing guard, scrub and
   union tests (HWR-004). Each new test failed on `dev` first (Evidence).
 
+- Slice 3: `yulius-app` `transcripts::tests::a_transcript_is_opened_without_following_links_or_waiting`
+  (AC-11), `record_numbers::tests::a_linked_directory_lists_no_names` (AC-13); `yulius-harness`
+  `tests/tail.rs` `a_fifo_or_a_link_in_the_transcripts_place_is_refused_at_once` (AC-11);
+  `yulius-sandbox` `manager::tests::a_sandbox_s_passwd_is_read_without_following_a_link`
+  (AC-12), `usage::tests::a_linked_root_or_folder_is_not_walked` (AC-14); `yulius-git`
+  `review::tests::an_untracked_file_is_read_without_following_a_link` (AC-15),
+  `tests/git_ops.rs` `the_push_guard_follows_no_link_an_agent_planted` (AC-16, extended) and
+  `managed_attributes_follow_no_link_an_agent_planted` (its linked-file case now asks with
+  lines, so a writer that followed the link would copy the host file).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -222,6 +290,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   no-follow handles, the clone named by the caller. The server's own `git config` writes and
   what Git itself writes or runs in an agent-writable clone are ADR-0114's remaining hole
   (finding G1, a later slice).
+- [ADR-0315](../../docs/decisions/0315-what-the-host-reads-in-a-sandbox-it-reads-through-handles.md):
+  the five readers through handles; the adapter hands on the text of `passwd`, not its path.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -237,9 +307,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | --- | --- | --- | --- | --- |
 | V1 | vault | Fingerprints with a per-request rolling-hash base give every value away | critical | fixed (slice 1) |
 | V2 | vault | A playground with guests still gets fingerprints | medium | fixed (slice 1) |
-| C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | slice 2 |
-| D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | slice 2 |
-| D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` and `review.rs` open by path too | high | slice 2 |
+| C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | fixed (slice 2) |
+| D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
+| D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
 | G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 3a |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | slice 3 |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | slice 3 |

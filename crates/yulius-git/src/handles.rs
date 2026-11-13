@@ -121,27 +121,51 @@ pub(crate) fn read_in(
     max: u64,
     what: &'static str,
 ) -> Result<Option<(Vec<u8>, Mode)>, GitError> {
+    let Some((bytes, mode)) = read_start_in(dir, name, max + 1, what)? else {
+        return Ok(None);
+    };
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max {
+        return Err(refused(what, "it is too large"));
+    }
+    Ok(Some((bytes, mode)))
+}
+
+/// The first `limit` bytes at most, and the permission bits, of the regular file `name` of
+/// `dir`; `None` when it is missing. A link or a FIFO (never waited on) is refused.
+pub(crate) fn read_start_in(
+    dir: &OwnedFd,
+    name: &str,
+    limit: u64,
+    what: &'static str,
+) -> Result<Option<(Vec<u8>, Mode)>, GitError> {
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
     let file = match openat(dir, name, flags, Mode::empty()) {
         Ok(fd) => fd,
         Err(Errno::ENOENT) => return Ok(None),
         Err(Errno::ELOOP) => return Err(refused(what, "it is a link")),
-        Err(err) => return Err(io("opening a file in the repository's .git", err)),
+        Err(err) => return Err(io("opening a file in the repository", err)),
     };
-    let stat = fstat(&file).map_err(|err| io("checking a file in the repository's .git", err))?;
+    let stat = fstat(&file).map_err(|err| io("checking a file in the repository", err))?;
     regular(stat.st_mode, what)?;
     let mut bytes = Vec::new();
     std::fs::File::from(file)
-        .take(max + 1)
+        .take(limit)
         .read_to_end(&mut bytes)
-        .map_err(|err| io("reading a file in the repository's .git", err))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max {
-        return Err(refused(what, "it is too large"));
-    }
+        .map_err(|err| io("reading a file in the repository", err))?;
+    // The permission bits only: a set-user-id bit an agent put there is not copied on.
     Ok(Some((
         bytes,
-        Mode::from_bits_truncate(stat.st_mode & 0o7777),
+        Mode::from_bits_truncate(stat.st_mode & 0o777),
     )))
+}
+
+/// The folder at `path`, opened without following a link at its name.
+pub(crate) fn open_dir(path: &Path) -> Result<OwnedFd, GitError> {
+    match open(path, DIR_FLAGS, Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        Err(Errno::ELOOP | Errno::ENOTDIR) => Err(refused("folder", "it is a link or a file")),
+        Err(err) => Err(io("opening a folder", err)),
+    }
 }
 
 /// Puts `bytes` with `mode` at `name` of `dir`: a new file of a random name is written, synced

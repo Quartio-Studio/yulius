@@ -139,9 +139,11 @@ mod tests {
     /// namespaces, so a program named without its path is refused instead of looked up.
     #[test]
     fn a_bare_program_name_is_refused_before_anything_is_started() {
+        // Names nothing answers to: were they looked up after all, the exec would fail too,
+        // with another error, instead of replacing this test's process.
         for argv in [
-            vec![OsString::from("bwrap")],
-            vec!["./bwrap".into(), "--version".into()],
+            vec![OsString::from("yulius-no-such-bwrap")],
+            vec!["./yulius-no-such-dir/bwrap".into(), "--version".into()],
         ] {
             let error = exec_bwrap_with(&argv, crate::seccomp::Profile::Run);
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);

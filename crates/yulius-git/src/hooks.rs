@@ -149,10 +149,11 @@ impl Git {
             validate_branch_name(branch)?;
         }
         let (git_dir_path, git_dir) = self.git_dir_below(repo, worktree)?;
-        let hooks = open_dir_in(&git_dir, HOOKS_DIR_NAME, true)?.ok_or(GitError::InvalidInput {
-            what: "repository",
-            reason: "its hooks folder could not be made".to_owned(),
-        })?;
+        let hooks =
+            open_dir_in(&git_dir, HOOKS_DIR_NAME, true)?.ok_or_else(|| GitError::InvalidInput {
+                what: "repository",
+                reason: "its hooks folder could not be made".to_owned(),
+            })?;
         let (plain, executable) = (
             Mode::from_bits_truncate(0o644),
             Mode::from_bits_truncate(0o755),
@@ -187,9 +188,11 @@ impl Git {
         })
     }
 
-    /// The Git directory of `worktree` as Git names it, and a handle of it opened below the
-    /// clone `repo`'s `.git` without following a link: `.git` itself for the clone, else
-    /// `.git/worktrees/<name>`. A worktree whose Git directory is elsewhere is refused.
+    /// The Git directory of `worktree` below the clone `repo`, as a path made from the clone's
+    /// and as a handle opened below the clone's `.git` without following a link: `.git` itself
+    /// for the clone, else `.git/worktrees/<name>`. Git only says which one it is: a worktree
+    /// whose Git directory, or whose common directory, is not the clone's is refused (its `.git`
+    /// file is the agent's to rewrite).
     #[cfg(unix)]
     fn git_dir_below(
         &self,
@@ -209,8 +212,7 @@ impl Git {
         ]))?;
         let text = told.stdout_trimmed();
         let (git_dir, common) = text.split_once('\n').ok_or_else(elsewhere)?;
-        let git_dir = PathBuf::from(git_dir);
-        let below = git_dir
+        let below = Path::new(git_dir)
             .strip_prefix(common)
             .map_err(|_| elsewhere())?
             .to_path_buf();
@@ -226,10 +228,22 @@ impl Git {
             return Err(elsewhere());
         }
         let mut dir = open_git_dir(repo)?;
+        // The common directory Git found is the clone's own `.git`, not one that looks like it.
+        let (ours, theirs) = (
+            nix::sys::stat::fstat(&dir),
+            nix::sys::stat::stat(Path::new(common)),
+        );
+        match (ours, theirs) {
+            (Ok(ours), Ok(theirs))
+                if ours.st_dev == theirs.st_dev && ours.st_ino == theirs.st_ino => {}
+            _ => return Err(elsewhere()),
+        }
+        let mut path = repo.join(".git");
         for name in names {
             dir = open_dir_in(&dir, name, false)?.ok_or_else(elsewhere)?;
+            path.push(name);
         }
-        Ok((git_dir, dir))
+        Ok((path, dir))
     }
 }
 
