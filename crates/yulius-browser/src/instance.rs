@@ -2060,7 +2060,7 @@ impl BrowserInstance {
 
     /// Whether a viewer's clicks and keys may reach this browser: always without a virtual
     /// display (a headless browser shows no window of its own), else only while the host's
-    /// managed policy is in force (ADR-0318). A "no" is asked again after [`POLICY_RECHECK`];
+    /// managed policy is in force (ADR-0318). A "no" is asked again after `POLICY_RECHECK`;
     /// a "yes" stands for the browser's life (policies are not taken away under it by Yulius).
     pub async fn viewer_input_allowed(&self) -> bool {
         if self.display.is_none() {
