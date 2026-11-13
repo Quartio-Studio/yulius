@@ -747,16 +747,22 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
 /// SPEC-483 E8 and E9: the page rule also covers where the keys can end up besides the tab's
 /// own document: a frame of another site with the focus, and the page a navigation under way
 /// is bringing. Both answer as a page the secret is not for, naming the site, with no key sent.
+/// E10: so for the secret's user name (and its one-time code, typed the same way), which was
+/// typed on what Yulius had last heard of the tab.
 #[tokio::test]
 async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving() -> TestResult
 {
     const VALUE: &str = "docs-pass-8842-qrs";
+    const USER: &str = "alice-docs-8842";
     with_fixture(|f| async move {
         let created = support::call(
             &f.h.router,
             axum::http::Method::POST,
             "/api/sandboxes/s1/agent-secrets",
-            Some(json!({"name": "DOCS_LOGIN", "hosts": ["docs.example"], "value": VALUE})),
+            Some(
+                json!({"name": "DOCS_LOGIN", "hosts": ["docs.example"], "injection": "basic",
+                "username": USER, "value": VALUE}),
+            ),
             &f.writer,
         )
         .await?;
@@ -777,12 +783,12 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
             .as_str()
             .ok_or("tab id")?
             .to_owned();
-        let fill = || {
+        let fill = |field: &'static str| {
             mcp_tool(
                 &f.h,
                 TOKEN,
                 "browser_fill_secret",
-                json!({"tab_id": tab, "secret": "DOCS_LOGIN"}),
+                json!({"tab_id": tab, "secret": "DOCS_LOGIN", "field": field}),
             )
         };
         let typed = || f.fake.calls_for("Input.insertText").len();
@@ -811,44 +817,121 @@ async fn a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_le
         f.fake
             .set_secret_probe(Some(json!({"shown": ["Fake page text"], "masked": [],
             "over": false, "focus": {"kind": "frame"}})));
-        let framed = fill().await?;
-        assert_eq!(framed["isError"], true, "{framed}");
-        assert!(
-            tool_text(&framed).as_str().is_some_and(|t| {
-                t.contains("nothing was typed")
-                    && t.contains("a frame of evil.example")
-                    && !t.contains(VALUE)
-            }),
-            "{framed}"
-        );
+        for field in ["value", "username"] {
+            let framed = fill(field).await?;
+            assert_eq!(framed["isError"], true, "{field}: {framed}");
+            assert!(
+                tool_text(&framed).as_str().is_some_and(|t| {
+                    t.contains("nothing was typed")
+                        && t.contains("a frame of evil.example")
+                        && !t.contains(VALUE)
+                        && !t.contains(USER)
+                }),
+                "{field}: {framed}"
+            );
+        }
         assert_eq!(typed(), before);
 
         // The tab set out for such a site (a link clicked just before) and has not arrived.
         f.fake.set_child_frames(&[]);
         f.fake.set_secret_probe(None);
         f.fake
-            .announce_navigation(&tab, "https://evil.example/next", Some("differentDocument"))
+            .emit(
+                &tab,
+                "Page.frameStartedNavigating",
+                json!({"frameId": "frame-1", "loaderId": "loader-next",
+                    "navigationType": "differentDocument", "url": "https://evil.example/next"}),
+            )
             .await;
         heard("leaving").await?;
-        let leaving = fill().await?;
-        assert_eq!(leaving["isError"], true, "{leaving}");
-        assert!(
-            tool_text(&leaving).as_str().is_some_and(|t| {
-                t.contains("nothing was typed")
-                    && t.contains("on its way to evil.example")
-                    && !t.contains(VALUE)
-            }),
-            "{leaving}"
-        );
-        let refused_at = typed();
+        for field in ["value", "username"] {
+            let leaving = fill(field).await?;
+            assert_eq!(leaving["isError"], true, "{field}: {leaving}");
+            assert!(
+                tool_text(&leaving).as_str().is_some_and(|t| {
+                    t.contains("nothing was typed")
+                        && t.contains("on its way to evil.example")
+                        && !t.contains(VALUE)
+                }),
+                "{field}: {leaving}"
+            );
+        }
+        assert_eq!(typed(), before);
 
         // Chrome gave the navigation up (the server never answered): the page is the bound
-        // one again and the secret is typed.
-        f.fake.announce_navigation(&tab, "", None).await;
+        // one again, and the secret and its user name are typed.
+        f.fake
+            .emit(
+                &tab,
+                "Page.frameStoppedLoading",
+                json!({"frameId": "frame-1"}),
+            )
+            .await;
         heard("stayed").await?;
-        let filled = fill().await?;
-        assert_ne!(filled["isError"], true, "{filled}");
-        assert!(typed() > refused_at);
+        for field in ["value", "username"] {
+            let filled = fill(field).await?;
+            assert_ne!(filled["isError"], true, "{field}: {filled}");
+        }
+        let texts: Vec<String> = f
+            .fake
+            .calls_for("Input.insertText")
+            .iter()
+            .filter_map(|c| c.params["text"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(texts[before..], [VALUE.to_owned(), USER.to_owned()]);
+
+        // The focus went into another site's frame while the user name was typed: said, and
+        // kept in the secret's activity, as for the secret itself.
+        let probe = |kind: &str| {
+            json!({"shown": ["Fake page text"], "masked": [], "over": false,
+                "focus": {"kind": kind}})
+        };
+        f.fake.set_child_frames(&["https://evil.example/collect"]);
+        // Three looks: where the focus is, what the typing may edit, where the focus ended.
+        f.fake
+            .queue_secret_probes(vec![probe("field"), probe("field"), probe("frame")]);
+        let astray = fill("username").await?;
+        assert_eq!(astray["isError"], true, "{astray}");
+        assert!(
+            tool_text(&astray).as_str().is_some_and(|t| {
+                t.contains("went into a frame of evil.example") && !t.contains(USER)
+            }),
+            "{astray}"
+        );
+        let activity = support::call(
+            &f.h.router,
+            axum::http::Method::GET,
+            "/api/secrets/activity",
+            None,
+            &f.writer,
+        )
+        .await?;
+        let recorded = activity.body.as_array().is_some_and(|entries| {
+            entries.iter().any(|e| {
+                e["action"] == "vault.agent.fill"
+                    && e["detail"].as_str().is_some_and(|d| {
+                        d.contains("username on docs.example")
+                            && d.contains("a frame of evil.example")
+                    })
+            })
+        });
+        assert!(recorded, "{}", activity.body);
+        f.fake.set_child_frames(&[]);
+
+        // The tab went on to another site and Yulius has not heard of it yet (it still lists
+        // the bound host's page): the user name is not typed there either.
+        let typed_so_far = typed();
+        f.fake
+            .move_target_unannounced(&tab, "https://evil.example/collect");
+        let moved = fill("username").await?;
+        assert_eq!(moved["isError"], true, "{moved}");
+        assert!(
+            tool_text(&moved).as_str().is_some_and(|t| {
+                t.contains("nothing was typed") && t.contains("evil.example") && !t.contains(USER)
+            }),
+            "{moved}"
+        );
+        assert_eq!(typed(), typed_so_far);
         Ok(())
     })
     .await

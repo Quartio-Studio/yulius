@@ -1046,28 +1046,33 @@ impl App {
             text: text.to_string(),
             selector: args.selector.clone(),
         };
-        if matches!(field, "username" | "totp") {
-            // Not what the redactor hides: a user name is in the description and a code expires.
-            browser.tool_type(&params).await?;
+        // The tab's page is asked again where the typing begins: what `tabs()` said above may
+        // be from before a navigation (SPEC-483 E3).
+        let on_bound_host =
+            |address: &str| page_host(address).is_some_and(|(h, p)| bound_to(&record, &h, p));
+        let typed = if matches!(field, "username" | "totp") {
+            // Not what the redactor hides (a user name is in the description and a code
+            // expires), so screenshots stay; but a code signs in while it lasts, and both go
+            // only where the secret goes (SPEC-483 E10).
+            browser
+                .tool_type_beside_secret(&params, &on_bound_host)
+                .await
         } else {
-            // Screenshots that may show it are refused from now on (SPEC-450). The tab's page
-            // is asked again where the typing begins: what `tabs()` said above may be from
-            // before a navigation (SPEC-483 E3).
-            let on_bound_host =
-                |address: &str| page_host(address).is_some_and(|(h, p)| bound_to(&record, &h, p));
-            if let Err(failure) = browser.tool_type_secret(&params, &on_bound_host).await {
-                if failure.kind == BrowserFailureKind::SecretAstray {
-                    // Part of it may be in a page it was not for: its people read where.
-                    self.note_agent_use(
-                        (&user.run(), &user.actor()),
-                        &record,
-                        "vault.agent.fill",
-                        &format!("{field} on {host}; {}", failure.message),
-                    )
-                    .await;
-                }
-                return Err(failure.into());
+            // Screenshots that may show it are refused from now on (SPEC-450).
+            browser.tool_type_secret(&params, &on_bound_host).await
+        };
+        if let Err(failure) = typed {
+            if failure.kind == BrowserFailureKind::SecretAstray {
+                // Part of it may be in a page it was not for: its people read where.
+                self.note_agent_use(
+                    (&user.run(), &user.actor()),
+                    &record,
+                    "vault.agent.fill",
+                    &format!("{field} on {host}; {}", failure.message),
+                )
+                .await;
             }
+            return Err(failure.into());
         }
         browser.agent_activity(&args.tab_id, None, "type", &user.label());
         self.note_agent_use(
