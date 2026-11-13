@@ -911,7 +911,8 @@ SPEC-488, [decision 0329](decisions/0329-a-prompt-box-the-screen-shows-empty-hol
   own dimmed suggestion), the message is typed and nobody is asked. Any other picture proves
   nothing, and the message waits: text in the box, a draft put aside with Claude Code's stash
   key (`› stashed` above the box: it returns to the box by itself), a dialog, the agents view
-  or another view, a Claude Code that draws the box differently from 2.1.323.
+  or a session opened from it, a session that was renamed (its name stands on the line above
+  the box), a Claude Code that draws the box differently from 2.1.323.
 - **Who is told.** A message sent with `task_message` is refused with that reason at once, and
   the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes

@@ -21,7 +21,7 @@ send a prompt, so the price was a finished task that asked for one.
 ADR-0309 rejected reading the box from the screen as fragile, without having looked at the
 real tool. Task #470 and its independent reviewer looked: Claude Code 2.1.323, full screen as
 Yulius runs it, in a PTY against a local stub of the model API, rendered with the `vt100`
-parser the hub uses, 401 screens over 43 runs in all six built-in themes (SPEC-488, Context
+parser the hub uses, 537 screens over 62 runs in all six built-in themes (SPEC-488, Context
 and Evidence). An empty box is one row `❯` between two rules across the width, on the
 alternate screen, with the cursor parked at the box's first cell. Typed text is drawn in normal
 intensity; what Claude Code draws into an empty box by itself (its prompt suggestion, on by
@@ -31,7 +31,9 @@ the review with the real tool: a draft put aside with the stash key, which comes
 box by itself after the next submit (Claude Code says `› stashed` in the row above the box for
 as long), and the agents view, whose box starts a new background session with what is entered
 and whose placeholder is dim under the theme `dark-ansi` (its rules are dim in every theme,
-the conversation's in none). The other states that were opened (shell mode, the history
+the conversation's in none). A third is told apart by a label alone: a session opened from the
+agents view shows an ordinary box whose upper rule ends in the session's name, and a paste
+there goes to that session. The other states that were opened (shell mode, the history
 search, the rewind list, a permission dialog, 17 slash-command dialogs, the transcript view, a
 footer pill with the keys) have no such box at the cursor.
 
@@ -40,10 +42,11 @@ footer pill with the keys) have no such box at the cursor.
 - **The screen is read as proof that the box is empty, and as nothing else.**
   `prompt_box::shown_empty` accepts exactly that picture: the alternate screen; the cursor in
   column 2 of a row that starts with `❯` and a blank; rules across the whole width directly
-  above and below, not dim; a blank row above the upper rule (Claude Code's hint row: a hint
-  there, whatever it says, is no proof); from column 2 on nothing, or only dim text (the cell
-  under the cursor may be inverse when dim text follows). Anything else proves nothing and
-  ADR-0309's hold stays.
+  above and below, not dim and without a label; the row above the upper rule (Claude Code's
+  hint row) blank, or holding only the notice "N% context used", which stays while a
+  session's context is nearly full (any other hint there is no proof); from column 2 on
+  nothing, or only dim text (the cell under the cursor may be inverse when dim text follows).
+  Anything else proves nothing and ADR-0309's hold stays.
 - **A box shown empty ends the hold of a possible draft once the minute after the key has
   passed** (`BoxHeld::ends_at_an_empty_box`, in `App::type_into_session`). The minute stays
   whatever the screen shows: the person is at the keyboard and the screen may be behind.
@@ -70,8 +73,13 @@ footer pill with the keys) have no such box at the cursor.
 - **Turn Claude Code's prompt suggestions off in Yulius's sessions** so an empty box is always
   blank. It takes a feature from the person's terminal to simplify a check. Rejected.
 - **Refuse a stash by its word** ("stashed" in the hint row). A renamed hint would read as
-  empty again. Rejected for the row itself: anything written there is no proof; the other
-  notices there last seconds.
+  empty again. Rejected for the row itself: what is written there is no proof.
+- **Ask for a blank hint row, with no exception.** The first fix did. The review then found
+  "N% context used" in that row for as long as a session's context is nearly full: the false
+  flag was back for the long sessions. That one notice is let through by its exact words; a
+  stash shows behind it in the same row ("88% context used · › stashed"), so the whole row
+  must be the notice. An allowed word that changes costs the old false flag; a refused word
+  that changes would have cost a glued prompt.
 - **Tell the agents view by its placeholder's colour.** Grey in five themes, dim in one: the
   first reader did that and was wrong under `dark-ansi`. Rejected for the rules' dimness,
   which held in every theme; switching the agents view off for Yulius's sessions would take a
@@ -88,10 +96,14 @@ footer pill with the keys) have no such box at the cursor.
   keystroke does, and flags nobody. Text in the box holds every message as ADR-0309 decided;
   clearing it releases them without a prompt.
 - A task flagged before this change over an empty box is released at the watch's next pass.
-- A session with a stashed draft, or one left in the agents view, proves nothing: ADR-0309's
-  hold and flag stay for it until a prompt is sent from its box.
-- A notice in the hint row (deleted text, a dismissed dialog) costs the tries of a few
-  seconds; the hold is looked at a minute or more after the key.
+- A session with a stashed draft, one left in the agents view, and one whose upper rule
+  carries a name (another session opened from that view; the task's own after `/rename` or a
+  trip through that view) prove nothing: ADR-0309's hold and flag stay for them until a
+  prompt is sent from the box.
+- A notice in the hint row other than the context notice (deleted text, a dismissed dialog,
+  the usage-limit warning) costs the tries of some seconds; the hold is looked at a minute or
+  more after the key. A notice that stays and was not seen with the real tool brings the
+  old hold back for its session.
 - The reading is tied to what Claude Code 2.1.323 draws full screen. A version that draws the
   box differently is not recognised, and ADR-0309's hold and flag come back for it: the
   failure is the old false flag, not a prompt glued to a draft. A version that drew typed text

@@ -43,7 +43,7 @@ still never typed behind text that is there (SPEC-480).
   no test could tell an empty box from a filled one.
 - **What the real tool draws** (Claude Code 2.1.323, full screen as Yulius runs it
   (`CLAUDE_CODE_NO_FLICKER=1`), in a PTY against a local stub of the model API, rendered with
-  the `vt100` crate the hub uses; 401 screens over 43 runs, the author's and the independent
+  the `vt100` crate the hub uses; 537 screens over 62 runs, the author's and the independent
   reviewer's, in `$HOME/.cache/yulius-task-470` and `$HOME/.cache/yulius-review-470`). The
   prompt box is one row `❯` between two rows of `─` across the whole width, on the alternate
   screen, and the terminal's cursor is parked at the box's first cell (column 2 of that row)
@@ -62,17 +62,23 @@ still never typed behind text that is there (SPEC-480).
     and "Press up to edit queued messages", both **dim** with the cursor at column 2 (the
     first character inverse under the caret while focused, dim when not). A paste into a box
     that shows a suggestion replaces it: the prompt hook got the pasted message alone;
-  - the row above the upper rule is Claude Code's hint row: blank, or a notice that lasts
-    seconds ("Ctrl+Y to paste deleted text" was gone 21 s after the deletion), or `› stashed`
-    for as long as a draft is put aside with the stash key (`Ctrl+S`; seen 67 s later, and
-    down to 10 columns and 4 rows). A stashed draft leaves the box empty and comes back into
-    it, with no keystroke, after the next submit or local command (review run r1: a first
-    pasted message went alone, a second was submitted as "my precious draftMessage from
-    Yulius two");
+  - the row above the upper rule is Claude Code's hint row: blank; or a notice that lasts
+    seconds ("Ctrl+Y to paste deleted text" was gone 21 s after the deletion; a dismissed
+    dialog's line; the usage-limit warning, gone 30 s after its turn); or "N% context used"
+    for as long as the session's context is nearly full (88% at about 159k of 200k tokens,
+    none at 139k; idle, mid-turn and 90 s after a further turn); or `› stashed` for as long as
+    a draft is put aside with the stash key (`Ctrl+S`; seen 67 s later, down to 10 columns and
+    4 rows, and behind the context notice as "88% context used · › stashed"). A stashed draft
+    leaves the box empty and comes back into it, with no keystroke, after the next submit or
+    local command (review run r1: a first pasted message went alone, a second was submitted
+    as "my precious draftMessage from Yulius two");
   - the agents view (Left arrow from an empty box) has a box of its own, which starts a new
     background session with what is entered into it (review run r13: a second `SessionStart`).
     Its rules are dim in every theme, the conversation's never are; its placeholder is grey
-    in five themes and dim, like a suggestion, under `dark-ansi`;
+    in five themes and dim, like a suggestion, under `dark-ansi`. A session opened from that
+    view shows an ordinary box whose upper rule ends in its name ("─ stub title ─"): a paste
+    there went to that session, not the task's (review runs q2, q10). The task's own session
+    carries such a name after `/rename`, and after a trip through the agents view;
   - other states have no such box at the cursor: shell mode (`!` instead of `❯`), the history
     search (a labelled upper rule and the entry's text), the rewind list, a permission dialog,
     the transcript view, the 17 slash-command dialogs the review opened, a footer pill that
@@ -95,14 +101,15 @@ still never typed behind text that is there (SPEC-480).
   types as into any session.
 - EBX-002 (what counts as shown empty). Exactly what the probes saw: the alternate screen; the
   cursor in column 2 of a row that starts with `❯` and a blank; the rows directly above and
-  below consist of `─` across the whole width and are not dim (the agents view's are); the
-  row above the upper rule is blank (a hint there, `› stashed` above all, is no proof); and
-  from column 2 on the box's row holds nothing, or only dim text (Claude Code's own suggestion
-  or hint): every non-blank cell is dim, except that the cell under the cursor may be inverse
-  when a dim cell follows it. Anything else is not proof, and the hold stays as SPEC-480 has
-  it: text in normal intensity, a second row in the box, another prompt character, a labelled
-  or dim rule, a hint above the box, a dialog or another view, the main screen, a withheld
-  screen, a Claude Code that draws differently.
+  below consist of `─` across the whole width and are not dim (the agents view's are; a rule
+  that carries a name is another session's, or this one renamed); the row above the upper
+  rule is blank or holds, whole, only the notice "N% context used" (any other hint there,
+  `› stashed` above all, is no proof); and from column 2 on the box's row holds nothing, or
+  only dim text (Claude Code's own suggestion or hint): every non-blank cell is dim, except
+  that the cell under the cursor may be inverse when a dim cell follows it. Anything else is
+  not proof, and the hold stays as SPEC-480 has it: text in normal intensity, a second row in
+  the box, another prompt character, a labelled or dim rule, a hint above the box, a dialog
+  or another view, the main screen, a withheld screen, a Claude Code that draws differently.
 - EBX-003 (the minute stays). A keystroke of the last minute holds a message as before
   (SPEC-480 DRF-002), whatever the screen shows: the person is at the keyboard, and the screen
   may be behind their key.
@@ -155,12 +162,16 @@ still never typed behind text that is there (SPEC-480).
   them: true for the empty box (focused, unfocused, help below, text deleted), the suggestion
   (focused and not) and the queue hint; false for a draft (cursor behind it, cursor at its
   start, one character under the cursor, a character behind a blank or behind the cursor's, a
-  pasted block, a second row, wrapped), a hint above the box (`› stashed`, deleted text), the
-  agents view under `dark-ansi` (dim rules, one or both), shell mode, the history search, the
-  rewind list, a permission dialog, the transcript view, the agents view's grey placeholder,
-  the same box on the main screen, at the screen's top, without its lower rule, a cursor
-  elsewhere. The same reader over all 401 captured screens of the real tool (`verdicts.py`):
-  no screen with typed text, a stash or the agents view reads empty.
+  pasted block, a second row, wrapped), a hint above the box (`› stashed`, deleted text, the
+  context notice with a stash behind it, cut short or reworded), the agents view under
+  `dark-ansi` (dim rules, one or both, or in part), a rule that ends in a session's name,
+  shell mode, the history search, the rewind list, a permission dialog, the transcript view,
+  the agents view's grey placeholder, the same box on the main screen, at the screen's top,
+  without its lower rule, a cursor elsewhere; true again with the context notice alone above
+  the box, and for a box whose hint row is the screen's first. The same reader over all 537
+  captured screens of the real tool (`verdicts.py`): 213 read empty, each with `❯` alone or
+  Claude Code's own dim text in the box and a blank hint row (192) or the context notice
+  (21); no screen with typed text, a stash, the agents view or a named rule reads empty.
 - AC5 (EBX-002, EBX-004). A hub rebuilt from a snapshot of a screen with an empty box, and of
   one with a suggestion, still reads it as shown empty; one with a draft does not. With real
   processes and a restarted server: a key that left nothing in the box before the restart
@@ -227,11 +238,19 @@ still never typed behind text that is there (SPEC-480).
 - **The cursor must be in the box.** A transcript can show a picture of an empty box (this
   repository's own tests print one); Claude Code parks the cursor in the real one, and in a
   dialog or list while that has the keys.
-- **A hint above the box is no proof, whatever it says** (review round 1). The stash is the
-  reason: a stashed draft is not in the box, but it returns there by itself after the next
-  submit, so the message after the one typed now would be glued to it. The rule reads the
-  row, not the word "stashed": a renamed hint still refuses. Other notices there last seconds
-  and cost one try of a watch.
+- **A hint above the box is no proof, unless it is the context notice alone** (review rounds
+  1 and 2). The stash is the reason: a stashed draft is not in the box, but it returns there
+  by itself after the next submit, so the message after the one typed now would be glued to
+  it. The rule does not look for the word "stashed": a renamed hint still refuses. One notice
+  is let through by its exact words, "N% context used", because it stays for as long as the
+  context is nearly full and would bring the false flag back for just the long sessions; a
+  stash shows behind it in the same row, so the row must hold nothing else. Other notices
+  there last seconds and cost one try of a watch; one not seen with the real tool is no
+  proof.
+- **A named rule is no proof** (review round 2). The name on the upper rule is all that tells
+  another session's box from the task's. A session a person renamed (`/rename`), or one that
+  was in the agents view, therefore keeps SPEC-480's hold and flag: not telling the two
+  apart is the worse error.
 - **Dim rules are not the prompt box's** (review round 1). The agents view's box takes a paste
   and Enter as a new background session, and under `dark-ansi` its placeholder is dim. Its
   rules are dim in all six themes and the conversation's in none, over every captured screen.
