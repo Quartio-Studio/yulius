@@ -664,7 +664,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
   through Yulius once no integration environment is pending; the outcome is added to `notes`
-  and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
+  and audited. With `require_checks`, an automatic fast-forward does not wait for the
+  integration head's own checks (they may not have reported yet), and is stopped by failing
+  or unreadable ones ("Automatic promotion did not happen: …"). No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
   independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
@@ -693,8 +695,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
   production (`result: "pr_opened"`, `sha` = PR URL); a later call merges it with a merge commit
-  once its checks allow (`result: "promoted"`). Tasks waiting for promotion then advance to
-  `promoted` (or `production_done` without production environments).
+  once its checks allow (`result: "promoted"`). With `require_checks`, both ways ask what
+  the checks at the integration head say, as a task's merge does: Yulius CI's newest run of
+  that commit when the project has Yulius CI (failed, errored or cancelled refuses; none yet
+  or running waits), else GitHub's checks; unreadable checks never pass. Tasks waiting for
+  promotion then advance to `promoted` (or `production_done` without production environments).
 - **Environment runs** need `{"confirm": true}` on every request. For an environment with a
   command, the run starts in the background and `GET …/runs/{run_id}` reports progress; only one
   command run per sandbox runs at a time (`conflict` otherwise). An environment without a command

@@ -23,6 +23,30 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   left out. A plan that grew since its first step was finished says so: "Step 6/11 · 4 at
   first" in the task strip, the same on the task page and in the tools (API
   `steps.first_total`, schema version 56).
+- Sessions no longer show Claude Code's "Language server … couldn't start" notice, and are not
+  asked to install a language server (SPEC-485, task #467, ADR-0327). The cause, measured with
+  Claude Code 2.1.323: when a session writes a file of a language whose server is on `PATH`,
+  Claude Code offers the server's plugin in the terminal, yes by default; one Enter installed
+  it into the sandbox's home, switched on for every session. Each session then started its own
+  server at the first edited file (here 2.6 GiB, 6.2 GiB with its `cargo check` in the
+  worktree's `target/`; 20 GB with parallel tasks in October), or, where rustup's proxy found
+  no `rust-analyzer` in the toolchain, showed the notice. Now Yulius decides per run: the
+  session's plugins that bring a language server (installed, or switched on by the home's or
+  the worktree's settings) are switched off in the run's own settings, which outrank the
+  home's, a repository's and a worktree's, and the offer is switched off
+  (`lspRecommendationDisabled`). Other plugins are untouched; nothing in a sandbox's home needs
+  changing. Checked against the real CLI in eight layouts by an opt-in test that needs no
+  account; what the lookup does not read (a marketplace outside the sandbox's folders) is in
+  ADR-0327 and the operations guide.
+- A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
+  are green was decided in five places by three rules: a task's merge and the Git page
+  asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
+  cases of its own, a promotion pull request read GitHub's checks only, and a fast-forward
+  promotion read none. A failed Yulius CI run at the `dev` head whose status had not been
+  published read as "no checks", and the promotion went through with required checks on.
+  All of them now ask one function: Yulius CI's newest run of the commit where the project
+  has Yulius CI, else GitHub's checks. A pull request that brings CI to a project without
+  any is "pending" until its first run, for every caller.
 - A usage limit met while a session runs a dynamic workflow moves the task (SPEC-486, task
   #468, ADR-0326). Claude Code writes that limit only to the workflow agent's own transcript,
   pauses the workflow and leaves the session's thread asleep, so Yulius saw a finished turn and
@@ -43,8 +67,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stricter job failed passed on the rerun. Which jobs test a commit on its way into the
   integration branch is one rule now, for the scheduler, a merge train, a playground task,
   a run again and a change from the remote control. A playground task that changes its jobs
-  keeps the trusted security job, as a pull request does, and one that did not change them
-  is tested with `dev`'s jobs of now also when `dev` changed them since the task began.
+  keeps the trusted security job, as a pull request does.
 - A production secret reaches no run, by one rule (SPEC-483 slice 12, task #465, ADR-0324).
   A secret allowed for production deploys that still had hosts from before such secrets
   became exclusive was sent to those hosts for an agent's run by the egress proxy, while a

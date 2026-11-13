@@ -4237,6 +4237,43 @@ async fn a_branch_behind_is_tested_with_the_integration_branchs_jobs_of_now() ->
     Ok(())
 }
 
+/// SPEC-483 D5: the verdict of a commit that Yulius CI will test is "pending" before its first
+/// run exists, also when the integration branch has no CI and the commit brings it: a merge
+/// that requires checks waits for that run instead of reading "no checks" in the meantime.
+#[tokio::test]
+async fn a_pull_request_that_brings_ci_waits_for_its_first_run() -> TestResult {
+    use yulius_domain::ci::GateResult;
+    let f = fixture_with(false, |_| String::new()).await?;
+    let plain = f.push_feature("feature.txt", Some("no job\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &plain).await,
+        GateResult::NotConfigured,
+        "nothing will test it"
+    );
+    let brings = f.push_feature(
+        "yulius.toml",
+        Some("[[ci.jobs]]\nname = \"own\"\ncommand = \"echo own\"\n"),
+    )?;
+    // Fetched, and not yet looked at by the scheduler.
+    git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["fetch", "-q", "origin"],
+    )?;
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &brings).await,
+        GateResult::Run(None),
+        "pending before the scheduler's round"
+    );
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert!(matches!(
+        f.h.app.ci_gate_result(&f.sandbox, &brings).await,
+        GateResult::Run(Some(yulius_domain::ci::RunState::Passed))
+    ));
+    Ok(())
+}
+
 /// SPEC-483 D4: while the integration branch's own configuration cannot be read, nothing is
 /// tested, not even a pull request that brings jobs of its own: what is broken is said, and
 /// the pull request is not given a verdict by a configuration nobody merged.
