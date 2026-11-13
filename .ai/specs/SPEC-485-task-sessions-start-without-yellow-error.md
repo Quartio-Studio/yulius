@@ -300,7 +300,7 @@ from second 0 to 80, with `cc` and build scripts in the worktree's `target/`.
 counts in Decisions. No record holds the language-server notice (Claude Code does not write it).
 
 **Tests.**
-- `cargo nextest run -p yulius-harness`: 167 passed. New: 10 in `claude_plugins`, 1 in
+- `cargo nextest run -p yulius-harness`: 168 passed. New: 11 in `claude_plugins`, 1 in
   `claude_config`, 2 in `tests/launch.rs`; each was seen failing first (the first lookup against
   a stub that finds nothing: 4 of 6 failed, the other two assert absence and got a positive
   control or are about a missing folder).
@@ -313,11 +313,19 @@ counts in Decisions. No record holds the language-server notice (Claude Code doe
   charged (1); the folder budget never charged (1); the worktree's local settings not read (1);
   ids of any length (1); `..` in a `source` walked (1); a path outside the sandbox's folders
   opened as written (2). One mutant survived and is harmless: a path outside taken as relative
-  to the sandbox directory opens nothing outside it.
+  to the sandbox directory opens nothing outside it. On what the wiring hands to the lookup
+  (round 2): a task run handing the home over as the worktree (1 test fails), a Superagent
+  handing the sandbox directory over as its working directory (1), or its config dir as the
+  sandbox directory (1). A task run handing the home over as the sandbox directory survives
+  and is the same program: the lookup takes the folder above the home, which is the sandbox
+  directory of a task run, by itself.
 - Live, against the real CLI: `YULIUS_LIVE_CLAUDE=1 cargo nextest run -p yulius -E
-  'binary_id(yulius::main) & test(/^live_claude::a_runs/)' --run-ignored only`: passed (5.1 s).
-  In each of the seven layouts the CLI alone loads the three servers; with the run's settings
-  none.
+  'binary_id(yulius::main) & test(/^live_claude::a_runs/)' --run-ignored only`: passed (5.4 s).
+  In each of the eight layouts the CLI alone loads the three servers; with the run's settings
+  none. With the plugins' folders gone from a cloned marketplace the CLI loads two of them from
+  the copies their install records name, which only `installPath` finds; with a marketplace
+  that is a folder it loads in place and ignores the copies (seen as a failed control while
+  writing the layout).
 - The whole lookup on the layout the reviewer measured at 370 s and 32 GiB with the first
   bounds (256 marketplaces, 4096 manifests, here 2 MiB each): the unit test runs in 0.2 s
   (debug build) and reads at most 16 MiB.
@@ -342,11 +350,12 @@ the session's process has no language server among its children and the sandbox 
 `rust-analyzer` process; `claude plugin list` there: `rust-analyzer-lsp@claude-plugins-official
 … Status: ✘ disabled`.
 
-**Gates.** `scripts/dev ci` at 2fd99c346, with dev merged (#1253): exit 0; `4220 tests run:
-4220 passed, 17 skipped` (`gate3.log`). After it only the decision index changed (dev's file
-plus the line of 0327; `scripts/dev check` exit 0) and this paragraph. Before the merge, at
-49d9ebfac: 4217 passed (`gate2.log`); before the review, at e877462e9: 4213 passed
-(`gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
+**Gates.** `scripts/dev ci` at 6539ce637, after the second review round's fixes: exit 0; `4221
+tests run: 4221 passed, 17 skipped` (`gate4.log`). After it dev was merged once more (#1254, CI
+code): `scripts/dev check` exit 0, the two changed crates' tests and the live test passed
+again, and only this section changed; the whole gate on that head is the reviewer's run and
+Yulius CI's. Earlier: at 2fd99c346 with #1253 merged 4220 passed (`gate3.log`); at 49d9ebfac
+4217 (`gate2.log`); before the review, at e877462e9, 4213 (`gate.log`). `yulius security-scan`: "Security scan disabled: Vidoc is
 turned off in Yulius, for this project or the whole instance; nothing was scanned." (disabled,
 not passed). The end-to-end suite was not run: no web UI change.
 
@@ -371,6 +380,33 @@ and tens of GiB on the host (F2)." It ran the gate itself (exit 0), the live tes
 - F6 (minor): "the fail-open is silent". Fixed: the launch logs what it switched off and what
   it left unread.
 - Nits: `.lsp.json` is now a `stat`; the test comment and the spelled-out type are gone.
+
+**Independent review, round 2** (the same reviewer, head 608e1f44a; it ran the gate, the live
+test, 18 mutants of the lookup and its probes again). Verdict: "**REQUEST CHANGES** — one major
+finding in the change's own code (R2-1): one case on the "not covered" list is described with
+a fact that is false in a terminal session, and the leak behind it recurs." It found the
+round-1 findings fixed ("The round-1 layout costs 0.01 s and 2 MiB; the worst valid-JSON
+layout 0.19 s and 41 MiB RSS (was 370 s, 32 GiB)") but for these, all own code, each answered:
+- R2-1 (major): "a repository's own marketplace still loads its language servers, and the
+  documents say it does not": in a terminal the registering session logs `Total LSP servers
+  loaded: 0` and then `3`, and it recurs at each new worktree. Fixed: the marketplace's folder
+  is read from the settings that bring it; a unit test, and two live layouts (absolute path,
+  where the registering session is its own control; relative path, the run planned before
+  anything is registered). The false sentence is gone from the spec and ADR-0327.
+- R2-2 (minor): 256 ids of control characters made a Superagent's `--settings` 303,124 bytes,
+  too long to start. Fixed: an id is taken only as two names of Claude Code's characters;
+  tested in the lookup and as the size of the longest argument (below 64 KiB).
+- R2-3 (minor): "a file that is not UTF-8 is read and not charged" (2,560 MiB read). Fixed:
+  bytes are read and charged whatever they hold; tested with such files.
+- R2-4 (minor): the wiring's arguments were unproven. Fixed: the wiring test has a plugin only
+  the repository switches on, from a folder of the repository, for a task run and a
+  Superagent (the mutants above).
+- R2-5 (minor): a contained Superagent's Claude Code names paths in the person's home as it
+  sees them, which the host does not open. Named in the "not covered" list of the spec,
+  ADR-0327 and the operations guide; a marketplace whose folder is not opened is now said in
+  the launch's warning (its nit).
+- Nits: the cap of 8 notes is tested; the live layout of copies outside the cache now depends
+  on `installPath`; the anchors' real paths are resolved once.
 
 **Not tested.** Which session showed the person the notice (not written to transcripts;
 terminals are on the host). Other projects' sandboxes and other languages' servers (the rule is
