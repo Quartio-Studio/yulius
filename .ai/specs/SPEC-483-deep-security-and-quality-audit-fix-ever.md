@@ -2364,7 +2364,18 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** A promotion in a project without Yulius CI whose GitHub checks fail
-  (pending and unreadable are tested, as before); an automatic promotion (`auto_promote`)
-  past a failed run of its own head (it goes through the same function; a merge's commit
-  cannot have a run yet when the promotion follows it at once); the cost of the extra
-  read in a project without CI.
+  (pending and unreadable are tested, as before); an automatic promotion after an
+  environment's command, as distinct from its confirmation (the same call); the cost of
+  the extra read in a project without CI.
+- **Review of slice 14, round 1** (head acda02182, request changes; "The four call sites
+  that were right before behave as they did, and the promotion checks are mostly right").
+  One minor finding, in the reviewer's words: "the automatic promotion's pending exception
+  covers more cases than the spec says, and one of its outcomes is untested". Answered by
+  the reviewer's second way (Decisions): the rule is said as it holds, for every automatic
+  promotion, and AC-88 shows a failed head stopping one. Two nits answered: CHK-003's
+  wording, and a sentence on `auto_promote` in `docs/api.md`.
+- **Tests failing without their fix, after the review** (`mutations.log`, 8 cases, each
+  failed its tests): the seven above, and an automatic promotion reading no checks.
+- **Gate after it.** `scripts/dev ci` at `ee36e7c2e`: exit 0; `4214 tests run: 4214 passed, 16
+  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
+  rustdoc passed.
