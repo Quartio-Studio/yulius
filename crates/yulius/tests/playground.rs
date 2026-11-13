@@ -635,11 +635,48 @@ async fn an_unfinished_task_is_not_merged() -> TestResult {
     assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
     assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
 
+    // A plan none of whose steps is finished has no finished part to squash (SPEC-484 PLN-001).
+    playground_task(
+        &h,
+        &made.body,
+        "t3",
+        &[("c.txt", "c\n")],
+        &["pending", "blocked"],
+    )
+    .await?;
+    let untouched = merge(&h, &owner, "t3").await?;
+    assert_eq!(
+        untouched.status,
+        StatusCode::CONFLICT,
+        "{:?}",
+        untouched.body
+    );
+    assert!(
+        text(&untouched).contains("no step of the plan is finished"),
+        "{:?}",
+        untouched.body
+    );
+
     assert_eq!(
         git(&origin, &["rev-parse", "dev"])?,
         before,
         "nothing landed"
     );
+
+    // Steps still ahead do not hold the finished part: it lands, and they stay open.
+    playground_task(
+        &h,
+        &made.body,
+        "t4",
+        &[("d.txt", "d\n")],
+        &["done", "pending", "blocked"],
+    )
+    .await?;
+    let part = merge(&h, &owner, "t4").await?;
+    assert_eq!(part.status, StatusCode::OK, "{:?}", part.body);
+    assert_eq!(part.body["stage"], "merged_integration", "{:?}", part.body);
+    assert_eq!(part.body["steps_open"], 2, "{:?}", part.body);
+    assert_eq!(file_at(&origin, "dev", "d.txt")?, "d\n");
     Ok(())
 }
 
