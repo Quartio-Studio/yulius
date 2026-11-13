@@ -410,7 +410,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy (merged, #1245)
 - [x] Slice 7: a secret is typed into the page the browser shows when the typing begins, and Yulius's navigations wait for it (merged, #1247)
 - [x] Slice 8: a secret is typed neither into a focused frame of another site nor into a tab on its way to one (merged, #1248)
-- [ ] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches, reviewed
+- [x] Slice 9: a sandbox's browser goes out through a proxy of its own and reaches what its sandbox reaches, reviewed
 
 ## Acceptance criteria
 
@@ -1315,3 +1315,53 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **The gate after round 2.** `scripts/dev ci` at `20404f5ae`: exit 0; `4161 tests run: 4161
   passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
   cargo-shear and rustdoc passed.
+
+### Slice 9 (2026-11-13)
+
+- **The hole, on a real browser.** With the proxy's switches taken out (the browser as it
+  was), Google Chrome 157 of sandbox `s1` opened `http://localhost:43020/`, a port of sandbox
+  `s2`, and showed its page ("other page";
+  `target/audit/slice9/real-chrome-mutations.log`). With only
+  `--proxy-bypass-list=<-loopback>` taken out the same test failed too: Chrome 157 sends the
+  loopback past a proxy unless told otherwise (also seen with a logging proxy,
+  `probe_proxy.py`: `localhost` reached the origin directly, and through the proxy with the
+  switch).
+- **Real browser, with the fix** (Chrome 157, opt-in, `YULIUS_TEST_CHROMIUM`):
+  `browser_network::a_real_chromium_reaches_its_sandboxes_ports_and_no_other_local_address`
+  passed: its own server by `localhost` and `127.0.0.1` and the welcome page load; another
+  sandbox's port (three spellings), a host service, the internal API, `169.254.169.254` and
+  two HTTPS addresses show none of those pages; a page's `fetch`, images and a WebSocket to
+  them arrived at no server while its own answered. The four tests of `real_chromium.rs`
+  passed as before.
+- **Tests failing without their fix** (`target/audit/slice9/mutate.py`, 18 cases,
+  `mutations.log` and `mutations-b.log`): each failed its tests: every port of the loopback
+  reached, local addresses not refused, every path of Yulius's listener, a tunnel to it, a
+  listener bound to every address not taken as Yulius's, what a name resolved to not asked,
+  the proxy's hop headers sent on; the loopback past the proxy, names resolved by Chrome, UDP
+  past the proxy, a browser started without its proxy, the proxy closed while the browser
+  runs, the proxy outliving its browser (this one survived at first: the test let go of the
+  browser itself; it now holds on to it, as a viewer's session does); every sandbox's ports
+  for every browser, a proxy before the egress proxy runs, the server's browsers left to
+  connect by themselves; and the two answers to slice 8's nits (a long address kept cut, or
+  kept as none).
+- **The gate.** Its first run (at `e57456953`) stopped at rustdoc: a doc comment had ended up
+  on the wrong function. Its second (at `b814ad528`) failed in this slice's own
+  `browser_network::each_browsers_proxy_reaches_its_own_sandboxes_ports`: the test's "service
+  of the host" took a port the system gave, 43013, which lies in the fixture sandbox's range
+  (43000-43019), so the sandbox's browser rightly reached it. Reproduced by putting that
+  server into the range on purpose (the same assertion, `flake-proof.log`); the test now
+  takes a port outside both ranges. `scripts/dev ci` at `b9bd0eb68`: exit 0; `4172 tests
+  run: 4172 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run for this slice.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 8, round 3** (head 4fb8a2eab): "No critical, major or minor own-code
+  finding is open." Approve, two nits, both answered here; merged as pull request #1248 (its
+  first armed merge was refused for a title of 112 characters; retitled, merged at the same
+  head).
+- **Not tested here.** A real server with real sandboxes: the browser of one sandbox against
+  the relayed ports of another on a host (the test's servers stand on the loopback where the
+  relay would listen). WebRTC and QUIC being off (the switches are asserted, their effect is
+  not). A viewer's address bar on a virtual display (it navigates the same Chrome through
+  the same proxy). Chromium builds other than Google Chrome 157. macOS, where the same
+  switches are passed.
