@@ -1770,3 +1770,41 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   is a folder the address is rewritten to, or an address where nothing listens); how much a
   courier's fetch asks of a large repository; a proxy that would really read the header
   (the test's proxy counts connections). macOS and other unconfined Git: unchanged.
+- **Review of slice 11, round 1** (head dda456b3b, request changes; two major, five minor,
+  seven nits, all answered in the slice). The majors, in the reviewer's words: "A confined
+  Git still starts the clone's file through the loader, via `core.askPass` on the
+  `Route::Named` fallback" (reproduced by the reviewer under the launcher) and "Every
+  transfer with GitHub fails when the data folder path is not canonical". What changed for
+  each finding is in Decisions; each has a test that fails without it (below).
+- **G3, by hand** (`target/audit/slice11/lazy-fetch-proof.log`, Git 2.53.0, the launcher of
+  head dda456b3b): with a promisor remote in the clone's configuration whose command for
+  the other side writes a file, a confined push between two folders (the shell allowed) of
+  a commit whose tree no repository has wrote the file; a confined command without the
+  shell could not start the command ("cannot exec … Permission denied"); with
+  `GIT_NO_LAZY_FETCH=1` the push wrote nothing. A fetch into such a clone did not start the
+  command in these tries. **Ubuntu 24.04** (`git-2404-lazy-env.log`, a container with
+  2.43.0-1ubuntu7.4): the variable is honoured there ("with the variable: not-run",
+  "without: /tmp/RAN"), though that Git does not know the option of the same name
+  (`git-2404-lazy.log`), which is why the doctor's probe asks by doing, not by version.
+- **Tests failing without their fix, round 1's answers** (`target/audit/slice11/mutate2.py`,
+  `mutations-c.log`, 17 cases): a program asked for a password; a missing object fetched; a
+  remote without an address named to Git; a clone that writes in a sandbox's folder given
+  the configuration; every `GIT_CONFIG_` variable withheld; the diff flags dropped past the
+  options' end; a signed push left to the clone; the objects allowed anywhere; the
+  sandbox's folders compared as written (the linked data folder); a path of two lines; a
+  listing that borrows objects; a clone made in the sandbox's folder; no note of the
+  default branch; the note made over the clone's own; a `..` part naming a sandbox; a
+  doctor that takes any Git; the first commit made in the sandbox's folder. Each failed its
+  test. The 13 cases of the first round were run again on the new code
+  (`mutations-d.log`): each still fails. Still without a test of its own: what the courier
+  is told the clone has (it only saves the remote work).
+- **Gate after round 1's answers.** `scripts/dev ci` at `7b35303aa`: exit 0; `4197 tests
+  run: 4197 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed (the run before it stopped at rustdoc once
+  more: a public comment linked a private item).
+- **Not tested, round 1's answers.** A clone and a transfer with the real GitHub through a
+  courier (as above); the race of a sandbox's process against a new clone's configuration,
+  which the clone in a courier removes (the reviewer did not reproduce it either); a Git
+  that really lacks `GIT_NO_LAZY_FETCH` (the doctor's test takes the variable away from
+  this machine's Git with a wrapper); whether a fetch, rather than a push, can be made to
+  fetch a missing object (it did not in the tries above; the variable covers both).
