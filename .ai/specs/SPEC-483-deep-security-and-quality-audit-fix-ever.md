@@ -2548,3 +2548,21 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   fails on demand; the mapping and the absence of another are what is tested, and
   `yulius wait`'s reading of a 500 is); an outside client of the loopback listener that
   reads its 400 or 502 (none in this repository).
+- **Review, round 1** (a fresh session, read-only, head `2a5f2d4ec`): request changes. One
+  finding in this slice's code, minor: "A behaviour change with no test" (the condition
+  `ended.is_none() &&` in `merge_armed_task`: an ended run is not asked where its branch
+  is). `delivery::an_armed_merge_ends_with_its_tasks_run` now commits past the armed head
+  before the task is closed and again before the pull request is merged by hand, and
+  expects "run ended (closed)" and "merged", never "dropped". One finding from before,
+  minor: "an Internal error is answered without a log line" on the routes of the agents'
+  own clients, where its 500 now ends a `yulius wait`; `bare_status` logs it as the public
+  API does and is what `routes/internal.rs`, `routes/mcp.rs` and `routes/secrets.rs` call.
+  The nits are answered: the source test's comment says what it reads; STS-001 names the
+  guest link's 410; `docs/api.md` speaks of the routes the agents' clients call;
+  `docs/changes.md` says five kinds; the line of this spec is joined; the `unavailable`
+  code that nothing produces is P15 in the ledger.
+- **Tests failing without their fix, after the review** (`mutations.log`, 4 cases, each
+  failed its test): the three above and "an ended run's moved branch is the reason it
+  gives".
+- **Gate after it.** `scripts/dev ci` at `c65fb7087`: exit 0;
+  `4280 tests run: 4280 passed, 17 skipped` (`target/audit/slice16/gate2.log`).
