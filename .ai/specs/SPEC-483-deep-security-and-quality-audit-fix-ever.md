@@ -49,8 +49,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   9. the sandbox browser's network (E2): merged, pull request #1250;
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
-  12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan, the others
-      follow one by one;
+  12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
+      request #1254), D5 slice 14, the others follow one by one;
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
@@ -329,6 +329,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
   by the agent's `ci_rerun`, or by Yulius after an errored run), and `ci_gate_result` takes
   the newest run of a head as its verdict.
 
+### Slice 14: what the checks at a commit say
+
+- **D5 (medium).** "Are the checks green at this head" was decided in five places by three
+  rules. `dlv_observe` (a task's delivery) and `git_overview` (the Git page) asked Yulius
+  CI's run of the head and, without Yulius CI, GitHub's checks, each with its own copy.
+  The remote control's merge (`remote_files.rs`) added two cases (a pull request that
+  brings CI is pending; a broken configuration refuses). A promotion pull request read
+  GitHub's checks only, with `ChecksState::None` passing: when a run's status was not
+  published, a failed Yulius CI run at the integration head read as no checks and the
+  promotion merged with `require_checks` on, although `docs/engineering/git.md` says the
+  head "must have a successful `yulius/ci` status". A fast-forward promotion read no
+  checks at all.
+- **From the review of slice 13 (its sixth point):** `ci_gate_result` said "not configured"
+  for a commit without a run in a project without CI, also when the commit brings jobs the
+  scheduler is about to test: a merge that requires checks could go through before that
+  first run existed. Only the remote control compensated.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -601,6 +618,17 @@ no code path reaches; documents, texts shown to agents and people, and code that
   jobs. A run again that nothing tests says why: the integration branch's broken
   configuration, the commit's own that cannot be read, or that the sandbox (a branch's run)
   or the commit has no CI.
+- **CHK-001** `App::dlv_checks_at(sandbox, token, sha)` answers what the checks at a commit
+  say: with a verdict of Yulius CI (`ci_gate_result` other than "not configured"), that
+  verdict alone, with the word `error` for a run that could not happen; else GitHub's
+  combined checks and what of them could not be read.
+- **CHK-002** A task's delivery, the Git page, the remote control's merge, a promotion pull
+  request and a fast-forward promotion use CHK-001. With `require_checks`, both promotions
+  refuse failing, pending and unreadable checks at the integration head and go on passed
+  checks or none.
+- **CHK-003** `ci_gate_result` is "pending" for a commit without a run when Yulius CI will
+  test it: the integration branch has CI, or the commit brings its own to a branch without
+  any (CGR-001 for a proposal).
 
 ## Plan
 
@@ -620,6 +648,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 11: a transfer that carries the server's token is made in a repository of the server's own, reviewed (merged, #1252)
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
+- [ ] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer
 
 ## Acceptance criteria
 
@@ -961,6 +990,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-82** In a playground whose `dev` has a `yulius.toml` that cannot be read (the CI
   overview says so): a task that brings a readable one arms its merge (`dev` does not move
   before the run), and its run shows the task's job.
+- **AC-83** With a promotion pull request open and GitHub's checks at its head passed: a
+  failed run of Yulius CI at that head refuses the promotion (409, "fail…"), nothing is
+  merged; a newer passed run lets it merge.
+- **AC-84** With a fast-forward profile: a failed run of Yulius CI at the integration head
+  refuses the promotion and the production branch does not move; a newer passed run lets
+  it fast-forward.
+- **AC-85** In a project without CI: a pull request without jobs has no verdict of Yulius
+  CI; one that brings a job is pending before the scheduler's round and passed after its
+  run.
+- **AC-86** The existing tests of a task's delivery, the Git page, the remote control's
+  merge and the promotions pass unchanged (pending, unreadable and passed checks of
+  GitHub's for a project without Yulius CI among them).
 
 ## Test plan
 
@@ -1124,6 +1165,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-80): two parts of the rule that only a unit test of its comparison, or nothing, held;
   `playground::a_task_that_changes_the_jobs_is_tested_with_its_own` (AC-81) and
   `playground::a_task_that_repairs_a_broken_configuration_is_tested_with_its_own` (AC-82).
+- Slice 14: `yulius` `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`
+  (AC-83), `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out`
+  (AC-84), `local_ci::a_pull_request_that_brings_ci_waits_for_its_first_run` (AC-85);
+  `delivery`, `remote_mcp`, `merge_train` and `playground` as they are (AC-86).
 
 ## Decisions
 
@@ -1187,14 +1232,26 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
+  one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
+  head, which is the promotion pull request's head too. A fast-forward promotion is held
+  to the same checks as one by pull request (it had none): what reaches production is the
+  same commit either way, and `require_checks` is the profile's word for both. The
+  "pending before the first run" case moved from the remote control into `ci_gate_result`,
+  so that a task's `delivery_merge` waits for it too; it costs one read of the commit's
+  `yulius.toml` per question, only in a project without CI and only for a commit without
+  a run. The remote control keeps its two refusals with their own words (a broken
+  configuration on the integration branch, an unreadable one in the pull request).
 - Slice 13 (no decision record: an existing rule, CI-110 and SPEC-217, given one place):
   the rule lives in `ci_gate_for_head` and takes the commit and what it is (a proposal or
   the branch with a change merged); what the commit branched off is the merge base with the
   integration branch for every caller. For a train's merge commit that is the integration
   head it was built on, as its own copy had it. For a playground's it is that head too,
-  where its copy compared with the task's fork point: the answers differ when `dev` changed
-  its jobs since the task began and the task did not, and the new one (the jobs of `dev` as
-  it is, since the task changed nothing) is the rule's. A playground task that changes its
+  where its copy compared with the task's fork point: the answers differ only when `dev`
+  changed its jobs since the task began, the task did not, and the playground's profile
+  has a `gate` command (the copy then ran `dev`'s project jobs as the task's own instead of
+  the profile's gate); the new answer, the gate, is the rule's, since the task changed
+  nothing. A playground task that changes its
   jobs now keeps the trusted security job: the copy that lacked it was the odd one. A
   playground task's merge is still tested with its own jobs while `dev`'s configuration is
   broken (the review of this slice: without it the repairing task would land untested, and
@@ -1339,7 +1396,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
-| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 12 |
+| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 14 |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 12 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |

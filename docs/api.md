@@ -683,8 +683,11 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
   production (`result: "pr_opened"`, `sha` = PR URL); a later call merges it with a merge commit
-  once its checks allow (`result: "promoted"`). Tasks waiting for promotion then advance to
-  `promoted` (or `production_done` without production environments).
+  once its checks allow (`result: "promoted"`). With `require_checks`, both ways ask what
+  the checks at the integration head say, as a task's merge does: Yulius CI's newest run of
+  that commit when the project has Yulius CI (failed, errored or cancelled refuses; none yet
+  or running waits), else GitHub's checks; unreadable checks never pass. Tasks waiting for
+  promotion then advance to `promoted` (or `production_done` without production environments).
 - **Environment runs** need `{"confirm": true}` on every request. For an environment with a
   command, the run starts in the background and `GET …/runs/{run_id}` reports progress; only one
   command run per sandbox runs at a time (`conflict` otherwise). An environment without a command

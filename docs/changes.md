@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A promotion asks Yulius CI (SPEC-483 slice 14, task #465). Whether the checks at a commit
+  are green was decided in five places by three rules: a task's merge and the Git page
+  asked Yulius CI's run and fell back to GitHub's checks, the remote control added two
+  cases of its own, a promotion pull request read GitHub's checks only, and a fast-forward
+  promotion read none. A failed Yulius CI run at the `dev` head whose status had not been
+  published read as "no checks", and the promotion went through with required checks on.
+  All of them now ask one function: Yulius CI's newest run of the commit where the project
+  has Yulius CI, else GitHub's checks. A pull request that brings CI to a project without
+  any is "pending" until its first run, for every caller.
 - A run again tests a commit with the jobs the scheduler gives it (SPEC-483 slice 13, task
   #465): its own when it changed them, the integration branch's of now otherwise.
   A pull request that changes the CI is tested with its own jobs; run again (Run again, the
