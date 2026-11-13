@@ -285,15 +285,10 @@ impl App {
             } else {
                 runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
                 // With the box empty no person's draft holds a typed message any more
-                // (DRF-007, DRF-009): its mark leaves the run's folder, whatever this server
-                // remembers of having written it, and a flag that said a message of Yulius's
-                // own waits for it ends, also after a prompt that starts no turn. A key typed
-                // after this submit is a draft of its own, and both stay.
-                if !self.persons_draft_holds(&ctx.task.id) {
-                    runtime.draft_marked.store(false, Ordering::SeqCst);
-                    crate::supervisor::clear_person_typed(run_dir);
-                    self.settle_draft_flag(&ctx.task.id).await;
-                }
+                // (DRF-007, DRF-009): its mark and its flag end, also after a prompt that
+                // starts no turn. A key typed after this submit is a draft of its own, and
+                // both stay.
+                self.draft_ended(&ctx.task.id, Some(run_dir)).await;
             }
             // It goes on to Claude Code now, which writes where it went (a turn of its own,
             // or its queue) only after this answer: until that record is read, a turn's end

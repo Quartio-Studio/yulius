@@ -14,13 +14,15 @@
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person's draft may sit in the
 //!   prompt box (they typed since it was last empty, however long ago: their draft is theirs,
-//!   SPEC-480) or they typed in the last minute, while Yulius types the first message, or while
+//!   SPEC-480; a box the screen shows empty holds nothing, SPEC-488) or they typed in the last
+//!   minute, while Yulius types the first message, or while
 //!   another message is typed; other states are refused with their name (TMS-004). A sender is
 //!   told why; for a message of Yulius's own that waits for a draft, its person is told after
 //!   ten minutes (SPEC-480 DRF-006);
 //! - the person needs write access; every message is audited `task.messaged` without its text
 //!   (TMS-005); a typed message ends the task's open `needs_you` (TMS-006).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -261,8 +263,8 @@ impl App {
 
     /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
     /// it takes typed text (TMS-004): its session started, no person's draft may sit in its
-    /// prompt box and none typed in the last minute (SPEC-480), and nothing else is being
-    /// typed. Also Yulius's own "Yulius is back; continue" (SPEC-358 MSB-007). `what` says
+    /// prompt box (SPEC-480; none does in a box the screen shows empty, SPEC-488) and none
+    /// typed in the last minute, and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358 MSB-007). `what` says
     /// whether Claude Code will submit it as a prompt, `from` who is told when a person's
     /// possible draft holds it back.
     pub(crate) async fn type_into_session(
@@ -324,7 +326,16 @@ impl App {
         // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
-        match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
+        let mut held = yulius_domain::intake::box_held(self.now().0, typed, emptied);
+        // Most keys leave no text (Escape, an arrow, an answered dialog), and the screen can
+        // prove it: a prompt box shown empty, once the minute after the key has passed, holds
+        // nothing (SPEC-488). Any other picture proves nothing and the hold stays.
+        if held.is_some_and(BoxHeld::ends_at_an_empty_box) && runtime.hub.prompt_box_shown_empty()
+        {
+            self.box_seen_empty(task, typed).await;
+            held = None;
+        }
+        match held {
             Some(held @ BoxHeld::Draft { .. }) => {
                 if from.tells_person(held) {
                     self.tell_of_held_message(task, typed).await;
@@ -378,6 +389,43 @@ impl App {
             ))
         })?;
         Ok(())
+    }
+
+    /// The session's screen shows its prompt box empty: the person's keystroke at `typed` left
+    /// no draft there (SPEC-488 EBX-004). The box counts as emptied at that keystroke, as after
+    /// a prompt submitted from it, so a key typed later (also while the screen was read) is a
+    /// possible draft of its own; the hold's mark and flag end ([`Self::draft_ended`]).
+    async fn box_seen_empty(&self, task: &TaskRecord, typed: i64) {
+        let runtime = self.runtime(&task.id);
+        runtime.box_emptied_ms.fetch_max(typed, Ordering::SeqCst);
+        let run_dir = match self.deps.store.live_attempt(&task.id).await {
+            Ok(attempt) => attempt.map(|attempt| attempt.run_dir),
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "could not find the run whose draft mark ends");
+                None
+            }
+        };
+        tracing::info!(task = %task.id, "the prompt box is shown empty: a person's keystroke left no draft");
+        self.draft_ended(&task.id, run_dir.as_deref().map(Path::new))
+            .await;
+    }
+
+    /// The task's prompt box was emptied (a prompt submitted from it, SPEC-480 DRF-007 and
+    /// DRF-009, or the screen showing it empty, SPEC-488): unless a key typed since is a
+    /// possible draft of its own, the mark of one leaves the run's folder `run_dir`, whatever
+    /// this server remembers of having written it, and a flag that said a message of Yulius's
+    /// own waits for it ends, also when no turn starts.
+    pub(crate) async fn draft_ended(&self, task_id: &TaskId, run_dir: Option<&Path>) {
+        if self.persons_draft_holds(task_id) {
+            return;
+        }
+        self.runtime(task_id)
+            .draft_marked
+            .store(false, Ordering::SeqCst);
+        if let Some(run_dir) = run_dir {
+            crate::supervisor::clear_person_typed(run_dir);
+        }
+        self.settle_draft_flag(task_id).await;
     }
 
     /// Tells the session's person that a message of Yulius's own waits for what they typed at

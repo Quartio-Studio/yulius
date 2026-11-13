@@ -208,13 +208,24 @@ impl BoxHeld {
     pub fn tells_person(self) -> bool {
         matches!(self, Self::Draft { typed_ms_ago } if typed_ms_ago >= DRAFT_TOLD_MS)
     }
+
+    /// Whether a screen that shows the session's prompt box empty ends this hold (SPEC-488
+    /// EBX-001, EBX-003): a possible draft whose keystroke is older than [`TYPED_WINDOW_MS`].
+    /// Within that minute the person is at the keyboard and the screen may be behind their
+    /// key, so the hold stays whatever it shows.
+    #[must_use]
+    pub fn ends_at_an_empty_box(self) -> bool {
+        matches!(self, Self::Draft { typed_ms_ago } if typed_ms_ago > TYPED_WINDOW_MS)
+    }
 }
 
 /// Whether a person holds a session's prompt box at `now_ms`, so that Yulius types no message
 /// into it (SPEC-480 DRF-001, DRF-002). `typed_at_ms` is a person's last keystroke (0: none),
 /// `box_emptied_ms` when the box was last known empty (its run's start, or the last prompt
-/// submitted from it; [`crate::agent_cli::is_draft`]). Yulius sees keys, not the box: every
-/// keystroke after the box was emptied counts, also one that left no text there.
+/// submitted from it, or the last keystroke after which the session's screen showed it empty,
+/// SPEC-488; [`crate::agent_cli::is_draft`]). Yulius sees keys, not the box: every keystroke
+/// after the box was emptied counts, also one that left no text there, until the screen proves
+/// that ([`BoxHeld::ends_at_an_empty_box`]).
 #[must_use]
 pub fn box_held(now_ms: i64, typed_at_ms: i64, box_emptied_ms: i64) -> Option<BoxHeld> {
     if typed_at_ms <= 0 {
@@ -608,6 +619,28 @@ mod tests {
         assert!(draft(DRAFT_TOLD_MS).tells_person());
         assert!(draft(90 * MIN).tells_person());
         assert!(!BoxHeld::AtKeyboard.tells_person());
+    }
+
+    /// SPEC-488 EBX-001, EBX-003: a screen that shows the prompt box empty ends the hold of a
+    /// possible draft only once the minute after its keystroke has passed; the minute of a
+    /// person at the keyboard is not the screen's to end.
+    #[test]
+    fn an_empty_box_ends_a_possible_draft_after_the_minute() {
+        let draft = |typed_ms_ago| BoxHeld::Draft { typed_ms_ago };
+        assert!(!draft(0).ends_at_an_empty_box());
+        assert!(!draft(TYPED_WINDOW_MS).ends_at_an_empty_box());
+        assert!(draft(TYPED_WINDOW_MS + 1).ends_at_an_empty_box());
+        assert!(draft(DRAFT_TOLD_MS).ends_at_an_empty_box());
+        assert!(!BoxHeld::AtKeyboard.ends_at_an_empty_box());
+        // The box then counts as emptied at that keystroke: nothing holds it any more.
+        let now = 100 * TYPED_WINDOW_MS;
+        let typed = now - TYPED_WINDOW_MS - 1;
+        assert_eq!(box_held(now, typed, typed), None);
+        // A key typed after the judged one is a possible draft of its own.
+        assert_eq!(
+            box_held(now, now - 5, typed),
+            Some(BoxHeld::Draft { typed_ms_ago: 5 })
+        );
     }
 
     fn answer(choice: &str, probabilities: &[(&str, f64)]) -> ChoiceAnswer {
