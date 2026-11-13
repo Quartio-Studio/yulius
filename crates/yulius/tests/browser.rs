@@ -1225,6 +1225,87 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
     .await
 }
 
+/// SPEC-483 E1 (ADR-0318): on a virtual display a viewer's clicks and keys are real input that
+/// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
+/// refused (a button press, a key press, typed text), with what an administrator runs, until
+/// the browser itself answers that the host's managed policy is in force; moving the pointer
+/// and releases pass; the probe's tab is nobody's tab; and once the policy appears input is
+/// taken without a restart.
+#[tokio::test]
+async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
+        // Typed text (an IME, a paste) is input too.
+        let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
+
+        for refused in [&down, &key, &text] {
+            send(&mut socket, refused.clone()).await?;
+            let error = loop {
+                let message = next_json(&mut socket).await?;
+                assert!(
+                    message["tabs"].as_array().is_none_or(|tabs| tabs.len() == 1),
+                    "the probe's tab was listed: {message}"
+                );
+                if message["type"] == "error" {
+                    break message;
+                }
+            };
+            assert_eq!(error["code"], "input_locked", "{error}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("sudo yulius host setup")),
+                "{error}"
+            );
+        }
+        // Releases pass (nothing may stay held), and so does moving the pointer.
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "up", "key": "a", "code": "KeyA"})).await?;
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": 30, "y": 40})).await?;
+        assert!(display.wait_for_input(|i| *i == DisplayInput::Motion { x: 30, y: 40 }, WAIT).await);
+        assert!(
+            !display.inputs().iter().any(|i| matches!(
+                i,
+                DisplayInput::Button { press: true, .. } | DisplayInput::Key { press: true, .. }
+            )),
+            "{:?}",
+            display.inputs()
+        );
+        assert!(
+            display
+                .inputs()
+                .contains(&DisplayInput::Button { button: 1, press: false }),
+            "{:?}",
+            display.inputs()
+        );
+        // One probe for the three refusals (the answer stands for a moment), its tab closed.
+        assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
+        assert_eq!(f.fake.target_ids().len(), 1);
+
+        // An administrator ran host setup: the running browser takes input.
+        f.fake.set_browser_policy(true);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            if display.wait_for_input(pressed, Duration::from_millis(500)).await {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "input stayed off");
+        }
+        Ok(())
+    })
+    .await
+}
+
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.
@@ -1305,6 +1386,122 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
         drop(socket);
         assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6): the policy probe's tab is known by the id Chrome gave it, never
+/// by its address. A page that opens a window at the probe's address gets an ordinary tab: it
+/// is listed and, on the display, becomes the shown tab, so the panel never shows one tab's
+/// address over another window's picture.
+#[tokio::test]
+async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // A probe ran (a click asked for it); then a page opens its look-alike.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+        let popup = f
+            .fake
+            .open_from_page(&first, "about:blank#yulius-browser-policy")
+            .await;
+        let shown = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == popup.as_str() && t["active"] == true)
+                })
+        })
+        .await?;
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6, round 2): what Chrome announces while a probe waits for the id
+/// of its own tab is listed once the id is known, unless it is the probe's; and a tab that
+/// goes to a page of Chrome's own stays a tab (Chrome still shows it).
+#[tokio::test]
+async fn tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays() -> TestResult
+{
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake.create_alongside_next_target("https://beside.example/");
+        // A press asks for the probe, whose tab and the other are announced before its id.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        let listed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter().any(|t| t["url"] == "https://beside.example/")
+                })
+        })
+        .await?;
+        let urls: Vec<&str> = listed["tabs"]
+            .as_array()
+            .map(|tabs| tabs.iter().filter_map(|t| t["url"].as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(urls.len(), 2, "the probe's tab was listed: {urls:?}");
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+
+        f.fake.set_target_url(&first, "chrome://settings/").await;
+        let stayed = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == first.as_str() && t["url"] == "chrome://settings/")
+                })
+        })
+        .await?;
+        assert_eq!(stayed["tabs"].as_array().map(Vec::len), Some(2), "{stayed}");
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318: a page of Chrome itself is no tab (Chrome 157 reports its address bar's popup,
+/// `chrome://omnibox-popup.top-chrome/`, as a page): viewers are never shown it, and it never
+/// becomes the shown tab; the page opened after it is.
+#[tokio::test]
+async fn chromes_own_pages_are_no_tabs() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        f.fake
+            .open_from_page(&first, "chrome://omnibox-popup.top-chrome/")
+            .await;
+        let popup = f
+            .fake
+            .open_from_page(&first, "https://accounts.example/oauth")
+            .await;
+        // Every tab list on the way to the real popup's has no page of Chrome's.
+        let shown = loop {
+            let message = next_json(&mut socket).await?;
+            let Some(tabs) = message["tabs"].as_array() else {
+                continue;
+            };
+            assert!(
+                tabs.iter()
+                    .all(|t| !t["url"].as_str().unwrap_or_default().starts_with("chrome:")),
+                "{message}"
+            );
+            if tabs.iter().any(|t| t["id"] == popup.as_str()) {
+                break message;
+            }
+        };
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
         Ok(())
     })
     .await

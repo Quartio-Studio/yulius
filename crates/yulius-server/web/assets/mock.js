@@ -13,6 +13,7 @@
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
 // vault=unlocked (two-factor is on and the code was just entered),
+// browser=locked (the sandbox browser refuses clicks and keys: the host's browser policy is missing),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), claude_hold_read=1 (the Claude Code
 // card's reads are answered late, once `__yuliusMock.claude.releaseRead()` is called), as=<login> (signed in as another member, a
@@ -6371,6 +6372,9 @@ class LoginSession {
  * encodes; the real server sends H.264) — or as JPEG frames when a viewer asks for pixels or
  * WebCodecs is missing. Clicks and keys change the drawn page; copy answers with the typed text.
  */
+/** What the server answers a click or a key while the host's browser policy is missing. */
+const INPUT_LOCKED = { type: 'error', code: 'input_locked', message: "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host" };
+
 class BrowserSession {
   constructor(db, sandbox) {
     this.db = db;
@@ -6476,6 +6480,7 @@ class BrowserSession {
       case 'mouse': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown || msg.event === 'wheel') break;
+        if (this.db.browserLocked && msg.event !== 'move') { ws.push(JSON.stringify(INPUT_LOCKED)); break; }
         this.cursor = { x: msg.x, y: msg.y };
         if (msg.event === 'down' && shown.id === 'tab-aws' && shown.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
           shown.action_requested = null;
@@ -6489,6 +6494,7 @@ class BrowserSession {
       case 'key': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown) break;
+        if (this.db.browserLocked && msg.event !== 'up') { ws.push(JSON.stringify(INPUT_LOCKED)); break; }
         const typed = this.typed.get(shown.id) || '';
         if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(shown.id, typed.slice(0, -1));
         else if (msg.event === 'down' && typeof msg.key === 'string' && msg.key.length === 1) this.typed.set(shown.id, (typed + msg.key).slice(-80));
@@ -6954,6 +6960,9 @@ export function createMockTransport(params) {
   db.failNoteLoads = params.get('noteloads') === 'fail';
   // `browserask=0`: no sign-in request from the sandbox browser 5 s after the start (startAmbient).
   db.noBrowserAsk = params.get('browserask') === '0';
+  // `browser=locked`: the host's browser policy is not in force, so the sandbox browser refuses
+  // viewers' clicks and keys (ADR-0318).
+  db.browserLocked = params.get('browser') === 'locked';
   // `ambient=0`: no ambient activity at all (startAmbient): no task changes by themselves.
   db.noAmbient = params.get('ambient') === '0';
   // `sessionlimit=<n>`: the instance's session limit in the Status panel (default 8, SPEC-334).

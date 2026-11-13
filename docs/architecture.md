@@ -377,7 +377,14 @@ DevTools socket, and a contained run (isolated or the fallback bubblewrap, each 
 namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
 running as Yulius's user on the host, including an agent run without containment (host mode), or
 root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
-tools, viewers through the viewer WebSocket. The two Superagents drive it with the same tools: the
+tools, viewers through the viewer WebSocket. On a virtual display a viewer's input is real X
+input, which reaches Chrome's own windows too (a file chooser, Save as, the developer tools) in
+a Chrome that runs on the host: the browser takes button and key presses only while it answers
+itself that the host's managed policy, which switches those windows off, is in force
+(`BrowserInstance::viewer_input_allowed`: a hidden tab is sent to the address the policy
+blocks; `yulius_browser::policy`, written by `yulius host setup`;
+[ADR-0318](decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md)).
+The probe's tab and Chrome's own `chrome:` pages are never listed as tabs. The two Superagents drive it with the same tools: the
 sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label

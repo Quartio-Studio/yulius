@@ -397,7 +397,8 @@ watching, steering and unblocking.
   dev is empty until it has a dev machine, and production is the push to `main`, which each
   instance installs once a superadmin chooses Update now.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
-  and sign-ins for the agent.
+  and sign-ins for the agent. Their clicks and keys need the host's browser policy, which
+  `yulius host setup` writes: without it the browser shows but takes none (ADR-0318).
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
   its Defaults (as the default workflows do), each off until a person switches it on: "Keep the
   docs up to date", "Work through open issues" (the issues of the core team, of people with write

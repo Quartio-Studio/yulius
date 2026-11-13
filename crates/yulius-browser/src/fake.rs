@@ -108,6 +108,12 @@ struct FakeState {
     screenshot_base64_len: usize,
     ax_nodes: Value,
     emit_load_events: bool,
+    /// Whether the host's managed policy is in force: the policy probe's navigation is
+    /// blocked by the administrator (ADR-0318).
+    browser_policy: bool,
+    /// A page target Chrome makes by itself, opened by no page, announced just before the
+    /// next `Target.createTarget` is answered.
+    alongside: Option<String>,
     selection: String,
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
@@ -304,6 +310,8 @@ impl FakeCdpServer {
                 screenshot_base64_len: 0,
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
+                browser_policy: true,
+                alongside: None,
                 selection: String::new(),
                 pages: HashMap::new(),
                 password_fields: HashSet::new(),
@@ -460,6 +468,36 @@ impl FakeCdpServer {
     /// Whether `Page.navigate` is followed by `Page.loadEventFired` (default true).
     pub fn set_emit_load_events(&self, emit: bool) {
         lock(&self.shared.state).emit_load_events = emit;
+    }
+
+    /// Makes a page target at `url`, opened by no page, appear just before the next
+    /// `Target.createTarget` is answered (a tab made while a caller waits for its own).
+    pub fn create_alongside_next_target(&self, url: &str) {
+        lock(&self.shared.state).alongside = Some(url.to_owned());
+    }
+
+    /// Changes a target's address and notifies connected clients (`Target.targetInfoChanged`):
+    /// a navigation Yulius did not start.
+    pub async fn set_target_url(&self, target_id: &str, url: &str) {
+        let (event, connections) = {
+            let mut state = lock(&self.shared.state);
+            let Some(target) = state.targets.iter_mut().find(|t| t.id == target_id) else {
+                return;
+            };
+            url.clone_into(&mut target.url);
+            let event = target_event("Target.targetInfoChanged", target);
+            (event, state.connections.clone())
+        };
+        for connection in connections {
+            let _ = connection.outgoing.send(event.to_string()).await;
+        }
+    }
+
+    /// Whether the host's managed browser policy is in force (default true): the navigation to
+    /// its marker address fails as blocked by the administrator, or as a name that does not
+    /// resolve.
+    pub fn set_browser_policy(&self, in_force: bool) {
+        lock(&self.shared.state).browser_policy = in_force;
     }
 
     /// The text pages report as the user's selection (the copy expression's result).
@@ -949,6 +987,16 @@ fn respond(
             before.push(target_event("Target.targetCreated", &target));
             let id = target.id.clone();
             state.targets.push(target);
+            if let Some(url) = state.alongside.take() {
+                let beside = FakeTarget {
+                    id: fake_target_id(state.next_target),
+                    url,
+                    title: String::new(),
+                };
+                state.next_target += 1;
+                before.push(target_event("Target.targetCreated", &beside));
+                state.targets.push(beside);
+            }
             Ok(json!({"targetId": id}))
         }
         "Target.closeTarget" | "Target.activateTarget" => {
@@ -986,6 +1034,14 @@ fn respond(
                 return Ok(
                     json!({"frameId": "frame-1", "errorText": "net::ERR_NAME_NOT_RESOLVED"}),
                 );
+            }
+            if url.contains("yulius-browser-policy-v") {
+                let error = if state.browser_policy {
+                    "net::ERR_BLOCKED_BY_ADMINISTRATOR"
+                } else {
+                    "net::ERR_NAME_NOT_RESOLVED"
+                };
+                return Ok(json!({"frameId": "frame-1", "errorText": error}));
             }
             let target_id = session_id.and_then(|s| state.sessions.get(s)).cloned();
             if let Some(target) = state

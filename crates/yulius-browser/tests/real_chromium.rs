@@ -443,3 +443,285 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     framing_server.abort();
     Ok(())
 }
+
+/// The windows of display `name` that are no part of the kiosk: `xwininfo -root -tree` lines
+/// whose title says a file dialog (GTK's "Open File", "Open Files", "Save File", "All Files",
+/// Chrome's own "File Upload").
+fn file_dialogs(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("xwininfo")
+        .args(["-root", "-tree"])
+        .envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
+        .output()
+        .map_err(|e| format!("xwininfo: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| {
+            [
+                "Open File",
+                "Save File",
+                "File Upload",
+                "All Files",
+                "Select",
+            ]
+            .iter()
+            .any(|title| line.contains(title))
+        })
+        .map(|line| line.trim().to_owned())
+        .collect())
+}
+
+/// SPEC-483 E1 (ADR-0318), opt-in (never in CI): `YULIUS_TEST_CHROMIUM` and an `Xvfb` on `PATH`.
+/// A viewer's input on the virtual display is real X input, and the browser runs on the host
+/// as the service user: a click on a page's file input must open no native file chooser, in
+/// which the viewer could pick any file the service user reads (the instance's master key,
+/// another sandbox's repository) for the page to read. With the host's managed policy
+/// installed (`yulius host setup`) the click reaches the page and Chrome opens nothing, nor do
+/// its accelerators for Open File, Save as, Print, the page's source and the developer tools
+/// (no window shown, no `devtools:`, `view-source:`, `file:` or print page), and a link to
+/// another program's address is blocked as a page instead of handed to `xdg-open`; without
+/// it the click is refused. Before ADR-0318 the chooser opened: "Open File", over the whole display
+/// (Google Chrome 157).
+#[tokio::test]
+async fn a_viewers_click_on_a_file_input_opens_no_file_chooser() -> TestResult {
+    use yulius_browser::{DisplayConfig, DisplayMode, MouseInput};
+    use yulius_contracts::browser::{MouseButton, MouseEventKind};
+    let Some(exe) = std::env::var_os("YULIUS_TEST_CHROMIUM") else {
+        eprintln!("skipped: set YULIUS_TEST_CHROMIUM to a Chromium executable to run");
+        return Ok(());
+    };
+    const UPLOAD: &str = "<!doctype html><html><head><title>upload</title></head><body>\
+<input type=\"file\" id=\"f\" style=\"position:fixed;left:0;top:0;width:600px;height:400px;font-size:200px\" \
+onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.files[0].name\">\
+<a href=\"yulius-test-scheme://open\" style=\"position:fixed;left:0;top:450px;width:600px;height:200px\" \
+onclick=\"document.title='linked'\">another program</a></body></html>";
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await;
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{UPLOAD}",
+                    UPLOAD.len()
+                );
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    let dir = tempfile::tempdir()?;
+    let config = BrowserConfig {
+        startup_timeout: Duration::from_secs(60),
+        display: DisplayMode::Virtual(DisplayConfig::new(dir.path().join("displays"))),
+        // Chrome refuses to run as root with its own sandbox (a test host's choice).
+        no_sandbox: std::env::var_os("YULIUS_TEST_CHROMIUM_NO_SANDBOX").is_some(),
+        ..BrowserConfig::new(exe.into(), dir.path().join("profiles"))
+    };
+    let manager = BrowserManager::new(config);
+    let sandbox = SandboxId::parse("real-upload")?;
+    let browser = manager
+        .ensure(&sandbox, &manager.default_profile_dir(&sandbox))
+        .await?;
+    let env = browser.display().ok_or("no virtual display")?.env();
+    let tab = browser.open(&format!("http://127.0.0.1:{port}/")).await?;
+    assert_eq!(file_dialogs(&env)?, Vec::<String>::new());
+
+    let at = |event, button| MouseInput {
+        event,
+        x: 300.0,
+        y: 200.0,
+        button,
+        dx: 0.0,
+        dy: 0.0,
+        modifiers: 0,
+    };
+    // Clicks until the page saw one (its window may still be mapping), then gives a chooser
+    // the time to show: none must have by then.
+    // The page's title as the browser window shows it ("<title> - Google Chrome").
+    let title = || -> String {
+        let tree = std::process::Command::new("xwininfo")
+            .args(["-root", "-tree"])
+            .envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        tree.lines()
+            .filter_map(|line| line.split('"').nth(1))
+            .find_map(|name| {
+                name.strip_suffix(" - Google Chrome")
+                    .or_else(|| name.strip_suffix(" - Chromium"))
+            })
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while tokio::time::Instant::now() < deadline && title() != "upload" {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(title(), "upload", "the page did not load");
+    let mut shown = Vec::new();
+    let mut refused = false;
+    'clicks: while tokio::time::Instant::now() < deadline && shown.is_empty() && title() == "upload"
+    {
+        for (event, button) in [
+            (MouseEventKind::Move, MouseButton::None),
+            (MouseEventKind::Down, MouseButton::Left),
+            (MouseEventKind::Up, MouseButton::Left),
+        ] {
+            match browser.dispatch_mouse(&tab, at(event, button)).await {
+                Ok(()) => {}
+                Err(BrowserError::InputLocked) => {
+                    refused = true;
+                    break 'clicks;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        shown = file_dialogs(&env)?;
+    }
+    eprintln!(
+        "{}",
+        if refused {
+            "the host's browser policy is not installed: the click was refused"
+        } else {
+            "the host's browser policy is in force: the click reached the page"
+        }
+    );
+    assert!(
+        refused || title() != "upload",
+        "the click never reached the page"
+    );
+    let settle = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < settle && shown.is_empty() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        shown = file_dialogs(&env)?;
+    }
+    // A link to another program's address: Chrome offers to run `xdg-open` on the host.
+    let mut handed_over = false;
+    if !refused && shown.is_empty() {
+        let link = |event, button| MouseInput {
+            y: 550.0,
+            ..at(event, button)
+        };
+        for (event, button) in [
+            (MouseEventKind::Move, MouseButton::None),
+            (MouseEventKind::Down, MouseButton::Left),
+            (MouseEventKind::Up, MouseButton::Left),
+        ] {
+            browser.dispatch_mouse(&tab, link(event, button)).await?;
+        }
+        // The policy blocks the address as a page (the tab shows it blocked); without that
+        // rule Chrome keeps the page and hands the address to `xdg-open`.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline
+            && matches!(title().as_str(), "clicked" | "linked")
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        handed_over = matches!(title().as_str(), "clicked" | "linked");
+    }
+    // With input taken, Chrome's own accelerators arrive too: Open File, Save as, Print, the
+    // developer tools, the page's source. None may open a window of its own or a page of
+    // Chrome's.
+    let mut own = Vec::new();
+    if !refused && shown.is_empty() {
+        use yulius_browser::KeyInput;
+        use yulius_contracts::browser::KeyEventKind;
+        // The top-level windows shown on the display (mapped: GTK also keeps unmapped ones).
+        let windows = || -> Vec<String> {
+            let xwininfo = |args: &[&str]| {
+                std::process::Command::new("xwininfo")
+                    .args(args)
+                    .envs(env.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str())))
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default()
+            };
+            xwininfo(&["-root", "-children"])
+                .lines()
+                .filter_map(|line| line.trim().split(' ').next())
+                .filter(|id| id.starts_with("0x"))
+                .filter(|id| xwininfo(&["-id", id]).contains("Map State: IsViewable"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let before = windows();
+        let key = |event, key: &str, code: &str| KeyInput {
+            event,
+            key: Some(key.to_owned()),
+            code: Some(code.to_owned()),
+            text: None,
+            modifiers: 0,
+        };
+        for (held, name, code) in [
+            (vec![("Control", "ControlLeft")], "o", "KeyO"),
+            (vec![("Control", "ControlLeft")], "s", "KeyS"),
+            (vec![("Control", "ControlLeft")], "p", "KeyP"),
+            (vec![("Control", "ControlLeft")], "u", "KeyU"),
+            (vec![], "F12", "F12"),
+            (
+                vec![("Control", "ControlLeft"), ("Shift", "ShiftLeft")],
+                "I",
+                "KeyI",
+            ),
+        ] {
+            for (modifier, code) in &held {
+                browser
+                    .dispatch_key(&tab, key(KeyEventKind::Down, modifier, code))
+                    .await?;
+            }
+            browser
+                .dispatch_key(&tab, key(KeyEventKind::Down, name, code))
+                .await?;
+            browser
+                .dispatch_key(&tab, key(KeyEventKind::Up, name, code))
+                .await?;
+            for (modifier, code) in held.iter().rev() {
+                browser
+                    .dispatch_key(&tab, key(KeyEventKind::Up, modifier, code))
+                    .await?;
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            let dialogs = file_dialogs(&env)?;
+            let targets = browser.cdp().call("Target.getTargets", json!({})).await?;
+            let pages: Vec<String> = targets["targetInfos"]
+                .as_array()
+                .map(|infos| {
+                    infos
+                        .iter()
+                        .filter_map(|t| t["url"].as_str())
+                        .filter(|url| {
+                            ["devtools://", "view-source:", "file://", "chrome://print"]
+                                .iter()
+                                .any(|own| url.starts_with(own))
+                        })
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !dialogs.is_empty() || !pages.is_empty() || windows() != before {
+                own.push(format!(
+                    "{held:?}+{name}: dialogs {dialogs:?}, pages {pages:?}, windows {:?} (were {before:?})",
+                    windows()
+                ));
+            }
+        }
+    }
+    let _ = manager.shutdown(&sandbox).await;
+    server.abort();
+    assert_eq!(shown, Vec::<String>::new(), "a native file dialog opened");
+    assert_eq!(
+        own,
+        Vec::<String>::new(),
+        "Chrome opened a window or page of its own"
+    );
+    assert!(
+        !handed_over,
+        "a link to another program's address was not blocked as a page"
+    );
+    Ok(())
+}

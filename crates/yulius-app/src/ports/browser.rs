@@ -42,6 +42,9 @@ pub enum BrowserFailureKind {
     NotFound,
     /// Tab or resource limit reached.
     Capacity,
+    /// A viewer's clicks and keys are off: the host's browser policy is not in force
+    /// (ADR-0318).
+    InputLocked,
     /// Malformed or out-of-bounds input (including a missing element).
     Invalid,
     /// A result exceeded its bound.
@@ -76,6 +79,7 @@ impl BrowserFailure {
             BrowserFailureKind::UrlRefused => ViewerErrorCode::UrlRefused,
             BrowserFailureKind::NotFound => ViewerErrorCode::NotFound,
             BrowserFailureKind::Capacity => ViewerErrorCode::Capacity,
+            BrowserFailureKind::InputLocked => ViewerErrorCode::InputLocked,
             BrowserFailureKind::Invalid => ViewerErrorCode::Invalid,
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
@@ -93,6 +97,8 @@ impl From<BrowserFailure> for AppError {
             | BrowserFailureKind::Invalid
             | BrowserFailureKind::NotFound => Self::Invalid(failure.message),
             BrowserFailureKind::Capacity => Self::Capacity(failure.message),
+            // Only a viewer's input meets it; were a tool to, it is the host's to fix.
+            BrowserFailureKind::InputLocked => Self::Forbidden(failure.message),
             BrowserFailureKind::NotInstalled
             | BrowserFailureKind::Upstream
             | BrowserFailureKind::TooLarge => Self::Upstream(failure.message),

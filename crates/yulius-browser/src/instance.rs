@@ -7,7 +7,7 @@
 //! get JPEG frames and CDP input. All operations are bounded by the CDP call timeout; input
 //! events are serialized per browser so their order is preserved.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -927,6 +927,13 @@ struct State {
     screencasts: HashMap<TabId, Screencast>,
     viewport: (u32, u32),
     pointer: Pointer,
+    /// The policy probe's own tabs (ADR-0318), by the ids Chrome gave them: never listed.
+    probe_tabs: HashSet<TabId>,
+    /// A policy probe asked Chrome for its tab and has no id for it yet: what is announced
+    /// meanwhile of a page no page opened (the probe's own tab is one, however Chrome first
+    /// names it) waits here until the id says whether it is the probe's.
+    probing: bool,
+    probe_held: Vec<CdpEvent>,
 }
 
 impl State {
@@ -1022,7 +1029,64 @@ pub struct BrowserInstance {
     new_tab_url: Mutex<Option<String>>,
     /// Addresses this browser never loads: Yulius itself (BRW-008).
     deny: Mutex<UrlDenyList>,
+    /// Whether the host's managed policy is in force in this browser, as it last answered
+    /// (ADR-0318).
+    policy: Mutex<PolicyCheck>,
+    /// One probe at a time.
+    policy_lock: tokio::sync::Mutex<()>,
 }
+
+/// A policy probe's wait for the id of its tab. Dropping it ends the wait: the id (when Chrome
+/// gave one) marks the probe's tab, which is taken off the tab list should it be on it, and
+/// what was announced meanwhile is listed, unless it is the probe's own or listed already by a
+/// newer event.
+struct ProbeWait<'a> {
+    browser: &'a BrowserInstance,
+    target: Option<TabId>,
+}
+
+impl Drop for ProbeWait<'_> {
+    fn drop(&mut self) {
+        let held = {
+            let mut state = lock(&self.browser.state);
+            state.probing = false;
+            if let Some(target) = &self.target {
+                state.probe_tabs.insert(target.clone());
+            }
+            std::mem::take(&mut state.probe_held)
+        };
+        if let Some(target) = &self.target {
+            self.browser.forget_tab(target);
+        }
+        for event in held {
+            let id = event
+                .params
+                .get("targetInfo")
+                .and_then(page_entry)
+                .map(|(id, _, _)| id);
+            let stale = id.is_some_and(|id| lock(&self.browser.state).has(&id));
+            if !stale {
+                self.browser.on_event(&event);
+            }
+        }
+    }
+}
+
+/// What the browser last answered about the host's managed policy, and when.
+#[derive(Debug, Default, Clone, Copy)]
+struct PolicyCheck {
+    in_force: bool,
+    asked: Option<Instant>,
+}
+
+/// How long a "not in force" answer stands before a refused input asks again (the policy
+/// appears while the browser runs when an administrator runs host setup: Chrome reloads it).
+const POLICY_RECHECK: Duration = Duration::from_secs(5);
+/// How long a "in force" answer stands before the next press asks again: the files can be
+/// taken away under a running browser.
+const POLICY_CONFIRM: Duration = Duration::from_secs(300);
+/// The longest the probe's navigation is waited for: a viewer's connection waits with it.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl std::fmt::Debug for BrowserInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1065,6 +1129,14 @@ fn page_entry(info: &Value) -> Option<(TabId, String, String)> {
             .to_owned()
     };
     Some((id, text("title"), text("url")))
+}
+
+/// Whether an address is a page of Chrome itself: a target created at one is no tab for
+/// viewers and tools (Chrome 157 reports its address bar's popup,
+/// `chrome://omnibox-popup.top-chrome/`, as a page). Nobody navigates to such an address
+/// through Yulius either ([`normalize_url`]).
+fn chromes_own(url: &str) -> bool {
+    url.starts_with("chrome://") || url.starts_with("chrome-untrusted://")
 }
 
 fn metrics(width: u32, height: u32) -> Value {
@@ -1186,6 +1258,9 @@ impl BrowserInstance {
                 screencasts: HashMap::new(),
                 viewport,
                 pointer: Pointer::default(),
+                probe_tabs: HashSet::new(),
+                probing: false,
+                probe_held: Vec::new(),
             }),
             tabs_tx: watch::channel(Vec::new()).0,
             events_tx,
@@ -1202,6 +1277,8 @@ impl BrowserInstance {
             secrets,
             new_tab_url: Mutex::new(None),
             deny: Mutex::new(UrlDenyList::default()),
+            policy: Mutex::new(PolicyCheck::default()),
+            policy_lock: tokio::sync::Mutex::new(()),
         });
         if let Err(error) = instance.resync().await {
             if let Some(display) = &instance.display {
@@ -1355,6 +1432,13 @@ impl BrowserInstance {
         let mut gone_sessions = Vec::new();
         {
             let mut state = lock(&self.state);
+            // The probe's own tabs and pages of Chrome's that are no tabs yet stay unlisted.
+            let pages: Vec<_> = pages
+                .into_iter()
+                .filter(|(id, _, url)| {
+                    !state.probe_tabs.contains(id) && (state.has(id) || !chromes_own(url))
+                })
+                .collect();
             let gone: Vec<TabId> = state
                 .tabs
                 .iter()
@@ -1379,6 +1463,30 @@ impl BrowserInstance {
         match event.method.as_str() {
             "Target.targetCreated" | "Target.targetInfoChanged" => {
                 let info = event.params.get("targetInfo");
+                if let Some((id, _, url)) = info.and_then(page_entry) {
+                    let opened_by_a_page = info
+                        .and_then(|info| info.get("openerId"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|opener| !opener.is_empty());
+                    let mut state = lock(&self.state);
+                    // The policy probe's own tab, known by the id Chrome gave it (never by its
+                    // address, which a page can copy), is nobody's tab.
+                    if state.probe_tabs.contains(&id) {
+                        return;
+                    }
+                    let known = state.has(&id);
+                    // The probe's tab may be announced before Chrome answers with its id, under
+                    // whatever address: a new page no page opened waits for the id.
+                    if !known && state.probing && !opened_by_a_page {
+                        state.probe_held.push(event.clone());
+                        return;
+                    }
+                    // A page of Chrome's own never becomes a tab; a tab that went to one stays
+                    // a tab (Chrome still shows it).
+                    if !known && chromes_own(&url) {
+                        return;
+                    }
+                }
                 if let Some((id, title, url)) = info.and_then(page_entry) {
                     // A page a page opened (a link to a new tab, a popup) comes to the front on
                     // the display: it is the shown tab now.
@@ -1404,6 +1512,7 @@ impl BrowserInstance {
                     .and_then(Value::as_str)
                     .and_then(|id| TabId::parse(id).ok());
                 if let Some(tab) = tab {
+                    lock(&self.state).probe_tabs.remove(&tab);
                     self.forget_tab(&tab);
                 }
             }
@@ -2016,6 +2125,119 @@ impl BrowserInstance {
         Ok(())
     }
 
+    /// Whether a viewer's clicks and keys may reach this browser: always without a virtual
+    /// display (a headless browser shows no window of its own), else only while the host's
+    /// managed policy is in force (ADR-0318). A "no" is asked again after `POLICY_RECHECK`, a
+    /// "yes" after `POLICY_CONFIRM` (Chrome reloads its policy files while it runs).
+    pub async fn viewer_input_allowed(&self) -> bool {
+        if self.display.is_none() {
+            return true;
+        }
+        let fresh = |check: PolicyCheck| {
+            let stands = if check.in_force {
+                POLICY_CONFIRM
+            } else {
+                POLICY_RECHECK
+            };
+            check.asked.is_some_and(|at| at.elapsed() < stands)
+        };
+        let known = *lock(&self.policy);
+        if fresh(known) {
+            return known.in_force;
+        }
+        let _one = self.policy_lock.lock().await;
+        let known = *lock(&self.policy);
+        if fresh(known) {
+            return known.in_force;
+        }
+        let in_force = match self.probe_policy().await {
+            Ok(in_force) => in_force,
+            Err(error) => {
+                warn!(sandbox = %self.sandbox, %error, "the browser's policy could not be asked");
+                false
+            }
+        };
+        if !in_force {
+            warn!(sandbox = %self.sandbox, "the host's browser policy is not in force: viewers' clicks and keys are refused (run `yulius host setup`)");
+        }
+        *lock(&self.policy) = PolicyCheck {
+            in_force,
+            asked: Some(Instant::now()),
+        };
+        in_force
+    }
+
+    /// Asks the browser whether it loaded the host's managed policy: a hidden tab is sent to
+    /// the address the policy blocks, and the navigation fails as blocked, or otherwise.
+    async fn probe_policy(&self) -> Result<bool, BrowserError> {
+        lock(&self.state).probing = true;
+        // Ends the wait for the tab's id however this future ends, a drop included (it runs in
+        // a viewer's connection).
+        let mut wait = ProbeWait {
+            browser: self,
+            target: None,
+        };
+        let created = tokio::time::timeout(
+            PROBE_TIMEOUT,
+            self.cdp.call(
+                "Target.createTarget",
+                json!({"url": crate::policy::PROBE_BLANK, "background": true}),
+            ),
+        )
+        .await
+        .map_err(|_| BrowserError::NavigationFailed("the policy probe got no tab in time".into()))
+        .and_then(|created| created.map_err(BrowserError::from))
+        .and_then(|created| {
+            created
+                .get("targetId")
+                .and_then(Value::as_str)
+                .and_then(|id| TabId::parse(id).ok())
+                .ok_or_else(|| malformed("Target.createTarget", "missing targetId"))
+        });
+        wait.target = created.as_ref().ok().cloned();
+        drop(wait);
+        let target = created?;
+        let asked = async {
+            let attached = self
+                .cdp
+                .call(
+                    "Target.attachToTarget",
+                    json!({"targetId": target.as_str(), "flatten": true}),
+                )
+                .await?;
+            let session = attached
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| malformed("Target.attachToTarget", "missing sessionId"))?;
+            let answer = self
+                .cdp
+                .call_session(
+                    session,
+                    "Page.navigate",
+                    json!({"url": crate::policy::probe_url()}),
+                )
+                .await?;
+            Ok::<_, BrowserError>(
+                answer
+                    .get("errorText")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.contains(crate::policy::BLOCKED)),
+            )
+        };
+        // No answer in time is a "no": the tab is closed either way.
+        let asked = tokio::time::timeout(PROBE_TIMEOUT, asked)
+            .await
+            .unwrap_or(Ok(false));
+        if let Err(error) = self
+            .cdp
+            .call("Target.closeTarget", json!({"targetId": target.as_str()}))
+            .await
+        {
+            debug!(%error, "the policy probe's tab could not be closed");
+        }
+        asked
+    }
+
     /// Dispatches pointer input to a tab. Presses at the same spot within 500 ms count as
     /// double/triple clicks.
     ///
@@ -2032,6 +2254,12 @@ impl BrowserInstance {
             check_coordinate(name, value)?;
         }
         if let Some(display) = &self.display {
+            // A press is real X input wherever the pointer is, Chrome's own windows included
+            // (ADR-0318); moving and scrolling open none, and a release always passes, as a
+            // key's does.
+            if input.event == MouseEventKind::Down && !self.viewer_input_allowed().await {
+                return Err(BrowserError::InputLocked);
+            }
             return self.display_mouse(display, input).await;
         }
         let session = self.session(tab).await?;
@@ -2276,6 +2504,10 @@ impl BrowserInstance {
             ));
         }
         if let Some(display) = &self.display {
+            // A release always passes: a key held when the answer changed must not stay down.
+            if input.event != KeyEventKind::Up && !self.viewer_input_allowed().await {
+                return Err(BrowserError::InputLocked);
+            }
             return self.display_key(display, input).await;
         }
         let bit = match input.key.as_deref() {

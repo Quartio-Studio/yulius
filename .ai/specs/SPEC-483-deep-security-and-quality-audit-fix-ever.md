@@ -39,16 +39,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
      directories, disk usage (C2, C3, C5, I4): merged, pull request #1242;
   4. access rules of the public API and the merge gate (A1-A4, W1, D3, P8): merged, pull
      request #1243;
-  5. the vault's rules on every path (V3-V5);
-  6. the sandbox browser (E1-E3, W1b, C4);
-  7. the host's own Git in a clone its agents write (G1);
-  8. production secrets decided once (V6);
-  9. delivery and CI decided once (D4-D6, QB1);
-  10. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
-  11. documents and shipped texts against the code (P1-P14, QB9);
-  12. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
-  13. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
-  14. efficiency (QA8, QB5, QC1, QC6).
+  5. the vault's rules on every path (V3-V5): merged, pull request #1244;
+  6. the sandbox browser's own windows: a viewer's real input reaches Chrome's file dialogs,
+     DevTools and `file:` pages on the host (E1);
+  7. the sandbox browser's network and its secret typing (E2, E3, W1b, C4);
+  8. the host's own Git in a clone its agents write (G1);
+  9. production secrets decided once (V6);
+  10. delivery and CI decided once (D4-D6, QB1);
+  11. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
+  12. documents and shipped texts against the code (P1-P14, QB9);
+  13. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
+  14. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
+  15. efficiency (QA8, QB5, QC1, QC6).
   The Plan grows by a slice's steps when the slice before it is merged. The ledger below lists
   every finding with its slice and state.
 
@@ -147,6 +149,27 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `terminal_snapshot` and `redact_for_sandbox` withhold.
 - **V3 (medium).** `vault_update`'s `WHERE` compares hosts, `auto_allow` and `cd_prod` with what
   the edit read, not `ciphertext`; `update_agent_secret` seals the payload it read again.
+
+### Slice 6: the sandbox browser's own windows
+
+- **E1 (critical), reproduced on Google Chrome 157** with the opt-in test
+  `yulius-browser` `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`: on a
+  virtual display a viewer's click is real X input (`display_mouse`, XTest), and a click on a
+  page's `<input type=file>` opened GTK's "Open File" window, 1280x800 over the page, in a
+  Chrome that runs on the host as the service user. The viewer types a path there (the
+  instance's `master.key`, the database, another sandbox's repository) and the page reads the
+  file. Anyone with Work access to one sandbox is a viewer, a playground's guest included.
+  The same real input reaches Chrome's other own windows: Save as, Print to a file, DevTools
+  (F12, Inspect), `view-source:` and `file:` pages; `--kiosk` hides the toolbar, not these.
+- **What Chrome offers.** With a managed policy file (`/etc/opt/chrome/policies/managed/`, for
+  Chromium `/etc/chromium/policies/managed/`) holding `AllowFileSelectionDialogs: false`, the
+  same click opened nothing and `showOpenFilePicker()` answered `NotAllowedError` (probes on
+  this machine). A policy directory is root's; `yulius host setup` already writes such files
+  and the update helper's `yulius host check` re-applies the safe ones.
+- **What does not work here.** A private file system view for Chrome (bubblewrap) would hide
+  the host's files whatever window opens; inside a sandbox namespaces cannot be made, so it
+  cannot be proven on this machine, and Chrome's own sandbox inside one needs a host test.
+  It stays the firmer fix, for the slice that moves the browser into its sandbox (E2).
 
 ## Requirements
 
@@ -253,6 +276,27 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **VLR-006** An imported session's transcript and side files are copied up to 1 GiB together,
   counted as they are read; past it the import is refused and the file in hand leaves no copy.
 
+- **BRL-001** `yulius host setup` and `yulius host check` write the browser policy
+  (`yulius.json`: no file selection dialogs, no downloads, no printing, the File System Access
+  API blocked, no extension installs, only web addresses (so no `file:`, `view-source:`,
+  `chrome:` or `devtools:` page and no address handed to another program), and a version
+  marker) into the managed policy directories of Google Chrome and Chromium, and report it as
+  every other item. The update helper's unit may write those directories: the shipped unit
+  lists them, and the setup writes a drop-in for a unit from before.
+- **BRL-002** A browser on a virtual display is asked whether that policy is in force
+  (a hidden tab, known by its id, navigated to the marker address: blocked by the
+  administrator, or not; 3 seconds at most) at the first button or key press; a "no" is asked
+  again after 5 seconds, a "yes" after 5 minutes.
+- **BRL-003** While it is not in force, a viewer's button presses, key presses and typed text
+  on a virtual display are refused and the viewer is told why and what an administrator runs;
+  moving the pointer, scrolling, releases, watching, the tab bar, the address bar and the
+  agents' tools work as before. A headless browser, which shows no window of its own, is
+  unchanged.
+- **BRL-005** The probe's tab is never listed; a page that opens a window at the probe's
+  address gets an ordinary tab. A target created as a page of Chrome's own is no tab; a tab
+  that goes to one stays a tab.
+- **BRL-004** `yulius doctor` says whether the policy is installed.
+
 ## Plan
 
 One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
@@ -262,7 +306,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles (merged, #1241)
 - [x] Slice 3: the host's reads in a sandbox go through handles, bounded and never waiting (merged, #1242)
 - [x] Slice 4: token scopes, the sign-in's browser, the merge's base and production hold on every way in (merged, #1243)
-- [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation, reviewed
+- [x] Slice 5: a secret allowed use by use goes somewhere new only after two-factor, redaction that cannot load withholds, an edit keeps a rotation (merged, #1244)
+- [x] Slice 6: a viewer's input reaches the sandbox browser only while Chrome's file dialogs, DevTools and file pages are locked by policy, reviewed
 
 ## Acceptance criteria
 
@@ -372,6 +417,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-33** The app's proxy policy has nothing to redact with for a sandbox one of whose secrets
   no longer opens, and still has for another sandbox.
 
+- **AC-35** Host setup writes the policy file where it is missing or differs and leaves an
+  equal one alone; the dry run says so and writes nothing; the check mode writes it.
+- **AC-36** A browser on a (fake) display whose Chrome does not block the marker refuses a
+  viewer's button press, key press and typed text with the reason and presses nothing on the
+  display, while releases and moves pass; one probe serves them; after the policy appears,
+  input is taken without a restart. A window a page opens at the probe's address is listed
+  and shown; a page of Chrome's own is not.
+- **AC-37** Against a real Chrome (opt-in): with the policy installed a click on a file input
+  opens no window, the accelerators for Open, Save, Print, the page's source and the
+  developer tools open no window and no page of Chrome's, and a link to another program's
+  address is blocked as a page; without it the click is refused and opens none.
+- **AC-38** A helper unit that may write the modules list but not the policy directories: the
+  re-check says to run the setup, the setup writes the drop-in with the directories, and the
+  re-check is then satisfied.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -440,6 +500,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-32), `secrets::the_proxy_gets_nothing_to_redact_with_while_a_secret_cannot_be_opened`
   (AC-33), `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` (AC-34).
 
+- Slice 6: `yulius` `host_setup::tests::the_browser_policy_is_written_where_it_is_missing_or_differs`
+  (AC-35), `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` (AC-36),
+  `yulius-browser` `real_chromium::a_viewers_click_on_a_file_input_opens_no_file_chooser`
+  (AC-37, opt-in: `YULIUS_TEST_CHROMIUM`), `policy::tests`, `browser::chromes_own_pages_are_no_tabs`,
+  `browser::a_page_cannot_hide_a_window_behind_the_probes_address`,
+  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays`,
+  `host_setup::tests::a_helper_from_before_the_browser_policy_gets_its_drop_in_anew` (AC-38),
+  `doctor::tests::the_browser_policy_line_warns_until_host_setup_wrote_it`, e2e
+  `browser.e2e.ts` "a sandbox browser without the host policy says once that clicks and keys
+  are off"; `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once` (the
+  nit left by slice 5's review).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -469,6 +541,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `form_train` does not skip an armed pull request that was pointed at another branch. It is
   left so: skipping needs a GitHub read per candidate on every look, and such a train is
   refused when it lands (`WrongBase`) and the armed merge dropped, so the cost is one train.
+- [ADR-0318](../../docs/decisions/0318-viewers-input-reaches-a-sandbox-browser-only-under-the-hosts-managed-policy.md):
+  Chrome's own windows are switched off by a managed policy host setup writes; the browser is
+  asked whether it loaded it; no policy, no clicks and keys. A private file system view for
+  Chrome comes with its network (E2).
+- From the review of slice 5, round 4 (two nits): a message refused for a withheld screen now
+  flags the task once (slice 6). The launch goal's watch is left: with a withheld screen an
+  untaken launch goal is flagged as "Claude Code did not take the task's goal" while the
+  terminal says its screen is withheld; nothing is typed either way, and telling the two
+  apart needs a program that draws without answering, which no test here has.
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -487,7 +568,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | fixed (slice 2) |
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | fixed (slice 2) |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` (G1) and `review.rs` (slice 3) open by path too | high | fixed (slice 2) |
-| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 7 |
+| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 8 |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | fixed (slice 3) |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | fixed (slice 3) |
 | C5 | host reads | `usage::measure` walks by path | low | fixed (slice 3) |
@@ -499,41 +580,41 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 6 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 7 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | slice 6 |
-| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 6 |
-| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 6 |
-| V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | slice 5 |
-| V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | slice 5 |
-| V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | slice 5 |
-| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 8 |
-| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 9 |
-| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 9 |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 9 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 9 |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 10 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 10 |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 10 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 10 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 10 |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 10 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 10 |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 10 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 10 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 10 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 10 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 10 |
-| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 11 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 11 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 12 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 12 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 12 |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 12 |
-| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 13 |
-| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 13 |
-| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 13 |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 14 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 6 |
+| E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | slice 7 |
+| E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | slice 7 |
+| V3 | vault | An edit re-seals the value it read: a concurrent rotation is undone | medium | fixed (slice 5) |
+| V4 | vault | Redaction that cannot load the secrets passes text through in the terminal and the proxy, withholds elsewhere | medium | fixed (slice 5) |
+| V5 | vault | Reading a value needs two-factor; sending it to a new host does not | medium | fixed (slice 5) |
+| V6 | vault | "May this production secret reach this run" is decided four ways | low | slice 9 |
+| D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | slice 10 |
+| D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | slice 10 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 10 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 10 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 11 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 11 |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 11 |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 11 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 11 |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 11 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 11 |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 11 |
+| E7 | move | An unreadable move mark does nothing and stays | low | slice 11 |
+| QC8 | store | `tasks.closed_at` is never cleared | low | slice 11 |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 11 |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 11 |
+| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 12 |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 12 |
+| W7 | web UI | Dead exports and CSS rules | low | slice 13 |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 13 |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 13 |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 13 |
+| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 14 |
+| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 14 |
+| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 14 |
+| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 15 |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 7 |
 
 ## Evidence
 
@@ -768,3 +849,82 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   tested with a policy that has nothing to redact with, the app's policy on its own); a task
   agent's terminal (the Superagent's goes through the same `scrub_output`). The two-factor
   dialog over the open edit form is tested in the mock (e2e), not against a real server.
+
+### Slice 6 (2026-11-13)
+
+- **Reproduced on a real browser** (Google Chrome 157.0.8103.50 on Xvfb, this machine, the
+  opt-in test with `YULIUS_TEST_CHROMIUM`): before the fix a click through
+  `BrowserInstance::dispatch_mouse` on a page's file input mapped the window `"Open File"`,
+  1280x800, over the page (`xwininfo -root -tree`), and the test failed with "a native file
+  dialog opened". With the fix and no policy installed: "the host's browser policy is not
+  installed: the click was refused", no window, passed. With the policy written to
+  `/etc/opt/chrome/policies/managed/yulius.json`: "the host's browser policy is in force: the
+  click reached the page" (the page's title turned to "clicked"), no window; then Ctrl+O,
+  Ctrl+S, Ctrl+P, Ctrl+U, F12 and Ctrl+Shift+I through `dispatch_key`: no window shown (GTK
+  keeps one unmapped), no file dialog, no `devtools:`, `view-source:`, `file:` or print page
+  among the targets; and a click on a link to another program's address
+  (`yulius-test-scheme://open`): under the first draft of the policy the page stayed and the
+  address was handed over; with only web addresses allowed the tab shows it blocked; passed.
+- **Probes of the policy on that Chrome.** `Page.navigate` to the marker host:
+  `net::ERR_BLOCKED_BY_ADMINISTRATOR`; to `file:///etc/hostname`: the same; to another
+  `.invalid` host: `net::ERR_NAME_NOT_RESOLVED`. `showOpenFilePicker()`: `NotAllowedError`.
+  With `DeveloperToolsAvailability: 2` in the file `Target.attachToTarget` answered "Not
+  allowed" for every target, so it is left out. The existing real smoke test
+  (`drives_a_real_chromium_when_configured`: load, snapshot, type, click, screenshots, PDF
+  frames) passed with the policy installed.
+- **Tests failing without their fix** (`target/audit/slice6/mutate.py`, ten cases; held tabs
+  dropped and a tab at Chrome's own page dropped fail
+  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays`): the mouse
+  gate off, the key gate off, typed text ungated, the probe's tab listed:
+  `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` failed; Chrome's own
+  pages listed: `browser::chromes_own_pages_are_no_tabs` failed; a look-alike hidden by its
+  address: `browser::a_page_cannot_hide_a_window_behind_the_probes_address` failed; host setup
+  writing nothing:
+  `host_setup::tests::the_browser_policy_is_written_where_it_is_missing_or_differs` failed; no
+  flag on a refused message: `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once`
+  failed.
+- **Web UI.** `cd e2e && npx e2e run` at `2c4b50dbd`: `Test Files 84 passed | 1 skipped (85)`,
+  `Tests 1019 passed | 1 skipped (1020)`, exit 0 (nothing under `web/` or `e2e/` changed
+  after it).
+- **Review of slice 6, round 1** (head 53cb2786d): request changes, two major and four minor
+  findings and three nits, all in this slice's code, all answered in it. Major: the update
+  helper's unit could not write the policy directories, so its re-check could never bring a
+  newer policy (the shipped unit lists them, the setup writes a drop-in for a unit from
+  before; test); the probe's tab was hidden by its address, which a page can open (it is
+  known by Chrome's id now; test). Minor: a tab that went to a page of Chrome's own was
+  dropped (only a target created as one is no tab); texts that did not match the code; the
+  real-browser proof covered the file input only (accelerators and a link to another program
+  added, which changed the policy to web addresses only); typed text and releases untested.
+  Nits: a yes stood for the browser's life (asked again after 5 minutes); the probe could
+  hold a viewer's connection (3 seconds at most); another policy file can override a setting
+  (ADR-0318 says so).
+- **Review of slice 6, round 2** (head 0a566a925): request changes, two minor findings and
+  three nits; round 1's answers verified. Minor: the probe's tab could still be listed when
+  Chrome announces it under another address first, or a resync runs meanwhile (every new
+  page no page opened now waits for the id, and the probe's is taken off the list when the
+  id is known); the replay of what waited and "a tab at Chrome's own page stays" were
+  untested (test with a tab made beside the probe and a tab sent to `chrome://settings/`;
+  two more mutations). Nits: the wait for the id survives a dropped probe now (a drop guard)
+  and the tab's creation is timed; a replayed announcement no longer overwrites a newer one;
+  `ws:` and `wss:` are in the policy's allowed addresses (whether the blocklist reaches
+  WebSocket handshakes was not measured).
+- **Gate.** `scripts/dev ci` at `d42465f95` (round 2's answers; `84a173793` after round 1:
+  4147 passed; `53cb2786d` before the reviews: 4145 passed): exit 0; `4148 tests run: 4148
+  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed. Both real-browser tests passed again with the final policy
+  file.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review of slice 5, round 4** (head cf2f03a6e): approve, two nits; one is fixed here (the
+  flag on a refused message), one is left with its reason (Decisions).
+- **Not tested here.** That a task flagged for a withheld screen is flagged again after it was
+  stopped and continued (the flag's reset at attach): a start reads the secrets, so a
+  continued task does not start while the secret that withheld the screen is unreadable.
+  The update helper's unit under systemd (its writable paths are tested against the fake
+  host's answer to `systemctl show`). `yulius host setup` on a real host (the item is tested against the fake
+  host; the policy file was written by hand for the real-browser runs, with the content
+  `managed_policy()` gives). Chromium and a snap-packaged Chromium (only Google Chrome is on
+  this machine): the browser is asked itself, so a flavor that reads no policy from these
+  directories refuses viewers' input instead of taking it unlocked. The context menu's
+  entries (Save as, Inspect) were not clicked on the real browser; their accelerators were
+  pressed. That the accelerator check would see a window or page were one to open was not
+  shown (without the policy the keys are refused before they reach Chrome).

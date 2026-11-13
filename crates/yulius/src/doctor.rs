@@ -197,6 +197,9 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         ),
     });
     checks.extend(browser_display_checks());
+    checks.push(browser_policy_check(|path| {
+        std::fs::read_to_string(path).ok()
+    }));
     checks.extend(containment_visibility(contained, extra));
     if cfg!(target_os = "linux") {
         if contained {
@@ -510,6 +513,35 @@ fn delegation_check() -> Check {
     }
 }
 
+/// Chrome's managed policy for the sandbox browsers (ADR-0318), as `yulius host setup` writes
+/// it: without it a browser on a virtual display refuses viewers' clicks and keys.
+fn browser_policy_check(read: impl Fn(&Path) -> Option<String>) -> Check {
+    use yulius_browser::policy::{POLICY_DIRS, POLICY_FILE, managed_policy};
+    let policy = managed_policy();
+    let missing: Vec<&str> = POLICY_DIRS
+        .iter()
+        .copied()
+        .filter(|dir| read(&Path::new(dir).join(POLICY_FILE)).as_deref() != Some(policy.as_str()))
+        .collect();
+    if missing.is_empty() {
+        check(
+            "browser policy",
+            Level::Ok,
+            format!("{POLICY_FILE} in the managed policy directories of Chrome and Chromium"),
+        )
+    } else {
+        check(
+            "browser policy",
+            Level::Warn,
+            format!(
+                "{POLICY_FILE} is missing or old in {}: a sandbox browser whose Chrome reads it \
+                 there refuses viewers' clicks and keys; run `sudo yulius host setup`",
+                missing.join(", ")
+            ),
+        )
+    }
+}
+
 /// The virtual display's prerequisites (SPEC-002 ADR-15): Xvfb, and ffmpeg with x11grab and
 /// libx264. Without them the sandbox browser runs headless and shows JPEG frames.
 fn browser_display_checks() -> Vec<Check> {
@@ -692,6 +724,28 @@ mod tests {
         restart_check("yulius.service", &facts)
             .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
             .unwrap_or_default()
+    }
+
+    /// SPEC-483 E1 (ADR-0318): the doctor says whether the sandbox browsers' policy is where
+    /// `yulius host setup` writes it, and what is off while it is not.
+    #[test]
+    fn the_browser_policy_line_warns_until_host_setup_wrote_it() {
+        use yulius_browser::policy::{POLICY_DIRS, POLICY_FILE, managed_policy};
+        let missing = super::browser_policy_check(|_| None);
+        assert_eq!(missing.level, Level::Warn);
+        assert!(
+            missing.detail.contains(POLICY_DIRS[0])
+                && missing.detail.contains("clicks and keys")
+                && missing.detail.contains("sudo yulius host setup"),
+            "{}",
+            missing.detail
+        );
+        let old = super::browser_policy_check(|path| {
+            (path == Path::new(POLICY_DIRS[0]).join(POLICY_FILE)).then(|| "{}\n".to_owned())
+        });
+        assert_eq!(old.level, Level::Warn);
+        let written = super::browser_policy_check(|_| Some(managed_policy()));
+        assert_eq!(written.level, Level::Ok, "{}", written.detail);
     }
 
     #[test]

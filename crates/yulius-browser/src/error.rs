@@ -120,6 +120,12 @@ pub enum BrowserError {
     /// taking input; it was not delivered. Moves never do (they are coalesced).
     #[error("the sandbox browser is not taking input right now; that input was not delivered")]
     InputBacklog,
+    /// A viewer's click or key on a virtual display while Chrome's own windows are not locked
+    /// by the host's managed policy (ADR-0318): not delivered.
+    #[error(
+        "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host"
+    )]
+    InputLocked,
     /// The page may show a secret (typed with [`crate::BrowserInstance::tool_type_secret`] or
     /// one Yulius hides), or cannot be read to tell, so no screenshot is taken (SPEC-450).
     #[error(
@@ -142,6 +148,7 @@ impl BrowserError {
             Self::UrlRefused(_) => ViewerErrorCode::UrlRefused,
             Self::TabNotFound(_) => ViewerErrorCode::NotFound,
             Self::TooManyTabs(_) | Self::InputBacklog => ViewerErrorCode::Capacity,
+            Self::InputLocked => ViewerErrorCode::InputLocked,
             Self::InvalidInput(_)
             | Self::ToolParams(_)
             | Self::InvalidSelector(_)
