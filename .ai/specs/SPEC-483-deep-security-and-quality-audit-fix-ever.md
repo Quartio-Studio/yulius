@@ -689,7 +689,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
-- [ ] Slice 16: the agents' own listener answers an error with the status every other route gives it
+- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it
 
 ## Acceptance criteria
 
@@ -2516,3 +2516,28 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   rustdoc passed.
 - **Not tested, besides the list above:** the path that queues a held run (capacity back
   with every slot taken) end to end; the test sets the state.
+
+### Slice 16 (2026-11-13)
+
+- **Slice 15's delivery.** Pull request #1263 merged into `dev` (through a merge train of
+  one, at 7c20df998), its own Yulius CI run passed; its review approved the head in its
+  second round, and its three nits are answered here (the long line of `docs/api.md`, a
+  long line of this spec, and the order in `merge_armed_task`: of an ended run only what
+  became of its pull request is asked).
+- **Tests failing without their fix** (`target/audit/slice16/mutate.py`, `mutations.log`, 3
+  cases, each failed its test): a failure inside Yulius answered with 502; a table of its
+  own in the loopback listener's routes; one in the remote MCP endpoint's. The third
+  passed at first: the source test looked only for arms that begin with `AppError::`, and
+  the type can be named by its path; it reads any arm that names it now.
+- **The suites:** `2739 tests run: 2739 passed` for the server, the app and the binary
+  (`target/audit/slice16-suite1.log`): hooks, the credential helper, `yulius wait` against
+  a listener that answers 500, the remote MCP endpoint.
+- **Gate.** `scripts/dev ci` at `de1cb8ba0`: exit 0; `4280 tests run: 4280 passed, 17 skipped`;
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A failure inside Yulius through the listener itself (it needs a store that
+  fails on demand; the mapping and the absence of another are what is tested, and
+  `yulius wait`'s reading of a 500 is); an outside client of the loopback listener that
+  reads its 400 or 502 (none in this repository).
