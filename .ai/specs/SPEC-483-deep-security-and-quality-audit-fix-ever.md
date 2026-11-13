@@ -672,7 +672,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 12: a production secret reaches no run by one rule, and no row keeps hosts for one (merged, #1253)
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
-- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start
+- [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 
 ## Acceptance criteria
 
@@ -1468,7 +1468,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | V6 | vault | "May this production secret reach this run" is decided four ways | low | fixed (slice 12) |
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
-| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | slice 15 |
+| D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 12 |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
