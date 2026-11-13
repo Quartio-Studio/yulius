@@ -179,6 +179,7 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
             account_id: None,
             provider_session_id: Some("session-1".into()),
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Exited,
             run_dir: "/nonexistent/run".into(),
             token_hash: "x".into(),

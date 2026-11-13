@@ -22,7 +22,7 @@ const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, 
     updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
-    state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason";
+    state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason, model";
 
 fn parse_id<T>(
     column: &str,
@@ -100,6 +100,7 @@ fn attempt_from_row(row: &Row<'_>) -> rusqlite::Result<AttemptRecord> {
             .transpose()?,
         provider_session_id: row.get("provider_session_id")?,
         launch_kind: LaunchKind::parse(&kind),
+        model: row.get("model")?,
         state: AttemptState::parse(&state).ok_or_else(|| bad_column("attempt state", &state))?,
         run_dir: row.get("run_dir")?,
         token_hash: row.get("token_hash")?,
@@ -908,7 +909,7 @@ impl TaskStore for SqliteStore {
         let a = a.clone();
         self.call(move |c| {
             c.execute(
-                &format!("INSERT INTO attempts ({ATTEMPT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"),
+                &format!("INSERT INTO attempts ({ATTEMPT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"),
                 params![
                     a.id.as_str(),
                     a.task_id.as_str(),
@@ -927,6 +928,7 @@ impl TaskStore for SqliteStore {
                     a.ended_at.map(|t| t.0),
                     a.exit_code,
                     a.exit_reason,
+                    a.model,
                 ],
             )
             .map_err(|e| match db(e) {

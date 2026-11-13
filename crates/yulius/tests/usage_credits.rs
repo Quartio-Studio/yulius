@@ -59,6 +59,31 @@ async fn stored_usage(
     Ok((record.status, usage))
 }
 
+/// Opus 5.5 is used up on `accounts` too, for six more days: a task of a Fable model has no
+/// model to fall back to there (SPEC-482), so what SPEC-464 says about a model no subscription
+/// can run still holds: the task waits for a reset, or a person is asked. A provider's reading
+/// keeps the window (its reset is ahead); storing an account's usage whole replaces it.
+async fn opus_out(app: &App, accounts: &[&str]) -> TestResult {
+    for account in accounts {
+        let id = AccountId::parse(account)?;
+        let record = app.deps.store.account(&id).await?.ok_or("account")?;
+        let mut usage: Value = serde_json::from_str(record.usage_json.as_deref().unwrap_or("{}"))?;
+        usage["weekly_opus"] = json!({"used_percent": 100.0, "window_minutes": 10_080,
+            "resets_at": app.now().plus_millis(6 * 24 * HOUR).0});
+        app.deps
+            .store
+            .set_account_state(
+                &id,
+                record.status,
+                Some(&usage.to_string()),
+                None,
+                app.now(),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 /// How often a goal pause that needs a person was audited for `id`.
 async fn pauses_audited(app: &App, id: &TaskId) -> usize {
     app.deps
@@ -515,6 +540,7 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
         // (a window whose reset passed is not stored).
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(Some(8)))?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        opus_out(&app, &["a-first"]).await?;
         app.start_capacity_loop();
         let id = new_task(&app, &sandbox, &user, "Waits").await?;
         ready(&app, &id).await?;
@@ -588,6 +614,7 @@ fn a_refresh_that_finds_the_model_running_resumes_the_task_that_waits_for_its_re
             refused_for_credits(Some(40 * 3600)),
         )?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        opus_out(&app, &["a-first"]).await?;
         app.start_capacity_loop();
         let id = new_task(&app, &sandbox, &user, "Waits").await?;
         ready(&app, &id).await?;
@@ -813,7 +840,9 @@ async fn refused_twice(
             app.now(),
         )
         .await?;
-    let id = new_task(&app, &sandbox, &user, "No end").await?;
+    // A task of a model that has no fallback: a Fable task would go on with Opus 5.5 here
+    // (SPEC-482; `model_fallback.rs` has that one, refused for both models).
+    let id = task_of_model(&app, &sandbox, &user, "No end", Some("claude-opus-5-5")).await?;
     ready(&app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
     wait_for("the pause", Duration::from_secs(30), || {
@@ -824,15 +853,15 @@ async fn refused_twice(
     assert_eq!(pause.kind, PauseKind::Limit);
     needs_nobody(&app, &id).await?;
     let (status, stored) = stored_usage(&app, "a-first").await?;
-    assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
-    assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
-    assert_eq!(status, AccountStatus::Limited);
+    assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+    assert!(stored["weekly_opus"]["resets_at"].is_null(), "{stored}");
+    assert_eq!(status, AccountStatus::Ok, "the default model still runs");
 
     // A provider's reading ends the limit; the pool tries the task again, once.
     probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
     reading(&app, "a-first").await?;
     let (status, stored) = stored_usage(&app, "a-first").await?;
-    assert!(stored["weekly_fable"].is_null(), "{stored}");
+    assert!(stored["weekly_opus"].is_null(), "{stored}");
     assert_eq!(status, AccountStatus::Ok);
     let _ = app.resume_round().await;
     live_run(&app, &id, 2).await?;
@@ -1197,13 +1226,20 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
     Ok(())
 }
 
-/// The first turn of a session whose agent only echoes, with its transcript.
+/// The first turn of a session whose agent only echoes, with its transcript. Its task is set to
+/// `model`. One of the default model has Opus 5.5 used up on its subscription for six more days
+/// ([`opus_out`]), so it waits where it would fall back; one of a model that has no fallback
+/// (`Some`) waits with nothing known to wait for.
 async fn first_turn(
     app: &Arc<App>,
     data: &Path,
+    model: Option<&str>,
 ) -> Result<(TaskId, UserId, PathBuf), Box<dyn std::error::Error>> {
     let (sandbox, user) = seed(app, data, &["a-first"]).await?;
-    let id = new_task(app, &sandbox, &user, "Appended").await?;
+    if model.is_none() {
+        opus_out(app, &["a-first"]).await?;
+    }
+    let id = task_of_model(app, &sandbox, &user, "Appended", model).await?;
     ready(app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
     let mut transcript = None;
@@ -1231,7 +1267,7 @@ async fn goal_pause_then_a_wait(
         ..FakeAgentOptions::default()
     };
     let app = build_with(data, fake, probe, agent)?;
-    let (id, _user, transcript) = first_turn(&app, data).await?;
+    let (id, _user, transcript) = first_turn(&app, data, None).await?;
     append_lines(
         &transcript,
         "paused",
@@ -1359,7 +1395,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
-        let (id, _user, transcript) = first_turn(&app, &data).await?;
+        let (id, _user, transcript) = first_turn(&app, &data, None).await?;
         let started = app.now();
         let refused = [Line::Prompt, Line::SessionLimit, Line::TurnDuration];
         append_lines(&transcript, "first", &refused)?;
@@ -1412,7 +1448,8 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
-        let (id, _user, transcript) = first_turn(&app, &data).await?;
+        // A model that has no fallback: nothing says when the task can go on.
+        let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
         let started = app.now();
         append_refused_turn(&transcript, "first")?;
         wait_for("the pause", Duration::from_secs(30), || {
@@ -1464,6 +1501,7 @@ fn a_limit_after_the_model_answered_again_has_its_own_retry() -> TestResult {
         // Each run answers one message, then is refused without a word on when that ends.
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(None))?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        opus_out(&app, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Answers between").await?;
         ready(&app, &id).await?;
         let started = app.now();
@@ -1552,6 +1590,7 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
                 {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
         )
         .await?;
+        opus_out(&app, &["a-first", "b-second"]).await?;
         let id = new_task(&app, &sandbox, &user, "Waits for the other").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);

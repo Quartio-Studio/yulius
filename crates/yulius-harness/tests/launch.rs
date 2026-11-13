@@ -524,6 +524,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -627,6 +628,23 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
             Err(LaunchError::Invalid("session_id"))
         );
     }
+    // The fallback model while no subscription can run the default one (SPEC-482 FBK-011), at
+    // the effort that model takes.
+    let fallback = plan_cockpit(&CockpitRequest {
+        model: Some("claude-opus-5-5".into()),
+        ..request.clone()
+    })?;
+    assert_eq!(
+        fallback.argv[fallback.argv.len() - 4..],
+        ["--model", "claude-opus-5-5", "--effort", "high"]
+    );
+    assert_eq!(
+        plan_cockpit(&CockpitRequest {
+            model: Some("--help".into()),
+            ..request.clone()
+        }),
+        Err(LaunchError::Invalid("model"))
+    );
     assert_eq!(
         plan_cockpit(&CockpitRequest {
             credential: Credential::ClaudeOauthToken(Secret::new("a\nb".into())),
@@ -644,6 +662,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: Some(SESSION.into()),
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -692,6 +711,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: Some(SESSION.into()),
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081/".into(),
@@ -769,6 +789,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
         project_mcp_servers: vec![
@@ -813,6 +834,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),
@@ -950,6 +972,7 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         config_dir: PathBuf::from("/data/users/u1/superagent/.claude"),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081".into(),

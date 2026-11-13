@@ -644,6 +644,7 @@ async fn task_on(
             account_id: Some(account.clone()),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/nonexistent".into(),
             token_hash: format!("email-hash-{n}"),

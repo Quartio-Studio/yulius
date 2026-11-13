@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tokio::sync::{broadcast, oneshot};
 use yulius_contracts::events::UiEvent;
-use yulius_domain::harness::Harness;
+use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, Harness, claude_model_name};
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
@@ -1198,20 +1198,22 @@ impl App {
             return None;
         }
         let input = self.rotation_input(task, None).await.ok()?;
-        match rotation::decide(&input, Trigger::Start).0 {
+        // As the resume loop decides: off what refused the task with no end (SPEC-464 UCL-010).
+        match self.decide_for_waiting(&task.id, &input, Trigger::Start).0 {
             Decision::Wait { until } => until,
             Decision::Switch { .. } | Decision::Stay => None,
         }
     }
 
-    /// The account a new attempt of `task` runs on (placement, ROT-004), or `None` when no
-    /// subscription has capacity and the task must pause (ROT-010). A requested account is
-    /// honoured when it is usable and refused otherwise (ROT-007).
+    /// Where a new attempt of `task` runs (placement, ROT-004): its account, and the fallback
+    /// model it is launched with while no subscription can run the task's own (SPEC-482). `None`
+    /// when no subscription has capacity and the task must pause (ROT-010). A requested account
+    /// is honoured when it is usable and refused otherwise (ROT-007).
     pub(crate) async fn choose_account(
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
-    ) -> AppResult<Option<AccountRecord>> {
+    ) -> AppResult<Option<Placed>> {
         let trigger = match requested {
             Some(id) => Trigger::Manual {
                 account: Some(id.clone()),
@@ -1220,13 +1222,17 @@ impl App {
         };
         let input = self.rotation_input(task, None).await?;
         match rotation::decide(&input, trigger) {
-            (Decision::Switch { account, .. }, _) => Ok(Some(
-                self.deps
+            (Decision::Switch { account, .. }, _) => Ok(Some(Placed {
+                account: self
+                    .deps
                     .store
                     .account(&account)
                     .await?
                     .ok_or(AppError::NotFound)?,
-            )),
+                // The same snapshot decided the account and says the model.
+                fallback: crate::capacity::fallback_of(task.model.as_deref())
+                    .filter(|_| rotation::placing_family(&input) != input.family),
+            })),
             (Decision::Wait { .. }, _) => Ok(None),
             (Decision::Stay, reason) => {
                 let label = match requested {
@@ -1540,7 +1546,9 @@ impl App {
             Some(id) if store.account(&id).await?.is_none() => None,
             other => other,
         };
-        let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
+        let Some(Placed { account, fallback }) =
+            self.choose_account(&task, requested.as_ref()).await?
+        else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
             // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
@@ -1681,7 +1689,8 @@ impl App {
             worktree: worktree.clone(),
             sandbox_home: home.clone(),
             run_dir: run_dir.clone(),
-            model: task.model.clone(),
+            // The fallback while no subscription can run the task's own model (SPEC-482).
+            model: fallback.map(str::to_owned).or_else(|| task.model.clone()),
             effort: task.effort.clone(),
             contained: self.config.contained,
             mcp,
@@ -1760,7 +1769,16 @@ impl App {
         };
         // `gh` in the agent's shell acts as the task's owner, like its Git (F 2026-10-11).
         self.add_agent_gh(&mut launch)?;
-        let seq = u32::try_from(store.attempts(&task.id).await?.len() + 1).unwrap_or(u32::MAX);
+        let earlier = store.attempts(&task.id).await?;
+        let seq = u32::try_from(earlier.len() + 1).unwrap_or(u32::MAX);
+        let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+        let model = fallback.unwrap_or(own);
+        // Said once per change of the model (SPEC-482 FBK-008): at the launch that falls back,
+        // and at the first one that runs the task's own model again.
+        let before = earlier.last().and_then(|run| run.model.as_deref());
+        if let Some(said) = model_change_notice(own, before, model) {
+            self.runtime(&task.id).hub.notice(said);
+        }
         let attempt = AttemptRecord {
             id: attempt_id.clone(),
             task_id: task.id.clone(),
@@ -1769,6 +1787,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
+            model: Some(model.to_owned()),
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),
@@ -3590,13 +3609,25 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // A restart that only keeps its subscription lets the pool place the run when that
+        // subscription cannot take it and another can (SPEC-482 FBK-004).
+        let account = match account {
+            Some(kept) if keeps_subscription(reason) => {
+                let input = self.rotation_input(&task, None).await?;
+                rotation::keeps_account(&input, &kept).then_some(kept)
+            }
+            other => other,
+        };
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
-        if let Err(err) = self.preflight_start(&task, account.as_ref()).await {
-            self.refuse_switch(&task, account.as_ref(), reason, &err)
-                .await;
-            return Err(err);
-        }
+        let fallback = match self.preflight_start(&task, account.as_ref()).await {
+            Ok(fallback) => fallback,
+            Err(err) => {
+                self.refuse_switch(&task, account.as_ref(), reason, &err)
+                    .await;
+                return Err(err);
+            }
+        };
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -3616,7 +3647,11 @@ impl App {
             None => task.harness.as_str().to_owned(),
         };
         let decision_id = self.deps.crypto.new_id();
-        let to_desc = self.account_desc(task.harness, account.as_ref()).await;
+        let mut to_desc = self.account_desc(task.harness, account.as_ref()).await;
+        // A move onto the fallback names the model (SPEC-482 FBK-008).
+        if let Some(fallback) = fallback {
+            to_desc = format!("{to_desc}, {}", claude_model_name(fallback));
+        }
         store
             .insert_switch(&SwitchDecisionRecord {
                 id: decision_id.clone(),
@@ -3898,7 +3933,8 @@ impl App {
 
     /// What a launch would need, checked without changing anything: the repository, a usable
     /// subscription credential and the sandbox's isolation (disk quota, holder). A switch runs
-    /// it before it ends the running session (ROT-014).
+    /// it before it ends the running session (ROT-014). `Ok` names the fallback model the
+    /// launch would be placed with (SPEC-482), `None` for the task's own.
     ///
     /// # Errors
     /// The reason the launch would be refused.
@@ -3906,7 +3942,7 @@ impl App {
         &self,
         task: &TaskRecord,
         requested: Option<&AccountId>,
-    ) -> AppResult<()> {
+    ) -> AppResult<Option<&'static str>> {
         let sandbox = self
             .deps
             .store
@@ -3924,11 +3960,12 @@ impl App {
             ));
         }
         // No subscription with capacity is not a refusal: the switch pauses the task instead.
-        if let Some(account) = self.choose_account(task, requested).await? {
-            self.open_credential(&account)?;
+        let placed = self.choose_account(task, requested).await?;
+        if let Some(placed) = &placed {
+            self.open_credential(&placed.account)?;
         }
         self.isolation_join(&sandbox).await?;
-        Ok(())
+        Ok(placed.and_then(|placed| placed.fallback))
     }
 
     /// Whether a switch of `task` was refused so recently that an automatic one waits.
@@ -4641,7 +4678,8 @@ impl App {
                 };
                 let blind = limit.without_an_end(self.now());
                 if let Some(account) = &attempt.account_id {
-                    let family = self.task_family(task_id).await;
+                    // The limit of the model this run was launched with (SPEC-482 FBK-006).
+                    let family = self.run_family_of(attempt).await;
                     self.record_limit(account, limit, family).await;
                 }
                 let app = self.clone();
@@ -4851,6 +4889,15 @@ impl App {
         let Ok(input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
+        // Remembered for the model this run was launched with: a task of a Fable model may be
+        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
+        if blind
+            && limit
+            && let Some(account) = &current
+            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
+        {
+            met.met(account, input.running.unwrap_or(input.family));
+        }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
             .proactive_switch
@@ -4881,7 +4928,7 @@ impl App {
                         .blind_limits
                         .lock()
                         .map_or(crate::moves::BlindWait::Pause, |mut blind| {
-                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                            blind.nowhere_to_go(until, task.status)
                         });
                     if next == crate::moves::BlindWait::AskAPerson {
                         self.limit_without_end(&task).await;
@@ -4956,6 +5003,36 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Where the pool places a run (SPEC-482).
+pub(crate) struct Placed {
+    /// The subscription.
+    pub account: AccountRecord,
+    /// The model the run is launched with instead of the task's own, while no subscription can
+    /// run that; `None`: the task's own.
+    pub fallback: Option<&'static str>,
+}
+
+/// What a session's terminal says when a launch changes the model it runs (SPEC-482 FBK-008):
+/// `model` is not the task's `own` (the launch falls back), or it is again after a run on
+/// another model (`before`, the model of the task's last run). `None` when nothing changes.
+pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) -> Option<String> {
+    let name = claude_model_name;
+    if model != own {
+        return (before != Some(model)).then(|| {
+            format!(
+                "{} is used up on every subscription: this session runs on {}.",
+                name(own),
+                name(model)
+            )
+        });
+    }
+    // Only a fallback is undone: a task set to another model since its last run says nothing.
+    let fell_back = before.is_some_and(|before| {
+        before != own && yulius_domain::harness::fallback_model(own) == Some(before)
+    });
+    fell_back.then(|| format!("{} can run again: this session runs on it.", name(own)))
+}
+
 /// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
 /// (SPEC-447 MOV-002).
 fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> String {
@@ -4978,6 +5055,13 @@ fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> Str
     }
 }
 
+/// Whether a switch for `reason` restarts the session where it is and asks for its subscription
+/// only to keep it: a newer Claude Code, a fresh session after a full context, a hand-over. A
+/// person's choice and the pool's own decisions name the subscription they mean.
+fn keeps_subscription(reason: &str) -> bool {
+    matches!(reason, "context_full" | "handover") || reason == crate::claude_code::MOVE_REASON
+}
+
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
 /// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
 /// automatic switches come while the agent is idle.
@@ -4987,6 +5071,35 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-482 FBK-008: the terminal says a change of the model once, at the launch that
+    /// makes it: onto the fallback, and back to the task's own model after a run on it.
+    #[test]
+    fn a_launch_says_when_the_model_changes() {
+        use super::model_change_notice as said;
+        let (fable, opus) = ("claude-fable-5-2", "claude-opus-5-5");
+        let fell_back =
+            "Fable 5.2 is used up on every subscription: this session runs on Opus 5.5.";
+        let back = "Fable 5.2 can run again: this session runs on it.";
+        // The first run, a run after one on Fable, and one after a run that names no model.
+        for before in [None, Some(fable)] {
+            assert_eq!(said(fable, before, opus).as_deref(), Some(fell_back));
+            assert_eq!(said(fable, before, fable), None);
+        }
+        assert_eq!(said(fable, Some(opus), opus), None, "said at the first");
+        assert_eq!(said(fable, Some(opus), fable).as_deref(), Some(back));
+        // An older Fable model names itself.
+        assert_eq!(
+            said("claude-fable-5-1", Some(opus), "claude-fable-5-1").as_deref(),
+            Some("Fable 5.1 can run again: this session runs on it.")
+        );
+        // A task a person set to another model since its last run did not fall back.
+        assert_eq!(said(opus, Some(fable), opus), None);
+        assert_eq!(
+            said("claude-sonnet-5-5", Some(opus), "claude-sonnet-5-5"),
+            None
+        );
+    }
+
     /// SPEC-464 UCL-010: only the model's own records say it answered. A turn's work (a tool
     /// call) and its end both do; a refusal Claude Code writes itself, a prompt and a
     /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.

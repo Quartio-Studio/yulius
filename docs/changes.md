@@ -6,6 +6,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A task of a Fable model goes on with Opus 5.5 while no subscription can run Fable (SPEC-482,
+  task #464, ADR-0312; the request: "add fallback for opus 5.5 if fable is done everywhere").
+  Fable's weekly allowance of usage credits could be used up on every subscription while their
+  5-hour and weekly windows had room: tasks of the default model then waited for a reset, up
+  to a week, or asked a person. Now the pool places such a run with Opus 5.5: at the limit
+  that cut its turn (the same session, on the same subscription when that is the one with
+  room), at its start and when it resumes. The session's terminal says "Fable 5.2 is used up
+  on every subscription: this session runs on Opus 5.5.", the task's details name the model,
+  and the Capacity card and the Status line say that tasks run on Opus 5.5. A session that
+  fell back is not restarted to get back; its next launch runs Fable again once a subscription
+  can. Each run records the model it was launched with (`attempts.model`, schema version 54),
+  and a limit binds that model. The Superagent follows the same rule. A task waits, or asks a
+  person, only when neither model can run. While a subscription can still run Fable, tasks
+  move there as before.
 - `yulius instance migrate` no longer calls a move finished while its old instance is not held
   (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while the
   old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now` and

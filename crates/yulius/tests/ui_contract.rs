@@ -520,6 +520,28 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// SPEC-482 FBK-001: the pages name the fallback model the server launches (the Status line, the
+/// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
+#[test]
+fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, FALLBACK_CLAUDE_MODEL, fallback_model};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    assert!(
+        models.contains(&format!(
+            "export const FALLBACK_MODEL = '{FALLBACK_CLAUDE_MODEL}';"
+        )),
+        "models.js does not fall back to {FALLBACK_CLAUDE_MODEL}"
+    );
+    assert!(models.contains(&format!("{{ id: '{FALLBACK_CLAUDE_MODEL}', name: '")));
+    // The page's rule is the server's: a Fable model falls back, the default one included.
+    assert!(models.contains("includes('fable') ? FALLBACK_MODEL : null"));
+    assert_eq!(
+        fallback_model(DEFAULT_CLAUDE_MODEL),
+        Some(FALLBACK_CLAUDE_MODEL)
+    );
+    Ok(())
+}
+
 /// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
 /// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
 /// behind.

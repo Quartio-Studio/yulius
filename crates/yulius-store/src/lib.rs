@@ -139,6 +139,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0053_task_attention.sql"),
+    // Schema version 54 (SPEC-482). The file is 0054, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0054_attempt_model.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -720,6 +724,53 @@ mod tests {
             times(800, Some(4)),
             "no run yet: since it was created"
         );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-005: a run records the model it was launched with; the runs of a version-53
+    /// database have none, and the column round-trips.
+    #[tokio::test]
+    async fn version_fifty_three_runs_have_no_launch_model()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::TaskId;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v53.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..53] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 53)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 1, 500);
+                 INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at) VALUES
+                   ('a1', 't1', 1, 'claude', 'new', 'live', '/r/a1', 'h1', x'00', 100);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = TaskId::parse("t1")?;
+        let old = store.live_attempt(&task).await?.ok_or("the old run")?;
+        assert_eq!(old.model, None);
+        store
+            .transition_attempt(
+                &old.id,
+                yulius_domain::task::AttemptState::Exited,
+                &yulius_app::ports::store::AttemptUpdate::default(),
+            )
+            .await?;
+        let mut next = old.clone();
+        next.id = yulius_domain::ids::AttemptId::parse("a2")?;
+        next.seq = 2;
+        next.token_hash = "h2".into();
+        next.model = Some("claude-opus-5-5".into());
+        store.insert_attempt(&next).await?;
+        let stored = store.live_attempt(&task).await?.ok_or("the new run")?;
+        assert_eq!(stored.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(schema_version(), 54);
         Ok(())
     }
 

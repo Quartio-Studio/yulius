@@ -200,14 +200,30 @@ pub(crate) fn default_family() -> ModelFamily {
     model_family(None)
 }
 
+/// The model a run of a task set to `model` is launched with instead while no subscription can
+/// run that model (SPEC-482): Opus 5.5 for a Fable model, the default one included.
+#[must_use]
+pub(crate) fn fallback_of(model: Option<&str>) -> Option<&'static str> {
+    yulius_domain::harness::fallback_model(
+        model.unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
+    )
+}
+
+/// The family of the model a run was launched with (SPEC-482 FBK-005): `launched`, the model
+/// its record names, else the one its task is set to (a run recorded before schema version 54).
+#[must_use]
+pub(crate) fn run_family(launched: Option<&str>, task_model: Option<&str>) -> ModelFamily {
+    model_family(launched.or(task_model))
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
         self.capacity.wake.notify_one();
     }
 
-    /// The policy input for `task` (its provider and model family) with `current` as the
-    /// account it runs on.
+    /// The policy input for `task` (its provider, its model family and its fallback's) with
+    /// `current` as the account it runs on, and the model its live run was launched with.
     ///
     /// # Errors
     /// Store failures.
@@ -216,24 +232,37 @@ impl App {
         task: &TaskRecord,
         current: Option<AccountId>,
     ) -> AppResult<RotationInput> {
+        let model = task.model.as_deref();
+        // A run stays, and its subscription is left out, by the model the run was launched
+        // with, which is the fallback's while no subscription could run the task's own.
+        let running = match &current {
+            Some(_) => self
+                .deps
+                .store
+                .live_attempt(&task.id)
+                .await?
+                .map(|run| run_family(run.model.as_deref(), model)),
+            None => None,
+        };
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
             // A task without a model runs the default, Fable 5.2.
-            family: model_family(task.model.as_deref()),
+            family: model_family(model),
+            fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
+            running,
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
         })
     }
 
-    /// The family of the model the task `task_id` runs; the default model's when the task cannot
-    /// be read.
-    pub(crate) async fn task_family(&self, task_id: &TaskId) -> ModelFamily {
-        match self.deps.store.task(task_id).await {
-            Ok(Some(task)) => model_family(task.model.as_deref()),
-            _ => default_family(),
-        }
+    /// The family of the model `run` was launched with ([`run_family`]); the default model's
+    /// when its record names none and its task cannot be read.
+    pub(crate) async fn run_family_of(&self, run: &crate::model::AttemptRecord) -> ModelFamily {
+        let task = self.deps.store.task(&run.task_id).await.ok().flatten();
+        let task_model = task.as_ref().and_then(|task| task.model.as_deref());
+        run_family(run.model.as_deref(), task_model)
     }
 
     /// Reads `account`'s stored usage, changes it with `change` and stores what that gives,
@@ -271,8 +300,9 @@ impl App {
         Some(usage)
     }
 
-    /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
-    /// placement of the pool for a run of `family`, whose weekly cap binds too.
+    /// The subscription a run outside any task that names its model's family runs on (a split
+    /// proposal): the best placement of the pool for a run of `family`, whose weekly cap binds
+    /// too. A Superagent is placed with [`Self::place_default_run`].
     ///
     /// # Errors
     /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
@@ -288,6 +318,8 @@ impl App {
             current: None,
             task_provider: provider,
             family,
+            fallback: None,
+            running: None,
             accounts,
             now: self.now(),
             threshold: rotation::THRESHOLD,
@@ -299,6 +331,51 @@ impl App {
                 .account(&account)
                 .await?
                 .ok_or(crate::error::AppError::NotFound),
+            Decision::Stay | Decision::Wait { .. } => Err(crate::error::AppError::Capacity(
+                "no subscription has capacity right now".into(),
+            )),
+        }
+    }
+
+    /// Where the pool places a run of the default model outside any task (a Superagent), with
+    /// the fallback while no subscription can run the default model (SPEC-482 FBK-011).
+    /// `current` is the subscription a usage limit just cut the run on, with the family of the
+    /// model it was launched with: the run is placed off it unless its model changes.
+    ///
+    /// # Errors
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
+    pub(crate) async fn place_default_run(
+        &self,
+        current: Option<(AccountId, ModelFamily)>,
+    ) -> AppResult<crate::supervisor::Placed> {
+        let provider = yulius_domain::harness::Provider::Anthropic;
+        self.ensure_agent_account(provider).await?;
+        let trigger = match current {
+            Some(_) => Trigger::LimitReached,
+            None => Trigger::Start,
+        };
+        let (current, running) = current.unzip();
+        let input = RotationInput {
+            current,
+            task_provider: provider,
+            family: default_family(),
+            fallback: fallback_of(None).map(|fallback| model_family(Some(fallback))),
+            running,
+            accounts: self.account_views().await?,
+            now: self.now(),
+            threshold: rotation::THRESHOLD,
+        };
+        match rotation::decide(&input, trigger).0 {
+            Decision::Switch { account } => Ok(crate::supervisor::Placed {
+                account: self
+                    .deps
+                    .store
+                    .account(&account)
+                    .await?
+                    .ok_or(crate::error::AppError::NotFound)?,
+                fallback: fallback_of(None)
+                    .filter(|_| rotation::placing_family(&input) != input.family),
+            }),
             Decision::Stay | Decision::Wait { .. } => Err(crate::error::AppError::Capacity(
                 "no subscription has capacity right now".into(),
             )),
@@ -655,17 +732,29 @@ impl App {
             Trigger::Start
         };
         let input = self.rotation_input(task, current).await?;
-        // A subscription that refused the task again at a limit nothing says the end of is not
-        // tried again while a reset is known to wait for, whatever a reading said since
-        // (SPEC-464 UCL-010).
-        let left_out = self
-            .existing_runtime(&task.id)
-            .and_then(|rt| rt.blind_limits.lock().ok()?.refused_by().cloned());
-        let (decision, reason) = match left_out {
-            Some(account) => rotation::decide_leaving_out(&input, trigger, &account),
-            None => rotation::decide(&input, trigger),
-        };
+        let (decision, reason) = self.decide_for_waiting(&task.id, &input, trigger);
         Ok((decision, format!("{reason:?}"), has_process))
+    }
+
+    /// The pool's decision for a task that waits. What refused it again at a limit nothing says
+    /// the end of is not tried again while a reset is known to wait for, whatever a reading
+    /// said since (SPEC-464 UCL-010): each subscription, for the model it refused (SPEC-482
+    /// FBK-007).
+    pub(crate) fn decide_for_waiting(
+        &self,
+        task: &TaskId,
+        input: &RotationInput,
+        trigger: Trigger,
+    ) -> (Decision, rotation::DecisionReason) {
+        let left_out = self
+            .existing_runtime(task)
+            .and_then(|rt| Some(rt.blind_limits.lock().ok()?.left_out().to_vec()))
+            .unwrap_or_default();
+        if left_out.is_empty() {
+            rotation::decide(input, trigger)
+        } else {
+            rotation::decide_leaving_out(input, trigger, &left_out)
+        }
     }
 
     async fn would_resume(&self, pause: &PauseRecord) -> bool {
@@ -878,15 +967,28 @@ impl App {
             .map(token_run)
             .collect();
         let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
+        // For a task of the default model: its own weekly window binds too (SPEC-464), and
+        // while no subscription can run it, the task is placed with its fallback (SPEC-482).
+        let default_task = RotationInput {
+            current: None,
+            task_provider: yulius_domain::harness::Provider::Anthropic,
+            family: default_family(),
+            fallback: fallback_of(None).map(|fallback| model_family(Some(fallback))),
+            running: None,
+            accounts: views,
+            now,
+            threshold,
+        };
+        let placing = rotation::placing_family(&default_task);
+        let views = &default_task.accounts;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
         let mut five_hour_left: Option<f64> = None;
         let mut available = 0_u32;
         for record in &records {
             let usage = account_usage(record);
-            // For a task of the default model: its own weekly window binds too (SPEC-464).
             let is_available = views.iter().any(|v| {
-                v.id == record.id && rotation::assess(v, now, threshold, default_family()).is_some()
+                v.id == record.id && rotation::assess(v, now, threshold, placing).is_some()
             });
             if is_available {
                 available += 1;
@@ -952,16 +1054,7 @@ impl App {
         )
         .unwrap_or(u32::MAX);
         let resumes_at = (available == 0)
-            .then(|| {
-                rotation::available_again(&RotationInput {
-                    current: None,
-                    task_provider: yulius_domain::harness::Provider::Anthropic,
-                    family: default_family(),
-                    accounts: views.clone(),
-                    now,
-                    threshold,
-                })
-            })
+            .then(|| rotation::available_again(&default_task))
             .flatten();
         Ok(CapacityView {
             threshold,
@@ -982,6 +1075,9 @@ impl App {
             recommendation: forecast.recommendation(),
             paused_tasks,
             resumes_at: resumes_at.map(rfc3339),
+            fallback_model: fallback_of(None)
+                .filter(|_| placing != default_task.family)
+                .map(str::to_owned),
             accounts,
             tokens: pool_view(&pool),
         })
@@ -1049,6 +1145,31 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-482: a task of a Fable model, the default one included, falls back to Opus 5.5; a
+    /// run's family is that of the model its record names, else of its task's (a run recorded
+    /// before the launch model was).
+    #[test]
+    fn a_runs_family_is_its_launch_models() {
+        assert_eq!(fallback_of(None), Some("claude-opus-5-5"));
+        assert_eq!(
+            fallback_of(Some("claude-fable-5-1")),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(fallback_of(Some("claude-opus-5-5")), None);
+        assert_eq!(fallback_of(Some("claude-sonnet-5-5")), None);
+        let opus = Some("claude-opus-5-5");
+        assert_eq!(run_family(opus, None), ModelFamily::Opus);
+        assert_eq!(run_family(None, None), ModelFamily::Fable);
+        assert_eq!(
+            run_family(None, Some("claude-sonnet-5-5")),
+            ModelFamily::Sonnet
+        );
+        assert_eq!(
+            run_family(Some("claude-fable-5-2"), opus),
+            ModelFamily::Fable
+        );
+    }
 
     /// SPEC-464: a task that names no model runs the default one, Fable, whose weekly allowance
     /// of usage credits binds it; a task that names one is bound by that model's family.

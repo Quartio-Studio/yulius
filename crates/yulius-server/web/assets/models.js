@@ -24,6 +24,22 @@ export const PROVIDERS = [
   },
 ];
 
+/**
+ * The model a task of a Fable model runs while no subscription can run Fable (SPEC-482): the
+ * server's `FALLBACK_CLAUDE_MODEL`, which a test keeps equal to this.
+ */
+export const FALLBACK_MODEL = 'claude-opus-5-5';
+
+/** The model a task of `model` falls back to, or null: a Fable model's is [`FALLBACK_MODEL`]. */
+export function fallbackOf(model) {
+  return String(model || '').toLowerCase().includes('fable') ? FALLBACK_MODEL : null;
+}
+
+/** What the pool says while tasks of `model` run its fallback (SPEC-482), in one line. */
+export function fallbackLine(model, fallback) {
+  return `${modelLabel(model)} is used up on every subscription: tasks run on ${modelLabel(fallback)} until it can run again`;
+}
+
 export const EFFORTS = [
   { id: 'low', name: 'Low', description: 'Quick, fewest tokens' },
   { id: 'medium', name: 'Medium', description: 'Balanced speed and depth' },

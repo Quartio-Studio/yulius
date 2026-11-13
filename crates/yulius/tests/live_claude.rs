@@ -114,6 +114,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
             account_id: None,
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),

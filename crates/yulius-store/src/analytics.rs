@@ -285,6 +285,7 @@ mod tests {
                     account_id: Some(AccountId::parse("gone")?),
                     provider_session_id: None,
                     launch_kind: LaunchKind::New,
+                    model: None,
                     state: AttemptState::Exited,
                     run_dir: String::new(),
                     token_hash: format!("hash-{task}"),

@@ -673,6 +673,8 @@ function detail(db, task) {
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
     model: task.model || 'claude-fable-5-2',
     model_default: !task.model || task.effort === 'default',
+    // The model its run was launched with while no subscription could run its own (SPEC-482).
+    ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
@@ -5245,8 +5247,11 @@ route('GET', '/api/capacity', ({ db }) => {
     const known = healthy.map((a) => a.usage && a.usage[key] && a.usage[key].used_percent).filter(Number.isFinite);
     return known.length ? known.reduce((sum, used) => sum + Math.max(0, threshold - used), 0) : null;
   };
-  // For a task of the default model: Fable's weekly allowance binds it too (SPEC-464).
-  const isAvailable = (a) => healthy.includes(a) && ['primary', 'secondary', 'weekly_fable'].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
+  // For a task of the default model: Fable's weekly allowance binds it too (SPEC-464), and while
+  // no subscription can run Fable the task is placed with its fallback, Opus 5.5 (SPEC-482).
+  const runs = (own) => (a) => healthy.includes(a) && ['primary', 'secondary', own].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
+  const fallback = !db.accounts.some(runs('weekly_fable')) && db.accounts.some(runs('weekly_opus'));
+  const isAvailable = runs(fallback ? 'weekly_opus' : 'weekly_fable');
   const paused = db.tasks.filter((t) => t.status === 'waiting_capacity');
   return {
     threshold,
@@ -5267,6 +5272,7 @@ route('GET', '/api/capacity', ({ db }) => {
     recommendation: 'Add about 1 subscription to stop pausing',
     paused_tasks: paused.length,
     resumes_at: null,
+    fallback_model: fallback ? 'claude-opus-5-5' : null,
     accounts: db.accounts.map((a) => ({
       label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by, ...(a.email ? { email: a.email } : {}) } : {}),

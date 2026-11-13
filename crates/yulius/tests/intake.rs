@@ -685,6 +685,7 @@ async fn live_task(i: &Intake, id: &str) -> Result<TaskRecord, Box<dyn std::erro
             account_id: Some(AccountId::parse("acc-1")?),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/nonexistent/run".into(),
             token_hash: i.h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),

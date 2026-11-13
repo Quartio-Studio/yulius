@@ -182,6 +182,7 @@ impl HarnessPort for HarnessAdapter {
             config_dir: l.config_dir.clone(),
             resume: l.resume.clone(),
             continue_interrupted: l.continue_interrupted,
+            model: l.model.clone(),
             credential: Credential::ClaudeOauthToken(HSecret::new(
                 l.credential.expose().to_owned(),
             )),
@@ -643,6 +644,7 @@ mod tests {
             config_dir_host: config.clone(),
             resume: None,
             continue_interrupted: false,
+            model: None,
             credential: Secret("token".into()),
             yulius: None,
             project_mcp_servers: Vec::new(),

@@ -1790,6 +1790,7 @@ pub async fn seed_live_attempt_at(
             account_id: None,
             provider_session_id: None,
             launch_kind: yulius_app::model::LaunchKind::New,
+            model: None,
             state: yulius_domain::task::AttemptState::Live,
             run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(token.as_bytes()),
