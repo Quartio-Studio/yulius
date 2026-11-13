@@ -14,6 +14,7 @@
 
 use std::path::{Component, Path};
 
+use yulius_domain::ids::SandboxId;
 use yulius_domain::spec_format::{self, DecisionsLocation, DocsLayout, MAX_CONFIG_BYTES};
 
 use crate::context::App;
@@ -76,10 +77,11 @@ fn plain_path(path: &str) -> bool {
 }
 
 impl App {
-    /// MRG-001: keeps the union merge of the project's shared logs in the repository behind
-    /// `worktree` (a task's worktree at its start), from the `yulius.toml` there. Failures are
-    /// logged: the task starts anyway.
-    pub async fn keep_union_merges(&self, worktree: &Path) {
+    /// MRG-001: keeps the union merge of the project's shared logs in `sandbox`'s clone, which
+    /// every worktree of it reads, from the `yulius.toml` in `worktree` (a task's worktree at
+    /// its start). The clone is named by the sandbox, never asked of the worktree, whose Git
+    /// files the agent writes (ADR-0314). Failures are logged: the task starts anyway.
+    pub async fn keep_union_merges(&self, sandbox: &SandboxId, worktree: &Path) {
         let config = crate::delivery::read_repo_file(
             worktree,
             "yulius.toml",
@@ -88,7 +90,8 @@ impl App {
         .await
         .ok();
         let lines = union_lines(&checkout_layout(worktree, config.as_deref()));
-        match self.deps.git.set_merge_attributes(worktree, &lines).await {
+        let repo = self.sandbox_repo(sandbox);
+        match self.deps.git.set_merge_attributes(&repo, &lines).await {
             Ok(true) => tracing::info!(lines = ?lines, "the shared logs merge by union"),
             Ok(false) => {}
             Err(err) => {

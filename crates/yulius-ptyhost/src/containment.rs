@@ -5,7 +5,8 @@ use std::path::Path;
 
 use yulius_contracts::ptyhost::BubblewrapSpec;
 
-/// Program name of bubblewrap, resolved through the child's `PATH`.
+/// Program name of bubblewrap. The process host starts it by its path on the host's own `PATH`,
+/// never through the run's.
 pub const BWRAP_PROGRAM: &str = "bwrap";
 
 /// Host system directories bound read-only at the same path (skipped by bwrap when absent).

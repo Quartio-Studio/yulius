@@ -32,7 +32,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   read again, and a test that fails without the fix is written first. Their notes are kept
   outside the repository (`$HOME/.cache/yulius-audit-465/`).
 - **Slices.** The fixes are delivered as pull requests of one concern each, most harmful first:
-  1. the redaction fingerprints (V1, V2);
+  1. the redaction fingerprints (V1, V2): merged, pull request #1240;
   2. what the host runs and writes where an agent can write: `bwrap` found on a run's PATH, the
      Git attributes and hook files written by path (C1, D1, D2);
   3. what the host reads where an agent can write: transcripts, `upper/etc/passwd`, numbered
@@ -74,6 +74,23 @@ no code path reaches; documents, texts shown to agents and people, and code that
   so its wrapper keeps reading the old format only: a new answer or a new file would refuse
   every command of every live session after the update.
 
+### Slice 2: what the host runs and writes where an agent can write
+
+- **Whose files.** A sandbox's directory (home, clone, worktrees) is mounted read-write into
+  its runs at the same paths as on the host; the server and the process hosts work there as
+  the service user, outside containment (ADR-0174).
+- **C1 (critical): `bwrap` by name.** A contained run is `bwrap …` with the run's environment
+  (`yulius-ptyhost` `containment.rs`, `host.rs`; `yulius sandbox-exec`, `enter.rs`). A task
+  run's `PATH` begins in `<sandbox>/home/.cargo/bin`. A `bwrap` planted there starts instead
+  of bubblewrap, as the service user, before containment.
+- **D1 (critical): `info/attributes` by path.** `Git::set_managed_attributes`
+  (`yulius-git` `merges.rs`), run at every task start (`keep_union_merges`), read and replaced
+  the clone's `info/attributes` by path, in a folder asked of Git in the agent's worktree: a
+  host file copied to the agent, a host file overwritten with the agent's lines, a FIFO.
+- **D2 (high): the guard by path.** `Git::install_pre_push_guard` (`hooks.rs`) wrote fifteen
+  files through fixed temporary names into the new worktree's Git directory, which exists
+  before the checkout ends.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -102,12 +119,26 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `{"version":1}`, with which its wrapper runs nothing and after which the format is still
   known.
 
+- **HWR-001** A contained run is started with the `bwrap` of the process host's own `PATH`
+  (the first absolute directory with an executable file of that name); the launch fails when
+  there is none. `sandbox-exec` refuses a program without an absolute path.
+- **HWR-002** `set_managed_attributes` takes the clone and reaches `info/attributes` through
+  no-follow handles below the clone's `.git`: a link at the file, its folder or any temporary
+  name is neither read nor written through; a FIFO is refused at once; more than 256 KiB or a
+  file that is not text is refused; the file's other lines and its mode are kept.
+- **HWR-003** `install_pre_push_guard` takes the clone and the worktree and writes the hooks
+  through no-follow handles below the clone's `.git`; a hooks folder that is a link, or a
+  worktree whose Git directory is not the clone's or one of its `worktrees/<name>`, is refused.
+- **HWR-004** The union merge and the guard work as before for a task (SPEC-083 MRG-001,
+  DSC-007).
+
 ## Plan
 
-- [x] Fingerprints are fixed per sandbox and carry a tag instead of a rolling hash
-- [x] A playground with guests keeps only the fingerprints of its MCP servers' values
-- [x] A starting server rewrites the fingerprint files of live sessions
-- [x] Independent review of slice 1 and its findings answered
+One item per slice (a slice's own steps are its requirements and tests); a slice is ticked when
+its change is reviewed and ready to merge, and the next is added when it is merged.
+
+- [x] Slice 1: redaction fingerprints say a few bits and are fixed per sandbox (merged, #1240)
+- [x] Slice 2: bubblewrap by the host's path, the clone's Git files through handles, reviewed
 
 ## Acceptance criteria
 
@@ -135,6 +166,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
 - **AC-7** The new wrapper refuses a file in the old format (`Invalid`), so nothing runs
   unredacted while the server cannot be reached.
 
+- **AC-8** With a `bwrap` that leaves a marker in `<sandbox>/home/.cargo/bin` and that folder
+  first on the run's `PATH`, a contained launch leaves no marker.
+- **AC-9** `set_managed_attributes`: a link at the old temporary name keeps its target; a link
+  at `attributes` is refused and its target not copied; a FIFO and a 300 KiB file are refused;
+  `info` as a link out of the repository is refused with nothing written there; the existing
+  union merge test passes with the clone named.
+- **AC-10** `install_pre_push_guard`: links at three old temporary names and at one hook's name
+  keep their target, the hooks are regular files and the guard refuses a push to a protected
+  branch; a hooks folder that is a link out of the repository is refused with nothing written.
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -158,6 +199,14 @@ no code path reaches; documents, texts shown to agents and people, and code that
   this server's answer and file; speed in a release build on 1 MB with 10, 40 and 200 secrets,
   before and after.
 
+- Slice 2: `yulius-ptyhost` `tests/containment.rs`
+  `a_bwrap_planted_on_the_runs_path_never_starts_a_run` (AC-8; no skip without namespaces),
+  `host::tests::a_host_program_is_an_executable_file_in_an_absolute_directory`,
+  `yulius-sandbox` `enter::tests::a_bare_program_name_is_refused_before_anything_is_started`;
+  `yulius-git` `tests/git_ops.rs` `managed_attributes_follow_no_link_an_agent_planted` (AC-9),
+  `the_push_guard_follows_no_link_an_agent_planted` (AC-10), the existing guard, scrub and
+  union tests (HWR-004). Each new test failed on `dev` first (Evidence).
+
 ## Decisions
 
 - [ADR-0313](../../docs/decisions/0313-redaction-fingerprints-are-fixed-per-sandbox-and-say-a-few-bits.md):
@@ -168,6 +217,11 @@ no code path reaches; documents, texts shown to agents and people, and code that
   there: limiting requests, a fixed base, bits of a whole-needle rolling hash, more or fewer
   tag bits, redacting on the server, leaving production secrets out, restarting sessions, the
   old format on the endpoint.
+- [ADR-0314](../../docs/decisions/0314-the-host-starts-bubblewrap-by-its-own-path-and-writes-git-files-through-handles.md):
+  bubblewrap by the process host's own `PATH`; the clone's attributes and guard files through
+  no-follow handles, the clone named by the caller. The server's own `git config` writes and
+  what Git itself writes or runs in an agent-writable clone are ADR-0114's remaining hole
+  (finding G1, a later slice).
 - The tag hash has no key: the redactor needs whatever the server uses, so a key would be in the
   set. Equal tags do show that two sandboxes hold a value with the same beginning; the digests,
   salted per sandbox, do not show that it is the same value.
@@ -181,11 +235,12 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 
 | # | Area | Finding | Severity | State |
 | --- | --- | --- | --- | --- |
-| V1 | vault | Fingerprints with a per-request rolling-hash base give every value away | critical | slice 1 |
-| V2 | vault | A playground with guests still gets fingerprints | medium | slice 1 |
+| V1 | vault | Fingerprints with a per-request rolling-hash base give every value away | critical | fixed (slice 1) |
+| V2 | vault | A playground with guests still gets fingerprints | medium | fixed (slice 1) |
 | C1 | containment | A run's `bwrap` is looked up on the launch PATH, whose first entries are in the sandbox home | critical | slice 2 |
 | D1 | git | `set_managed_attributes` reads and writes `.git/info/attributes` by path (host file read and write through links) | critical | slice 2 |
 | D2 | git | The pre-push guard is written by path into the new worktree's Git directory; `git config --worktree` and `review.rs` open by path too | high | slice 2 |
+| G1 | git | The host's own Git works by path in the agent-writable clone: its `git config` writes and index writes follow links, and a repository's configuration can make it run commands (ADR-0114's remaining hole, #54 part B, #486) | critical | slice 3a |
 | C2 | containment | `upper/etc/passwd` and `group` are read through links, unbounded, into people's `/etc/passwd` | high | slice 3 |
 | C3 | host reads | Transcripts in the sandbox home are opened by path (FIFO blocks threads, links followed) | medium | slice 3 |
 | C5 | host reads | `usage::measure` walks by path | low | slice 3 |
@@ -304,3 +359,23 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
     the read is bounded, the corner test names the secret, and #1239 tracks the removal of
     the old format's writer. The Global Superagent has no fingerprint file and no test of
     that absence.
+
+### Slice 2 (2026-11-13)
+
+- **The defects, each by a test that failed before its fix** (on the code of `dev`):
+  - `a_bwrap_planted_on_the_runs_path_never_starts_a_run`: failed, the stand-in `bwrap` in
+    `<sandbox>/home/.cargo/bin` had left its marker.
+  - `managed_attributes_follow_no_link_an_agent_planted`: failed at its first check, the file
+    outside the repository held `*.png binary` and Yulius's block instead of `kept`.
+  - `the_push_guard_follows_no_link_an_agent_planted`: failed, the file outside the repository
+    held the `pre-push` script instead of `kept`.
+- **After the fix** all three pass, with the 95 tests of `yulius-git` (the guard, the scrub and
+  the union merge among them) and `delivery::the_changes_log_merges_by_union_in_any_repository`.
+- **Gate.** `scripts/dev ci` at 70e27996a (on `dev` b4eaca1e5 merged in): exit 0; `4117 tests
+  run: 4117 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested here.** A joined run (`yulius sandbox-exec` after the holder's namespaces): this
+  sandbox has no holder to join; the refusal of a bare name there is a unit test, and the
+  process host's lookup, which every launch passes first, is tested end to end.
+

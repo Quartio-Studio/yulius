@@ -392,9 +392,19 @@ impl GitPort for GitAdapter {
         blocking(move || git.has_changes(&wt)).await
     }
 
-    async fn install_push_guard(&self, worktree: &Path, protected: &[String]) -> AppResult<()> {
-        let (git, wt, protected) = (self.git(), worktree.to_path_buf(), protected.to_vec());
-        blocking(move || git.install_pre_push_guard(&wt, &protected).map(|_| ())).await
+    async fn install_push_guard(
+        &self,
+        repo: &Path,
+        worktree: &Path,
+        protected: &[String],
+    ) -> AppResult<()> {
+        let (git, repo, wt) = (self.git(), repo.to_path_buf(), worktree.to_path_buf());
+        let protected = protected.to_vec();
+        blocking(move || {
+            git.install_pre_push_guard(&repo, &wt, &protected)
+                .map(|_| ())
+        })
+        .await
     }
 
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()> {

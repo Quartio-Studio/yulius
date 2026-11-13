@@ -15,8 +15,6 @@
 //! The guard is a guardrail for cooperative agents, not a security boundary: `--no-verify`
 //! skips it. GitHub rulesets and token scoping are the enforcement layer.
 
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::Git;
@@ -118,43 +116,29 @@ exit 0
     )
 }
 
-fn write_atomic(path: &Path, contents: &str, executable: bool) -> Result<(), GitError> {
-    let io = |source| GitError::Io {
-        context: "writing hook",
-        source,
-    };
-    let mut temp_name = path.as_os_str().to_owned();
-    temp_name.push(".yulius-tmp");
-    let temp = PathBuf::from(temp_name);
-    {
-        let mut file = fs::File::create(&temp).map_err(io)?;
-        file.write_all(contents.as_bytes()).map_err(io)?;
-        file.sync_all().map_err(io)?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = if executable { 0o755 } else { 0o644 };
-        fs::set_permissions(&temp, fs::Permissions::from_mode(mode)).map_err(io)?;
-    }
-    #[cfg(not(unix))]
-    let _ = executable;
-    fs::rename(&temp, path).map_err(io)
-}
-
 impl Git {
-    /// Installs (or rewrites) the pre-push guard for `worktree`, refusing pushes whose
-    /// remote ref is `refs/heads/<b>` for any `b` in `protected_branches`. Existing
-    /// repository hooks are preserved and chained (see the module docs). Returns the path
-    /// of the installed `pre-push` script.
+    /// Installs (or rewrites) the pre-push guard for `worktree`, a worktree of the clone `repo`
+    /// (or the clone itself), refusing pushes whose remote ref is `refs/heads/<b>` for any `b`
+    /// in `protected_branches`. Existing repository hooks are preserved and chained (see the
+    /// module docs). Returns the path of the installed `pre-push` script.
     ///
-    /// `worktree` is the worktree directory (or the primary checkout); its Git directory and
-    /// the effective hooks location are discovered with Git itself.
+    /// The hooks are written below `repo`'s own `.git` through handles that follow no link
+    /// (ADR-0314): the agents of the sandbox write there, and a new worktree's Git directory
+    /// exists before its checkout ends. Git says which of the clone's Git directories is the
+    /// worktree's; only that name is taken from it, never a path to write to.
+    ///
+    /// # Errors
+    /// Invalid branch names; a worktree of another repository; a link or a file where a folder
+    /// of the Git directory is; Git or file failures.
+    #[cfg(unix)]
     pub fn install_pre_push_guard(
         &self,
+        repo: &Path,
         worktree: &Path,
         protected_branches: &[String],
     ) -> Result<PathBuf, GitError> {
+        use crate::handles::{open_dir_in, replace_in};
+        use nix::sys::stat::Mode;
         if protected_branches.is_empty() {
             return Err(GitError::InvalidInput {
                 what: "protected branches",
@@ -164,29 +148,88 @@ impl Git {
         for branch in protected_branches {
             validate_branch_name(branch)?;
         }
-        let git_dir = self.run_ok(
-            Invocation::new(self, "rev-parse", Some(worktree))
-                .args(["rev-parse", "--absolute-git-dir"]),
-        )?;
-        let git_dir = PathBuf::from(git_dir.stdout_trimmed());
-        let hooks_dir = git_dir.join(HOOKS_DIR_NAME);
-        fs::create_dir_all(&hooks_dir).map_err(|source| GitError::Io {
-            context: "creating the Yulius hooks directory",
-            source,
+        let (git_dir_path, git_dir) = self.git_dir_below(repo, worktree)?;
+        let hooks = open_dir_in(&git_dir, HOOKS_DIR_NAME, true)?.ok_or(GitError::InvalidInput {
+            what: "repository",
+            reason: "its hooks folder could not be made".to_owned(),
         })?;
-        write_atomic(&hooks_dir.join(LIB_NAME), LIB_SCRIPT, false)?;
+        let (plain, executable) = (
+            Mode::from_bits_truncate(0o644),
+            Mode::from_bits_truncate(0o755),
+        );
+        replace_in(&hooks, LIB_NAME, LIB_SCRIPT.as_bytes(), plain)?;
         for name in FORWARDED_HOOKS {
-            write_atomic(&hooks_dir.join(name), &forwarder_script(name), true)?;
+            replace_in(&hooks, name, forwarder_script(name).as_bytes(), executable)?;
         }
-        let pre_push = hooks_dir.join("pre-push");
-        write_atomic(&pre_push, &pre_push_script(protected_branches), true)?;
+        let script = pre_push_script(protected_branches);
+        replace_in(&hooks, "pre-push", script.as_bytes(), executable)?;
+        let hooks_dir = git_dir_path.join(HOOKS_DIR_NAME);
         self.enable_worktree_config(worktree)?;
         self.run_ok(
             Invocation::new(self, "config", Some(worktree))
                 .args(["config", "--worktree", "core.hooksPath"])
                 .arg(&hooks_dir),
         )?;
-        Ok(pre_push)
+        Ok(hooks_dir.join("pre-push"))
+    }
+
+    /// Off Unix there are no no-follow handles, and no contained agents.
+    #[cfg(not(unix))]
+    pub fn install_pre_push_guard(
+        &self,
+        _: &Path,
+        _: &Path,
+        _: &[String],
+    ) -> Result<PathBuf, GitError> {
+        Err(GitError::InvalidInput {
+            what: "pre-push guard",
+            reason: "the guard needs a Unix host".to_owned(),
+        })
+    }
+
+    /// The Git directory of `worktree` as Git names it, and a handle of it opened below the
+    /// clone `repo`'s `.git` without following a link: `.git` itself for the clone, else
+    /// `.git/worktrees/<name>`. A worktree whose Git directory is elsewhere is refused.
+    #[cfg(unix)]
+    fn git_dir_below(
+        &self,
+        repo: &Path,
+        worktree: &Path,
+    ) -> Result<(PathBuf, std::os::fd::OwnedFd), GitError> {
+        use crate::handles::{open_dir_in, open_git_dir};
+        let elsewhere = || GitError::InvalidInput {
+            what: "worktree",
+            reason: "its Git directory is not in the repository".to_owned(),
+        };
+        let told = self.run_ok(Invocation::new(self, "rev-parse", Some(worktree)).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ]))?;
+        let text = told.stdout_trimmed();
+        let (git_dir, common) = text.split_once('\n').ok_or_else(elsewhere)?;
+        let git_dir = PathBuf::from(git_dir);
+        let below = git_dir
+            .strip_prefix(common)
+            .map_err(|_| elsewhere())?
+            .to_path_buf();
+        let names: Vec<&str> = below
+            .components()
+            .map(|part| match part {
+                std::path::Component::Normal(name) => name.to_str(),
+                _ => None,
+            })
+            .collect::<Option<_>>()
+            .ok_or_else(elsewhere)?;
+        if !matches!(names.as_slice(), [] | ["worktrees", _]) {
+            return Err(elsewhere());
+        }
+        let mut dir = open_git_dir(repo)?;
+        for name in names {
+            dir = open_dir_in(&dir, name, false)?.ok_or_else(elsewhere)?;
+        }
+        Ok((git_dir, dir))
     }
 }
 
