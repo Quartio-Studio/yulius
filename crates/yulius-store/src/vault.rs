@@ -431,8 +431,8 @@ impl VaultStore for SqliteStore {
         request: &[String],
         bound: &[String],
         hosts: &[String],
-        by: &str,
-        at: Timestamp,
+        (by, at): (&str, Timestamp),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool> {
         let (id, request, bound, hosts, by) = (
             id.to_owned(),
@@ -447,8 +447,8 @@ impl VaultStore for SqliteStore {
                     "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
                      updated_by = ?5, updated_at = ?6 \
                      WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3 \
-                     AND NOT (cd_prod = 1 AND ?4 != ?3)",
-                    params![id, request, bound, hosts, by, at.0],
+                     AND NOT (cd_prod = 1 AND ?4 != ?3) AND (?7 IS NULL OR auto_allow = ?7)",
+                    params![id, request, bound, hosts, by, at.0, auto_allow.map(i64::from)],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -594,6 +594,7 @@ impl VaultStore for SqliteStore {
         id: &str,
         from: (EnvFiles, Option<&str>),
         to: (EnvFiles, Option<&str>),
+        auto_allow: Option<bool>,
     ) -> AppResult<bool> {
         let (id, from_state, from_by, to_state, to_by) = (
             id.to_owned(),
@@ -607,8 +608,16 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
                      WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
-                     AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1)",
-                    params![id, from_state, from_by, to_state, to_by],
+                     AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1) \
+                     AND (?6 IS NULL OR auto_allow = ?6)",
+                    params![
+                        id,
+                        from_state,
+                        from_by,
+                        to_state,
+                        to_by,
+                        auto_allow.map(i64::from)
+                    ],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -1112,28 +1121,39 @@ mod tests {
         let no = (EnvFiles::No, None);
         assert!(
             store
-                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#1")))
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#1")), None)
                 .await?
         );
         assert!(
             !store
-                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#2")))
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#2")), None)
                 .await?,
             "it is no longer unasked"
         );
         assert!(
             !store
-                .vault_set_env_files("a", (EnvFiles::Asked, None), (EnvFiles::Allowed, None))
+                .vault_set_env_files(
+                    "a",
+                    (EnvFiles::Asked, None),
+                    (EnvFiles::Allowed, None),
+                    None
+                )
                 .await?,
             "a person who saw no asker answers nothing"
         );
+        // An answer that depended on `auto_allow` holds only while it still is what was read
+        // (SPEC-483 slice 5, review: no unlock was asked because agents set the secret up).
+        let auto = store.vault_get("a").await?.ok_or("row")?.auto_allow;
+        let seen = (EnvFiles::Asked, Some("#1"));
+        assert!(
+            !store
+                .vault_set_env_files("a", seen, (EnvFiles::Allowed, None), Some(!auto))
+                .await?,
+            "its auto_allow is not what the answer read"
+        );
         assert!(
             store
-                .vault_set_env_files(
-                    "a",
-                    (EnvFiles::Asked, Some("#1")),
-                    (EnvFiles::Allowed, None)
-                )
+                .vault_set_env_files("a", seen, (EnvFiles::Allowed, None), Some(auto))
                 .await?
         );
         let got = store.vault_get("a").await?.ok_or("row")?;
@@ -1175,20 +1195,28 @@ mod tests {
         for (request, seen) in [(hosts(&["x.test"]), &bound), (hosts(&["new.test"]), &both)] {
             assert!(
                 !store
-                    .vault_answer_request("a", &request, seen, &both, "u1", Timestamp(9))
+                    .vault_answer_request("a", &request, seen, &both, ("u1", Timestamp(9)), None)
                     .await?
             );
         }
+        // Nor does one that depended on another `auto_allow` than the row has now.
+        let auto = store.vault_get("a").await?.ok_or("row")?.auto_allow;
+        let asked = hosts(&["new.test"]);
         assert!(
-            store
+            !store
                 .vault_answer_request(
                     "a",
-                    &hosts(&["new.test"]),
+                    &asked,
                     &bound,
                     &both,
-                    "u1",
-                    Timestamp(9)
+                    ("u1", Timestamp(9)),
+                    Some(!auto)
                 )
+                .await?
+        );
+        assert!(
+            store
+                .vault_answer_request("a", &asked, &bound, &both, ("u1", Timestamp(9)), Some(auto))
                 .await?
         );
         let got = store.vault_get("a").await?.ok_or("row")?;
@@ -1709,7 +1737,7 @@ mod tests {
         store.vault_insert(&fresh).await?;
         assert!(
             store
-                .vault_set_env_files("e", asked, (EnvFiles::Allowed, None))
+                .vault_set_env_files("e", asked, (EnvFiles::Allowed, None), None)
                 .await?
         );
         assert!(
@@ -1725,13 +1753,13 @@ mod tests {
         assert!(store.vault_set_cd_prod("f", false, true).await?);
         assert!(
             !store
-                .vault_set_env_files("f", asked, (EnvFiles::Allowed, None))
+                .vault_set_env_files("f", asked, (EnvFiles::Allowed, None), None)
                 .await?,
             "a production secret is never copied into .env files"
         );
         assert!(
             store
-                .vault_set_env_files("f", asked, (EnvFiles::No, None))
+                .vault_set_env_files("f", asked, (EnvFiles::No, None), None)
                 .await?,
             "dismissing the request still works"
         );
@@ -1746,7 +1774,7 @@ mod tests {
         store.vault_insert(&third).await?;
         assert!(
             store
-                .vault_answer_request("h", &one, &none, &one, "u1", Timestamp(9))
+                .vault_answer_request("h", &one, &none, &one, ("u1", Timestamp(9)), None)
                 .await?
         );
         assert!(
@@ -1764,7 +1792,7 @@ mod tests {
         assert!(store.vault_set_cd_prod("p", false, true).await?);
         assert!(
             !store
-                .vault_answer_request("p", &one, &none, &one, "u1", Timestamp(9))
+                .vault_answer_request("p", &one, &none, &one, ("u1", Timestamp(9)), None)
                 .await?,
             "a production secret is never bound to hosts"
         );
@@ -1779,7 +1807,7 @@ mod tests {
         assert!(store.vault_update(&described, &seen).await?);
         assert!(
             store
-                .vault_answer_request("p", &one, &none, &none, "u1", Timestamp(9))
+                .vault_answer_request("p", &one, &none, &none, ("u1", Timestamp(9)), None)
                 .await?
         );
         let got = store.vault_get("p").await?.ok_or("row")?;

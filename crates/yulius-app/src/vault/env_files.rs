@@ -319,7 +319,13 @@ impl App {
         if !self
             .deps
             .store
-            .vault_set_env_files(id, (seen, seen_by), (to, None))
+            .vault_set_env_files(
+                id,
+                (seen, seen_by),
+                (to, None),
+                // Whether the unlock was asked depended on `auto_allow`.
+                answer.allow.then_some(record.auto_allow),
+            )
             .await?
         {
             return Err(AppError::Conflict(
@@ -355,7 +361,7 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         allow: bool,
-    ) -> AppResult<AgentSecretView> {
+    ) -> AppResult<Revealed<AgentSecretView>> {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, &record.scope()).await?;
         // CD runs belong to no person (SPEC-245 RES-005).
@@ -379,6 +385,11 @@ impl App {
             ));
         }
         if record.cd_prod != allow {
+            // Production deploys run the repository's command with the value: somewhere new
+            // (ADR-0317). `auto_allow` is off here, so the unlock is always asked.
+            if allow && let Some(status) = self.fresh_to_widen(ctx, &record).await? {
+                return Ok(Revealed::ReauthRequired(status));
+            }
             if !self
                 .deps
                 .store
@@ -409,7 +420,7 @@ impl App {
                 self.settle_secret_waits(record.sandbox_id.as_ref()).await;
             }
         }
-        self.agent_view(&record, true).await
+        Ok(Revealed::Values(self.agent_view(&record, true).await?))
     }
 
     /// `secret_copy_to_env`: copies the values of agent secrets of the caller's project into a
@@ -618,6 +629,7 @@ impl App {
                 &record.id,
                 (record.env_files, record.env_requested_by.as_deref()),
                 (EnvFiles::Asked, Some(&by)),
+                None,
             )
             .await?
         {

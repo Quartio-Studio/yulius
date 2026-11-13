@@ -1101,7 +1101,6 @@ async fn get_as(
     call(&w.h.router, Method::GET, path, None, creds).await
 }
 
-/// A browser session for a seeded user (signed in now).
 /// A browser session of `user` with two-factor set up and the vault unlocked: what a person
 /// needs to let the value of a secret allowed use by use go somewhere new (ADR-0317).
 pub(crate) async fn unlocked(
@@ -1113,7 +1112,8 @@ pub(crate) async fn unlocked(
     Ok(session)
 }
 
-async fn browser_session(
+/// A browser session for a seeded user (signed in now).
+pub(crate) async fn browser_session(
     h: &support::Harness,
     user: &str,
 ) -> Result<Creds, Box<dyn std::error::Error>> {
@@ -2812,7 +2812,12 @@ async fn a_use_by_use_secret_goes_somewhere_new_only_after_two_factor() -> TestR
     // `.env` copies an agent asked for: the same.
     assert!(
         w.h.store
-            .vault_set_env_files(&id, (EnvFiles::No, None), (EnvFiles::Asked, Some("#1")))
+            .vault_set_env_files(
+                &id,
+                (EnvFiles::No, None),
+                (EnvFiles::Asked, Some("#1")),
+                None
+            )
             .await?
     );
     let token = env(true, "asked", w.writer.clone()).await?;
@@ -2889,6 +2894,64 @@ async fn a_use_by_use_secret_goes_somewhere_new_only_after_two_factor() -> TestR
     )
     .await?;
     assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    Ok(())
+}
+
+/// SPEC-483 V4 (review of slice 5), the app's own answer to the proxy: while an agent secret of
+/// the sandbox cannot be opened there is nothing to redact with (the proxy then sends nothing),
+/// not an empty set that would let every value through; another sandbox is not touched.
+#[tokio::test]
+async fn the_proxy_gets_nothing_to_redact_with_while_a_secret_cannot_be_opened() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = world().await?;
+    for (sandbox, name) in [("s1", "STRIPE_KEY"), ("s2", "OTHER_KEY")] {
+        let created = add_agent_secret(
+            &w,
+            &w.writer,
+            sandbox,
+            json!({"name": name, "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    let s2 = app.egress_client(TOKEN_S2).await.ok_or("s2 client")?;
+    assert!(
+        app.egress_redactor(&s1)
+            .await
+            .is_some_and(|m| !m.is_empty())
+    );
+
+    // Its sealed payload no longer opens (a key-encryption key nobody has).
+    let records =
+        w.h.store
+            .vault_agent_in(&yulius_domain::ids::SandboxId::parse("s1")?)
+            .await?;
+    let seen = records
+        .iter()
+        .find(|r| r.name == "STRIPE_KEY")
+        .ok_or("no secret")?
+        .clone();
+    let mut broken = seen.clone();
+    broken.envelope.kek_id = 9_999;
+    assert!(w.h.store.vault_update(&broken, &seen).await?);
+    // A change of a secret drops the set built before.
+    let more = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "LATER_KEY", "value": "later-value-0123456"}),
+    )
+    .await?;
+    assert_eq!(more.status, StatusCode::CREATED, "{}", more.body);
+
+    assert!(app.egress_redactor(&s1).await.is_none());
+    assert!(
+        app.egress_redactor(&s2)
+            .await
+            .is_some_and(|m| !m.is_empty())
+    );
     Ok(())
 }
 

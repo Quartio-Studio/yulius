@@ -2348,6 +2348,71 @@ async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 V4 (review of slice 5), the real path: while an agent secret of the sandbox cannot
+/// be opened, a Superagent's terminal says its screen is withheld and shows none of its output
+/// (it is dropped, not kept); once the secrets can be read again, output flows.
+#[tokio::test]
+async fn a_superagent_screen_shows_no_output_while_a_secret_cannot_be_opened() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+
+    // Its sealed payload no longer opens (a key-encryption key nobody has), and a change of a
+    // secret makes the terminal load them anew.
+    let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+    let seen =
+        f.h.store
+            .vault_agent_in(&sandbox)
+            .await?
+            .into_iter()
+            .find(|r| r.name == "APIFY_KEY")
+            .ok_or("no secret")?;
+    let mut broken = seen.clone();
+    broken.envelope.kek_id = 9_999;
+    assert!(f.h.store.vault_update(&broken, &seen).await?);
+    let more = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "LATER_KEY", "value": "later-value-0123456"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(more.status, StatusCode::CREATED, "{:?}", more.body);
+
+    let say = |text: String| Message::text(json!({"type": "input", "data": text}).to_string());
+    let marker = f.data.join("ran-while-withheld");
+    socket
+        .send(say(format!(
+            "echo shown-$((40+2)); touch {}\r",
+            marker.display()
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, "the screen is withheld").await?;
+    wait_for("the command ran", || marker.exists()).await?;
+
+    // The secret that does not open is deleted: the next output is shown.
+    let deleted = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/agent-secrets/{}", seen.id),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
+    socket.send(say("echo back-$((40+2))\r".into())).await?;
+    read_until(&mut socket, &mut screen, "back-42").await?;
+    assert!(!screen.contains("shown-42"), "{screen:?}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// ADR-0313: a Superagent that was running across the update keeps its old wrapper, which reads
 /// only the fingerprint file format from before version 2. A starting server rewrites its file
 /// in that format without what told too much, and the old wrapper's request (it cannot read the

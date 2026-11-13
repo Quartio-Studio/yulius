@@ -3142,7 +3142,7 @@ function reauthStatus(db) {
 
 /**
  * As `fresh_to_widen` (ADR-0317): the value of a secret allowed use by use goes somewhere new
- * (a host, `.env` files, agents binding it) only after the two-factor code.
+ * (a host, `.env` files, production deploys, agents binding it) only after the two-factor code.
  */
 function needFreshToWiden(db, secret) {
   return secret.auto_allow ? null : needFresh(db);
@@ -3316,7 +3316,10 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const sameHosts = (a, b) => a.length === b.length && a.every((x) => b.includes(String(x).toLowerCase()));
   if (body.expect_hosts && !sameHosts(body.expect_hosts, secret.hosts)) fail(409, 'conflict', `its hosts changed since you opened it (now ${secret.hosts.join(', ') || 'none'}): reload and edit again`);
   delete body.expect_hosts;
-  const widens = (body.auto_allow === true && !secret.auto_allow) || (body.hosts || []).some((host) => !secret.hosts.includes(String(host).toLowerCase()));
+  // Hosts as the server reads them (`HostPattern`): no scheme, path or default port, any case.
+  const hostOf = (host) => String(host).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:443$/, '');
+  const bound = secret.hosts.map(hostOf);
+  const widens = (body.auto_allow === true && !secret.auto_allow) || (body.hosts || []).some((host) => !bound.includes(hostOf(host)));
   const refused = widens && needFreshToWiden(db, secret);
   if (refused) return refused;
   for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'auto_allow']) if (body[key] !== undefined) secret[key] = body[key];
@@ -3403,6 +3406,8 @@ route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
   // A production secret is exclusive (ADR-0109): not while agents can use it.
   if (body.allow && ((secret.env_files || 'no') === 'allowed' || secret.hosts.length)) fail(409, 'conflict', 'agents can use this secret (copies into .env files or hosts the proxy sends it to): revoke those, or add a separate secret for production deploys');
   if (Boolean(secret.cd_prod) !== Boolean(body.allow)) {
+    const refused = body.allow && needFreshToWiden(db, secret);
+    if (refused) return refused;
     audit(db, body.allow ? 'vault.agent.cd_prod_allow' : 'vault.agent.cd_prod_revoke', secret.id, `${secret.name} → production CD runs`);
     secret.cd_prod = Boolean(body.allow);
   }

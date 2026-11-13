@@ -869,7 +869,7 @@ restart is recorded as `error` and never run again by itself.
 | `POST /api/sandboxes/{sid}/cd/{env}/rollback`, a production-stage `env` | admin, `{"part"?, "release"?, "confirm": "<slug>", "confirm_ms"?}` | the running `CdRun`; never promotes |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
-| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216) |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216). Allowing needs the caller's fresh two-factor code, as a reveal does (403 `reauth_required` with the reauth status; 403 `forbidden` for an API token; ADR-0317); revoking does not |
 
 ```text
 CdOverview = {"slug", "environments": [CdEnvironment (dev stage, then prod stage; the default first,
@@ -1766,7 +1766,7 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 | POST | `/api/team-secrets` | `{scope?: "instance", title, value?, notes?}` → 201 a team-wide `TeamSecret` (any other field: 422) |
 | GET | `/api/sandboxes/{sid}/team-secrets` | (read) → `[TeamSecret]`: the sandbox's and the team-wide ones (SPEC-216) |
 | POST | `/api/sandboxes/{sid}/team-secrets` | `{scope?: "sandbox" (default)\|"instance", title, value?, notes?}` → 201 `TeamSecret`; a sandbox's needs write access (403 for readers, 404 without access) |
-| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret`. A sandbox's: write access (403 for readers, 404 without access) |
+| PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret`. A sandbox's: write access (403 for readers, 404 without access). 409 when someone saved it since this edit read it (reload) |
 | DELETE | `/api/team-secrets/{id}` | → 204. A sandbox's: write access |
 | POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields; a sandbox's: read access, 404 without). Audited (`vault.team.reveal` / `vault.team.copy`) |
 

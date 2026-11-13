@@ -332,8 +332,8 @@ async fn agent_cd_prod_answer(
     Auth(ctx): Auth,
     Path(id): Path<String>,
     Json(answer): Json<CdProdAnswer>,
-) -> ApiResult<Json<AgentSecretView>> {
-    Ok(Json(app.answer_cd_prod(&ctx, &id, answer.allow).await?))
+) -> Result<Response, ApiError> {
+    Ok(revealed(app.answer_cd_prod(&ctx, &id, answer.allow).await?))
 }
 
 async fn agent_delete(

@@ -380,6 +380,9 @@ impl App {
         {
             return Ok(Revealed::ReauthRequired(status));
         }
+        // Whether the unlock was asked depended on `auto_allow`: the write holds only while it
+        // still is what was read.
+        let widened = answer.allow.then_some(record.auto_allow);
         let asked = std::mem::take(&mut record.requested_hosts);
         let by = record.requested_by.take().unwrap_or_default();
         let hosts = if answer.allow {
@@ -394,7 +397,7 @@ impl App {
         if !self
             .deps
             .store
-            .vault_answer_request(id, &asked, &record.hosts, &hosts, user, now)
+            .vault_answer_request(id, &asked, &record.hosts, &hosts, (user, now), widened)
             .await?
         {
             return Err(AppError::Conflict(

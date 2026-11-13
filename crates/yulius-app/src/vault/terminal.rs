@@ -5,7 +5,7 @@
 //! the screen keeps its layout (SPEC-239).
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthChar as _;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -24,23 +24,37 @@ struct Inner {
     redactor: Option<StreamRedactor<Arc<PlainMatcher>>>,
     /// Bumped by every push; a pending flush only runs if nothing came since.
     epoch: u64,
-    /// The agent secrets could not be read for the generation in force: output is withheld
-    /// until they can (VLT-007: never shown unredacted).
-    withheld: bool,
+    /// The agent secrets could not be read: output is withheld until they can (VLT-007: never
+    /// shown unredacted). The generation that failed and when to ask for it again.
+    failed: Option<(u64, Instant)>,
 }
 
 /// What a terminal shows in place of output it cannot check for agent secrets.
 const WITHHELD: &[u8] = b"\r\n[Yulius: the screen is withheld until agent secrets can be read]\r\n";
 
+/// How long a terminal waits before it asks again for secrets that could not be read (a change
+/// of a secret asks at once): a secret that no longer opens fails every time, and every chunk
+/// of output would otherwise read and open all of them.
+const RETRY_AFTER: Duration = Duration::from_secs(1);
+
 impl TerminalScrub {
+    /// Whether the redactor has to be loaded for the vault's `generation` before the next
+    /// chunk: it was built for another one, or its last load failed and it is time to ask again.
+    fn needs_load(&self, generation: u64, now: Instant) -> bool {
+        self.0.lock().map_or(true, |inner| match inner.failed {
+            Some((failed, retry_at)) => failed != generation || now >= retry_at,
+            None => inner.generation != Some(generation),
+        })
+    }
+
     /// Takes the redactor loaded for the vault's `generation` and returns what to show now:
-    /// what the old redactor still held, and, when the load failed, the notice (once). A failed
-    /// load leaves the generation unset, so the next chunk asks again, and output is withheld
-    /// until a load succeeds.
+    /// what the old redactor still held, and, when the load failed, the notice (once per
+    /// failure, however long it lasts). Output is withheld until a load succeeds.
     fn loaded(
         &self,
         generation: u64,
         fresh: AppResult<Option<StreamRedactor<Arc<PlainMatcher>>>>,
+        now: Instant,
     ) -> Vec<u8> {
         let Ok(mut inner) = self.0.lock() else {
             return Vec::new();
@@ -52,17 +66,20 @@ impl TerminalScrub {
             .unwrap_or_default();
         match fresh {
             Ok(redactor) => {
+                if inner.failed.take().is_some() {
+                    tracing::info!("agent secrets can be read again: the terminal shows output");
+                }
                 inner.redactor = redactor;
                 inner.generation = Some(generation);
-                inner.withheld = false;
             }
-            Err(_) => {
+            Err(err) => {
                 inner.redactor = None;
                 inner.generation = None;
-                if !inner.withheld {
-                    inner.withheld = true;
+                if inner.failed.is_none() {
+                    tracing::error!(error = %err, "terminal output withheld: agent secrets unreadable");
                     show.extend_from_slice(WITHHELD);
                 }
+                inner.failed = Some((generation, now + RETRY_AFTER));
             }
         }
         show
@@ -76,7 +93,7 @@ impl TerminalScrub {
         };
         inner.epoch += 1;
         let epoch = inner.epoch;
-        if inner.withheld {
+        if inner.failed.is_some() {
             return (Vec::new(), epoch, false);
         }
         match inner.redactor.as_mut() {
@@ -183,14 +200,9 @@ impl App {
         F: Fn(u64, &[u8]) + Send + Sync + 'static,
     {
         let generation = self.vault_generation();
-        let stale = scrub
-            .0
-            .lock()
-            .map(|inner| inner.generation != Some(generation))
-            .unwrap_or(true);
-        if stale {
+        if scrub.needs_load(generation, Instant::now()) {
             let fresh = self.terminal_redactor(sandbox).await;
-            let show = scrub.loaded(generation, fresh);
+            let show = scrub.loaded(generation, fresh, Instant::now());
             if !show.is_empty() {
                 sink(seq, &show);
             }
@@ -226,38 +238,51 @@ mod tests {
     const COLS: u16 = 40;
 
     /// VLT-007 (SPEC-483 V4): when the agent secrets cannot be read for the terminal, its
-    /// output is withheld with one notice, never shown unredacted, and the next chunk asks
-    /// again; once they can be read the output flows, redacted.
+    /// output is withheld with one notice, never shown unredacted; it asks again after a
+    /// moment or when a secret changes, not at every chunk; once they can be read the output
+    /// flows, redacted.
     #[test]
     fn output_is_withheld_while_agent_secrets_cannot_be_read() {
         let scrub = TerminalScrub::default();
         let failed = || Err(crate::error::AppError::Internal("store".into()));
         let text = format!("TOKEN={VALUE}\r\n");
+        let start = Instant::now();
+        let soon = start + RETRY_AFTER / 2;
+        let later = start + RETRY_AFTER;
 
-        let first = scrub.loaded(1, failed());
-        assert_eq!(first, WITHHELD);
+        assert!(scrub.needs_load(1, start), "nothing is loaded yet");
+        assert_eq!(scrub.loaded(1, failed(), start), WITHHELD);
         assert_eq!(scrub.push(text.as_bytes()).0, b"");
-        assert_eq!(scrub.loaded(1, failed()), b"", "the notice shows once");
+        // The next chunks do not ask again (a secret that never opens would be read and
+        // opened at each), until a moment passed or a secret changed.
+        assert!(!scrub.needs_load(1, soon));
+        assert!(scrub.needs_load(2, soon), "a secret changed");
+        assert!(scrub.needs_load(1, later));
+        assert_eq!(
+            scrub.loaded(1, failed(), later),
+            b"",
+            "the notice shows once"
+        );
         assert_eq!(scrub.push(text.as_bytes()).0, b"");
-        let stale = |scrub: &TerminalScrub| {
-            scrub
-                .0
-                .lock()
-                .map(|inner| inner.generation != Some(1))
-                .unwrap_or(true)
-        };
-        assert!(stale(&scrub), "the next chunk asks again");
+        assert!(!scrub.needs_load(1, later + RETRY_AFTER / 2));
 
-        assert_eq!(scrub.loaded(1, Ok(Some(screen_redactor(matcher())))), b"");
-        assert!(!stale(&scrub));
+        let again = later + RETRY_AFTER;
+        assert!(scrub.needs_load(1, again));
+        assert_eq!(
+            scrub.loaded(1, Ok(Some(screen_redactor(matcher()))), again),
+            b""
+        );
+        assert!(!scrub.needs_load(1, again + RETRY_AFTER));
         let shown = scrub.push(text.as_bytes()).0;
         let shown = String::from_utf8_lossy(&shown);
         assert!(
             shown.starts_with("TOKEN=[secret:") && !shown.contains(VALUE),
             "{shown}"
         );
+        // A later failure says so again.
+        assert_eq!(scrub.loaded(2, failed(), again), WITHHELD);
         // Without agent secrets there is nothing to redact: the output passes.
-        assert_eq!(scrub.loaded(2, Ok(None)), b"");
+        assert_eq!(scrub.loaded(3, Ok(None), again), b"");
         assert_eq!(scrub.push(b"plain\r\n").0, b"plain\r\n");
     }
 

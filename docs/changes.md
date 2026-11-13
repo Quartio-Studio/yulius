@@ -9,14 +9,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - The vault's rules hold on every path (SPEC-483 slice 5, task #465, ADR-0317). Reading an
   agent secret needs your two-factor code, but sending it to a server of your choice read it
   too, with write access alone, also by an API token. For a secret you allow use by use ("Let
-  agents set it up" off) a new host, `.env` copies and letting agents set it up now ask for the
-  code (the page asks and carries on), and an API token is told to use the Secrets page;
+  agents set it up" off) a new host, `.env` copies, production deploys and letting agents set
+  it up now ask for the code (the page asks and carries on), and an API token is told to use the Secrets page;
   secrets agents set up are unchanged. When the secrets cannot be read, nothing is shown
   unredacted any more: a task's terminal says the screen is withheld and shows no output until
-  they can (it passed everything through, until the next change of a secret), and the proxy
+  they can, asking again every second (it passed everything through, until the next change of a
+  secret), and the proxy
   answers 503 before sending a request (it redacted nothing). An edit of a secret no longer
   undoes a new value saved beside it: it is refused and reloads. From the review of slice 4: an
-  imported session's files are copied up to 1 GiB together (it was 1 GiB each), and the sign-in
+  imported session's files are copied up to 1 GiB together, counted as they are read (it was
+  1 GiB each), and the sign-in
   page's "busy" text fits both of its causes.
 - Six access rules now hold on every way in (SPEC-483 slice 4, task #465, ADR-0316). A `read`
   API token no longer reads what only people who work in a sandbox see (its working tree with

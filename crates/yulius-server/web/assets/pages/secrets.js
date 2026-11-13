@@ -722,8 +722,11 @@ function agentCdProd(ctx, secret, act) {
   const answer = (allow) => act(async () => {
     button.disabled = true;
     try {
-      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
-      toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
+      // Production deploys run the repository's command with the value: allowing it asks for
+      // the two-factor code (ADR-0317). `null`: the person closed the code dialog.
+      const send = () => ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/cd-prod`, { allow });
+      const saved = allow ? await withReauth(ctx, send) : await send();
+      if (saved) toast(allow ? `Allowed. Production deploys get ${secret.name}.` : `Revoked. Production deploys no longer get ${secret.name}.`, { kind: 'ok' });
     } catch (error) { errorToast(error, 'Couldn’t change it'); }
   });
   const button = !secret.can_manage ? null : secret.cd_prod

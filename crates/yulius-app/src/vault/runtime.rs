@@ -849,16 +849,8 @@ impl App {
         &self,
         sandbox: &SandboxId,
     ) -> AppResult<Option<StreamRedactor<Arc<PlainMatcher>>>> {
-        match self.agent_secret_matcher(sandbox).await {
-            Ok(matcher) if !matcher.is_empty() => {
-                Ok(Some(super::terminal::screen_redactor(matcher)))
-            }
-            Ok(_) => Ok(None),
-            Err(err) => {
-                tracing::error!(error = %err, "agent secrets could not be loaded for the terminal");
-                Err(err)
-            }
-        }
+        let matcher = self.agent_secret_matcher(sandbox).await?;
+        Ok((!matcher.is_empty()).then(|| super::terminal::screen_redactor(matcher)))
     }
 
     /// The vault's generation (terminal redactors reload when it changes).

@@ -40,10 +40,13 @@ would guard nothing.
 ## Decision
 
 - **A secret allowed use by use goes somewhere new only as a reveal.** For an agent secret
-  with `auto_allow` off (production secrets and copies of them among them), three changes need
+  with `auto_allow` off (production secrets and copies of them among them), four changes need
   a browser session with a two-factor code entered in the last 10 minutes
-  (`App::fresh_to_widen`): binding a host it is not bound to, allowing `.env` copies, and
-  switching `auto_allow` on. Without the code the answer is 403 `reauth_required` with the
+  (`App::fresh_to_widen`): binding a host it is not bound to, allowing `.env` copies, allowing
+  it for production deploys (they run the repository's command with the value) and switching
+  `auto_allow` on. Where no code is asked because agents set the secret up, the write holds
+  only while `auto_allow` still is what was read (`vault_answer_request`,
+  `vault_set_env_files`). Without the code the answer is 403 `reauth_required` with the
   person's status, as for a reveal, and nothing changes; the page then asks for the code and
   repeats the request. An API token is refused (403 `forbidden`) with where the person does
   it. What sends the value nowhere new needs neither: a description, a name, fewer hosts, a new
@@ -51,12 +54,13 @@ would guard nothing.
 - **A secret agents set up is unchanged.** Its hosts are bound by agents and by its people's
   tokens as before (ADR-0194's unattended onboarding imports such secrets).
 - **Redaction that cannot load withholds.** The terminal stream shows one notice, drops its
-  output and asks again at the next chunk until the secrets can be read
-  (`TerminalScrub::loaded`). The proxy reads the values to redact before it sends a request;
+  output and asks again after a second or when a secret changes, until the secrets can be
+  read (`TerminalScrub::needs_load`, `loaded`); the failure is logged once, not per chunk. The proxy reads the values to redact before it sends a request;
   when it cannot, it answers 503 and sends nothing (`EgressPolicy::egress_redactor` returns
   `None`).
 - **An edit is refused when the value changed under it.** `vault_update` also compares the
-  sealed value the edit read; the edit answers 409 and names the value.
+  sealed value the edit read; the edit answers 409 (an agent secret's names the value, a team
+  secret's says someone saved it meanwhile).
 
 ## Alternatives
 
@@ -81,15 +85,18 @@ would guard nothing.
 
 ## Consequences
 
-- A person who allows a host or `.env` copies for a secret they allow use by use, or lets
-  agents set it up, is asked for their two-factor code unless they entered one in the last 10
+- A person who allows a host, `.env` copies or production deploys for a secret they allow use
+  by use, or lets agents set it up, is asked for their two-factor code unless they entered one in the last 10
   minutes; someone without two-factor sets it up there.
-- An agent or script with an API token cannot do those three things for such a secret; it is
+- An agent or script with an API token cannot do those four things for such a secret; it is
   told to use the Secrets page. `secret_hosts_answer {allow: true}` therefore works only for a
   request left on a secret that agents set up since.
-- While the store cannot be read, a task's terminal shows "[Yulius: the screen is withheld
-  until agent secrets can be read]" once and no output, and requests through the proxy get 503;
-  both recover by themselves.
+- While the secrets cannot be read, a task's terminal shows "[Yulius: the screen is withheld
+  until agent secrets can be read]" once and no output, and requests through the proxy get 503.
+  A store that answers again ends it by itself. A secret that no longer opens (its key is
+  gone) does not: the terminals of its sandbox stay withheld, and a run started meanwhile
+  waits for a screen that never comes and ends at its timeout, until someone replaces or
+  deletes that secret; the server's log names the error.
 - Two people editing one secret: the second save is refused and reloads, whatever each changed.
 - Not covered here: switching a global secret on for a project stays its administrators'
   switch, and a personal one its owner's (the project's agents then use it as the secret

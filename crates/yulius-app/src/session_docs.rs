@@ -1429,18 +1429,26 @@ const MAX_AUX_ENTRIES: usize = 10_000;
 const MAX_COPIED_BYTES: u64 = 1 << 30;
 
 /// A read-only copy of `file` at `dest`, taken from `bytes`, what is left of
-/// [`MAX_COPIED_BYTES`] for its session: a file larger than that is refused.
+/// [`MAX_COPIED_BYTES`] for its session: a file larger than that is refused, and leaves no copy.
+/// What counts is what was read: the size a file states first only spares the reading of one
+/// that is too large already, as an agent's file may grow between the two.
 fn copy_bounded(file: fs::File, dest: &Path, bytes: &mut u64) -> AppResult<()> {
     use std::io::Read as _;
-    let len = file.metadata().map_err(AppError::internal)?.len();
-    if len > *bytes {
-        return Err(AppError::Invalid(
+    let too_large = || {
+        AppError::Invalid(
             "the files of this session are larger than 1 GiB together; they are not copied".into(),
-        ));
+        )
+    };
+    if file.metadata().map_err(AppError::internal)?.len() > *bytes {
+        return Err(too_large());
     }
-    // What is read is bounded too: the file may grow while it is copied.
-    crate::imports::copy_immutable_from(&mut file.take(*bytes), dest)?;
-    *bytes -= len;
+    // One byte past what is left tells a file that grew past it from one that fits.
+    let copied = crate::imports::copy_immutable_from(&mut file.take(*bytes + 1), dest)?;
+    if copied > *bytes {
+        let _ = fs::remove_file(dest);
+        return Err(too_large());
+    }
+    *bytes -= copied;
     Ok(())
 }
 
@@ -1644,6 +1652,25 @@ mod tests {
             "{refused:?}"
         );
         assert_eq!(budget.bytes, 1, "two files of 2 bytes were copied");
+
+        // What counts is what was read, not the size the file stated before (review of slice 5):
+        // one that says 0 and holds 6 bytes (a pipe here; an agent's file growing between the
+        // two) is refused past what is left, takes what it read from the budget otherwise, and
+        // leaves no copy when refused.
+        let grown = |text: &'static [u8]| -> std::io::Result<fs::File> {
+            use std::io::Write as _;
+            let (reads, mut writes) = std::io::pipe()?;
+            writes.write_all(text)?;
+            Ok(fs::File::from(std::os::fd::OwnedFd::from(reads)))
+        };
+        let dest = dir.path().join("grown.jsonl");
+        let mut bytes = 5;
+        let refused = copy_bounded(grown(b"123456")?, &dest, &mut bytes);
+        assert!(matches!(refused, Err(AppError::Invalid(_))), "{refused:?}");
+        assert!(!dest.exists(), "no copy is left");
+        let mut bytes = 10;
+        copy_bounded(grown(b"123456")?, &dest, &mut bytes)?;
+        assert_eq!((bytes, std::fs::read(&dest)?.len()), (4, 6));
         Ok(())
     }
 

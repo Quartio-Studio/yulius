@@ -2069,13 +2069,15 @@ production secret never changes.
 
 The same unlock stands before every way the value of a secret allowed use by use (`auto_allow`
 off) goes somewhere new: a host it is not bound to (`update_agent_secret`,
-`answer_host_request`), `.env` copies (`answer_env_files`) and switching `auto_allow` on, each
+`answer_host_request`), `.env` copies (`answer_env_files`), production deploys
+(`answer_cd_prod`) and switching `auto_allow` on, each
 through `App::fresh_to_widen`; an API token is refused, and a secret agents set up is not asked
 for it, as agents bind its hosts without a person
 ([ADR-0317](decisions/0317-a-guarded-secret-goes-somewhere-new-only-after-two-factor.md)).
 Redaction that cannot load a sandbox's secrets withholds on every path: text redacted in one
 piece and a terminal's first screen say so, the live terminal stream shows one notice and drops
-its output until a load succeeds (`TerminalScrub::loaded`), and the egress proxy reads the
+its output until a load succeeds, asking again after a second or when a secret changes
+(`TerminalScrub::needs_load`, `loaded`), and the egress proxy reads the
 values before it sends a request and answers 503 without sending (`egress_redactor`). An edit
 of a secret compares the sealed value it read, so it never undoes a rotation made beside it
 (`vault_update`).

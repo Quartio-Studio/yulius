@@ -228,7 +228,8 @@ each switched on for the project; not the instance's Vidoc key; SPEC-287), and d
 project's own secrets by name: `secret_delete` (`yulius secrets delete NAME`), audited with the
 token, never showing the value (SPEC-274). A secret you allow use by use ("Let agents set it up"
 off) is the exception: sending it to a new host reads it, so your agent can describe it and
-dismiss a request, and you allow a host or `.env` copies on the Secrets page, after your
+dismiss a request, and you allow a host, `.env` copies or production deploys on the Secrets
+page, after your
 two-factor code (ADR-0317). Non-secret values are project variables (section 3):
 the Secrets page's Variables tab, or `yulius vars`.
 
