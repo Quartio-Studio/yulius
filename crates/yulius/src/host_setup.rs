@@ -1425,15 +1425,22 @@ impl<'a> Run<'a> {
                  (docs/operations.md §8); without it Settings → Instance offers no Update now",
             );
         }
-        let writable = out
+        // Everything the re-check writes: a unit from before the browser policy (ADR-0318)
+        // lacks its directories, and gets the drop-in.
+        let granted: Vec<&str> = out
             .stdout
             .lines()
             .find_map(|l| l.strip_prefix("ReadWritePaths="))
-            .is_some_and(|paths| {
+            .map(|paths| {
                 paths
                     .split_whitespace()
-                    .any(|p| p.trim_start_matches('-') == "/etc/modules-load.d")
-            });
+                    .map(|p| p.trim_start_matches('-'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let writable = std::iter::once("/etc/modules-load.d")
+            .chain(yulius_browser::policy::POLICY_DIRS)
+            .all(|needed| granted.contains(&needed));
         if writable {
             return self.ok(
                 ITEM,
@@ -1441,7 +1448,10 @@ impl<'a> Run<'a> {
             );
         }
         if self.mode == Mode::Check {
-            return self.needs_setup(ITEM, "cannot write /etc/modules-load.d after an update");
+            return self.needs_setup(
+                ITEM,
+                "cannot write /etc/modules-load.d or Chrome's policy directories after an update",
+            );
         }
         if self.may(false) {
             if let Err(why) = self
@@ -1460,7 +1470,10 @@ impl<'a> Run<'a> {
         }
         self.changed(
             ITEM,
-            &format!("wrote {HELPER_DROP_IN}: its re-check may fix the modules list and the needrestart rule"),
+            &format!(
+                "wrote {HELPER_DROP_IN}: its re-check may fix the modules list, the needrestart \
+                 rule and the browser policy"
+            ),
             &format!("write {HELPER_DROP_IN}"),
         );
     }

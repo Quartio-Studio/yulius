@@ -480,8 +480,9 @@ fn file_dialogs(env: &[(std::ffi::OsString, std::ffi::OsString)]) -> Result<Vec<
 /// another sandbox's repository) for the page to read. With the host's managed policy
 /// installed (`yulius host setup`) the click reaches the page and Chrome opens nothing, nor do
 /// its accelerators for Open File, Save as, Print, the page's source and the developer tools
-/// (no window shown, no `devtools:`, `view-source:`, `file:` or print page); without it the
-/// click is refused. Before ADR-0318 the chooser opened: "Open File", over the whole display
+/// (no window shown, no `devtools:`, `view-source:`, `file:` or print page), and a link to
+/// another program's address is blocked as a page instead of handed to `xdg-open`; without
+/// it the click is refused. Before ADR-0318 the chooser opened: "Open File", over the whole display
 /// (Google Chrome 157).
 #[tokio::test]
 async fn a_viewers_click_on_a_file_input_opens_no_file_chooser() -> TestResult {
@@ -493,7 +494,9 @@ async fn a_viewers_click_on_a_file_input_opens_no_file_chooser() -> TestResult {
     };
     const UPLOAD: &str = "<!doctype html><html><head><title>upload</title></head><body>\
 <input type=\"file\" id=\"f\" style=\"position:fixed;left:0;top:0;width:600px;height:400px;font-size:200px\" \
-onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.files[0].name\"></body></html>";
+onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.files[0].name\">\
+<a href=\"yulius-test-scheme://open\" style=\"position:fixed;left:0;top:450px;width:600px;height:200px\" \
+onclick=\"document.title='linked'\">another program</a></body></html>";
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let server = tokio::spawn(async move {
@@ -597,6 +600,30 @@ onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.fi
         tokio::time::sleep(Duration::from_millis(250)).await;
         shown = file_dialogs(&env)?;
     }
+    // A link to another program's address: Chrome offers to run `xdg-open` on the host.
+    let mut handed_over = false;
+    if !refused && shown.is_empty() {
+        let link = |event, button| MouseInput {
+            y: 550.0,
+            ..at(event, button)
+        };
+        for (event, button) in [
+            (MouseEventKind::Move, MouseButton::None),
+            (MouseEventKind::Down, MouseButton::Left),
+            (MouseEventKind::Up, MouseButton::Left),
+        ] {
+            browser.dispatch_mouse(&tab, link(event, button)).await?;
+        }
+        // The policy blocks the address as a page (the tab shows it blocked); without that
+        // rule Chrome keeps the page and hands the address to `xdg-open`.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline
+            && matches!(title().as_str(), "clicked" | "linked")
+        {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        handed_over = matches!(title().as_str(), "clicked" | "linked");
+    }
     // With input taken, Chrome's own accelerators arrive too: Open File, Save as, Print, the
     // developer tools, the page's source. None may open a window of its own or a page of
     // Chrome's.
@@ -691,6 +718,10 @@ onclick=\"document.title='clicked'\" onchange=\"document.title='picked '+this.fi
         own,
         Vec::<String>::new(),
         "Chrome opened a window or page of its own"
+    );
+    assert!(
+        !handed_over,
+        "a link to another program's address was not blocked as a page"
     );
     Ok(())
 }

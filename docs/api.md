@@ -1193,7 +1193,7 @@ resolves to nothing, the run gets the server without that variable or token.
     cannot take (its X server stopped reading) gets `capacity`. On a virtual display, button and
     key presses get `input_locked` (with what an administrator runs) while the browser does not
     answer that the host's managed policy is in force (ADR-0318); moves, the wheel and releases
-    pass, and the question is asked again after 5 s. Keys and buttons a viewer held are
+    pass; a "no" is asked again after 5 s, a "yes" after 5 minutes. Keys and buttons a viewer held are
     released when it leaves. Access is re-checked every 60 s (close 4003). When Chromium is
     missing or the browser stops, the server sends an `upstream` error with the reason and closes
     with 1011. Addresses of Yulius itself (its public origin and its subdomains, every loopback

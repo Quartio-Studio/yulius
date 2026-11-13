@@ -34,7 +34,8 @@ pub const POLICY_DIRS: [&str; 3] = [
 /// What a navigation the policy blocks fails with.
 pub(crate) const BLOCKED: &str = "ERR_BLOCKED_BY_ADMINISTRATOR";
 
-/// The address the probe's hidden tab starts at: never listed as a tab.
+/// The address the probe's hidden tab starts at. The tab is known by the id Chrome gives it,
+/// not by this address, which any page can open.
 pub(crate) const PROBE_BLANK: &str = "about:blank#yulius-browser-policy";
 
 /// The host [`managed_policy`] blocks so a browser can be asked whether it loaded this version
@@ -50,17 +51,15 @@ pub(crate) fn probe_url() -> String {
     format!("http://{}/", marker_host())
 }
 
-/// Whether `url` is the probe's own tab (never shown among the tabs).
-pub(crate) fn is_probe(url: &str) -> bool {
-    url == PROBE_BLANK || url.starts_with("http://yulius-browser-policy-v")
-}
-
 /// The managed policy file's content: JSON, one setting a line, ending in a newline.
 ///
 /// - no file selection dialog at all (uploads, Save as, the File System Access pickers);
 /// - no downloads, no printing (a print dialog saves to a file);
-/// - no `file:`, `view-source:` or `chrome:` page, no `devtools:` page (the developer tools'
-///   own window is one), and the marker host;
+/// - only web addresses: every address is blocked but `http:`, `https:`, `about:`, `data:`,
+///   `blob:` and Chrome's built-in extensions (its PDF viewer). So no `file:`, `view-source:`
+///   or `chrome:` page, no `devtools:` page (the developer tools' own window is one), and no
+///   address of another program (Chrome would offer to run `xdg-open` on the host for it);
+///   and the marker host, which stays blocked as the more specific rule;
 /// - the File System Access API answers "not allowed";
 /// - no extension can be installed (one could be given access to `file:` addresses).
 ///
@@ -75,14 +74,15 @@ pub fn managed_policy() -> String {
         "DownloadRestrictions": 3,
         "ExtensionInstallBlocklist": ["*"],
         "PrintingEnabled": false,
-        "URLBlocklist": [
-            "file://*",
-            "view-source:*",
-            "chrome://*",
-            "chrome-untrusted://*",
-            "devtools://*",
-            marker_host(),
+        "URLAllowlist": [
+            "http://*",
+            "https://*",
+            "about:*",
+            "data:*",
+            "blob:*",
+            "chrome-extension://*",
         ],
+        "URLBlocklist": ["*", marker_host()],
     });
     let mut text = serde_json::to_string_pretty(&policy).unwrap_or_default();
     text.push('\n');
@@ -93,8 +93,8 @@ pub fn managed_policy() -> String {
 mod tests {
     use super::*;
 
-    /// ADR-0318: the file says what it must switch off, blocks the marker of its own version,
-    /// and the probe's addresses are told from every other tab's.
+    /// ADR-0318: the file says what it must switch off and blocks the marker of its own
+    /// version, which the probe navigates to.
     #[test]
     fn the_policy_switches_off_chromes_own_windows_and_blocks_its_marker() {
         let policy: serde_json::Value = serde_json::from_str(&managed_policy()).unwrap_or_default();
@@ -110,21 +110,28 @@ mod tests {
             .as_array()
             .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
             .unwrap_or_default();
-        for pattern in ["file://*", "view-source:*", "chrome://*", "devtools://*"] {
-            assert!(blocked.contains(&pattern), "{pattern}: {blocked:?}");
-        }
-        assert!(blocked.contains(&marker_host().as_str()));
+        // Everything but the web: `file:`, `chrome:`, `devtools:`, another program's scheme.
+        assert_eq!(blocked, ["*", marker_host().as_str()]);
+        let allowed: Vec<&str> = policy["URLAllowlist"]
+            .as_array()
+            .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        assert!(allowed.contains(&"http://*") && allowed.contains(&"https://*"));
+        assert!(
+            allowed.iter().all(|pattern| {
+                !pattern.starts_with("file")
+                    && !pattern.starts_with("chrome:")
+                    && !pattern.starts_with("devtools")
+                    && !pattern.starts_with("view-source")
+                    && *pattern != "*"
+            }),
+            "{allowed:?}"
+        );
         assert_eq!(
             marker_host(),
             format!("yulius-browser-policy-v{POLICY_VERSION}.invalid")
         );
         assert!(managed_policy().ends_with("}\n"));
-
-        assert!(is_probe(PROBE_BLANK));
-        assert!(is_probe(&probe_url()));
-        assert!(is_probe("http://yulius-browser-policy-v7.invalid/"));
-        for other in ["about:blank", "https://example.com/", ""] {
-            assert!(!is_probe(other), "{other}");
-        }
+        assert_eq!(probe_url(), format!("http://{}/", marker_host()));
     }
 }

@@ -30,26 +30,36 @@ browser with.
 ## Decision
 
 - **The policy.** `yulius_browser::policy::managed_policy` is a file `yulius.json`: no file
-  selection dialog, no downloads, no printing, no `file:`, `view-source:`, `chrome:` or
-  `devtools:` page (the developer tools' window is one), the File System Access API blocked,
-  no extension installs, and a marker address blocked
-  (`yulius-browser-policy-v<version>.invalid`).
+  selection dialog, no downloads, no printing, the File System Access API blocked, no
+  extension installs, and only web addresses: every address is blocked but `http:`, `https:`,
+  `about:`, `data:`, `blob:` and Chrome's built-in extensions (its PDF viewer). That leaves no
+  `file:`, `view-source:` or `chrome:` page, no `devtools:` page (the developer tools' window
+  is one) and no address of another program, for which Chrome offers to run `xdg-open` on the
+  host (on Chrome 157 a click on such a link kept the page and handed the address over; under
+  the policy the tab shows it blocked). A marker address
+  (`yulius-browser-policy-v<version>.invalid`) is blocked as the more specific rule.
 - **Host setup writes it.** `yulius host setup`, and the update's `yulius host check`, write
   it into the managed policy directories of Google Chrome and Chromium
   (`/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed`,
-  `/etc/chromium-browser/policies/managed`) as the item "browser policy"; the update helper's
-  unit may write those directories once the setup made them. `yulius doctor` reports it.
+  `/etc/chromium-browser/policies/managed`) as the item "browser policy". The update helper's
+  unit lists those directories as writable (`deploy/systemd/yulius-update.service`; for a unit
+  from before, the setup writes a drop-in), so its re-check writes a newer version of the
+  policy into the directories the setup made. `yulius doctor` reports it.
 - **The browser is asked, not the file.** Which file a Chrome reads depends on its flavor and
   packaging. A browser on a virtual display is asked itself: a hidden tab is sent to the
   marker address, and the navigation fails as blocked by the administrator, or otherwise
   (`BrowserInstance::viewer_input_allowed`). The marker carries the policy's version, so an
-  older Yulius's file, without what a newer one adds, does not pass.
+  older Yulius's file, without what a newer one adds, does not pass. The probe's tab is known
+  by the id Chrome gives it, never by its address (a page can open the same address: such a
+  window is an ordinary tab); a tab announced before its id is known waits for it. The probe
+  is given 3 seconds.
 - **No policy, no clicks and keys.** While the answer is no, a viewer's button presses and key
   presses on the display are refused (`BrowserError::InputLocked`, `input_locked` on the
   viewer's socket) and the page tells the viewer why and what an administrator runs, once a
-  minute at most. Moving the pointer, scrolling, the tab bar, the address bar and the agents'
-  tools work as before. The question is asked again after 5 seconds, so input comes back
-  without a restart once the policy is written (Chrome reloads its policy files). A headless
+  minute at most. Moving the pointer, scrolling, releases, the tab bar, the address bar and
+  the agents' tools work as before. A "no" is asked again after 5 seconds, so input comes back
+  without a restart once the policy is written (Chrome reloads its policy files); a "yes"
+  after 5 minutes, as the files can also be taken away under a running browser. A headless
   browser, which shows no window of its own, is unchanged.
 
 ## Alternatives
@@ -78,15 +88,21 @@ browser with.
 ## Consequences
 
 - After the update that brings this, a host shows its sandbox browsers but takes no clicks and
-  keys in them until `sudo yulius host setup` ran once (the update helper cannot create the
-  policy directories; later versions of the policy it writes itself). The page, the update's
-  host check and `yulius doctor` say so.
+  keys in them until `sudo yulius host setup` ran once: the update helper's unit is read-only
+  outside the paths it lists, so it can neither create the policy directories nor, with a unit
+  from before, write them. The setup makes the directories and the drop-in; from then on the
+  helper's re-check writes later versions of the policy itself. The page, the update's host
+  check and `yulius doctor` say what to run.
 - The policy applies to every Chrome and Chromium on the host, not only Yulius's: on a
   machine where people also use Chrome themselves, their uploads, downloads and printing are
   off. Yulius's hosts are servers; a developer's workstation runs the sandbox browser headless
   or accepts it.
 - Viewers cannot upload a file through a page in the sandbox browser, download one or print;
   agents never could through real input. A page's upload button does nothing.
-- A probe opens and closes one hidden tab; it is never listed among the tabs. Nor are Chrome's
-  own pages any more (Chrome 157 reports its address bar's popup,
+- A probe opens and closes one hidden tab; it is never listed among the tabs. Nor is a page
+  of Chrome's own that is created as one (Chrome 157 reports its address bar's popup,
   `chrome://omnibox-popup.top-chrome/`, as a page: it showed as a tab).
+- Another file in the same policy directory that sorts after `yulius.json` can set one of its
+  settings differently (Chrome merges policy files by key, the later file winning) while the
+  marker still answers. Only root writes there; `yulius doctor` and host setup report
+  Yulius's own file, not others'.

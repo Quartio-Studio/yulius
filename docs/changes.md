@@ -10,8 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ADR-0318). The browser runs on the host and viewers' clicks are real input there: a click on
   a page's upload button opened Chrome's own file chooser, in which any path the service user
   reads could be picked for the page to read (reproduced on Chrome 157). `yulius host setup`
-  now writes a managed Chrome policy that switches off Chrome's own file dialogs, downloads,
-  printing and `file:` pages, and a browser on a virtual display takes clicks and keys only
+  now writes a managed Chrome policy that switches off Chrome's own file dialogs, downloads and
+  printing and leaves only web addresses (no `file:` pages, no links to other programs), and a browser on a virtual display takes clicks and keys only
   once it answers that the policy is in force. **After this update run `sudo yulius host
   setup` once on the host**: until then the sandbox browsers show and scroll, the agents'
   tools work, and the panel says that clicks and keys are off. `yulius doctor` reports the

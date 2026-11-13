@@ -1227,9 +1227,10 @@ async fn the_display_streams_video_from_a_keyframe_and_follows_the_viewport() ->
 
 /// SPEC-483 E1 (ADR-0318): on a virtual display a viewer's clicks and keys are real input that
 /// reaches Chrome's own windows (its file chooser, DevTools), which run on the host. They are
-/// refused, with what an administrator runs, until the browser itself answers that the host's
-/// managed policy is in force; moving the pointer passes; the probe's tab is nobody's tab; and
-/// once the policy appears input is taken without a restart.
+/// refused (a button press, a key press, typed text), with what an administrator runs, until
+/// the browser itself answers that the host's managed policy is in force; moving the pointer
+/// and releases pass; the probe's tab is nobody's tab; and once the policy appears input is
+/// taken without a restart.
 #[tokio::test]
 async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResult {
     with_display(FakeDisplay::new(), |f| async move {
@@ -1242,8 +1243,10 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
         let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
         let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
         let key = json!({"type": "key", "tab_id": tab, "event": "down", "key": "a", "code": "KeyA", "modifiers": 0});
+        // Typed text (an IME, a paste) is input too.
+        let text = json!({"type": "key", "tab_id": tab, "event": "char", "text": "ab"});
 
-        for refused in [&down, &key] {
+        for refused in [&down, &key, &text] {
             send(&mut socket, refused.clone()).await?;
             let error = loop {
                 let message = next_json(&mut socket).await?;
@@ -1263,17 +1266,27 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
                 "{error}"
             );
         }
+        // Releases pass (nothing may stay held), and so does moving the pointer.
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"})).await?;
+        send(&mut socket, json!({"type": "key", "tab_id": tab, "event": "up", "key": "a", "code": "KeyA"})).await?;
         send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "move", "x": 30, "y": 40})).await?;
         assert!(display.wait_for_input(|i| *i == DisplayInput::Motion { x: 30, y: 40 }, WAIT).await);
         assert!(
-            !display
-                .inputs()
-                .iter()
-                .any(|i| matches!(i, DisplayInput::Button { .. } | DisplayInput::Key { .. })),
+            !display.inputs().iter().any(|i| matches!(
+                i,
+                DisplayInput::Button { press: true, .. } | DisplayInput::Key { press: true, .. }
+            )),
             "{:?}",
             display.inputs()
         );
-        // One probe for both refusals (the answer stands for a moment), its tab closed again.
+        assert!(
+            display
+                .inputs()
+                .contains(&DisplayInput::Button { button: 1, press: false }),
+            "{:?}",
+            display.inputs()
+        );
+        // One probe for the three refusals (the answer stands for a moment), its tab closed.
         assert_eq!(f.fake.calls_for("Target.createTarget").len(), 1);
         assert_eq!(f.fake.target_ids().len(), 1);
 
@@ -1373,6 +1386,39 @@ async fn viewer_input_is_real_display_input_and_copy_reaches_the_clipboard() -> 
         assert!(display.wait_for_input(|i| *i == DisplayInput::Key { keycode: 50, press: true }, WAIT).await);
         drop(socket);
         assert!(display.wait_for_input(|i| *i == DisplayInput::ReleaseAll, WAIT).await);
+        Ok(())
+    })
+    .await
+}
+
+/// ADR-0318 (review of slice 6): the policy probe's tab is known by the id Chrome gave it, never
+/// by its address. A page that opens a window at the probe's address gets an ordinary tab: it
+/// is listed and, on the display, becomes the shown tab, so the panel never shows one tab's
+/// address over another window's picture.
+#[tokio::test]
+async fn a_page_cannot_hide_a_window_behind_the_probes_address() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let first = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // A probe ran (a click asked for it); then a page opens its look-alike.
+        send(&mut socket, json!({"type": "mouse", "tab_id": first, "event": "down", "x": 10, "y": 20, "button": "left"})).await?;
+        assert!(f.fake.wait_for_calls("Target.closeTarget", 1, WAIT).await);
+        let popup = f
+            .fake
+            .open_from_page(&first, "about:blank#yulius-browser-policy")
+            .await;
+        let shown = wait_json(&mut socket, |m| {
+            m["type"] == "tabs"
+                && m["tabs"].as_array().is_some_and(|tabs| {
+                    tabs.iter()
+                        .any(|t| t["id"] == popup.as_str() && t["active"] == true)
+                })
+        })
+        .await?;
+        assert_eq!(shown["tabs"].as_array().map(Vec::len), Some(2), "{shown}");
         Ok(())
     })
     .await

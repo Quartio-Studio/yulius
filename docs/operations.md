@@ -15,7 +15,7 @@ been performed or verified** as part of the implementation work.
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
-| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). It applies to every Chrome on the host: no file dialogs, downloads, printing, `file:` or `chrome:` pages, extensions. |
+| Chrome's managed policy (`yulius.json` in `/etc/opt/chrome/policies/managed`, `/etc/chromium/policies/managed` and `/etc/chromium-browser/policies/managed`) | clicks and keys in the sandbox browsers on a virtual display | `yulius host setup` writes it and the update's host check keeps it current; without it the browsers show but take no clicks and keys (ADR-0318). It applies to every Chrome on the host: no file dialogs, downloads, printing or extension installs, and only web addresses (no `file:` or `chrome:` pages, no links to other programs). |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
@@ -99,7 +99,9 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     daemon-reload`) are loaded, and a sessions unit that does not run is started. `yulius host
     check` only reports this item, in each of these cases.
 12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
-    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
+    write `/etc/modules-load.d`, `/etc/needrestart/conf.d` and Chrome's managed policy
+    directories (§8). A unit or drop-in from before the browser policy lacks those
+    directories: the setup writes the drop-in anew.
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
@@ -2424,9 +2426,11 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/yulius-update /var/lib/yulius /usr/local/bin /root/.cargo /root/.rustup
-# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list
-# and the needrestart rule.
+# The re-check after an install (`yulius host check`, SPEC-203) keeps the kernel modules list,
+# the needrestart rule and Chrome's managed policy for the sandbox browsers (ADR-0318; the
+# directories are made by `yulius host setup`).
 ReadWritePaths=/etc/modules-load.d -/etc/needrestart/conf.d
+ReadWritePaths=-/etc/opt/chrome/policies/managed -/etc/chromium/policies/managed -/etc/chromium-browser/policies/managed
 UMask=0022
 ```
 
