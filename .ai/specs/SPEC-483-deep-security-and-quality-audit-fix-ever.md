@@ -1391,3 +1391,41 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   not). A viewer's address bar on a virtual display (it navigates the same Chrome through
   the same proxy). Chromium builds other than Google Chrome 157. macOS, where the same
   switches are passed.
+- **Review of slice 9, round 1** (head 9c2af2437): request changes; no critical or major
+  finding. Own code, all answered test-first:
+  1. (minor) the loopback rule took any name that resolved to the loopback, resolved anew for
+     each request: a name's owner could answer a public address for a page and `127.0.0.1`
+     for the page's next request, and the page would read the sandbox's own dev server. The
+     loopback's ports and the welcome page are now reached only by an address or `localhost`.
+  2. (minor) `*.localhost` was asked of the host's resolver, which not every host answers:
+     `localhost` and names below it are the loopback without a resolver.
+  3. (minor) a plain request's wait covered its upload with one fixed bound: it now restarts
+     with every piece of the body sent on (`Progress`, as an agent's).
+  4. (minor) ADR-0320, its index line, FSR-005 and AC-46 still said a long address is kept as
+     none: amended (its site is kept).
+  5. (minor) the share test proved only the browser's own limit: an agent run's tunnel now
+     takes the place and the browser is refused, and the other way round.
+  Nits: the proxies hold the egress proxy weakly (no cycle through the application); the
+  listener backs off on accept errors and closes a connection that sends no request for 60 s;
+  the origin's `Host` and the error texts carry no user and password; the public listener is
+  never reached at its own address, also with its port in the sandbox's range; tunnel by
+  `localhost`, listed and answered hop headers are tested; a refusal with no known ports says
+  so. Pre-existing: ranges that are never given again drift into the system's free ports,
+  where a browser's proxy can take one: issue #1249.
+- **Tests failing without their fix, after the review** (`mutate.py`, 31 cases,
+  `mutations2.log` and `mutations2b.log`): all 31 failed their tests. One reported "passed"
+  in the first run: the script's filter had left the new integration test out; with the
+  filter corrected it failed there too. New: a name that resolved to the loopback reaching
+  the sandbox's port or the welcome page, the test map's answer counted as an address,
+  `localhost` asked of the resolver, the public listener reached, the bound not restarting
+  with the body, a silent server waited for without end, the origin's hop headers coming
+  back, a listed header sent on, a share of the browser's own, unknown ports read as a
+  range, user and password sent on as the host, the proxies keeping the egress proxy alive,
+  the public listener not passed to the proxies.
+- **Real browser after the review** (Chrome 157): the opt-in network test passed.
+- **The gate after the review.** `scripts/dev ci` at `d2b1afed2`: exit 0; `4176 tests run:
+  4176 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
+  cargo-shear and rustdoc passed.
+- **Not tested, named by the review.** How Chrome 157 classes a proxied answer's address
+  space (the fix does not depend on it); WebTransport under a fixed proxy; a managed proxy
+  policy on the host overriding the switches (documented in `docs/operations.md`).
