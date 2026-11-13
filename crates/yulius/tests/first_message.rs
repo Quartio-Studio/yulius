@@ -492,10 +492,11 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
     Ok(())
 }
 
-/// SPEC-483 slice 5 (review round 2, ADR-0317): a terminal whose screen is withheld (an agent
-/// secret no longer opens) shows nothing of what the program draws, so Yulius cannot tell
-/// whether it reads input or asks something. It types nothing, here no goal into a session
-/// that started behind the withheld screen, and flags the task with what to do.
+/// SPEC-483 slice 5 (review rounds 2 and 3, ADR-0317): a terminal whose screen is withheld (an
+/// agent secret no longer opens) shows nothing of what the program draws, so Yulius cannot tell
+/// whether it reads input or asks something. It types nothing: no first message into a session
+/// that started behind the withheld screen (the task is flagged with what to do), and no
+/// message another agent sends the task.
 #[test]
 fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -508,7 +509,8 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
             ..hooked()
         };
         let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
-            config.trust_answer_ms = 8_000;
+            // Longer than the test: the flag is the withheld screen's, never the trust dialog's.
+            config.trust_answer_ms = 600_000;
             config.goal_ready_ms = 2_000;
         })
         .await?;
@@ -533,12 +535,13 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
             }
         };
         let key = add("DEPLOY_KEY").await?;
+        // A first message Yulius types (it has an attachment), not one given at the launch.
         let id = new_task(
             &app,
             &sandbox,
             &user,
-            "Make the header blue",
-            TaskMode::Goal,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
         )
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
@@ -568,17 +571,18 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
             support::attention(&app, id.as_str()).await?,
             serde_json::json!({
                 "kind": "yulius",
-                "problem": "Agent secrets cannot be read, so this terminal's screen is withheld \
-                            and Yulius typed nothing.",
-                "action": "Replace or delete the agent secret that cannot be read (the server's \
-                           log names the error), then stop and continue the task.",
+                "problem": "Agent secrets could not be read, so this terminal's screen was \
+                            withheld and Yulius typed nothing.",
+                "action": "If the terminal still says its screen is withheld, replace or delete \
+                           the agent secret that cannot be read (the server's log names the \
+                           error). Then stop and continue the task.",
                 "link": null,
             })
         );
         let said = notices(&mut watch);
         assert!(
             said.iter()
-                .any(|n| n.contains("screen is withheld and Yulius typed nothing")),
+                .any(|n| n.contains("screen was withheld and Yulius typed nothing")),
             "{said:?}"
         );
         assert!(
@@ -587,8 +591,39 @@ fn a_withheld_screen_gets_nothing_typed_and_flags_the_task() -> TestResult {
                 .any(|n| n.contains("still asks whether to trust")),
             "{said:?}"
         );
+        // A message from the project's Superagent is not typed either, and says why.
+        let caller = crate::task_message::superagent(&sandbox, &user, "admin");
+        let message = serde_json::json!({"task_id": id.as_str(), "text": "Go on"});
+        let refused = app
+            .tool_task_message(&caller, &message)
+            .await
+            .err()
+            .ok_or("a message was typed into a withheld screen")?;
+        assert!(
+            refused.to_string().contains("screen was withheld"),
+            "{refused}"
+        );
         app.terminal_leave(&attach).await;
-        stop(&app, &id).await
+        stop(&app, &id).await?;
+        // Nothing reached the session: no transcript holds the first message or the
+        // Superagent's.
+        let mut pending = vec![data.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                if path.is_dir() && !path.is_symlink() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    assert!(
+                        !text.contains("Make it blue") && !text.contains("Go on"),
+                        "{}: {text}",
+                        path.display()
+                    );
+                }
+            }
+        }
+        Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())

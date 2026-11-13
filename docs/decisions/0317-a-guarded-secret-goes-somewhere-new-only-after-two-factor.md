@@ -95,13 +95,17 @@ would guard nothing.
   until agent secrets can be read]" once and no output, and requests through the proxy get 503.
   A store that answers again ends it by itself. A secret that no longer opens (its key is
   gone) does not: the terminals of its sandbox stay withheld until someone replaces or deletes
-  that secret (the server's log names the error), and no run starts there meanwhile (a start
-  reads the secrets).
-- A withheld screen is not what the program drew, so Yulius reads nothing off it and types
-  nothing into it: a run waiting for its first message or its goal keeps waiting
-  (`wait_input_ready`), and after the time a trust dialog gets (5 minutes) the task is flagged
-  with what to do. Before, a wait that timed out typed blind, which a withheld folder-trust
-  dialog would have taken as its answer.
+  that secret (the server's log names the error). A run whose own secrets cannot be read does
+  not start meanwhile (a start reads them); one whose secrets can (the unreadable one is
+  another person's personal secret switched on for the sandbox) starts behind a withheld screen.
+- A screen that is withheld, or misses output dropped while it was, is not what the program
+  drew (`TerminalScrub::screen_unknown`), until the next whole screen (a run attached anew).
+  Yulius reads nothing off such a screen and types nothing into it: a first message or a goal
+  waiting to be typed is not typed and the task is flagged with what to do
+  (`InputReady::ScreenWithheld`), and a message for the task is refused with the reason
+  (`type_into_session`). Before, a wait that timed out typed blind, which a withheld
+  folder-trust dialog would have taken as its answer. The price: after a store error that
+  passes, a task's person stops and continues it before Yulius types into it again.
 - Two people editing one secret: the second save is refused and reloads, whatever each changed.
 - Not covered here: switching a global secret on for a project stays its administrators'
   switch, and a personal one its owner's (the project's agents then use it as the secret

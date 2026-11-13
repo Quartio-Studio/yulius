@@ -27,6 +27,9 @@ struct Inner {
     /// The agent secrets could not be read: output is withheld until they can (VLT-007: never
     /// shown unredacted). The generation that failed and when to ask for it again.
     failed: Option<(u64, Instant)>,
+    /// Output was dropped since the last whole screen: what viewers and the hub hold is not
+    /// what the program drew, until the next whole screen.
+    dropped: bool,
 }
 
 /// What a terminal shows in place of output it cannot check for agent secrets.
@@ -38,10 +41,14 @@ const WITHHELD: &[u8] = b"\r\n[Yulius: the screen is withheld until agent secret
 const RETRY_AFTER: Duration = Duration::from_secs(1);
 
 impl TerminalScrub {
-    /// Whether the terminal's output is withheld: what its screen shows is then not what the
-    /// program drew, so nothing may be read off it or typed by it (the supervisor's waits).
-    pub(crate) fn withheld(&self) -> bool {
-        self.0.lock().map_or(true, |inner| inner.failed.is_some())
+    /// Whether the terminal's screen is not what the program drew: its output is withheld, or
+    /// some was dropped since the last whole screen. Nothing may be read off such a screen or
+    /// typed by it (the supervisor's waits, messages typed into a session). A state that
+    /// cannot be read counts.
+    pub(crate) fn screen_unknown(&self) -> bool {
+        self.0
+            .lock()
+            .map_or(true, |inner| inner.failed.is_some() || inner.dropped)
     }
 
     /// Records how the secrets were read for a whole screen: a failure withholds the stream
@@ -58,6 +65,8 @@ impl TerminalScrub {
             if inner.failed.take().is_some() {
                 inner.generation = None;
             }
+            // A whole screen: the hub holds what the program shows again.
+            inner.dropped = false;
         } else {
             inner.redactor = None;
             inner.generation = None;
@@ -121,6 +130,7 @@ impl TerminalScrub {
         inner.epoch += 1;
         let epoch = inner.epoch;
         if inner.failed.is_some() {
+            inner.dropped |= !bytes.is_empty();
             return (Vec::new(), epoch, false);
         }
         match inner.redactor.as_mut() {
@@ -304,10 +314,13 @@ mod tests {
             shown.starts_with("TOKEN=[secret:") && !shown.contains(VALUE),
             "{shown}"
         );
-        assert!(!scrub.withheld());
+        // Output was dropped: the screen is not the program's until the next whole screen.
+        assert!(scrub.screen_unknown());
+        scrub.screen_loaded(1, true, again);
+        assert!(!scrub.screen_unknown());
         // A later failure says so again.
         assert_eq!(scrub.loaded(2, failed(), again), WITHHELD);
-        assert!(scrub.withheld());
+        assert!(scrub.screen_unknown());
         // Without agent secrets there is nothing to redact: the output passes.
         assert_eq!(scrub.loaded(3, Ok(None), again), b"");
         assert_eq!(scrub.push(b"plain\r\n").0, b"plain\r\n");
@@ -315,12 +328,16 @@ mod tests {
         // A whole screen that could not be checked withholds the stream after it, without a
         // second notice (the screen says it); one that could makes the stream load anew.
         scrub.screen_loaded(4, false, again);
-        assert!(scrub.withheld());
+        assert!(scrub.screen_unknown());
         assert_eq!(scrub.push(text.as_bytes()).0, b"");
         assert_eq!(scrub.loaded(4, failed(), again + RETRY_AFTER), b"");
-        scrub.screen_loaded(4, true, again + RETRY_AFTER);
-        assert!(!scrub.withheld());
-        assert!(scrub.needs_load(4, again + RETRY_AFTER));
+        // The stream reads the secrets again: output flows, but what was dropped is missing
+        // from the screen until a whole one comes.
+        assert_eq!(scrub.loaded(4, Ok(None), again + RETRY_AFTER * 2), b"");
+        assert_eq!(scrub.push(b"later\r\n").0, b"later\r\n");
+        assert!(scrub.screen_unknown());
+        scrub.screen_loaded(4, true, again + RETRY_AFTER * 2);
+        assert!(!scrub.screen_unknown());
     }
 
     fn matcher() -> Arc<PlainMatcher> {

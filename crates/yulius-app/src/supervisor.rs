@@ -402,11 +402,13 @@ impl Drop for Finalizing<'_> {
 pub const SWITCH_COOLDOWN_MS: i64 = 10 * 60 * 1000;
 
 impl TaskRuntime {
-    /// Whether the terminal `hub` shows withholds its output (agent secrets cannot be read):
-    /// its screen is then not what the program drew. A state that cannot be read counts as
-    /// withheld.
+    /// Whether the screen `hub` shows is not what the program drew: its output is withheld
+    /// (agent secrets cannot be read) or some was dropped since the last whole screen. A state
+    /// that cannot be read counts.
     pub(crate) fn screen_withheld(&self) -> bool {
-        self.scrub.lock().map_or(true, |scrub| scrub.withheld())
+        self.scrub
+            .lock()
+            .map_or(true, |scrub| scrub.screen_unknown())
     }
 
     /// Whether a run is attached (a process can redraw the terminal).
@@ -975,17 +977,18 @@ enum InputReady {
     /// Claude Code's folder-trust dialog was still shown after
     /// [`crate::context::AppConfig::trust_answer_ms`]: type nothing into it.
     TrustUnanswered,
-    /// The terminal's screen was withheld for that long (agent secrets cannot be read,
-    /// ADR-0317): what the program shows is unknown, a dialog included, so type nothing.
+    /// The terminal's screen is withheld, or misses output dropped while it was (agent secrets
+    /// could not be read, ADR-0317): what the program shows is unknown, a dialog included, so
+    /// type nothing.
     ScreenWithheld,
 }
 
-/// Said when the screen is still withheld at the end of the wait: what is wrong, and what its
-/// person does.
-const SCREEN_WITHHELD: &str =
-    "Agent secrets cannot be read, so this terminal's screen is withheld and Yulius typed nothing";
-const SCREEN_WITHHELD_ANSWER: &str = "Replace or delete the agent secret that cannot be read (the \
-     server's log names the error), then stop and continue the task";
+/// Said when the screen is not the program's: what is wrong, and what its person does.
+pub(crate) const SCREEN_WITHHELD: &str = "Agent secrets could not be read, so this terminal's \
+     screen was withheld and Yulius typed nothing";
+const SCREEN_WITHHELD_ANSWER: &str = "If the terminal still says its screen is withheld, replace \
+     or delete the agent secret that cannot be read (the server's log names the error). Then \
+     stop and continue the task";
 
 /// Said when the trust dialog is still shown at the end of the wait: what is wrong, and how its
 /// person's part begins.
@@ -2077,8 +2080,8 @@ impl App {
         .await;
     }
 
-    /// The terminal's screen is still withheld once the time to wait for it is over (agent
-    /// secrets cannot be read, ADR-0317): nothing was typed, and the task needs a person.
+    /// The terminal's screen is not what the program drew (agent secrets could not be read,
+    /// ADR-0317): nothing was typed, and the task needs a person.
     async fn screen_withheld(&self, task_id: &TaskId) {
         self.runtime(task_id)
             .hub
@@ -2162,28 +2165,18 @@ impl App {
         let mut quiet_since = tokio::time::Instant::now();
         // When the trust dialog showed; `None` while it does not.
         let mut trust_since: Option<tokio::time::Instant> = None;
-        // Since when the screen is withheld; `None` while it is not.
-        let mut withheld_since: Option<tokio::time::Instant> = None;
         let mut started = started;
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt_id).await {
                 return InputReady::Gone;
             }
-            // A withheld screen is not what the program drew: whether it reads input, or asks
-            // something (the trust dialog), cannot be told. Nothing is typed until it shows
-            // again, and the wait starts over then, as for a TUI that just started.
+            // A screen that is withheld, or misses output dropped while it was, is not what the
+            // program drew: whether it reads input, or asks something (the trust dialog), cannot
+            // be told, also once output flows again (the dropped part is gone until the run is
+            // attached anew). Nothing is typed; the task's person is told.
             if runtime.screen_withheld() {
-                let since = *withheld_since.get_or_insert_with(tokio::time::Instant::now);
-                if since.elapsed() >= Duration::from_millis(self.config.trust_answer_ms) {
-                    return InputReady::ScreenWithheld;
-                }
-                continue;
-            }
-            if withheld_since.take().is_some() {
-                started = tokio::time::Instant::now();
-                quiet_since = started;
-                last = runtime.hub.output_seq();
+                return InputReady::ScreenWithheld;
             }
             let trust = !runtime.session_started.load(Ordering::SeqCst)
                 && trust_prompt_shown(&runtime.hub.screen_text());
@@ -2364,7 +2357,9 @@ impl App {
                 .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
                 .await
             {
-                InputReady::Ready => {}
+                // This watch types nothing: whether the launch goal was taken is told by its
+                // hook below, not by the screen, so a withheld screen changes nothing here.
+                InputReady::Ready | InputReady::ScreenWithheld => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => {
                     app.trust_unanswered(
@@ -2372,11 +2367,6 @@ impl App {
                         "; the task starts by itself once it is answered.",
                     )
                     .await;
-                    launch_goal_settled(&run_dir);
-                    return;
-                }
-                InputReady::ScreenWithheld => {
-                    app.screen_withheld(&task_id).await;
                     launch_goal_settled(&run_dir);
                     return;
                 }

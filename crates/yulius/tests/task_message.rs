@@ -37,7 +37,7 @@ use crate::support::{
 type Error = Box<dyn std::error::Error>;
 
 /// The Superagent of `user` in `sandbox`, as `cockpit_caller` makes it.
-fn superagent(sandbox: &SandboxId, user: &UserId, login: &str) -> ProjectCaller {
+pub(crate) fn superagent(sandbox: &SandboxId, user: &UserId, login: &str) -> ProjectCaller {
     ProjectCaller {
         sandbox: sandbox.clone(),
         user: user.clone(),
