@@ -189,6 +189,16 @@ impl Hub {
             .unwrap_or_default()
     }
 
+    /// Whether the screen shows Claude Code's prompt box with nothing typed in it
+    /// ([`crate::prompt_box::shown_empty`], SPEC-488): the one picture that proves a person's
+    /// keystroke left no draft there. A screen that cannot be read proves nothing.
+    #[must_use]
+    pub fn prompt_box_shown_empty(&self) -> bool {
+        self.screen
+            .lock()
+            .is_ok_and(|s| crate::prompt_box::shown_empty(s.parser.screen()))
+    }
+
     /// Sends a notice line to viewers.
     pub fn notice(&self, text: impl Into<String>) {
         let _ = self.tx.send(HubFrame::Notice(text.into()));
@@ -389,6 +399,35 @@ mod tests {
         assert!(hub.leave(b).moved);
         assert!(!hub.leave(b).moved, "leaving twice is harmless");
         assert_eq!(hub.controller(), 0);
+    }
+
+    /// SPEC-488 AC5: a hub rebuilt from a snapshot (a reattached run, as after a restart of the
+    /// server) still reads the prompt box: empty, a dim suggestion, and a draft.
+    #[test]
+    fn a_snapshot_keeps_the_prompt_box_readable() {
+        let rule = "─".repeat(20);
+        let framed = |row: &str| {
+            format!("\x1b[?1049h\x1b[H\x1b[2J\x1b[2;1H{rule}\x1b[3;1H{row}\x1b[0m\x1b[4;1H{rule}\x1b[5;1H  status\x1b[3;3H")
+        };
+        for (row, empty) in [
+            ("❯ ", true),
+            ("❯ \x1b[7mr\x1b[0m\x1b[2mun the tests", true),
+            ("❯ \x1b[2mrun the tests", true),
+            ("❯ \x1b[7mh\x1b[0malf a thought", false),
+            ("❯ half", false),
+        ] {
+            let hub = Hub::new(20, 6);
+            hub.output(1, framed(row).as_bytes());
+            assert_eq!(hub.prompt_box_shown_empty(), empty, "{row:?}");
+            let snapshot = hub
+                .screen
+                .lock()
+                .map(|s| viewer_snapshot(s.parser.screen()))
+                .unwrap_or_default();
+            let again = Hub::new(20, 6);
+            again.reset(2, &snapshot, 20, 6);
+            assert_eq!(again.prompt_box_shown_empty(), empty, "after a snapshot: {row:?}");
+        }
     }
 
     /// #78: a viewer who opens or reloads the task while a full-screen app runs gets the
