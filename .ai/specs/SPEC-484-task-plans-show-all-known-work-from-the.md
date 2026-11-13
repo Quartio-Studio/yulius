@@ -309,36 +309,80 @@ to the person.
 ## Evidence
 
 Commands run in this task's worktree, at the head named. Logs are kept in the ignored
-`target/evidence/`.
+`target/evidence/`; the reviewer's notes and probes in `$HOME/.cache/yulius-task-466/`.
 
 - **The cause, from real tasks.** `target/evidence/task-465-steps.txt` (the plans #465 set and
   the refusal it got: "2026-11-13T02:19 delivery_status: Open steps: 4 … merge: 4 step(s) are
   still open", then the plan cut back to finished slices only), `step-history.txt` (385 tasks:
   the count grew in 184, in 69 right after n/n or (n-1)/n) and `step-additions.txt` (613 added
-  steps by kind). The numbers in Context are these files'.
+  steps by kind). The numbers in Context are these files'; the reviewer recounted them.
 - **Each test fails without its change.** `python3 target/evidence/mutants.py` undoes one
-  change at a time on a clean tree and runs the tests that pin it: 26 mutants, "every mutant
-  was killed" (`mutants.log`; the seven whose lines changed afterwards again in
-  `mutants-rerun.log`). They cover the merge rule, the call's two holds, the turn's end, a
-  person's merge, the playground's three paths, the merged messages, the bound, the complete
-  nudge, the briefing's and the tools' texts, the skill and workflow texts, the four store
-  rules of the first size, and its way through the API and the tools. Two web mutants by hand
-  (`mutant-web-1.log`: a first size not below the plan's is shown; `mutant-web-2.log`: the
-  strip shows none): `steps.e2e.ts` fails for each.
+  change at a time on a clean tree and runs the tests that pin it: 28 mutants at 39db6b6c2,
+  "every mutant was killed" (`mutants.log`). They cover the merge rule (both ways), the call's
+  two holds, the turn's end, a head the pull request already has, the wording above an open
+  pull request, the playground's whole-plan squash, the three merged messages and the two
+  kinds of answer, the bound, the complete nudge, the briefing's and the tools' texts, the
+  skill and workflow texts, the four store rules of the first size, and its way through the
+  API and the tools. Not mutated: the order of nudges and list in the briefing
+  (`briefing::steps_show_weighted_progress_and_nudges` asserts the order and a cut list that
+  keeps its nudge). Two web mutants by hand (`mutant-web-1.log`: a first size not below the
+  plan's is shown; `mutant-web-2.log`: the strip shows none): `steps.e2e.ts` fails for each.
 - **A defect of this change, found by reading it and fixed test-first.** With a part delivered
   and armed and steps ahead, the end of the turn noted "Yulius has not delivered …" for the
   head the open pull request already had, which ends the agent's `yulius wait` at once. The
   test reproduced it (`push_problem` set); `try_auto_open_pr` now asks about the plan after the
   open pull request's head. Commit 13325719b.
-- **The gate.** `scripts/dev ci` at 83944755d: exit 0 (`gate-1.log`): repository contracts
-  passed, clippy with `-D warnings`, the macOS build, "4218 tests run: 4218 passed, 16
-  skipped", doctests, `cargo deny`, `cargo shear`, `cargo doc`. Its first run at c959bd28b
-  failed in clippy (a needless borrow in `merge_train.rs`), fixed in 83944755d.
-- **The e2e suite.** `cd e2e && npx e2e run` at 83944755d: 1020 passed, 1 failed, 1 skipped
-  (`e2e-1.log`). The failure is `tests/cd.e2e.ts` "a needs_you decision reads Decide, and an
-  action alone only To do", one of the tests of the open issue #1171 (fails under host load;
-  the load average was 20), in files this change does not touch; the file alone: 26 passed
-  (`e2e-cd-alone.log`). `tests/steps.e2e.ts`: 5 passed, with the two new tests.
+- **The independent review, round 1** (a fresh session, read-only, `om-code-review`, head
+  2c4a4318c): "**request changes.** There are three major findings in the change's own code".
+  Answered in 828dcf88a, each test-first:
+  - M1, "A playground task that delivers a part can never deliver the rest": true (its probe 4).
+    Of its two corrections the second is taken: a playground squashes a task once, with its
+    whole plan, and says so. `playground::a_playground_squashes_a_task_once_with_its_whole_plan`,
+    `playground::an_unfinished_task_is_not_merged`.
+  - M2, "A commit for the next step drops the armed merge, and the test hides it": true (its
+    probe 1). The dropping rule is older and stays; the armed answers now say that the work of
+    the steps ahead starts once `yulius wait` reports the merge, the claim is corrected here,
+    in ADR-0325 and in SPEC-001, and the test keeps the commit and asserts "The merge you armed
+    was dropped".
+  - M3, "A new test cannot fail for this change": true. The test now has 36 slices (30 was the
+    bound) and reads the nudges where the briefing has them; it fails for the mutant "a plan
+    has at most 30 steps".
+  - m1, "'Refused while a step is in progress' is three different rules": one rule now, the
+    hold belongs to delivering a head; a person's merge has no check of its own.
+    `delivery::a_head_the_pull_request_already_has_merges_whatever_step_was_started_since`
+    (its probes 2 and 3 as a test).
+  - m2, "The delivery view says Merge is ready when the call is refused": with m1 the view and
+    the call agree for a head the pull request has (asserted in the same test).
+  - m3, the playground's "merged meanwhile" message: a playground has no step ahead at a merge
+    any more (M1), so the message is true as it is.
+  - m4, "PLN-003 call sites without tests": the merge train's message
+    (`merge_train::armed_pull_requests_merge_together_on_one_run`, one task with a slice
+    ahead), the "armed already" answer and the armed merge's message (the AC-2 test), the
+    answer of a merge left for the next pass
+    (`delivery::a_merge_left_for_the_next_pass_says_the_step_ahead_waits`), and the chained
+    task that waits until every step is finished (the AC-2 test, with the release as control).
+  - m5, "Every turn's end now reads GitHub while a pull request is open with steps ahead":
+    kept, and said (the comment in `try_auto_open_pr`, ADR-0325's consequences): the delivery
+    record has no head to compare with, and that state did not exist before.
+  - m6, "The briefing cannot show a long plan or its nudges": the nudges stand before the list
+    now, so a cut list keeps them; that the list itself is cut is said in PLN-005.
+  - m7, m8 and the nits: `docs/api.md`, the comments, the quotes in AC-4 and PLN-005, the
+    briefing's delivery sentence ("at your turn's end once all steps are done, or when you
+    call …"), one wording for "nothing finished" (`steps::NOTHING_FINISHED`), the Deliver
+    dialog's line about steps ahead (no longer a warning), the redundant alternative in the
+    skills test, `STATE_MAX_STEPS` and the two sentences rule 3 lost (now in PLN-004 and
+    PLN-006), "(not pushed to its open pull request)", and when a new pull request opens for
+    work after a merge.
+- **The gate.** `scripts/dev ci` at 83944755d, before the review: exit 0 (`gate-1.log`,
+  "4218 tests run: 4218 passed, 16 skipped"; the reviewer's own run at 2c4a4318c: PASS). At
+  39db6b6c2, with the answers: clippy, the macOS build and the repository check pass, and of
+  4220 tests one fails (`gate-2.log`): `task_done::a_stop_settles_a_run_no_server_holds`, "the
+  run's host still runs", the open issue #1190 ("fails … under full-gate load"; the load
+  average was 74), in code this change does not touch; alone it passed three times in a row.
+- **The e2e suite.** `cd e2e && npx e2e run` at 39db6b6c2: 1021 passed, 1 skipped, exit 0
+  (`e2e-2.log`). An earlier run at 83944755d had one failure, `tests/cd.e2e.ts` "a needs_you
+  decision reads Decide, and an action alone only To do" (open issue #1171, load), which
+  passed alone (26 of 26).
 - **The strip, seen.** `target/evidence/strip.png` (mock `planfirst=4`, 1280 px): "#12 Checkout
   API  Step 3/7 · 4 at first · Implement checkout API". At 760 px the count gives way whole,
   as before.
