@@ -209,6 +209,8 @@ pub struct TaskRuntime {
     /// The redaction state of the terminal `hub` shows (the attached run's): while it withholds
     /// output the screen is not what the program drew (ADR-0317).
     scrub: Mutex<crate::vault::TerminalScrub>,
+    /// The task's person was told that nothing is typed into this screen (once per attach).
+    screen_flagged: AtomicBool,
     /// The goal-mode session opened with a first message (a resumed session's continuation)
     /// whose turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
@@ -532,6 +534,7 @@ impl TaskRuntime {
             turn_order: tokio::sync::Mutex::new(()),
             session_started: AtomicBool::new(false),
             scrub: Mutex::new(crate::vault::TerminalScrub::default()),
+            screen_flagged: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
             typing_opening_said: AtomicBool::new(false),
@@ -2081,9 +2084,14 @@ impl App {
     }
 
     /// The terminal's screen is not what the program drew (agent secrets could not be read,
-    /// ADR-0317): nothing was typed, and the task needs a person.
-    async fn screen_withheld(&self, task_id: &TaskId) {
-        self.runtime(task_id)
+    /// ADR-0317): nothing was typed, and the task needs a person. Said once per attached run,
+    /// however many typists are refused (a first message, messages from agents and Yulius).
+    pub(crate) async fn screen_withheld(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        if runtime.screen_flagged.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        runtime
             .hub
             .notice(format!("{SCREEN_WITHHELD}. {SCREEN_WITHHELD_ANSWER}."));
         self.flag_task(
@@ -2620,6 +2628,7 @@ impl App {
         if let Ok(mut shown) = runtime.scrub.lock() {
             *shown = scrub.clone();
         }
+        runtime.screen_flagged.store(false, Ordering::SeqCst);
         let attached = self
             .deps
             .session_host

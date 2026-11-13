@@ -285,6 +285,9 @@ impl App {
         // not be read, ADR-0317), is not what the program drew: a dialog may show there that
         // nobody saw, and a paste and an Enter would answer it.
         if runtime.screen_withheld() {
+            // Its person learns it here, once: until the task is stopped and continued, every
+            // message for it is kept out (review of SPEC-483 slice 5, round 4).
+            self.screen_withheld(&task.id).await;
             return Err(AppError::Conflict(format!(
                 "{} into task #{}: its person stops and continues the task (and first replaces \
                  or deletes the agent secret that cannot be read, while the terminal says so)",

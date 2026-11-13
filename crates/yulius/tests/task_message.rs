@@ -92,6 +92,86 @@ fn fake_agent() -> FakeAgentOptions {
     }
 }
 
+/// SPEC-483 slice 5 (review round 4, ADR-0317): a running task whose screen became unknown (a
+/// secret stopped opening, output was dropped) gets no message typed, and its person learns it:
+/// the first refusal flags the task with what to do, once, however many messages follow.
+#[test]
+fn a_message_kept_out_of_a_withheld_screen_flags_the_task_once() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let add = |name: &'static str| {
+            let (app, ctx, sandbox) = (Arc::clone(&app), ctx.clone(), caller.sandbox.clone());
+            async move {
+                let input = serde_json::from_value(json!({
+                    "name": name,
+                    "value": format!("{name}-value-0123456"),
+                }))?;
+                Ok::<_, Error>(
+                    app.create_agent_secret(&ctx, sandbox.as_str(), &input)
+                        .await?,
+                )
+            }
+        };
+        // A secret that no longer opens (a key-encryption key nobody has); a change of a secret
+        // makes the terminal read them anew at its next output.
+        let key = add("DEPLOY_KEY").await?;
+        let seen = app.deps.store.vault_get(&key.id).await?.ok_or("secret")?;
+        let mut broken = seen.clone();
+        broken.envelope.kek_id = 9_999;
+        assert!(app.deps.store.vault_update(&broken, &seen).await?);
+        add("LATER_KEY").await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        app.terminal_input(&ctx, &attach, b"note\r", false).await?;
+        wait_for("the withheld screen", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("the screen is withheld")
+        })
+        .await?;
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        for _ in 0..2 {
+            let refused = app
+                .tool_task_message(&caller, &message)
+                .await
+                .err()
+                .ok_or("a message was typed into a withheld screen")?;
+            assert!(
+                refused.to_string().contains("screen was withheld"),
+                "{refused}"
+            );
+        }
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let why = support::attention(&app, id.as_str()).await?;
+        assert_eq!(
+            why["problem"],
+            "Agent secrets could not be read, so this terminal's screen was withheld and Yulius \
+             typed nothing.",
+            "{why}"
+        );
+        let told = notices(&mut watch)
+            .iter()
+            .filter(|n| n.contains("screen was withheld and Yulius typed nothing"))
+            .count();
+        assert_eq!(told, 1, "said once");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-1, AC-2, AC-7 (TMS-003, TMS-005, TMS-006): a running task gets the message in its session,
 /// labelled, multi-line, with no escape sequence of the text reaching the TUI; the answer says
 /// `sent`, the audit names the Superagent without the text, and the task's open `needs_you` ends.
