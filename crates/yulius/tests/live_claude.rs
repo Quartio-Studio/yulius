@@ -259,57 +259,245 @@ fn language_servers_loaded(log: &str) -> Option<(usize, Vec<String>)> {
     Some((total, plugins))
 }
 
-/// Runs the real `claude -p` in `work` with the config dir `config` and `args`, against a closed
-/// local port (no provider request can be made), until its debug log says which language servers
-/// it loaded; the process is then ended.
-async fn language_servers_of_a_session(
-    config: &std::path::Path,
-    work: &std::path::Path,
-    args: &[String],
-) -> Result<(usize, Vec<String>), Box<dyn std::error::Error>> {
-    let log = work.join(format!("debug-{}.log", args.len()));
-    let mut child = tokio::process::Command::new("claude")
-        .args(args)
-        .arg("--debug-file")
-        .arg(&log)
-        .args(["-p", "hi"])
-        .current_dir(work)
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", config.parent().ok_or("a home")?)
-        .env("CLAUDE_CONFIG_DIR", config)
-        // Not a key and not a reachable API: nothing leaves this machine.
-        .env("ANTHROPIC_API_KEY", "yulius-live-check-not-a-key")
-        .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
-        .env("DISABLE_AUTOUPDATER", "1")
-        .env("DISABLE_TELEMETRY", "1")
-        .env("DISABLE_ERROR_REPORTING", "1")
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()?;
-    let loaded = tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let text = tokio::fs::read_to_string(&log).await.unwrap_or_default();
-            if let Some(loaded) = language_servers_loaded(&text) {
-                return loaded;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await;
-    child.kill().await?;
-    Ok(loaded.map_err(|_| "the CLI's debug log never said which language servers it loaded")?)
+/// A sandbox directory for the real CLI: `home/.claude` (the config dir), `work` (the worktree,
+/// trusted) and the marketplace `m` of four plugins. Three bring a language server, each in one
+/// of the ways the CLI knows: the marketplace's entry (the official `rust-analyzer-lsp` plugin's
+/// way), the plugin's manifest and `.lsp.json`; `skills-only` brings none.
+struct LiveHome {
+    root: PathBuf,
+    home: PathBuf,
+    config: PathBuf,
+    work: PathBuf,
+    runs: std::cell::Cell<usize>,
 }
 
-/// SPEC-485 LSP-004 (ADR-0327): with plugins that bring a language server installed in the
-/// sandbox home and switched on in its `settings.json` (what Claude Code's install dialog leaves
-/// after one Enter), a session of the real CLI loads their servers; started with the settings
-/// Yulius plans for a run of that home it loads none, and the other plugin stays on. The three
-/// plugins bring their server in the three ways the CLI knows: the marketplace's entry (the
-/// official `rust-analyzer-lsp` plugin's way), the plugin's manifest and `.lsp.json`.
+const LIVE_PLUGINS: [&str; 4] = ["by-catalog", "by-manifest", "by-file", "skills-only"];
+
+impl LiveHome {
+    fn new(dir: &std::path::Path, name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let root = dir.join(name);
+        let (home, work) = (root.join("home"), root.join("work"));
+        let config = home.join(".claude");
+        std::fs::create_dir_all(config.join("plugins"))?;
+        std::fs::create_dir_all(&work)?;
+        // The worktree is trusted, as every launch of Yulius makes it.
+        std::fs::write(
+            config.join(".claude.json"),
+            serde_json::json!({
+                "hasCompletedOnboarding": true,
+                "projects": { work.to_string_lossy(): {
+                    "hasTrustDialogAccepted": true, "hasCompletedProjectOnboarding": true,
+                } },
+            })
+            .to_string(),
+        )?;
+        Ok(Self {
+            root,
+            home,
+            config,
+            work,
+            runs: std::cell::Cell::new(0),
+        })
+    }
+
+    /// The marketplace `m` as the folder `at`, its plugins in `at/plugins/<name>`.
+    fn marketplace(&self, at: &std::path::Path) -> TestResult {
+        let server = |extension: &str| {
+            serde_json::json!({ "srv": {
+                "command": "yulius-live-check-no-such-language-server",
+                "extensionToLanguage": { extension: "x" },
+            } })
+        };
+        let mut entries = Vec::new();
+        for name in LIVE_PLUGINS {
+            let source = at.join("plugins").join(name);
+            std::fs::create_dir_all(&source)?;
+            std::fs::write(source.join("README.md"), name)?;
+            let mut entry = serde_json::json!({
+                "name": name, "source": format!("./plugins/{name}"), "description": name,
+                "version": "1.0.0",
+            });
+            let mut manifest = serde_json::json!({
+                "name": name, "version": "1.0.0", "description": name,
+            });
+            match name {
+                "by-catalog" => {
+                    entry["strict"] = false.into();
+                    entry["lspServers"] = server(".xa");
+                }
+                "by-manifest" => manifest["lspServers"] = server(".xb"),
+                "by-file" => std::fs::write(source.join(".lsp.json"), server(".xc").to_string())?,
+                _ => {}
+            }
+            // A plugin described by its marketplace entry alone has no manifest of its own.
+            if name != "by-catalog" {
+                std::fs::create_dir_all(source.join(".claude-plugin"))?;
+                std::fs::write(
+                    source.join(".claude-plugin/plugin.json"),
+                    manifest.to_string(),
+                )?;
+            }
+            entries.push(entry);
+        }
+        std::fs::create_dir_all(at.join(".claude-plugin"))?;
+        std::fs::write(
+            at.join(".claude-plugin/marketplace.json"),
+            serde_json::json!({ "name": "m", "owner": { "name": "check" }, "plugins": entries })
+                .to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// `known_marketplaces.json`: the marketplace `m` is the folder `at`.
+    fn known(&self, at: &std::path::Path) -> TestResult {
+        std::fs::write(
+            self.config.join("plugins/known_marketplaces.json"),
+            serde_json::json!({ "m": {
+                "source": { "source": "directory", "path": at },
+                "installLocation": at,
+                "lastUpdated": "2026-11-13T00:00:00.000Z",
+            } })
+            .to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// Installs every plugin of the marketplace at `market` as Claude Code does: a copy of its
+    /// folder below `copies` and a record that names the copy.
+    fn install(&self, market: &std::path::Path, copies: &std::path::Path) -> TestResult {
+        let mut installed = serde_json::Map::new();
+        for name in LIVE_PLUGINS {
+            let source = market.join("plugins").join(name);
+            let copy = copies.join(name).join("1.0.0");
+            std::fs::create_dir_all(copy.join(".claude-plugin"))?;
+            for file in ["README.md", ".lsp.json", ".claude-plugin/plugin.json"] {
+                if source.join(file).exists() {
+                    std::fs::copy(source.join(file), copy.join(file))?;
+                }
+            }
+            if name == "by-catalog" {
+                std::fs::remove_dir(copy.join(".claude-plugin"))?;
+            }
+            installed.insert(
+                format!("{name}@m"),
+                serde_json::json!([{
+                    "scope": "user", "installPath": copy, "version": "1.0.0",
+                    "installedAt": "2026-11-13T00:00:00.000Z",
+                    "lastUpdated": "2026-11-13T00:00:00.000Z",
+                }]),
+            );
+        }
+        std::fs::write(
+            self.config.join("plugins/installed_plugins.json"),
+            serde_json::json!({ "version": 2, "plugins": installed }).to_string(),
+        )?;
+        Ok(())
+    }
+
+    /// Writes the settings file `file` that switches every plugin on, with the keys of `more`.
+    fn switch_on(&self, file: &std::path::Path, more: serde_json::Value) -> TestResult {
+        let on: serde_json::Map<String, serde_json::Value> = LIVE_PLUGINS
+            .iter()
+            .map(|name| (format!("{name}@m"), true.into()))
+            .collect();
+        let mut settings = serde_json::json!({ "enabledPlugins": on });
+        if let (Some(settings), Some(more)) = (settings.as_object_mut(), more.as_object()) {
+            settings.extend(more.clone());
+        }
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, settings.to_string())?;
+        Ok(())
+    }
+
+    /// Runs the real `claude -p` in the worktree with `args`, against a closed local port (no
+    /// provider request can be made), until its debug log says which language servers it loaded;
+    /// the process is then ended.
+    async fn session(
+        &self,
+        args: &[String],
+    ) -> Result<(usize, Vec<String>), Box<dyn std::error::Error>> {
+        self.runs.set(self.runs.get() + 1);
+        let log = self.root.join(format!("debug-{}.log", self.runs.get()));
+        let mut child = tokio::process::Command::new("claude")
+            .args(args)
+            .arg("--debug-file")
+            .arg(&log)
+            .args(["-p", "hi"])
+            .current_dir(&self.work)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", &self.home)
+            .env("CLAUDE_CONFIG_DIR", &self.config)
+            // Not a key and not a reachable API: nothing leaves this machine.
+            .env("ANTHROPIC_API_KEY", "yulius-live-check-not-a-key")
+            .env("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")
+            .env("DISABLE_AUTOUPDATER", "1")
+            .env("DISABLE_TELEMETRY", "1")
+            .env("DISABLE_ERROR_REPORTING", "1")
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+        let loaded = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                let text = tokio::fs::read_to_string(&log).await.unwrap_or_default();
+                if let Some(loaded) = language_servers_loaded(&text) {
+                    return loaded;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await;
+        child.kill().await?;
+        Ok(
+            loaded
+                .map_err(|_| "the CLI's debug log never said which language servers it loaded")?,
+        )
+    }
+
+    /// The `--settings` Yulius plans for a task run of this home and worktree, written where the
+    /// plan says. `/bin/true` stands in for the hooks' `yulius`.
+    fn planned_settings(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/true"), "http://127.0.0.1:9");
+        let plan = adapter.plan(&HarnessLaunch {
+            harness: Harness::ClaudeCode,
+            mode: SessionMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: self.work.clone(),
+            sandbox_home: self.home.clone(),
+            run_dir: self.root.join("run"),
+            model: None,
+            effort: None,
+            contained: false,
+            mcp: Vec::new(),
+            credential: Secret("unused-no-provider-request-is-made".into()),
+        })?;
+        let settings = plan
+            .plan
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("claude-settings.json"))
+            .ok_or("the run's settings file")?;
+        std::fs::create_dir_all(self.root.join("run"))?;
+        std::fs::write(&settings.path, &settings.contents)?;
+        Ok(vec![
+            "--settings".to_owned(),
+            settings.path.to_string_lossy().into_owned(),
+        ])
+    }
+}
+
+/// SPEC-485 LSP-004 (ADR-0327): in every layout in which the real CLI loads a plugin's language
+/// server, it loads none when started with the settings Yulius plans for a run of that home and
+/// worktree, and the plugin without a language server stays on. Each layout is first shown to be
+/// one the CLI loads three servers from (the control), so a layout a later Claude Code no longer
+/// loads, or loads differently, fails here too.
 ///
 /// No account and no provider request:
 /// `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main live_claude::a_run -- --ignored`.
@@ -320,158 +508,105 @@ async fn a_runs_settings_keep_the_real_cli_from_loading_a_language_server() -> T
         return Err("set YULIUS_LIVE_CLAUDE=1 to run this live check".into());
     }
     let dir = tempfile::tempdir()?;
-    let root = dir.path().canonicalize()?;
-    let home = root.join("home");
-    let config = home.join(".claude");
-    let work = root.join("work");
-    let market = config.join("plugins/marketplaces/m");
-    std::fs::create_dir_all(&work)?;
-    let server = |extension: &str| {
-        serde_json::json!({ "srv": {
-            "command": "yulius-live-check-no-such-language-server",
-            "extensionToLanguage": { extension: "x" },
-        } })
-    };
-    let mut entries = Vec::new();
-    let mut installed = serde_json::Map::new();
-    for name in ["by-catalog", "by-manifest", "by-file", "skills-only"] {
-        let source = market.join("plugins").join(name);
-        std::fs::create_dir_all(&source)?;
-        std::fs::write(source.join("README.md"), name)?;
-        let mut entry = serde_json::json!({
-            "name": name, "source": format!("./plugins/{name}"), "description": name,
-            "version": "1.0.0",
-        });
-        let mut manifest = serde_json::json!({
-            "name": name, "version": "1.0.0", "description": name,
-        });
-        match name {
-            "by-catalog" => {
-                entry["strict"] = false.into();
-                entry["lspServers"] = server(".xa");
-            }
-            "by-manifest" => manifest["lspServers"] = server(".xb"),
-            "by-file" => std::fs::write(source.join(".lsp.json"), server(".xc").to_string())?,
-            _ => {}
-        }
-        // A plugin described by its marketplace entry alone has no manifest of its own.
-        if name != "by-catalog" {
-            std::fs::create_dir_all(source.join(".claude-plugin"))?;
-            std::fs::write(
-                source.join(".claude-plugin/plugin.json"),
-                manifest.to_string(),
-            )?;
-        }
-        entries.push(entry);
-        // The installed copy, as Claude Code lays it out.
-        let copy = config.join("plugins/cache/m").join(name).join("1.0.0");
-        std::fs::create_dir_all(copy.join(".claude-plugin"))?;
-        for file in ["README.md", ".lsp.json", ".claude-plugin/plugin.json"] {
-            if source.join(file).exists() {
-                std::fs::copy(source.join(file), copy.join(file))?;
-            }
-        }
-        if name == "by-catalog" {
-            std::fs::remove_dir(copy.join(".claude-plugin"))?;
-        }
-        installed.insert(
-            format!("{name}@m"),
-            serde_json::json!([{
-                "scope": "user", "installPath": copy, "version": "1.0.0",
-                "installedAt": "2026-11-13T00:00:00.000Z",
-                "lastUpdated": "2026-11-13T00:00:00.000Z",
-            }]),
+    let dir = dir.path().canonicalize()?;
+    let all_three = (
+        3,
+        vec![
+            "by-catalog".to_owned(),
+            "by-file".to_owned(),
+            "by-manifest".to_owned(),
+        ],
+    );
+    let mut homes = Vec::new();
+
+    // What Claude Code's install dialog leaves: a cloned marketplace, the plugins installed
+    // into the cache and switched on in the home's settings.
+    let home = LiveHome::new(&dir, "cloned")?;
+    let market = home.config.join("plugins/marketplaces/m");
+    home.marketplace(&market)?;
+    home.known(&market)?;
+    home.install(&market, &home.config.join("plugins/cache/m"))?;
+    home.switch_on(&home.config.join("settings.json"), serde_json::json!({}))?;
+    homes.push(home);
+
+    // `claude plugin marketplace add <folder>` and `claude plugin install`: the marketplace
+    // stays where it lies; the copy of the plugin its entry alone describes holds no servers.
+    let home = LiveHome::new(&dir, "folder-marketplace")?;
+    let market = home.work.join("tools/market");
+    home.marketplace(&market)?;
+    home.known(&market)?;
+    home.install(&market, &home.config.join("plugins/cache/m"))?;
+    home.switch_on(&home.config.join("settings.json"), serde_json::json!({}))?;
+    homes.push(home);
+
+    // Switched on in the home's settings with no install record: loaded in place.
+    let home = LiveHome::new(&dir, "no-install-record")?;
+    let market = home.work.join("tools/market");
+    home.marketplace(&market)?;
+    home.known(&market)?;
+    home.switch_on(&home.config.join("settings.json"), serde_json::json!({}))?;
+    homes.push(home);
+
+    // Switched on by the repository, and by a worktree's local settings.
+    for file in ["settings.json", "settings.local.json"] {
+        let home = LiveHome::new(&dir, &format!("repository-{file}"))?;
+        let market = home.root.join("market");
+        home.marketplace(&market)?;
+        home.known(&market)?;
+        home.switch_on(&home.work.join(".claude").join(file), serde_json::json!({}))?;
+        homes.push(home);
+    }
+
+    // Installed copies outside the cache.
+    let home = LiveHome::new(&dir, "copies-elsewhere")?;
+    let market = home.config.join("plugins/marketplaces/m");
+    home.marketplace(&market)?;
+    home.known(&market)?;
+    home.install(&market, &home.root.join("copies"))?;
+    home.switch_on(&home.config.join("settings.json"), serde_json::json!({}))?;
+    homes.push(home);
+
+    // A repository that brings its own marketplace: Claude Code registers it at a session's
+    // start and loads from it from the next session on.
+    let home = LiveHome::new(&dir, "repository-marketplace")?;
+    home.marketplace(&home.work.join("tools/market"))?;
+    home.switch_on(
+        &home.work.join(".claude/settings.json"),
+        serde_json::json!({ "extraKnownMarketplaces": { "m": {
+            "source": { "source": "directory", "path": "./tools/market" },
+        } } }),
+    )?;
+    assert_eq!(home.session(&[]).await?.0, 0, "the first session registers");
+    homes.push(home);
+
+    for home in &homes {
+        let layout = home.root.file_name().unwrap_or_default().to_string_lossy();
+        assert_eq!(
+            home.session(&[]).await?,
+            all_three,
+            "{layout}: the control, the real CLI loads the three language servers"
+        );
+        let args = home.planned_settings()?;
+        assert_eq!(
+            home.session(&args).await?,
+            (0, Vec::new()),
+            "{layout}: with the run's settings no language server is loaded"
         );
     }
-    std::fs::create_dir_all(market.join(".claude-plugin"))?;
-    std::fs::write(
-        market.join(".claude-plugin/marketplace.json"),
-        serde_json::json!({ "name": "m", "owner": { "name": "check" }, "plugins": entries })
-            .to_string(),
-    )?;
-    let on: serde_json::Map<String, serde_json::Value> = installed
-        .keys()
-        .map(|id| (id.clone(), true.into()))
-        .collect();
-    std::fs::write(
-        config.join("plugins/installed_plugins.json"),
-        serde_json::json!({ "version": 2, "plugins": installed }).to_string(),
-    )?;
-    std::fs::write(
-        config.join("plugins/known_marketplaces.json"),
-        serde_json::json!({ "m": {
-            "source": { "source": "directory", "path": market },
-            "installLocation": market,
-            "lastUpdated": "2026-11-13T00:00:00.000Z",
-        } })
-        .to_string(),
-    )?;
-    std::fs::write(
-        config.join("settings.json"),
-        serde_json::json!({ "enabledPlugins": on }).to_string(),
-    )?;
 
-    // The control: the home's settings alone, as a session got them before.
-    let (total, plugins) = language_servers_of_a_session(&config, &work, &[]).await?;
-    assert_eq!(
-        (total, plugins),
-        (
-            3,
-            vec![
-                "by-catalog".to_owned(),
-                "by-file".to_owned(),
-                "by-manifest".to_owned()
-            ]
-        ),
-        "the real CLI loads a language server from each of the three layouts"
-    );
-
-    // The run Yulius plans for this home. `/bin/true` stands in for the hooks' `yulius`.
-    let adapter = HarnessAdapter::new(PathBuf::from("/bin/true"), "http://127.0.0.1:9");
-    let plan = adapter.plan(&HarnessLaunch {
-        harness: Harness::ClaudeCode,
-        mode: SessionMode::New {
-            session_id: None,
-            prompt: None,
-        },
-        worktree: work.clone(),
-        sandbox_home: home.clone(),
-        run_dir: root.join("run"),
-        model: None,
-        effort: None,
-        contained: false,
-        mcp: Vec::new(),
-        credential: Secret("unused-no-provider-request-is-made".into()),
-    })?;
-    let settings = plan
-        .plan
-        .files
-        .iter()
-        .find(|file| file.path.ends_with("claude-settings.json"))
-        .ok_or("the run's settings file")?;
-    std::fs::create_dir_all(root.join("run"))?;
-    std::fs::write(&settings.path, &settings.contents)?;
-    let args = [
-        "--settings".to_owned(),
-        settings.path.to_string_lossy().into_owned(),
-    ];
-    let (total, plugins) = language_servers_of_a_session(&config, &work, &args).await?;
-    assert_eq!(
-        (total, plugins),
-        (0, Vec::new()),
-        "with the run's settings no language server is loaded"
-    );
     // The plugin without a language server is still on, and the home's file is as it was.
+    let home = &homes[0];
+    let args = home.planned_settings()?;
     let listed = tokio::time::timeout(
         Duration::from_secs(60),
         tokio::process::Command::new("claude")
             .args(&args)
             .args(["plugin", "list", "--json"])
-            .current_dir(&work)
+            .current_dir(&home.work)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", &home)
-            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("HOME", &home.home)
+            .env("CLAUDE_CONFIG_DIR", &home.config)
             .env("DISABLE_AUTOUPDATER", "1")
             .stdin(Stdio::null())
             .kill_on_drop(true)
@@ -490,7 +625,7 @@ async fn a_runs_settings_keep_the_real_cli_from_loading_a_language_server() -> T
         assert_eq!(enabled(id), Some(false.into()), "{id}: {listed}");
     }
     let kept: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(config.join("settings.json"))?)?;
+        serde_json::from_str(&std::fs::read_to_string(home.config.join("settings.json"))?)?;
     assert_eq!(kept["enabledPlugins"]["by-catalog@m"], true);
     Ok(())
 }
