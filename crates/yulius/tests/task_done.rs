@@ -1845,6 +1845,86 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
+/// SPEC-486 WFL-006: a prompt that reaches a session whose workflow a usage limit paused (here
+/// the move off the limited subscription was refused, so the session stays where it is) is told,
+/// through the prompt hook, to resume the run by its id and not to start it again. Before the
+/// limit, and for a session without a workflow, the hook adds nothing.
+#[test]
+fn a_prompt_at_a_workflow_paused_by_a_limit_is_told_to_resume_it() -> TestResult {
+    use yulius_app::ports::Crypto as _;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            workflow_limit: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let store = &app.deps.store;
+        // A second subscription whose credential cannot be opened: the move to it is refused.
+        store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("a-claude-2")?,
+                provider: Provider::Anthropic,
+                label: "Claude spare".into(),
+                credential: Some(MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"spare")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+        let id = goal_task(&app, &sandbox, &user, "Audit the code").await?;
+        wait_for("the goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        app.send_input(&id, b"before\r").await?;
+        wait_for("the first answer", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: before")
+        })
+        .await?;
+        app.send_input(&id, b"/workflow\r").await?;
+        wait_for("the refused move", Duration::from_secs(60), || async {
+            store
+                .switches(&id)
+                .await
+                .is_ok_and(|s| s.iter().any(|s| s.outcome == "refused"))
+        })
+        .await?;
+        assert!(
+            !screen_contains(&app, &id, "PROMPT CONTEXT").await,
+            "nothing is added before a limit"
+        );
+        let run = app.dynamic_workflows(&id);
+        assert_eq!(run.len(), 1, "{run:?}");
+        app.send_input(&id, b"continue\r").await?;
+        wait_for("the answer", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: continue")
+        })
+        .await?;
+        let told = format!(
+            "PROMPT CONTEXT: Note from Yulius: this session's dynamic workflow (run {}) is paused at a usage limit.",
+            run[0]
+        );
+        let seen = app.runtime(&id).hub.screen_text();
+        let flat = seen.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains(&told), "{seen}");
+        assert!(flat.contains("Do not start that workflow again"), "{seen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-290 GDW-001 (task #272, 2026-10-24: "working 11h 15m" after "Goal achieved"): the goal
 /// turn leaves a background shell (its `yulius wait`), so Claude Code's evaluator gives no verdict
 /// at its Stop. The shell's end wakes the session, and the woken turn's verdict, achieved, comes

@@ -36,7 +36,10 @@ pub struct TranscriptTail {
 /// Opens the transcript at `path`, which is in a home the agent writes: without following a
 /// link at its name and without waiting (a FIFO nobody writes would hold the watcher for good),
 /// and only when it is a regular file (ADR-0174, ADR-0315).
-fn open_regular(path: &Path) -> io::Result<File> {
+///
+/// # Errors
+/// What opening it failed with, or `InvalidInput` when it is not a regular file.
+pub fn open_regular(path: &Path) -> io::Result<File> {
     use nix::fcntl::OFlag;
     use std::os::unix::fs::OpenOptionsExt as _;
     let file = std::fs::OpenOptions::new()
