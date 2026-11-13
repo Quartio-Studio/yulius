@@ -3277,17 +3277,17 @@ impl App {
         if task.activity == Some(Activity::Done) {
             return true;
         }
-        if self.pr_news_due(task).await {
+        // One reading of its delivery for the whole decision: a merge recorded between two
+        // readings would be "no news due" by the first and "merged" by the second.
+        let record = self.deps.store.delivery(&task.id).await.ok().flatten();
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         match self.deps.store.steps(&task.id).await {
             Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
             _ => return false,
         }
-        matches!(
-            self.deps.store.delivery(&task.id).await,
-            Ok(Some(record)) if past_merge(&record.stage)
-        )
+        matches!(record, Some(record) if past_merge(&record.stage))
     }
 
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
@@ -3307,9 +3307,14 @@ impl App {
         if running && task.activity == Some(Activity::Done) {
             return true;
         }
+        // One reading of its delivery for the whole decision: a merge recorded between two
+        // readings would be "no news due" by the first and "merged" by the second.
+        let Ok(record) = self.deps.store.delivery(&task.id).await else {
+            return false;
+        };
         // Yulius still has news of its pull request for its agent (an armed merge, a merge not
         // said yet): it goes on by itself, so it is not Done (SPEC-487 CHN-001, CHN-002).
-        if self.pr_news_due(task).await {
+        if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
         // A pull request makes a task Done only when its plan is complete (#139, TSK-014).
@@ -3317,7 +3322,7 @@ impl App {
             Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
             _ => return false,
         }
-        let Ok(Some(record)) = self.deps.store.delivery(&task.id).await else {
+        let Some(record) = record else {
             return false;
         };
         if past_merge(&record.stage) {
@@ -3338,7 +3343,8 @@ impl App {
             .await
         {
             Ok(observed) => match observed.pr_state() {
-                PrState::Merged => true,
+                // Merged on GitHub before the record says so: its news is as due as then.
+                PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
                 PrState::Open => {
                     matches!(observed.checks, ChecksState::Success | ChecksState::None)
                 }

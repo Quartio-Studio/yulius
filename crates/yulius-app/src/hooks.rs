@@ -471,9 +471,6 @@ impl App {
             return self.flag_needs_attention(&task.id, None).await.map(|_| ());
         }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
-            if activity == Activity::Working {
-                self.pr_news_turn_began(&task.id);
-            }
             return Ok(());
         }
         self.runtime(&task.id)
@@ -483,11 +480,6 @@ impl App {
             .store
             .set_activity(&task.id, Some(activity), self.now())
             .await?;
-        // Only now, with the task reading Working: the turn of what the pull request watch
-        // typed has begun (SPEC-487 CHN-002).
-        if activity == Activity::Working {
-            self.pr_news_turn_began(&task.id);
-        }
         // The turn settled: its screen is kept, so a run lost later (a reboot) still shows how
         // its last turn ended (SPEC-229 RBT-002).
         if activity.is_idle()
@@ -845,6 +837,13 @@ impl App {
             self.continue_working_stretch(&ctx.task.id).await
         };
         self.set_task_activity(&task, Activity::Working).await?;
+        // Only now, with the task gone from idle to Working by a prompt sent after the pull
+        // request watch typed: the turn of that news has begun (SPEC-487 CHN-002). Not for a
+        // task that already worked: the prompt hook of news typed while a turn runs comes at
+        // the Enter, and that news starts its own turn only after the running one.
+        if task.activity != Some(Activity::Working) {
+            self.pr_news_turn_began(&task.id, Some(sent));
+        }
         self.keep_working_stretch(&task.id, stretch).await;
         // A workflow of the session is paused at a usage limit: at a prompt a person or Yulius
         // typed, its agent is told to resume it, not to start it again (SPEC-486 WFL-006).

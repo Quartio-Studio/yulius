@@ -903,6 +903,8 @@ impl App {
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
         }
+        // It went on by itself from idle: what the pull request watch typed is being answered.
+        self.pr_news_turn_began(&task.id, None);
         self.keep_working_stretch(&task.id, stretch).await;
     }
 
@@ -1103,9 +1105,6 @@ impl App {
                 .store
                 .set_activity(task_id, Some(next), self.now())
                 .await;
-            if next == Activity::Working {
-                self.pr_news_turn_began(task_id);
-            }
             self.publish_task(task_id).await;
         }
         self.probe_idle_shells(task_id).await;
