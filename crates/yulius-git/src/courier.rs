@@ -326,7 +326,8 @@ impl Git {
 
     /// Clones `url` into `dest` in the folder of the sandbox `id` of `data`, when `dest` is to
     /// be made there by a clone that carries the adapter's configuration: the clone is made
-    /// in a courier, and `dest` is a copy of the courier with `url` as its origin's address.
+    /// in a courier, and `dest` is a copy of the courier with `url` as its origin's address,
+    /// its files still to be checked out ([`Self::check_out_files`]).
     /// A new repository's configuration is written before its objects arrive, and in a
     /// sandbox's folder the sandbox's agents could add to it meanwhile.
     pub(crate) fn clone_through(
@@ -350,16 +351,50 @@ impl Git {
                 .touching(&courier.dir)
                 .timeout(self.network_timeout),
         )?;
+        self.copy_without_files(&courier.dir, dest)?;
+        self.set_remote_url(dest, "origin", url)
+    }
+
+    /// Clones the repository in the folder `source` into `dest` without checking its files
+    /// out: a transfer between two folders, which may start the shell, so nothing in it
+    /// reads files through the new repository's configuration.
+    pub(crate) fn copy_without_files(&self, source: &Path, dest: &Path) -> Result<(), GitError> {
         self.run_ok(
             Invocation::new(self, "clone", None)
-                .args(["clone", "--quiet", "--no-recurse-submodules", "--"])
-                .arg(&courier.dir)
+                .args([
+                    "clone",
+                    "--quiet",
+                    "--no-checkout",
+                    "--no-recurse-submodules",
+                    "--",
+                ])
+                .arg(source)
                 .arg(dest)
                 .touching(dest)
-                .local(&courier.dir)
+                .local(source)
                 .timeout(self.network_timeout),
         )?;
-        self.set_remote_url(dest, "origin", url)
+        Ok(())
+    }
+
+    /// Checks out the files of the new clone `dest` ([`Self::copy_without_files`]), when its
+    /// `HEAD` names a commit (a clone of an empty repository has none): in the clone, as any
+    /// other command there, with no shell.
+    pub(crate) fn check_out_files(&self, dest: &Path) -> Result<(), GitError> {
+        let born = self.run(Invocation::new(self, "rev-parse", Some(dest)).args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD",
+        ]))?;
+        if born.status.success() {
+            self.run_ok(
+                Invocation::new(self, "checkout", Some(dest))
+                    .args(["checkout", "--quiet"])
+                    .timeout(self.network_timeout),
+            )?;
+        }
+        Ok(())
     }
 }
 

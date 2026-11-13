@@ -59,6 +59,9 @@ const INHERITED_ENV: &[&str] = &[
 /// neither `ssh` nor `git` transports (their commands get the address's parts), signs nothing
 /// and shows no signatures (the signing program gets files), and lists an alternate's refs
 /// itself. What the environment switches off is in [`FIXED_ENV`].
+///
+/// No command goes into a submodule: a push that did (`push.recurseSubmodules` of the clone)
+/// pushed the submodule by its own configuration, with its own command for the other side.
 const FIXED_CONFIG: &[&str] = &[
     "-c",
     "protocol.ext.allow=never",
@@ -80,6 +83,10 @@ const FIXED_CONFIG: &[&str] = &[
     "push.gpgSign=false",
     "-c",
     "log.showSignature=false",
+    "-c",
+    "push.recurseSubmodules=no",
+    "-c",
+    "submodule.recurse=false",
 ];
 
 /// The environment of every command, after the adapter's own. Constant.
@@ -936,6 +943,8 @@ mod tests {
             "tag.gpgSign=false",
             "push.gpgSign=false",
             "log.showSignature=false",
+            "push.recurseSubmodules=no",
+            "submodule.recurse=false",
             "core.fsmonitor=false",
             "core.hooksPath=/dev/null",
         ] {

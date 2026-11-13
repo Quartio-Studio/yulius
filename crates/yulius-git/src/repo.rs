@@ -38,9 +38,13 @@ impl Git {
         Ok(())
     }
 
-    /// Clones `url` into the absolute `dest` (network timeout applies). A clone from elsewhere
-    /// into a sandbox's folder is made in a repository of the server's own first
-    /// (`clone_through`, ADR-0323).
+    /// Clones `url` into the absolute `dest` (network timeout applies).
+    ///
+    /// Into a sandbox's folder, a new repository is the sandbox's agents' to write from its
+    /// first file on (ADR-0323): a clone from elsewhere is made in a repository of the
+    /// server's own first (`clone_through`), and the files are checked out by a command of
+    /// their own, which, unlike a transfer between two folders, may not start the shell (a
+    /// filter added to the new configuration meanwhile is not run).
     pub fn clone(&self, url: &str, dest: &Path) -> Result<(), GitError> {
         validate_remote_url(url)?;
         require_absolute("clone destination", dest)?;
@@ -48,10 +52,13 @@ impl Git {
             .confinement
             .as_ref()
             .and_then(|confinement| confinement.sandbox_of_path(dest));
-        if let Some((data, id)) = a_sandboxes
-            && !Path::new(url).is_absolute()
-        {
-            return self.clone_through((&data, &id), url, dest);
+        if let Some((data, id)) = a_sandboxes {
+            if Path::new(url).is_absolute() {
+                self.copy_without_files(Path::new(url), dest)?;
+            } else {
+                self.clone_through((&data, &id), url, dest)?;
+            }
+            return self.check_out_files(dest);
         }
         self.run_ok(
             Invocation::new(self, "clone", None)

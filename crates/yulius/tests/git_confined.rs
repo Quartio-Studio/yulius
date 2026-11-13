@@ -817,6 +817,132 @@ async fn a_data_folder_behind_a_link_transfers_as_any_other() -> TestResult {
     Ok(())
 }
 
+/// A push goes into no submodule. A clone can ask for its submodules to be pushed along
+/// (`push.recurseSubmodules`, `submodule.recurse`); a submodule is pushed by its own
+/// configuration, with its own command for the other side, which the shell of a push to a
+/// playground's origin would run.
+#[tokio::test]
+async fn a_push_goes_into_no_submodule() -> TestResult {
+    let w = world().await?;
+    let (command, marker) = w.marking("ran-in-submodule");
+    // A submodule of the agent's with a commit its "remote" does not have.
+    let sub = w.wt.join("sub");
+    std::fs::create_dir_all(&sub)?;
+    git(&sub, &["init", "-q", "-b", "main"])?;
+    std::fs::write(sub.join("s.txt"), "s\n")?;
+    git(&sub, &["add", "-A"])?;
+    git(&sub, &["commit", "-q", "-m", "s"])?;
+    let nowhere = w.sandbox.join("nowhere.git");
+    for (key, value) in [
+        ("remote.origin.url", &*nowhere.to_string_lossy()),
+        ("remote.origin.receivepack", &*format!("{command}; false")),
+        ("push.default", "current"),
+    ] {
+        git(&sub, &["config", key, value])?;
+    }
+    git(&w.wt, &["add", "sub"])?;
+    git(&w.wt, &["commit", "-q", "-m", "a submodule"])?;
+    let head = git(&w.wt, &["rev-parse", "HEAD"])?;
+    for (at, (key, value)) in [
+        ("push.recurseSubmodules", "on-demand"),
+        ("submodule.recurse", "true"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        git(&w.repo, &["config", key, value])?;
+        let branch = format!("pushed-{at}");
+        w.adapter.push(&w.wt, "feat/1", &branch, &token()).await?;
+        assert_eq!(git(&w.origin, &["rev-parse", &branch])?, head, "{key}");
+        git(&w.repo, &["config", "--unset", key])?;
+    }
+    assert!(
+        !marker.exists(),
+        "the submodule's command for its remote ran"
+    );
+    Ok(())
+}
+
+/// A new clone in a sandbox's folder is the sandbox's agents' to write from its first file
+/// on: a filter added to its configuration while it is being made is not run by the shell
+/// of the transfer that makes it. Its files are checked out by a command of their own, which
+/// may start no shell; they arrive unfiltered.
+#[tokio::test]
+async fn a_filter_added_to_a_new_clone_is_not_run() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let github = root.join("github");
+    let origin = github.join("acme/app.git");
+    // Many files: a checkout that lasts.
+    std::fs::create_dir_all(&origin)?;
+    git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
+    let seed = root.join("seed");
+    std::fs::create_dir_all(&seed)?;
+    git(&seed, &["init", "-q", "-b", "main"])?;
+    for n in 0..400 {
+        std::fs::write(seed.join(format!("f{n}.txt")), format!("file {n}\n"))?;
+    }
+    git(&seed, &["add", "-A"])?;
+    git(&seed, &["commit", "-q", "-m", "first"])?;
+    git(&seed, &["push", "-q", &origin.to_string_lossy(), "main"])?;
+    let adapter = crate::support::strict_git().with_github_base(&github);
+    let sandbox = root.join("sandboxes/s1");
+    std::fs::create_dir_all(&sandbox)?;
+    let marker = sandbox.join("ran-filter");
+    let filter = format!(
+        "\n[filter \"x\"]\n\tsmudge = sh -c 'echo ran > {}; cat'\n",
+        marker.display()
+    );
+
+    // From the address (through a courier) and from a folder (a playground's origin).
+    let from_folder = origin.to_string_lossy().into_owned();
+    for (name, url) in [
+        ("from-the-web", "https://github.com/acme/app.git"),
+        ("from-a-folder", from_folder.as_str()),
+    ] {
+        let dest = sandbox.join(name);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The sandbox's side: as soon as the new repository has a configuration, and until
+        // the clone is done, it names a filter for every file.
+        let racer = {
+            let (git_dir, filter, stop) = (dest.join(".git"), filter.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let (config, attributes) =
+                    (git_dir.join("config"), git_dir.join("info/attributes"));
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    if std::fs::read_to_string(&config).is_ok_and(|text| !text.contains("[filter"))
+                    {
+                        use std::io::Write as _;
+                        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&config)
+                        {
+                            let _ = file.write_all(filter.as_bytes());
+                        }
+                    }
+                    if git_dir.join("info").is_dir() && !attributes.exists() {
+                        let _ = std::fs::write(&attributes, "* filter=x\n");
+                    }
+                    std::thread::yield_now();
+                }
+            })
+        };
+        let cloned = adapter.sync_clone(url, &dest, &token()).await;
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        racer.join().map_err(|_| "the racing thread panicked")?;
+        cloned?;
+        assert!(!marker.exists(), "{name}: the new clone's filter ran");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("f399.txt"))?,
+            "file 399\n",
+            "{name}"
+        );
+        assert!(
+            std::fs::read_to_string(dest.join(".git/config"))?.contains("[filter"),
+            "{name}: the filter was there to be run"
+        );
+    }
+    Ok(())
+}
+
 /// The launcher itself: it finds Git by the host's `PATH`, says why Git was not started, and
 /// the Git it starts executes nothing but Git's own programs: not the shell (an alias written
 /// as a shell command), not another program by its path, unless the shell was asked for (a
