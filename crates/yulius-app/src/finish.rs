@@ -118,11 +118,14 @@ pub struct TranscriptFacts {
     pub turn_moved_at: Option<yulius_domain::time::Timestamp>,
     /// What waits in Claude Code's queue, as the lines read so far say (SPEC-471 CCQ-001).
     pub queue: yulius_domain::agent_cli::Queue,
+    /// The dynamic workflows the session launched whose end was not read (SPEC-486 WFL-003).
+    pub workflows: crate::dynamic_workflow::Unfinished,
 }
 
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
+        self.workflows.observe(observation);
         if let Observation::TurnComplete { at: Some(at) }
         | Observation::TurnEnded { at: Some(at), .. } = observation
         {
@@ -217,8 +220,11 @@ impl TranscriptFacts {
                 self.goal_unfinished = goal_unfinished(*outcome);
                 self.fold_goal(*outcome);
             }
-            // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
-            Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
+            // A refused subscription cuts the turn like a limit: the task goes on elsewhere. A
+            // limit that refused a workflow's agents leaves the session at it too (SPEC-486).
+            Observation::LimitReached { .. }
+            | Observation::WorkflowLimitReached { .. }
+            | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
                 self.limit_goal_pause = None;
                 // Work before the limit answers no request made at it: its goal pause's (the
@@ -229,6 +235,7 @@ impl TranscriptFacts {
             Observation::Queue(change, at) => self.queue.record(*change, *at),
             Observation::Session { .. }
             | Observation::CompactFailed
+            | Observation::WorkflowLaunched { .. }
             | Observation::BackgroundStarted { .. }
             | Observation::BackgroundEnded { .. }
             | Observation::BackgroundResumable { .. } => {}
@@ -968,6 +975,8 @@ impl App {
         facts: TranscriptFacts,
     ) {
         let runtime = self.runtime(task_id);
+        // The workflows left unfinished are the replay's (SPEC-486 WFL-003).
+        runtime.with_workflows(|workflows| workflows.clone_from(&facts.workflows));
         if let Some(at) = facts.turn_closed_at {
             runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
         }
@@ -1535,6 +1544,15 @@ impl App {
         u32::try_from(runtime.background_shells.load(Ordering::SeqCst)).ok()
     }
 
+    /// The run ids of the dynamic workflows the task's session launched whose end was not read
+    /// (SPEC-486 WFL-003). Public for tests, which wait until a launch was read.
+    #[must_use]
+    pub fn dynamic_workflows(&self, task_id: &TaskId) -> Vec<String> {
+        self.existing_runtime(task_id)
+            .map(|runtime| runtime.with_workflows(|workflows| workflows.runs()))
+            .unwrap_or_default()
+    }
+
     /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
     /// merge), as last probed: it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
@@ -2072,6 +2090,7 @@ mod tests {
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
                 queue: yulius_domain::agent_cli::Queue::default(),
+                workflows: crate::dynamic_workflow::Unfinished::default(),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.

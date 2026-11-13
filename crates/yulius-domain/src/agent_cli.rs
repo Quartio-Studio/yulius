@@ -159,6 +159,9 @@ pub enum QueueChange {
     /// running turn at a tool result, given to another agent, put back into the prompt box, or
     /// dropped.
     Taken,
+    /// The entry that was handed on was only written to the transcript (a notification with
+    /// `queueTranscriptOnly`, SPEC-486): its hand-over is over and no turn starts.
+    Written,
 }
 
 /// What waits in Claude Code's queue, as the records of one run say, in the order they were
@@ -196,6 +199,7 @@ impl Queue {
                 self.handing_on = true;
             }
             QueueChange::Taken => self.waiting = self.waiting.saturating_sub(1),
+            QueueChange::Written => self.turn_seen(),
         }
         // No record names the entry that left: it is taken to be one that was not left over,
         // while there is one (SPEC-479 SWQ-002).
@@ -538,6 +542,22 @@ mod tests {
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap_or_else(|| panic!("{text} parses"))
+    }
+
+    /// SPEC-486: a notification handed on for the transcript only ends its hand-over with no
+    /// turn; what waits is untouched.
+    #[test]
+    fn an_entry_written_for_the_transcript_only_ends_its_hand_over() {
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::HandedOn, Some(Timestamp(5)));
+        let handing = queue;
+        queue.record(QueueChange::Written, Some(Timestamp(6)));
+        assert_ne!(queue, handing, "the hand-over is over");
+        let mut seen = handing;
+        seen.turn_seen();
+        assert_eq!(queue, seen, "as when its turn was seen");
     }
 
     #[test]
