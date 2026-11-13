@@ -907,10 +907,10 @@ pub fn harness_with_host(
     )
 }
 
-/// Makes the agent secret `id` a production secret while it keeps its hosts, as a row from
-/// before SPEC-134 round 2 M-B could be: the store refuses that pair to every change since
-/// (SPEC-262 VTR-001), so it is written back whole, to prove the runtime never uses such a secret.
-pub async fn legacy_production_secret(
+/// Makes the agent secret `id` a production secret, written back whole. It loses its hosts:
+/// a production secret has none, and the store takes no row that says otherwise (ADR-0324:
+/// the pair with hosts kept is refused here).
+pub async fn production_secret(
     store: &SqliteStore,
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -920,6 +920,12 @@ pub async fn legacy_production_secret(
     assert!(record.sandbox_id.is_some(), "a project secret");
     assert!(store.vault_delete(id).await?);
     record.cd_prod = true;
+    let with_its_hosts = store.vault_insert(&record).await;
+    assert!(
+        matches!(&with_its_hosts, Err(yulius_app::error::AppError::Conflict(why)) if why.contains("no hosts")),
+        "a production secret that keeps hosts is no row: {with_its_hosts:?}"
+    );
+    record.hosts.clear();
     store.vault_insert(&record).await?;
     Ok(())
 }
