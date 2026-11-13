@@ -646,6 +646,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   a tab on its way to a page the secret is not for gets nothing typed. The second is asked
   although Chrome 157 holds its answers during a navigation (measured), because nothing
   promises that.
+- Slice 8's first gate failed in slice 5's own test
+  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task`: the task was
+  flagged before "Yulius is typing the first message" was cleared, so a message sent on seeing
+  the flag was refused as "still typing" instead of with the withheld screen. The typing now
+  ends first (`supervisor.rs`); nothing was typed either way. Fixed here, not filed: it is
+  this task's code.
 - From the review of slice 6, round 3 (three nits, all answered in slice 7): a tab's later
   announcement held with its first is replayed too; a tab made and closed during the wait is
   no tab; a probe whose tab comes after it gave up closes it.
