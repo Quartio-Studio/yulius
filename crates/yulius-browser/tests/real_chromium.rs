@@ -847,38 +847,6 @@ async fn a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium() -
             y: None,
         })
         .await?;
-    // PROBE (temporary)
-    {
-        let cdp = browser.cdp();
-        let t = std::time::Instant::now();
-        let attached = cdp
-            .call(
-                "Target.attachToTarget",
-                json!({"targetId": tab.as_str(), "flatten": true}),
-            )
-            .await?;
-        let session = attached["sessionId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        eprintln!("attach {:?}", t.elapsed());
-        let tree = cdp
-            .call_session(&session, "Page.getFrameTree", json!({}))
-            .await?;
-        eprintln!(
-            "frameTree {:?} url {}",
-            t.elapsed(),
-            tree["frameTree"]["frame"]["url"]
-        );
-        let eval = cdp
-            .call_session(
-                &session,
-                "Runtime.evaluate",
-                json!({"expression": "location.href"}),
-            )
-            .await?;
-        eprintln!("evaluate {:?} {}", t.elapsed(), eval["result"]["value"]);
-    }
     // Chrome 157 answers nothing about the page while the navigation is pending (the look at
     // the tab waits for the new document, which the page rule then refuses); a browser that
     // answers meanwhile is refused by where the tab is going. Either way nothing is typed.
