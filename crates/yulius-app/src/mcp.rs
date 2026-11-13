@@ -229,7 +229,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, its plan is complete and nothing of its pull request is left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project that has not ended is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, its plan is complete and nothing of its pull request is left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
@@ -237,7 +237,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
                 "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
                 "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done and #13 done\": #N done, #N merged or #N ended, joined by and, or, not and parentheses, at most 64 tasks (not with after_task)"},
-                "after_all_tasks": {"type": "boolean", "description": "Wait for every task of the project that has not ended at this call (running, queued or waiting; prepared ones left out) to be done: stored as the start_rule that names them, which the answer shows; with none left it starts now (alone: no other start choice with it)"},
+                "after_all_tasks": {"type": "boolean", "description": "Wait for every task of the project with work still coming at this call (working, waiting for a person, queued or chained) to be done: stored as the start_rule that names them, which the answer shows. Left out: ended and stopping tasks, tasks the list shows Done or Answered, and prepared ones. With none left it starts now (alone: no other start choice with it)"},
                 "supertask": {"type": "boolean", "description": "Run alone in the project: wait for the running tasks, and every other task waits for this one (not with after_task or start_rule)"},
                 "prepared": {"type": "boolean", "description": "Prepare it without starting: it waits until the person presses Start now (not with after_task, start_rule or supertask)"},
                 "start_at": {"type": "string", "description": "Prepare it and start it by itself at this RFC 3339 time, e.g. \"2026-10-15T09:00:00+02:00\" (at most 366 days ahead)"},
@@ -267,7 +267,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "number": {"type": "integer", "description": "Task number within this sandbox"},
                 "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
                 "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done\" (not with after_task)"},
-                "after_all_tasks": {"type": "boolean", "description": "Wait for every other task of the project that has not ended (prepared ones and tasks waiting on this one left out) to be done, stored as the start_rule that names them (alone)"},
+                "after_all_tasks": {"type": "boolean", "description": "Wait for every other task of the project with work still coming to be done, as task_create's after_all_tasks; tasks waiting on this one are left out too; stored as the start_rule that names them (alone)"},
                 "supertask": {"type": "boolean", "description": "Start now as a supertask (only when the person asks)"},
                 "prepared": {"type": "boolean", "description": "Wait until the person presses Start now"},
                 "start_at": {"type": "string", "description": "Prepared, starting by itself at this RFC 3339 time"}
@@ -1193,7 +1193,7 @@ mod tests {
             "nothing of its pull request is left to come",
             "a merge Yulius is about to make",
             "`#12 merged` when the merge itself matters",
-            "with after_all_tasks until every task of the project that has not ended is done",
+            "with after_all_tasks until every task of the project with work still coming is done",
             "The answer's start_rule is the rule as stored",
         ] {
             assert!(create.contains(said), "task_create misses `{said}`");

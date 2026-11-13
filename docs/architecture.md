@@ -3133,12 +3133,15 @@ flowchart LR
 A tested or merged pull request is not the end of a task that merges its own: its agent arms
 the merge and stops, the checks pass, the merge queue merges, and the pull request watch types
 the news into the session, which then goes on (the next slice, the closing summary). While
-Yulius has such news for the agent (`App::pr_news_due`: a merge armed or being decided, an
-armed merge that ended without merging and was not explained yet, a merge the watch saw open
-and has not told), the task goes on by itself: `yulius_wait` is true, the list reads "Waiting for
-checks or merge", and `task_is_done` answers no, so no chain or start rule starts on it and no
-supertask takes it for finished. A task the watch tells nothing (a playground's, a pull request
-it never saw open) is Done as before
+Yulius has such news for the agent, the task goes on by itself: `yulius_wait` is true, the list
+reads "Waiting for checks or merge", and `task_is_done` answers no, so no chain or start rule
+starts on it, no supertask takes it for finished and Home counts it as working. One rule says
+when (`news_due` in `pr_watch.rs`, asked through `App::pr_news_due`): a merge is armed or being
+decided (known from the armed merges' file until a restarted server put them back); or, for a
+task the watch types into, news was typed and its turn has not begun (at most two minutes), a
+merge the watch saw open is not told, or an armed merge that ended without merging is not
+explained yet. A task the watch tells nothing is Done as before: a playground's, one whose pull
+request it never saw open, one a person paused or an update holds
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 

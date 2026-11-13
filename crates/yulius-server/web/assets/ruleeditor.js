@@ -89,7 +89,7 @@ export function openRuleEditor({ tasks, value, onUse }) {
   const list = h('ol', { class: 'rule-conditions' });
   const preview = h('p', { class: 'rule-preview', role: 'status' });
   const addButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: add }, icon('plus', { size: 14 }), 'Add condition');
-  const limitNote = h('span', { class: 'field-hint' }, `A rule names at most ${RULE_MAX_CONDITIONS} conditions.`);
+  const limitNote = h('span', { class: 'field-hint' }, `The editor adds at most ${RULE_MAX_CONDITIONS} conditions.`);
 
   function add() {
     if (rule.conditions.length >= RULE_MAX_CONDITIONS) return;

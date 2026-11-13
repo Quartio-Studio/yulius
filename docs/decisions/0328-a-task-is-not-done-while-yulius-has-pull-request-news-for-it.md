@@ -29,10 +29,22 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
 
 ## Decision
 
-- **Pull request news that is due means the task goes on by itself.** One function says so
-  (`App::pr_news_due`): a merge is armed or being decided; an armed merge ended without
-  merging and the watch has not said how; or the pull request is merged and the watch, which
-  saw it open, has not said so.
+- **Pull request news that is due means the task goes on by itself.** One rule says so
+  (`news_due`, asked through `App::pr_news_due`): a merge is armed or being decided; or, for a
+  task the watch types into, news was typed and the turn it starts has not begun, the pull
+  request is merged and the watch, which saw it open, has not said so, or an armed merge ended
+  without merging and the watch has not said how. The watch's own conditions (`merge_untold`,
+  `outcome_key`) decide both what it types and what is due.
+- **Typed is not heard.** After the watch typed, the task still reads idle until Claude Code's
+  prompt hook (or the transcript's turn) makes it Working. The news stays due until then,
+  for at most two minutes (`NEWS_TURN_WAIT_MS`: a paste Claude Code swallowed must not hold
+  a chain for ever).
+- **An armed merge is known before it is restored.** A server that started again serves
+  hooks and chain passes before it put the saved armed merges back; until it did, their file
+  answers (`App::merge_is_armed`).
+- **A paused task is told nothing, and reads as before.** The watch types nothing into a task
+  a person paused or an update holds, so no news is due to it, except an armed merge, which
+  Yulius makes whatever the agent does.
 - **Such a task is not Done and not a person's turn.** `task_is_done` and
   `task_is_done_locally` answer no, and the task's `yulius_wait` fact is true, so the list
   reads "Waiting for checks or merge", as it does for an agent that waits in `yulius wait`.
@@ -45,9 +57,12 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   `task_update` answer `start_rule` (the whole rule), `runs_after` only for a task chained
   after one task, and `start_blocked` with the reason when the task will not start by itself.
 - **"After all current tasks"** is `after_all_tasks` on `task_create` and `task_update`: the
-  tool writes the rule that names every task of the project that has not ended (prepared
-  tasks, the task itself and tasks waiting on it left out). A rule names at most 64 tasks
-  (16 before); the web editor keeps building 16.
+  tool writes the rule that names every task of the project with work still coming. Left
+  out: tasks that ended or are stopping; tasks the list shows under Done (done, or
+  "Answered": an idle session with nothing open never becomes `done`, and would hold the rule
+  for good); prepared tasks; and the task whose start changes, with the tasks waiting on it.
+  A rule names at most 64 tasks (16 before) in at most 1400 characters (500 before); the web
+  editor keeps building 16.
 
 ## Alternatives
 
@@ -70,7 +85,16 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   (seconds to minutes), and from the integration branch, not from its predecessor's unmerged
   branch, when that predecessor merges its own pull request.
 - While the watch cannot type (a person's draft sits in the prompt box, a person must act
-  first), the task keeps waiting and so does its chain; the list says it waits.
+  first), the task keeps waiting and so does its chain; the list says it waits. For the same
+  time a merged task is not archived or deleted without stopping it first (the list does not
+  show it Done yet): seconds, in the usual case.
+- A task paused with a merged pull request it was not told of reads Done, as before this
+  decision; when it is resumed it is told, and goes on if it has more to do.
+- News typed in the instant before a restart of the server is not remembered as "typed":
+  the task may read Done until its turn begins.
+- A rule of 64 tasks reads each named task once per pass, and a reading may ask GitHub (an
+  idle task with an open pull request and no armed merge); passes run at every turn's end in
+  the sandbox and every minute.
 - What the watch told is kept in memory beside its file, since the task list asks for every
   idle task with a merged pull request.
 - A rule written by `after_all_tasks` needs a person once one of its tasks ends other than

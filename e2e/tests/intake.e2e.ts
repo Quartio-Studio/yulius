@@ -363,7 +363,7 @@ test('the rule editor builds at most 16 conditions', async ({ app, screen }) => 
     await expect(editor.getByRole('combobox', `Task of condition ${n}`)).toBeVisible();
   }
   await expect(add).toBeDisabled();
-  await expect(editor.getByText('A rule names at most 16 conditions.')).toBeVisible();
+  await expect(editor.getByText('The editor adds at most 16 conditions.')).toBeVisible();
   await editor.getByRole('button', 'Remove condition 16').click();
   await expect(add).toBeEnabled();
 });

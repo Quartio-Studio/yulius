@@ -84,7 +84,8 @@ under way; a slice is added to it when the one before is merged.
 
 ### The ability table (target)
 
-Kept current in `docs/product.md` for what is delivered; here for all of it. "Person's rights":
+The target, for all of it; it goes into `docs/product.md` complete with slice 11, and until
+then each slice's part is described there in words. "Person's rights":
 the function the web UI's route calls, with the person's rights checked at the call.
 
 | Ability | Superagent | Task's agent | Why |
@@ -116,20 +117,20 @@ the function the web UI's route calls, with the person's rights checked at the c
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| CHN-001 | A running task whose merge is armed or being decided is not Done, whatever its pull request's checks say: Yulius will merge it and tell its agent. A task chained after it, or waiting on a rule that names it `done`, keeps waiting, and the task list reads "Waiting for checks or merge", not Done and not a person's turn. | `merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge` |
-| CHN-002 | A running task whose pull request is merged is Done only once the pull request watch, when it saw that pull request open, has told its agent of the merge and the turn that news starts has ended. The same holds for an armed merge that ended without merging until the watch said how. A task the watch tells nothing (a playground's, one it never saw open) is Done as before. | `pr_watch::a_chained_task_waits_until_its_predecessor_heard_of_its_merge` |
+| CHN-001 | A running task whose merge is armed or being decided is not Done, whatever its pull request's checks say: Yulius will merge it and tell its agent. A task chained after it, or waiting on a rule that names it `done`, keeps waiting, and the task list reads "Waiting for checks or merge", not Done and not a person's turn. A server that started again knows the armed merges before it put them back. | `merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge`, `merge_train::a_restarted_server_keeps_a_chained_task_waiting_for_an_armed_merge` |
+| CHN-002 | A running task whose pull request is merged is Done only once the pull request watch, when it saw that pull request open, has told its agent of the merge and the turn that news starts has ended: while the news is typed and that turn has not begun (for at most two minutes), it still is not Done. The same holds for an armed merge that ended without merging until the watch said how. A task the watch tells nothing is Done as before: a playground's, one whose pull request it never saw open, and one a person paused or an update holds. A supertask's wait and Home's counts follow the same rule. | `task_done::a_chained_task_waits_until_its_predecessor_heard_of_its_merge` (real hooks, the prompt hook held at its check), `merge_train::a_task_chained_after_a_dropped_armed_merge_waits_for_its_news`, `supertask::a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge`, `pr_watch::tests::news_is_due_until_the_agent_heard_it` |
 | CHN-003 | An achieved goal is Done as before, and so are a closed task and a task with no pull request news left: CHN-001 and CHN-002 remove no Done state that was final. | the tests of TSK-012 and TSK-014 unchanged (`intake::chained_tasks_start_on_done_and_wait_for_a_person_otherwise`, `task_done::a_chain_starts_when_its_predecessor_achieves_its_goal`) |
-| CHN-004 | `tasks_list`, `task_get`, `task_create` and `task_update` answer how a waiting task starts as it is stored: `start_rule` with the whole rule for a rule, `runs_after` only for a task chained after one task, and `start_blocked` with the reason when it needs a person. Their text shows the rule in full. | `manage_tools` tests |
-| CHN-005 | `task_create` and `task_update` take `after_all_tasks: true`: the task waits for every task of the project that has not ended at the call (its own task and tasks waiting on it left out) to be done, stored as the rule that names them, so it reads back like any rule. A rule names at most 64 tasks. With no such task it starts now. | `manage_tools` tests; `yulius-domain` rule tests |
-| CHN-006 | `task_create`, `task_update` and their descriptions say what `done` means (the task finished and nothing of its pull request is left to come), and name `#N merged` for work that needs the merge itself. | `mcp::tests` |
+| CHN-004 | `tasks_list`, `task_get`, `task_create` and `task_update` answer how a waiting task starts as it is stored: `start_rule` with the whole rule for a task waiting on a rule, `runs_after` only for a task chained after one task, and `start_blocked` with the reason when it needs a person. Their text shows the rule in full. A task that has started answers neither `start_rule` nor `start_blocked`. | `manage_tools::a_start_rule_reads_back_whole`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `mcp_text::tests::a_waiting_tasks_rule_reads_whole` |
+| CHN-005 | `task_create` and `task_update` take `after_all_tasks: true`, alone among the start choices (a blank text is no choice): the task waits for every task of the project with work still coming to be done, stored as the rule that names them, so it reads back like any rule. Left out: tasks that ended or are stopping, tasks the list shows under Done (done or "Answered"), prepared tasks, and the task whose start changes with the tasks waiting on it, directly or through others. A rule names at most 64 tasks in at most 1400 characters; more tasks are refused with what to do. With no such task it starts now and the answer says so. The caller's person is checked before anything is counted. | `manage_tools::after_all_tasks_names_every_task_that_has_not_ended`, `manage_tools::after_all_tasks_with_nothing_left_starts_now`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `manage_tools::after_all_tasks_counts_nothing_for_a_person_without_access`, `rule::tests::the_limits_are_enforced` |
+| CHN-006 | `task_create`, `task_update` and their descriptions say what `done` means (the task finished and nothing of its pull request is left to come), and name `#N merged` for work that needs the merge itself. | `mcp::tests::the_start_choices_say_what_done_waits_for` |
 | SAR-001 | The rule: every function a person's route calls is served to their Superagent as a tool, run with the person's rights at the call and audited with the Superagent as actor, unless the ability table names why not. Slices 2 to 11 deliver it wall by wall. | slices 2 to 11 |
 
 ## Plan
 
-- [ ] A chained task waits while Yulius has pull request news for its predecessor (CHN-001 to CHN-003)
-- [ ] Tools read a start rule back as stored and take "after all current tasks" (CHN-004 to CHN-006)
-- [ ] Slice 1's documents: product, architecture, API, the decision and the changes log
-- [ ] Slice 1's independent review answered test-first
+- [x] A chained task waits while Yulius has pull request news for its predecessor (CHN-001 to CHN-003)
+- [x] Tools read a start rule back as stored and take "after all current tasks" (CHN-004 to CHN-006)
+- [x] Slice 1's documents: product, architecture, API, the decision and the changes log
+- [x] Slice 1's independent review answered test-first
 
 ## Acceptance criteria
 
@@ -137,26 +138,34 @@ the function the web UI's route calls, with the person's rights checked at the c
   the chained task stays `chained` through a chain pass and the predecessor's summary has
   `yulius_wait: true`; after the merge it leaves `chained`.
 - AC-CHN-2: with a predecessor idle and its pull request merged but not told, the chained task
-  stays `chained` through a chain pass and the background tick's pass; after the watch typed
-  the merge and that turn ended, it starts.
+  stays `chained` through a chain pass and the background tick's pass; it stays so after the
+  watch typed the merge while that turn has not begun; once that turn ended, it starts.
 - AC-CHN-3: `task_get` of a task waiting on `#1 done and #2 done and #3 done` answers that
   rule, in text and in the record, and no `runs_after`.
-- AC-CHN-4: `task_create` with `after_all_tasks: true` among three live tasks answers a
-  `start_rule` naming exactly those three; with none it answers a task that starts now.
+- AC-CHN-4: `task_create` with `after_all_tasks: true` among two live tasks, an ended, a
+  stopping, an answered and a prepared one answers a `start_rule` naming exactly the two;
+  with none it answers a task that starts now.
 - Every gate of the repository passes on the pull request head.
 
 ## Test plan
 
 - Integration, real repositories and the production Git adapter (`tests/merge_train.rs`): an
   armed, green pull request and a task chained after it; the merge by the queue.
-- Integration, a live fake session (`tests/pr_watch.rs`): a merged pull request, the watch's
-  pass that types the news, the chain's start after it.
+- Integration, a live session of the fake agent with Claude Code's real hooks
+  (`tests/task_done.rs`): a merged pull request, the watch's pass that types the news, the
+  prompt hook held at its check (`race::Point::PromptTurnChecked`), the chain's start at that
+  turn's end.
+- Integration (`tests/merge_train.rs`, `tests/supertask.rs`): a server started again before
+  the armed merges are back; an armed merge dropped on a green head; a supertask and Home's
+  counts with a merge not told.
 - Integration over the MCP endpoint (`tests/manage_tools.rs`): the rule read back, `after_all_tasks`
   with live, ended and waiting tasks, the 64-task bound.
 - Unit: the rule's bounds (`yulius-domain`), the tools' texts (`mcp_text`), the descriptions.
-- Not exercised by a test: the real Claude Code's Stop hook at the end of the turn the merge
-  news starts (the fake session of `tests/pr_watch.rs` runs no hooks; its turn's end is
-  recorded as the hook would).
+- Unit: the news rule's every branch (`pr_watch::tests::news_is_due_until_the_agent_heard_it`).
+- Mutation: seven mutants of the rule's uses, each failed by a named test
+  (`target/evidence/mutants-r1.sh`).
+- Not exercised by a test: the two-minute bound on typed news (a paste Claude Code swallows),
+  and the watch telling a merge to a run reattached after a restart.
 
 ## Decisions
 
@@ -174,5 +183,19 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`after_all_tasks` is stored as the rule it means**, so it reads back, shows in the editor
   and is evaluated like any rule. A task that ends other than done makes it need a person, as
   for every chain: "all done" is not "all gone".
+- **What `after_all_tasks` waits for is what the list shows as not finished** (review round 1,
+  M4). Naming every task that has not ended would name an "Answered" session, which never
+  becomes `done` by itself: the rule would never be true, and closing that session would make
+  it false. So the tool asks the list's own rule (`AttentionFacts::group`) and leaves Done
+  and ended tasks out.
+- **A paused or held task is told nothing, so no news is due to it** (review round 1, L6),
+  except an armed merge. It reads as before this change; the alternative, waiting for a
+  resume nobody may give, would hold a chain and keep a merged task from being archived.
+- **The person's decisions (asked 2026-11-13, answered "ok").** For the later slices:
+  production deploy, rollback and promotion to `main` stay behind one confirmation the person
+  gives in the Superagent's panel (the typed project slug; stored, amendable, still there when
+  they return); each cross-sandbox action keeps its approval, made lasting; Update now and
+  Restart run directly for a superadmin's Superagent, with the buttons' refusals; no agent
+  ever sees a secret's value, which the person types masked beside the chat.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.

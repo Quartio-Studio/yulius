@@ -14,14 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   pass, and for up to 20 seconds between its merge and the moment the pull request watch
   tells its agent, which then goes on. Now a running task is neither Done nor a person's turn
   while Yulius has such news for its agent (a merge armed or being decided, an armed merge's
-  end or a merge not told yet): it reads "Waiting for checks or merge", and chains, start
-  rules and a supertask's wait keep waiting. Achieved goals, closed tasks and playgrounds are
-  as before. The tools (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
+  end or a merge not told yet, news typed whose turn has not begun): it reads "Waiting for
+  checks or merge", and chains, start rules and a supertask's wait keep waiting. Achieved
+  goals, closed and paused tasks and playgrounds are as before. The tools (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
   waiting task's start as stored: `start_rule` with the whole rule (it read "after" the
   rule's first task only), `runs_after` for a task chained after one task, `start_blocked`
   with the reason when it will not start by itself. `after_all_tasks: true` on `task_create`
-  and `task_update` waits for every task of the project that has not ended, written as the
-  rule that names them; a rule names at most 64 tasks (16 before; the editor builds 16).
+  and `task_update` waits for every task of the project with work still coming (not the ended,
+  the prepared, or those the list shows Done or Answered), written as the rule that names
+  them; a rule names at most 64 tasks (16 before; the editor builds 16).
 - An armed merge ends with its task's run (SPEC-483 slice 15, task #465). A merge an agent
   armed outlived the task: for a task a person had stopped or closed, a green pull request
   that was up to date was still merged, one behind `dev` waited for ever (bringing it up to
