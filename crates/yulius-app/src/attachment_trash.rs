@@ -625,6 +625,10 @@ impl App {
                     AppError::Invalid("name the task to restore into with `into`".into())
                 })?,
             };
+            // Files put among a task's attachments are an attachment to it: its owner's
+            // (SPEC-490 OWN-004), as `POST /api/tasks/{tid}/attachments` is.
+            let ctx = self.manage_context(caller).await?;
+            self.require_control(&ctx, &into).await?;
             let folder = into.id.as_str().to_owned();
             let shown = [ATTACHMENTS_DIR, "tasks", &folder]
                 .iter()

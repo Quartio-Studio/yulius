@@ -494,7 +494,6 @@ async fn a_request_releases_only_its_own_task_and_only_for_its_owner() -> TestRe
             format!("/api/tasks/{waiting}/start-now"),
             None,
         ),
-        (Method::POST, format!("/api/tasks/{waiting}/stop"), None),
         (
             Method::PUT,
             format!("/api/tasks/{waiting}/schedule"),

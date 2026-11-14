@@ -1277,7 +1277,7 @@ impl App {
             return true;
         };
         match self.deps.store.task(task).await {
-            Ok(Some(task)) => task.owner == ctx.user.id,
+            Ok(Some(task)) => crate::tasks::owns(&task, &ctx.user.id),
             Ok(None) => true,
             Err(_) => false,
         }

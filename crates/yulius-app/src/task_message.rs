@@ -203,20 +203,11 @@ impl App {
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
             return Err(AppError::Forbidden("a task cannot message itself".into()));
         }
-        // A task holding its owner's personal secrets or MCP servers is directed by its owner
-        // alone (SPEC-245, SPEC-332): another person's message would steer an agent holding
-        // their credential.
-        if caller.user != task.owner
-            && (self.holds_personal_secrets(&task).await?
-                || self.holds_personal_mcp(&task).await?
-                || self.live_run_holds_personal_mcp(&task).await?)
-        {
-            return Err(AppError::Forbidden(format!(
-                "task #{} holds @{}'s personal secrets or MCP servers, so only they message it",
-                task.number,
-                self.login_of(&task.owner).await
-            )));
-        }
+        // A message steers the task, so it is its owner's (SPEC-490 OWN-004): queued into a
+        // request, typed into a session, past a draft or not. That also keeps another person's
+        // words from an agent holding the owner's personal secrets or MCP servers (SPEC-245,
+        // SPEC-332).
+        self.require_control(&ctx, &task).await?;
         let text = args
             .get("text")
             .and_then(Value::as_str)
@@ -231,8 +222,8 @@ impl App {
                 MAX_MESSAGE_BYTES / 1024
             )));
         }
-        // The owner alone decides that a message goes out together with what they left in
-        // their task's prompt box (SPEC-487 TCT-006).
+        // The owner decides that a message goes out together with what they left in their
+        // task's prompt box (SPEC-487 TCT-006); every message is the owner's (above).
         let with_draft = match args.get("with_draft") {
             None | Some(Value::Null) => false,
             Some(Value::Bool(with_draft)) => *with_draft,
@@ -242,14 +233,6 @@ impl App {
                 ));
             }
         };
-        if with_draft && caller.user != task.owner {
-            return Err(AppError::Forbidden(format!(
-                "task #{} is @{}'s: only its owner sends a message past what they left in its \
-                 prompt box",
-                task.number,
-                self.login_of(&task.owner).await
-            )));
-        }
         // A prompt Yulius held for the person's decision (TSK-013) is back in the prompt box
         // and reads as a draft: it is decided on its card, never carried on by a message.
         if with_draft && self.deps.store.pending_hold(&task.id).await?.is_some() {

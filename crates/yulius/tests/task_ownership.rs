@@ -1,6 +1,7 @@
-//! SPEC-070: a task is owned by one person, whose GitHub credentials it uses. Only the owner
-//! changes the task; anyone else who may work in the project asks the owner for control, and a
-//! hand-over moves the task's GitHub identity to the new owner.
+//! SPEC-070, SPEC-490: a task is owned by one person, whose GitHub credentials it uses. Only the
+//! owner steers the task; anyone else who may work in the project stops, archives and deletes
+//! it, and asks the owner for control, and a hand-over moves the task's GitHub identity to the
+//! new owner.
 
 use axum::http::Method;
 use serde_json::json;
@@ -15,10 +16,13 @@ use yulius_domain::task::TaskStatus;
 
 use crate::support::{
     Creds, Harness, call, harness, mcp_tool, perms, seed_github_user, seed_live_attempt,
-    seed_sandbox, seed_task, tool_text,
+    seed_sandbox, seed_task,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// A task that rests: stopped by a person.
+const RESTING: TaskStatus = TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled);
 
 /// Alice (`u-a`) and Bob (`u-b`) may both write to `acme/repo`; Alice created task `t1`, whose
 /// live run has the task token `tt`.
@@ -119,17 +123,22 @@ async fn auth(h: &Harness, id: &str) -> Result<AuthContext, Box<dyn std::error::
     })
 }
 
-/// The task writes of the web API (R3), each with a body that passes its validation.
-fn writes(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
+/// The ways the web API steers a task (SPEC-490 OWN-004), each with a body that passes its
+/// validation.
+fn steering(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
     let path = |rest: &str| format!("/api/tasks/{task}{rest}");
     vec![
-        (Method::POST, path("/stop"), None),
         (Method::POST, path("/continue"), Some(json!({}))),
         (Method::POST, path("/switch"), Some(json!({}))),
+        (Method::POST, path("/pause"), None),
+        (Method::POST, path("/resume"), None),
         (Method::POST, path("/start-now"), None),
-        (Method::POST, path("/archive"), None),
-        (Method::POST, path("/restore"), None),
-        (Method::DELETE, path(""), None),
+        (
+            Method::PUT,
+            path("/schedule"),
+            Some(json!({"start_at": null})),
+        ),
+        (Method::PUT, path("/start"), Some(json!({}))),
         (
             Method::POST,
             path("/queued-messages"),
@@ -147,25 +156,40 @@ fn writes(task: &str) -> Vec<(Method, String, Option<serde_json::Value>)> {
             path("/attachments?name=notes.txt"),
             Some(json!("notes")),
         ),
+        (Method::POST, path("/control-request/accept"), None),
     ]
 }
 
-/// R3, AC3: a person who may work in the project but does not own the task changes nothing of
-/// it, and is told whose it is; the owner passes the ownership check.
+/// What the refusal of control says (SPEC-490 OWN-004): whose the task is, how to ask, and what
+/// is open to everyone.
+fn says_whose_and_how(message: &str) -> bool {
+    message.contains("@alice")
+        && message.contains("only they steer it")
+        && message.contains("Ask them for control")
+        && message.contains("You can still stop, archive or delete it")
+}
+
+/// SPEC-490 OWN-004, AC-3 (SPEC-070 R3): a person who may work in the project but does not own
+/// the task steers nothing of it, and is told whose it is, how to ask and what they may do; an
+/// instance administrator is refused the same; the owner passes the ownership check.
 #[tokio::test]
-async fn only_the_owner_writes_to_a_task() -> TestResult {
+async fn only_the_owner_steers_a_task() -> TestResult {
     let f = fixture().await?;
     let id = f.task.id.as_str();
-    for (method, path, body) in writes(id) {
-        let refused = call(&f.h.router, method.clone(), &path, body, &f.bob).await?;
-        assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
-        let message = refused.body["error"]["message"]
-            .as_str()
-            .unwrap_or_default();
-        assert!(
-            message.contains("@alice") && message.contains("control"),
-            "{path}: {message}"
-        );
+    let admin = seed_github_user(&f.h, "u-admin", "ada").await?;
+    f.h.github.set_perm("ada", "acme/repo", perms("admin"));
+    f.h.store
+        .update_user_flags(&UserId::parse("u-admin")?, None, Some(true))
+        .await?;
+    for who in [&f.bob, &admin] {
+        for (method, path, body) in steering(id) {
+            let refused = call(&f.h.router, method.clone(), &path, body, who).await?;
+            assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
+            let message = refused.body["error"]["message"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(says_whose_and_how(message), "{path}: {message}");
+        }
     }
     let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
     assert_eq!(task, f.task, "nothing changed");
@@ -182,6 +206,113 @@ async fn only_the_owner_writes_to_a_task() -> TestResult {
         .await?;
         assert_eq!(tried.status, 409, "{rest}: {}", tried.body);
     }
+    Ok(())
+}
+
+/// One call of a task route by `who`.
+async fn task_call(
+    f: &Fixture,
+    method: Method,
+    rest: &str,
+    who: &Creds,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        method,
+        &format!("/api/tasks/{}{rest}", id_of(f)),
+        None,
+        who,
+    )
+    .await
+}
+
+/// SPEC-490 OWN-002, AC-1: a person who may work in the project stops, archives, restores and
+/// deletes a task they do not own, with the checks these have for its owner (a running task is
+/// not archived or deleted before it is stopped).
+#[tokio::test]
+async fn anyone_who_may_work_tidies_another_persons_task() -> TestResult {
+    let f = fixture().await?;
+    // Running: archive and delete say to stop it first, as they tell its owner.
+    for (method, rest) in [(Method::POST, "/archive"), (Method::DELETE, "")] {
+        let early = task_call(&f, method, rest, &f.bob).await?;
+        assert_eq!(early.status, 409, "{rest}: {}", early.body);
+        assert!(early.body.to_string().contains("stop the task"), "{rest}");
+    }
+    let stopped = task_call(&f, Method::POST, "/stop", &f.bob).await?;
+    assert_eq!(stopped.status, 200, "{}", stopped.body);
+    // The fixture's run has no process to end: the stop is under way.
+    assert_eq!(stopped.body["status"], "stopping");
+    assert_eq!(stopped.body["owner"]["login"], "alice", "still Alice's");
+
+    // A task of Alice's that rests: archived, restored and deleted by Bob.
+    seed_task(&f.h, "t-rest", "s1", "u-a", RESTING, None).await?;
+    let resting = |rest: &str| format!("/api/tasks/t-rest{rest}");
+    let archived = call(
+        &f.h.router,
+        Method::POST,
+        &resting("/archive"),
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(archived.status, 200, "{}", archived.body);
+    assert_eq!(archived.body["archived"], true);
+    let restored = call(
+        &f.h.router,
+        Method::POST,
+        &resting("/restore"),
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(restored.status, 200, "{}", restored.body);
+    assert_eq!(restored.body["archived"], false);
+    assert_eq!(restored.body["owner"]["login"], "alice", "still Alice's");
+    let deleted = call(&f.h.router, Method::DELETE, &resting(""), None, &f.bob).await?;
+    assert!(deleted.status.is_success(), "{}", deleted.body);
+    assert_eq!(f.h.store.task(&TaskId::parse("t-rest")?).await?, None);
+    Ok(())
+}
+
+/// SPEC-490 OWN-002: a task that waits to start is cancelled by anyone who may work.
+#[tokio::test]
+async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
+    let f = fixture().await?;
+    seed_task(&f.h, "t-q", "s1", "u-a", TaskStatus::Queued, None).await?;
+    let cancelled = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t-q/stop",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(cancelled.status, 200, "{}", cancelled.body);
+    assert_eq!(cancelled.body["status"], "stopped_cancelled");
+    Ok(())
+}
+
+/// SPEC-490 OWN-002, AC-2: tidying needs write access. A reader is refused (403) and a person
+/// without access to the project does not see the task (404); nothing changes.
+#[tokio::test]
+async fn a_reader_tidies_nothing() -> TestResult {
+    let f = fixture().await?;
+    let reader = seed_github_user(&f.h, "u-r", "rita").await?;
+    f.h.github.set_perm("rita", "acme/repo", perms("read"));
+    let stranger = seed_github_user(&f.h, "u-s", "sam").await?;
+    for (method, rest) in [
+        (Method::POST, "/stop"),
+        (Method::POST, "/archive"),
+        (Method::POST, "/restore"),
+        (Method::DELETE, ""),
+    ] {
+        let refused = task_call(&f, method.clone(), rest, &reader).await?;
+        assert_eq!(refused.status, 403, "{method} {rest}: {}", refused.body);
+        let unseen = task_call(&f, method.clone(), rest, &stranger).await?;
+        assert_eq!(unseen.status, 404, "{method} {rest}: {}", unseen.body);
+    }
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert_eq!(task, f.task, "nothing changed");
     Ok(())
 }
 
@@ -316,10 +447,11 @@ fn id_of(f: &Fixture) -> &str {
     f.task.id.as_str()
 }
 
-/// R3: an agent acting for a person (here a task of Bob's) cannot stop, archive or delete a
-/// task Bob does not own.
+/// SPEC-490 OWN-002, AC-1: an agent acting for a person (here a task of Bob's) stops, archives
+/// and deletes a task Bob does not own, as Bob may; it steers none (a message is refused with
+/// the owner's name).
 #[tokio::test]
-async fn an_agent_changes_only_its_persons_tasks() -> TestResult {
+async fn an_agent_tidies_tasks_for_its_person_and_steers_only_theirs() -> TestResult {
     let f = fixture().await?;
     let mut bobs = f.task.clone();
     bobs.id = TaskId::parse("t-bob")?;
@@ -327,16 +459,29 @@ async fn an_agent_changes_only_its_persons_tasks() -> TestResult {
     bobs.owner = UserId::parse("u-b")?;
     f.h.store.insert_task(&bobs).await?;
     seed_live_attempt(&f.h, "t-bob", "tok-bob").await?;
-    for tool in ["task_stop", "task_archive", "task_delete"] {
-        let refused = mcp_tool(&f.h, "tok-bob", tool, json!({"task_id": id_of(&f)})).await?;
-        assert_eq!(refused["isError"], true, "{tool}: {refused}");
-        assert!(
-            tool_text(&refused).to_string().contains("@alice"),
-            "{tool}: {refused}"
-        );
+    let stopped = mcp_tool(&f.h, "tok-bob", "task_stop", json!({"task_id": id_of(&f)})).await?;
+    assert_eq!(stopped["isError"], false, "{stopped}");
+    assert_eq!(audited(&f.h, "t1", "task.stopped").await?, 1);
+    // A task of Alice's that rests: archived, then deleted.
+    seed_task(&f.h, "t-rest", "s1", "u-a", RESTING, None).await?;
+    for (tool, action) in [
+        ("task_archive", "task.archived"),
+        ("task_delete", "task.deleted"),
+    ] {
+        let done = mcp_tool(&f.h, "tok-bob", tool, json!({"task_id": "t-rest"})).await?;
+        assert_eq!(done["isError"], false, "{tool}: {done}");
+        assert_eq!(audited(&f.h, "t-rest", action).await?, 1, "{tool}");
     }
-    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
-    assert_eq!(task, f.task, "nothing changed");
+    assert_eq!(f.h.store.task(&TaskId::parse("t-rest")?).await?, None);
+    // Steering stays Alice's: an agent's own tools for it follow the person too.
+    let update = mcp_tool(
+        &f.h,
+        "tok-bob",
+        "task_update",
+        json!({"task_id": id_of(&f), "start": "now"}),
+    )
+    .await?;
+    assert_eq!(update["isError"], true, "{update}");
     Ok(())
 }
 
@@ -356,10 +501,14 @@ async fn control(
     .await
 }
 
-/// How many audit entries of task `t1` record `action`.
-async fn audited(h: &Harness, action: &str) -> Result<usize, Box<dyn std::error::Error>> {
+/// How many audit entries of task `task` record `action`.
+async fn audited(
+    h: &Harness,
+    task: &str,
+    action: &str,
+) -> Result<usize, Box<dyn std::error::Error>> {
     Ok(h.store
-        .automation_audit("t1", 50)
+        .automation_audit(task, 50)
         .await?
         .iter()
         .filter(|e| e.action == action)
@@ -412,7 +561,7 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     let declined = control(&f, Method::DELETE, "", &f.alice).await?;
     assert_eq!(declined.status, 200, "{}", declined.body);
     assert_eq!(declined.body["control_request"], serde_json::Value::Null);
-    assert_eq!(audited(&f.h, "task.control_declined").await?, 1);
+    assert_eq!(audited(&f.h, "t1", "task.control_declined").await?, 1);
 
     assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
     let passed = control(&f, Method::POST, "/accept", &f.alice).await?;
@@ -421,8 +570,8 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     assert_eq!(passed.body["created_by"]["login"], "alice");
     assert_eq!(passed.body["control_request"], serde_json::Value::Null);
     assert_eq!(github_actor(&f.h, "tt").await?, "bob");
-    assert_eq!(audited(&f.h, "task.control_requested").await?, 2);
-    assert_eq!(audited(&f.h, "task.control_passed").await?, 1);
+    assert_eq!(audited(&f.h, "t1", "task.control_requested").await?, 2);
+    assert_eq!(audited(&f.h, "t1", "task.control_passed").await?, 1);
     let said = notices(&mut watch);
     assert!(
         said.iter()
@@ -430,9 +579,10 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
         "{said:?}"
     );
 
-    // Alice is now refused like anyone else; Bob writes.
-    let stop = format!("/api/tasks/{}/stop", id_of(&f));
-    let refused = call(&f.h.router, Method::POST, &stop, None, &f.alice).await?;
+    // Alice is now refused control like anyone else; Bob steers.
+    let message = format!("/api/tasks/{}/queued-messages", id_of(&f));
+    let text = Some(json!({"text": "also this"}));
+    let refused = call(&f.h.router, Method::POST, &message, text.clone(), &f.alice).await?;
     assert_eq!(refused.status, 403, "{}", refused.body);
     assert!(
         refused.body.to_string().contains("@bob"),
@@ -442,8 +592,8 @@ async fn the_owner_hands_control_over_on_request() -> TestResult {
     let (alice, bob) = (auth(&f.h, "u-a").await?, auth(&f.h, "u-b").await?);
     assert!(!f.h.app.can_work(&alice, &f.task.id).await);
     assert!(f.h.app.can_work(&bob, &f.task.id).await);
-    let stopped = call(&f.h.router, Method::POST, &stop, None, &f.bob).await?;
-    assert_eq!(stopped.status, 200, "{}", stopped.body);
+    let queued = call(&f.h.router, Method::POST, &message, text, &f.bob).await?;
+    assert_ne!(queued.status, 403, "{}", queued.body);
     Ok(())
 }
 
@@ -456,7 +606,7 @@ async fn the_requester_withdraws() -> TestResult {
     let withdrawn = control(&f, Method::DELETE, "", &f.bob).await?;
     assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
     assert_eq!(withdrawn.body["control_request"], serde_json::Value::Null);
-    assert_eq!(audited(&f.h, "task.control_withdrawn").await?, 1);
+    assert_eq!(audited(&f.h, "t1", "task.control_withdrawn").await?, 1);
     assert_eq!(
         control(&f, Method::POST, "/accept", &f.alice).await?.status,
         409
@@ -706,7 +856,7 @@ async fn a_requester_who_cannot_work_gives_way() -> TestResult {
     let refused = control(&f, Method::POST, "/accept", &f.alice).await?;
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(f.h.store.control_request(&f.task.id).await?, None);
-    assert_eq!(audited(&f.h, "task.control_dropped").await?, 2);
+    assert_eq!(audited(&f.h, "t1", "task.control_dropped").await?, 2);
     Ok(())
 }
 

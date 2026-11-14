@@ -606,8 +606,9 @@ async fn a_task_an_automations_task_creates_holds_no_personal_secret() -> TestRe
     Ok(())
 }
 
-/// Review of SPEC-245, M1: another person's Superagent cannot message a task that holds its
-/// owner's personal secrets (it would direct an agent holding them); the owner's can.
+/// Review of SPEC-245, M1, and SPEC-490 OWN-004: another person's Superagent cannot message a
+/// task, with or without its owner's personal secrets (it would direct an agent that acts as
+/// them and may hold them); the owner's can.
 #[tokio::test]
 async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult {
     let w = world().await?;
@@ -634,12 +635,16 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
             Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session")
         )
     };
-    // Without a personal secret, bob's Superagent may type into alice's task (SPEC-230).
+    // A message steers the task: bob's Superagent sends none into alice's, also while it holds
+    // no personal secret (SPEC-490 OWN-004; SPEC-230 allowed it).
     let before =
         w.h.app
             .tool_task_message(&caller("u-bob", "bob")?, &args)
             .await;
-    assert!(reached_session(&before), "{before:?}");
+    assert!(
+        matches!(&before, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("@alice")),
+        "{before:?}"
+    );
     add(
         &w,
         &w.alice,
@@ -653,7 +658,7 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
             .await;
     match refused {
         Err(yulius_app::error::AppError::Forbidden(message)) => {
-            assert!(message.contains("personal"), "{message}");
+            assert!(message.contains("only they steer it"), "{message}");
         }
         other => return Err(format!("bob's message was not refused: {other:?}").into()),
     }
@@ -705,24 +710,31 @@ async fn only_its_owner_messages_a_task_holding_a_personal_mcp_server() -> TestR
     let refused = w.h.app.tool_task_message(&caller("u-bob")?, &args).await;
     match refused {
         Err(yulius_app::error::AppError::Forbidden(message)) => {
-            assert!(message.contains("MCP servers"), "{message}");
+            assert!(message.contains("only they steer it"), "{message}");
         }
         other => return Err(format!("bob's message was not refused: {other:?}").into()),
     }
     let own = w.h.app.tool_task_message(&caller("u-alice")?, &args).await;
     assert!(reached_session(&own), "{own:?}");
-    // Bob's own task holds nothing of alice's, so alice's Superagent may message it.
-    let to_bob =
-        w.h.app
-            .tool_task_message(&caller("u-alice")?, &json!({"task_id": "t2", "text": "hi"}))
-            .await;
-    assert!(reached_session(&to_bob), "{to_bob:?}");
-    // Alice's automation's task holds nobody's personal server: bob may message it.
-    let to_automation =
-        w.h.app
-            .tool_task_message(&caller("u-bob")?, &json!({"task_id": "t3", "text": "hi"}))
-            .await;
-    assert!(reached_session(&to_automation), "{to_automation:?}");
+    // Whose task it is decides, not what it holds (SPEC-490 OWN-004): bob's own task is
+    // messaged by bob's Superagent, not alice's, and alice's automation's task (which holds
+    // nobody's personal server) by alice's, not bob's.
+    let refused = |result: &Result<Value, yulius_app::error::AppError>, owner: &str| {
+        matches!(
+            result,
+            Err(yulius_app::error::AppError::Forbidden(m)) if m.contains(owner)
+        )
+    };
+    let hi = |task: &str| json!({"task_id": task, "text": "hi"});
+    let app = &w.h.app;
+    let to_bob = app.tool_task_message(&caller("u-alice")?, &hi("t2")).await;
+    assert!(refused(&to_bob, "@bob"), "{to_bob:?}");
+    let own = app.tool_task_message(&caller("u-bob")?, &hi("t2")).await;
+    assert!(reached_session(&own), "{own:?}");
+    let to_automation = app.tool_task_message(&caller("u-bob")?, &hi("t3")).await;
+    assert!(refused(&to_automation, "@alice"), "{to_automation:?}");
+    let own = app.tool_task_message(&caller("u-alice")?, &hi("t3")).await;
+    assert!(reached_session(&own), "{own:?}");
     Ok(())
 }
 

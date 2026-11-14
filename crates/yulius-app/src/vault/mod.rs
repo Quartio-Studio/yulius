@@ -387,21 +387,6 @@ impl App {
             .is_some_and(|record| self.vidoc_scans_on(&record)))
     }
 
-    /// Whether runs of `task` get a personal secret (its owner's, switched on for its project).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn holds_personal_secrets(
-        &self,
-        task: &crate::model::TaskRecord,
-    ) -> AppResult<bool> {
-        Ok(self
-            .resolved_agent_secrets(&task.sandbox_id, Holder::of_task(task))
-            .await?
-            .iter()
-            .any(|r| matches!(r.scope(), crate::ports::vault::AgentScope::Personal(_))))
-    }
-
     /// Every agent secret that can reach some run of `sandbox` (`holder: None`: every person's
     /// personal ones switched on for it, RES-006), or a run of `holder` (its own personal ones,
     /// never another person's), with the instance Vidoc key: what redaction covers.

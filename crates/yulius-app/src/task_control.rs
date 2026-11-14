@@ -45,7 +45,7 @@ impl App {
         if ctx.user.disabled_at.is_some() {
             return Err(AppError::Forbidden("this account is disabled".into()));
         }
-        if task.owner == ctx.user.id {
+        if crate::tasks::owns(&task, &ctx.user.id) {
             return Err(AppError::Conflict("you already own this task".into()));
         }
         let store = &self.deps.store;

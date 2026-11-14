@@ -5657,7 +5657,12 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         json!({"number": carol_run.number}),
     )
     .await?;
-    assert!(is_error && said(&refused).contains("@carol"), "{refused}");
+    // Closing out is open to whoever may work (SPEC-490 OWN-002): what refuses is the task's
+    // state, as for one's own, not its owner.
+    assert!(
+        is_error && said(&refused).contains("is working") && !said(&refused).contains("@carol"),
+        "{refused}"
+    );
 
     // The arguments: one action, and either numbers or all.
     for (args, why) in [
@@ -5749,6 +5754,25 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
             task.number
         );
     }
+
+    // Named, another person's task is stopped too (SPEC-490 OWN-002, OWN-003), and its audit
+    // names its owner (OWN-005).
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "stop", "numbers": [carol_run.number]}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(numbers(&answer["done"]), vec![n(carol_run)], "{answer}");
+    let stops =
+        f.h.store
+            .audit_details(carol_run.id.as_str(), "task.stopped", 10)
+            .await?;
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    let detail: Value = serde_json::from_str(&stops[0])?;
+    assert_eq!(detail["owner"], "carol", "{detail}");
 
     // The audit names the action and the tasks, never the message.
     let entries: Vec<Value> =
