@@ -3,7 +3,7 @@
 //! page that had no tool: dismissing the agent's request and deciding a prompt Yulius held.
 //!
 //! Contract:
-//! - what a task says about itself ([`App::waits_why`]) is what its page shows: the list's
+//! - what a task says about itself (`App::waits_why`) is what its page shows: the list's
 //!   group, the agent's request (`needs_you`), the reason of its flag, a held prompt, a pause.
 //!   It is read by everyone who reads the task list, a task's agent included; the texts are the
 //!   agent's or Claude Code's own words, bounded and on one line where they are stored;
