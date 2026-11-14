@@ -1495,7 +1495,7 @@ resolves to nothing, the run gets the server without that variable or token.
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
-    sandbox's `GET …/shells`. `change_merge` is withheld too, and so are `task_merge` (SPEC-487 MRG-005) and `instance_update` (INS-004).
+    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` is the sandbox Superagent's only (INS-004).
   - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
     pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
     as other attachments (streamed, the upload limit, a free safe name) in its own folder,
