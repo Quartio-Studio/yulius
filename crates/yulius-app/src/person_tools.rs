@@ -173,16 +173,6 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
                 about.insert("do".into(), json!(action));
             }
         }
-        // What an instance update did (review of slice 7, F4), when it is one of the actions.
-        "instance_update" => {
-            if let Some(action) = args.get("do").and_then(Value::as_str).and_then(|action| {
-                crate::instance_tools::INSTANCE_ACTIONS
-                    .into_iter()
-                    .find(|known| *known == action)
-            }) {
-                about.insert("do".into(), json!(action));
-            }
-        }
         // The tasks a call names (a bounded list of numbers, or all), and what it does to them.
         "tasks_reorder" | "tasks_bulk" => {
             if let Ok(numbers) = crate::task_edit::numbers_arg(args.get("numbers"), "numbers") {
@@ -820,14 +810,6 @@ mod tests {
             json!({"task": 7})
         );
         assert_eq!(subject("subscriptions", &json!({"number": 7})), json!({}));
-        assert_eq!(
-            subject("instance_update", &json!({"do": "restart"})),
-            json!({"do": "restart"})
-        );
-        assert_eq!(
-            subject("instance_update", &json!({"do": "x".repeat(1 << 20)})),
-            json!({})
-        );
         assert_eq!(
             subject("instance_update", &json!({"do": "restart"})),
             json!({"do": "restart"})
