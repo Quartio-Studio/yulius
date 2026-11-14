@@ -2785,3 +2785,18 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate after it.** `scripts/dev ci` at `80e18ff9f`: exit 0;
   `4289 tests run: 4289 passed, 17 skipped` (`target/audit/slice17/gate3.log`). The web
   UI's one changed line is the text of a status; the e2e suite was not run.
+- **Review, round 3** (the same session, head `cc9a2d507`): request changes. Both
+  findings of round 2 fixed; one minor finding in this slice's code: at a server start a
+  task left `switching` whose run exited while Yulius was down "rests Closed for a clean
+  exit, or stopped_killed", where the start's sweep had rested it as lost to the restart
+  and listed it for a host move. The start rests it first now (AC-103;
+  `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` failed before:
+  "left: Closed, right: Stopped(ServerLost)"). Nits: the stale mark after one order on the
+  kill's path (left, Decisions); the status's short label and the run's "move timed out"
+  beside the new text (left: they name the same thing); the e2e suite not run locally for
+  one changed text (Yulius CI runs it on the pull request's head).
+- **Tests failing without their fix, after round 3** (`mutations4.log`, 15 cases, each
+  failed its test): the thirteen above, a start recording the end of a switching task's
+  run as a session that left, and that task missing from the tasks a move brings back.
+- **Gate after it.** `scripts/dev ci` at `b41c5d11f`: exit 0;
+  `4290 tests run: 4290 passed, 17 skipped` (`target/audit/slice17/gate4.log`).
