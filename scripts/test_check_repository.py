@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import delivery_instruction_errors, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
+from check_repository import delivery_instruction_errors, instruction_files, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
 
 
 def package(name, layer, dependencies=()):
@@ -93,11 +93,13 @@ class RepositoryContracts(unittest.TestCase):
             "If delivery_merge is refused, run `gh pr merge 12 --squash`.": "gh pr merge",
             "Then the agent self-merges after checks pass.": "self-merges",
             "squash-merge your own PR once green": "squash-merge your own",
+            "   then **squash-merges their own PR**. No reviewer approval": "squash-merges their own",
             "Author self-review + passing checks → squash PR to dev": "Author self-review",
             "- Change PR: typed branch → dev, squash merge by its author after checks pass.": "merge by its author",
             "promote only when the task asks for a release": "promote only when the task asks",
             "Promote when the user asks.": "Promote when the user asks",
-            "Promotion (merge-commit PR dev → main, then verify post-merge main) happens only when a task asks for a release": "a task asks",
+            # As AGENTS.md had it, wrapped: the rule reads a paragraph, not a line.
+            "Promotion (merge-commit PR dev → main, then verify\npost-merge main) happens only when a task asks for a release (F 2026-10-12).": "a task asks",
             "then fix/revert through `dev` and promote.": "and promote",
             "Poll live run IDs until the checks pass.": "Poll live run",
             "gh pr checks <number> --required --watch": "gh pr checks",
@@ -115,9 +117,22 @@ class RepositoryContracts(unittest.TestCase):
             "Yulius squash-merges the pull request on green.",
             "Features and fixes are **squash-merged** into the integration branch.",
             "when your task needs one, ask a person (in Yulius: `needs_you`) and finish the rest.",
+            "Promotion is not an agent's, even when the user asks.",
+            "Promotion is a person's: when a task asks for it, it asks with needs_you.",
         ]
         for line in fine:
             self.assertEqual(delivery_instruction_errors(line, "AGENTS.md"), [], line)
+
+    def test_every_instruction_file_is_scanned_once(self):
+        # SPEC-483 DOC-002: the files an agent follows, each once.
+        files = instruction_files()
+        names = {str(path.relative_to(ROOT)) for path in files}
+        for name in ["AGENTS.md", "docs/engineering/git.md", ".apm/skills/yulius-git/SKILL.md",
+                     "catalog/workflows/feature.md", "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+                     ".ai/templates/spec.md", ".github/pull_request_template.md"]:
+            self.assertIn(name, names)
+        self.assertTrue(any(n.startswith("catalog/automations/") for n in names))
+        self.assertEqual(len(files), len(set(files)))
 
     def test_skill_directory_must_match_name(self):
         with tempfile.TemporaryDirectory() as tmp:

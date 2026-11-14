@@ -351,7 +351,6 @@ The source of truth for paths and methods is the route table in
   server (`open_pr`, `merge`, `run_env:<name>`, `confirm_env:<name>`, `promote`) and show as status,
   `blocked` ones with their reason. Profile presets come from `GET /api/delivery/presets`; a running
   deploy's output is polled via `GET …/delivery/runs/{id}`.
-
 - **Uploads.** `api.put|post(path, file, {onProgress})` sends a `Blob` as the raw body; the real
   transport uses XMLHttpRequest for upload progress (`transport.upload`), and the timeout then
   counts from the last progress. Dropped files use `PUT /api/sandboxes/{sid}/files/upload` and the

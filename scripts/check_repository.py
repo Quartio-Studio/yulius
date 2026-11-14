@@ -672,44 +672,70 @@ INSTRUCTION_GLOBS = [
     "docs/engineering/*.md", ".apm/skills/*/SKILL.md", "catalog/skills/**/*.md",
     "catalog/workflows/*.md", "catalog/automations/*.md", ".ai/templates/*.md",
 ]
-# The only way an instruction names a hand merge: as refused.
-REFUSED_HAND_MERGE = re.compile(r"`gh pr merge[^`]*`\)? (is|are) refused")
+# The only way an instruction names a hand merge: as refused, right at the name.
+REFUSED_HAND_MERGE = re.compile(r"`?gh pr merge[^`]*`\)? (is|are) refused")
 NEGATED = re.compile(r"\b(not|never|no)\s+$", re.I)
+# A match that itself says the rule (a person's job, a negation) is not an instruction to break it.
+SAYS_THE_RULE = re.compile(r"\b(not|never)\b|a person's", re.I)
 DELIVERY_RULES = [
     (re.compile(r"gh pr merge"), "merging by hand is refused: name it only as refused, or deliver with `delivery_merge`"),
-    (re.compile(r"\b(self-merges?|author-merges?)\b|squash-merge (your|their|its) own|\bmerge by (its|the|their) author|Author self-review", re.I),
+    (re.compile(r"\b(self-merges?|author-merges?)\b|squash-merges? (your|their|its) own|\bmerge by (its|the|their) author|Author self-review", re.I),
      "Yulius merges through `delivery_merge` after an independent review; nobody merges their own pull request"),
     (re.compile(r"\bpromot\w*\b[^.]{0,120}?\bwhen (a|the) (task|user|request) asks|\bpromote (only )?(when|if|unless) (asked|the (task|user|request) asks)", re.I),
      "promotion is a person's (ADR-0110), never an agent's when asked"),
     (re.compile(r"\b(through|via) `?dev`? and promote\b", re.I), "promotion is a person's (ADR-0110)"),
-    (re.compile(r"\bPoll live run|gh pr checks [^\n]*--watch", re.I), "to wait, start `yulius wait` in the background; never poll"),
+    (re.compile(r"\bPoll live run|gh pr checks [^;\n]*?--watch", re.I), "to wait, start `yulius wait` in the background; never poll"),
 ]
+ITEM = re.compile(r"\s*([-*+]|\d+\.)\s")
+
+
+def paragraphs(text):
+    """Paragraphs and list items of `text`, each with its first line's number, its lines joined:
+    wrapped wording is read whole."""
+    block, start = [], 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or ITEM.match(line):
+            if block:
+                yield start, " ".join(block)
+            block, start = ([line.strip()], number) if line.strip() else ([], 0)
+            continue
+        if not block:
+            start = number
+        block.append(line.strip())
+    if block:
+        yield start, " ".join(block)
 
 
 def delivery_instruction_errors(text, label):
     errors = []
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, paragraph in paragraphs(text):
         for pattern, why in DELIVERY_RULES:
-            for match in pattern.finditer(line):
-                if match.group(0) == "gh pr merge" and REFUSED_HAND_MERGE.search(line[match.start() - 1:]):
+            for match in pattern.finditer(paragraph):
+                at = match.start() - 1 if match.start() and paragraph[match.start() - 1] == "`" else match.start()
+                if match.group(0) == "gh pr merge" and REFUSED_HAND_MERGE.match(paragraph, at):
                     continue
-                if NEGATED.search(line[:match.start()]):
+                if NEGATED.search(paragraph[:match.start()]) or SAYS_THE_RULE.search(match.group(0)):
                     continue
                 errors.append(f"{label}:{number}: '{match.group(0)}': {why}")
                 break
     return errors
 
 
-def instruction_errors():
-    errors = []
+def instruction_files():
     paths = [ROOT / name for name in INSTRUCTION_FILES]
     for pattern in INSTRUCTION_GLOBS:
         paths.extend(sorted(ROOT.glob(pattern)))
-    seen = set()
+    unique = []
     for path in paths:
-        if path.is_file() and path not in seen:
-            seen.add(path)
-            errors.extend(delivery_instruction_errors(path.read_text(), path.relative_to(ROOT)))
+        if path.is_file() and path not in unique:
+            unique.append(path)
+    return unique
+
+
+def instruction_errors():
+    errors = []
+    for path in instruction_files():
+        errors.extend(delivery_instruction_errors(path.read_text(), path.relative_to(ROOT)))
     return errors
 
 

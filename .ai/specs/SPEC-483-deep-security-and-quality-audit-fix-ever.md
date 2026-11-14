@@ -1071,8 +1071,9 @@ went; two of the auditors' items had gained a user since and stay.
   README.md, the pull request template, `docs/engineering/`, the repository skills, every
   catalog skill file, the catalog workflows and automations, the templates) tells it to run
   `gh pr merge` (other than "`gh pr merge` is refused"), to self- or author-merge, to promote
-  when asked or "and promote", or to poll (`gh pr checks --watch`); negated text ("never",
-  "not") is not refused. `scripts/check_repository.py` refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
+  when asked or "and promote", or to poll (`gh pr checks --watch`); wrapped text is read by
+  paragraph, and negated text ("never", "not") is not refused. `scripts/check_repository.py`
+  refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
   merge queue, `yulius wait`, promotion by a person on the CD page.
 - **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
   definition of done (short and full, and the request file) and the merge news pass
@@ -2049,11 +2050,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 27 (no decision record: the product decided; its own repository follows). The
   instructions keep the `git worktree` commands for work by hand and drop the `gh` merge and
   promotion commands: a person promotes on the CD page, and the hand merge an agent would copy
-  is refused. The check is a list of phrases, not a parser: its test holds the wording
-  AGENTS.md and the pull request template had before this slice and its variants; a new way
-  to say the same needs a review, as before. The
-  `apm` lock keeps the version its last writer used: only the four content hashes changed
-  (apm-cli 0.35.1 would also have renamed a target).
+  is refused. The check is a list of phrases read by paragraph, not a parser: its test holds
+  the wording AGENTS.md, `git.md` and the pull request template had before this slice and its
+  variants; a new way to say the same needs a review, as before. The `apm` lock keeps the
+  version its last writer used: only the eight hashes of the two skills changed (their content
+  and legacy-map entries; apm-cli 0.35.1 would also have renamed a target).
 - Slice 26 (no decision record: ADR-0110 and SPEC-441 decided; the texts follow). The Docs
   workflow keeps the review rather than `delivery_merge` waiving it for a documentation-only
   branch: a wrong instruction to an agent is as costly as wrong code, and the review of a

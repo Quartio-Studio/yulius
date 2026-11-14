@@ -20,8 +20,8 @@ distinguish reference observations, user requirements and proposed defaults.
 4. Identify blocking decisions separately from reversible implementation choices.
    Continue independent design work; don't turn a proposal into product approval.
 5. Review the spec against the actual brief, then run `spec_check` (its form) and
-   `python3 scripts/check_repository.py` (links). This check
-   cannot prove the design is sufficient: explain acceptance evidence still needed.
+   `python3 scripts/check_repository.py` (links). Neither proves the design is sufficient:
+   explain acceptance evidence still needed.
 
 Keep reference research and speculative product notes outside the repository.
 Only write a product spec into the repo when the user has requested that artifact

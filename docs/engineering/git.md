@@ -120,7 +120,6 @@ common ancestry across repeated promotions, while retaining the already squashed
 `main` has those feature commits plus promotion commits. Do not merge `main` back into `dev` just to
 copy promotion-only merge commits.
 
-
 No `git stash` in a task's worktree: the stash stack is shared by every worktree of the
 clone, so another session may pop your entry. Set work aside in a temporary commit instead.
 Change tasks by moving to their existing worktree, not by switching its branch.
@@ -157,7 +156,6 @@ matches the local branch exactly, stop branch-owned processes. Inspect tracked, 
 ignored files in that worktree; preserve user data and unpublished work. From the permanent dev
 worktree, remove the task worktree **before** deleting the local branch:
 
-
 ```sh
 git fetch origin --prune
 git worktree remove ../yulius-worktrees/feat/task-cancellation
@@ -186,8 +184,7 @@ branches or use forced ref updates to refresh a checked-out branch.
 - Failed post-merge `dev` checks block promotion. Fix on a new branch from `dev` and
   use the same PR/test sequence. Failed `main` checks stop further delivery; diagnose,
   then fix/revert through `dev`; a person promotes the fix. Do not bypass the process with a
-  direct
-  hotfix to `main`. Any emergency exception requires an explicit recorded user decision.
+  direct hotfix to `main`. Any emergency exception requires an explicit recorded user decision.
 - The independent review in a fresh session approves the exact head before `delivery_merge`;
   GitHub requires no approvals, code-owner approval or last-push approval. Resolve actionable
   comments if present; do not fabricate a second reviewer identity.
