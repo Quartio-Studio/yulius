@@ -69,10 +69,33 @@ fn setting(
     Ok(Some(Some(value.to_owned())))
 }
 
+/// The audit detail of a model change (review of slice 6, F1): only what was asked for, and
+/// `default` for a reset, so "back to the default" is told from "not asked".
+fn change_detail(model: Option<&Option<String>>, effort: Option<&Option<String>>) -> String {
+    let mut detail = serde_json::Map::new();
+    for (key, value) in [("model", model), ("effort", effort)] {
+        if let Some(value) = value {
+            detail.insert(key.into(), json!(value.as_deref().unwrap_or("default")));
+        }
+    }
+    Value::Object(detail).to_string()
+}
+
 impl App {
     /// The label of the subscription `task`'s live run is on, if it has one (a removed
     /// subscription is no task's, as in its summary).
     pub(crate) async fn run_subscription(&self, task: &crate::model::TaskRecord) -> Option<String> {
+        // Only a task whose run may be live can be on one: the others cost no read (a task
+        // being stopped still has its run; one held for capacity or queued again may too).
+        use yulius_domain::task::TaskStatus;
+        if !(task.status.is_live()
+            || matches!(
+                task.status,
+                TaskStatus::WaitingCapacity | TaskStatus::Queued
+            ))
+        {
+            return None;
+        }
         let store = &self.deps.store;
         let attempt = store.live_attempt(&task.id).await.ok()??;
         let account = store.account(attempt.account_id.as_ref()?).await.ok()??;
@@ -163,7 +186,7 @@ impl App {
             .store
             .update_task(&task.id, &update, self.now())
             .await?;
-        let detail = json!({"model": model, "effort": effort}).to_string();
+        let detail = change_detail(model.as_ref(), effort.as_ref());
         if let Err(err) = self
             .deps
             .store
@@ -205,7 +228,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{effort_shaped, model_shaped, setting};
+    use super::{change_detail, effort_shaped, model_shaped, setting};
+
+    /// SPEC-487 SUB-004 (review of slice 6, F1): the audit names what was asked for, and a
+    /// reset as `default`.
+    #[test]
+    fn a_model_change_is_audited_as_asked() {
+        assert_eq!(change_detail(Some(&None), None), r#"{"model":"default"}"#);
+        assert_eq!(
+            change_detail(None, Some(&Some("high".into()))),
+            r#"{"effort":"high"}"#
+        );
+    }
 
     /// SPEC-487 SUB-004: a model and an effort have the shapes a launch takes; `default` and
     /// blank go back to the default.

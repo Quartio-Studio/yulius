@@ -14,6 +14,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   a playground's guest stops, archives and deletes only their own tasks; a refused Start
   onboarding pushes no first commit, and an onboarding task that never ran goes to whoever
   starts onboarding.
+- A task whose work is not finished no longer reads Done (SPEC-491, task #474,
+  [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+  Task #465 read Done, and the tasks chained after it started, while its pull request
+  conflicted with `dev` and its spec still named work to do. A pull request now counts as
+  tested only when it would merge as it is: no conflict with its base, and checks passed or
+  none required by the project (the list reads "In review · PR #N · conflicts with dev"). A
+  task whose spec does not say `done` has work left, however complete its plan reads: it is
+  "Your turn", not Done, and chains and start rules wait. The step tools and `spec_check` tell
+  the agent so, and the pull request watch tells a conflict also where no CI run exists.
+
+- The Superagent reads and updates Yulius itself (SPEC-487 slice 7, task #469). Asked whether
+  Yulius was up to date or loaded, or to update or restart it, it sent the person to
+  Settings. Now `instance` shows the build, an update offered or under way, the host's load,
+  memory and disk and the sessions, and for a superadmin `instance_update` checks, installs,
+  restarts or cancels with the buttons' functions and refusals. The Global Superagent is not
+  served `instance_update`.
+
+- Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
+  30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
+  bulk stop start its next waiting task in the tests before stopping it.
 - Anyone who may work in a project stops, archives, restores and deletes any of its tasks;
   steering a task stays its owner's (SPEC-490, ADR-0331, task #473; amends ADR-0060). Stop,
   Archive and Delete are enabled on other people's tasks in the task menu, the sidebar and the

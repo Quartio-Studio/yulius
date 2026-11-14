@@ -1903,7 +1903,9 @@ an agent's `delivery_merge`; `App::ci_run_first` moves a queued run before its s
 (`CiStore::ci_run_to_front`; `ci_dispatch` starts each sandbox's queued runs in that order). What a task runs on is
 `task_setup.rs`: `App::switch_task_for_person` resolves a subscription's name and calls the page's
 `switch_task`; `App::set_task_model` stores a model or effort with the task (`TaskFieldUpdate`), which
-the next start of its session takes; a task's brief names its live run's subscription. A task's agent is served none of them; it keeps the tools about its own work
+the next start of its session takes; a task's brief names its live run's subscription. The instance is `instance_tools.rs`: the Status panel's and
+Settings' views for everyone, and for a superadmin the update buttons' functions (`check_updates_now`,
+`start_update`, `start_restart`, `cancel_update`) with the ask as their confirmation. A task's agent is served none of them; it keeps the tools about its own work
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
@@ -2012,7 +2014,7 @@ end and remove. Its person types into its terminal as into the sandbox Superagen
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
-settings file where Claude Code keeps the accepted warning. It is not served `change_merge` nor `task_merge`. An
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge`, `task_merge` nor `instance_update`. An
 image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
 into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
 which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
@@ -3242,8 +3244,18 @@ after it
 [decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
-tested pull request with a complete plan, so a task without a goal that opens no pull request would
-never be Done. For that reason the
+tested pull request with no declared work left. Tested is one reading (`PullSignal::from_wire`,
+asked by `task_is_done`, the Git overview and the counts): the pull request is open, does not
+conflict with its base (Yulius's own merge check in its clone, with its merge drivers,
+`App::pull_conflicts`, which is also what the watch tells the agent by; GitHub's flag only where
+the task has no clone, as GitHub knows nothing of the union rules) and its checks
+passed, or none are required by the project. Declared work is the plan's open steps and the
+task's spec: Yulius keeps the spec's `status` with the task whenever it reads the spec
+(`tasks.spec_status`), and while it says `draft`, `approved` or `in-progress` the task is not
+Done, however complete its plan reads
+([SPEC-491](../.ai/specs/SPEC-491-a-task-whose-work-is-not-finished-never.md),
+[decision 0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+So a task without a goal that opens no pull request would never be Done. For that reason the
 tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
 preparation. Only the continuation of an imported session is a prompt task, because the person
 whose conversation it continues decides when it is finished
