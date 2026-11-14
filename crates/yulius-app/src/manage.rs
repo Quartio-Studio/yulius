@@ -506,7 +506,11 @@ impl App {
             )));
         }
         let id = task.id.as_str();
-        let named = json!({"task": format!("#{} {}", task.number, task.title)});
+        // Each is audited by the function that does it, with the caller (SPEC-490 OWN-005).
+        let tool = crate::tasks::ToolAudit {
+            actor: &caller.actor,
+            detail: &caller.detail,
+        };
         let action = match change {
             TaskChange::Delete => {
                 let attachments = self
@@ -520,11 +524,11 @@ impl App {
                 }}));
             }
             TaskChange::Stop => {
-                self.stop_task(&ctx, id).await?;
+                self.stop_task_as(&ctx, id, Some(tool)).await?;
                 "task.stopped"
             }
             TaskChange::Archive(archived) => {
-                self.archive_task(&ctx, id, archived).await?;
+                self.archive_task_as(&ctx, id, archived, Some(tool)).await?;
                 if archived {
                     "task.archived"
                 } else {
@@ -532,22 +536,6 @@ impl App {
                 }
             }
         };
-        // The change happened: a failed audit write is logged, not reported as a failed call
-        // (which would invite a retry), as for a deletion.
-        if let Err(err) = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &caller.actor,
-                action,
-                Some(id),
-                Some(&tool_detail(caller, &named)),
-            )
-            .await
-        {
-            tracing::warn!(task = %task.id, error = %err, action, "tool audit failed");
-        }
         tracing::info!(task = %task.id, actor = %caller.actor, action, "task changed by a tool");
         let task = self
             .deps

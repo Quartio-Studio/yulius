@@ -4,6 +4,9 @@
 
 Accepted. Specified in [SPEC-070](../../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md).
 Extends [0007](0007-github-app-authority.md).
+Amended by [0331](0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md) (SPEC-490):
+stop, archive, restore and delete are open to anyone who may work in the project, the owner
+check is one rule in the domain, and the person who handed a task over can take it back.
 
 ## Context
 
