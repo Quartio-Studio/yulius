@@ -1496,7 +1496,9 @@ mod tests {
         };
         let (create, schema) = tool("task_create");
         for said in [
-            "nothing of its pull request is left to come",
+            // SPEC-491: the one Done rule, with its declared work and a pull request that merges.
+            "no work it declared is left (its plan is complete and its spec, if any, says done)",
+            "open and would merge as it is, with nothing of it left to come",
             "a merge Yulius is about to make",
             "`#12 merged` when the merge itself matters",
             "with after_all_tasks until every task of the project with work still coming is done",
