@@ -10,6 +10,7 @@ failOnPageErrors();
 type Who = 'me' | 'bob';
 type LiveHub = {
   holdEdits: boolean;
+  refuseEdits?: boolean;
   holdSaves: boolean;
   edits: { path: string; client: string; save: boolean; at: number }[];
   holdJoins: boolean;
@@ -387,6 +388,133 @@ test('a whole-text catch-up keeps unsent typing, and a refused old edit is not a
     return out;
   });
   expect(result).toEqual({ kept: 'Xabc!e', once: 'Tabcd', edits: 1 });
+});
+
+// SPEC-483 LVE-001 (finding W3): an edit the server refuses with 403 (the person may no longer
+// change the folder) left the typing unsent for good: the file read Unsaved, the page asked
+// before every unload, more typing piled up unsent, and a close waited its full 10 s. Now the
+// document takes the server's text back, nothing of this tab's waits, typing is not kept, and it
+// says it is read-only until it is joined again.
+test('an edit refused for lack of access gives the text back and leaves nothing waiting', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const { createLiveDoc, SEND_GAP_MS } = await import('/assets/livedoc.js' as string) as { createLiveDoc(o: unknown): Record<string, any>; SEND_GAP_MS: number };
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const until = async (test: () => boolean) => { for (let i = 0; i < 200 && !test(); i += 1) await wait(10); return test(); };
+    let text = 'abc';
+    let edits = 0;
+    let states = 0;
+    let joins = 0;
+    const api = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { joins += 1; return { session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        if (url.endsWith('/edit')) { edits += 1; throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); }
+        return { session: 's1', revision: 0, sha256: 'x', saved: true, disk_sha256: null };
+      },
+      get: async () => ({ session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }),
+    };
+    const doc = createLiveDoc({ api, sid: 'sb', root: 'task:t1', path: 'a', client: 'page', user: 'u', canWrite: () => true, getText: () => text, onRemote() {}, onReset: (t: string) => { text = t; }, onState() { states += 1; }, onSynced() {} });
+    await doc.join();
+    text = 'abcd'; doc.local([3, 'd']);
+    await until(() => doc.readOnly && text === 'abc');
+    const refused = { text, readOnly: doc.readOnly, busy: doc.busy, saved: doc.saved, told: states > 0 };
+    // More typing is not kept to be sent later.
+    text = 'abcX'; doc.local([3, 'X']);
+    await wait(SEND_GAP_MS * 3);
+    const after = { edits, busy: doc.busy, saved: doc.saved };
+    const started = Date.now();
+    await doc.close();
+    const closedFast = Date.now() - started < 1000;
+    // Joined again (the file opened again): its access is asked again.
+    await doc.join();
+    const rejoined = { joins, readOnly: doc.readOnly };
+    doc.destroy();
+
+    // A refusal of a stale session token (403 csrf_invalid) is not a refusal of access: the edit
+    // is sent again once the page has its token.
+    let csrfText = 'abc';
+    let csrfEdits = 0;
+    const csrfApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) return { session: 's2', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null };
+        if (url.endsWith('/edit')) {
+          csrfEdits += 1;
+          if (csrfEdits === 1) throw Object.assign(new Error('stale'), { status: 403, code: 'csrf_invalid' });
+          return { revision: 1 };
+        }
+        return { session: 's2', revision: 1, sha256: 'x', saved: true, disk_sha256: null };
+      },
+      get: async () => ({ session: 's2', revision: 0, steps: [], sha256: 'x', saved: true, disk_sha256: null }),
+    };
+    const csrfDoc = createLiveDoc({ api: csrfApi, sid: 'sb', root: 'task:t1', path: 'c', client: 'page', user: 'u', canWrite: () => true, getText: () => csrfText, onRemote() {}, onReset: (t: string) => { csrfText = t; }, onState() {}, onSynced() {} });
+    await csrfDoc.join();
+    csrfText = 'abcd'; csrfDoc.local([3, 'd']);
+    await until(() => csrfEdits === 2);
+    const csrf = { edits: csrfEdits, readOnly: csrfDoc.readOnly, text: csrfText };
+    csrfDoc.destroy();
+
+    // A person who lost all access: the catch-up after the refused edit is refused too. The
+    // document stays read-only with the text it had, and asks nothing more.
+    let lostText = 'abc';
+    let lostJoins = 0;
+    let lostGets = 0;
+    const lostApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { lostJoins += 1; if (lostJoins > 1) throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); return { session: 's3', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' });
+      },
+      get: async () => { lostGets += 1; throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); },
+    };
+    const lostDoc = createLiveDoc({ api: lostApi, sid: 'sb', root: 'task:t1', path: 'l', client: 'page', user: 'u', canWrite: () => true, getText: () => lostText, onRemote() {}, onReset: (t: string) => { lostText = t; }, onState() {}, onSynced() {} });
+    await lostDoc.join();
+    lostText = 'abcd'; lostDoc.local([3, 'd']);
+    await until(() => lostDoc.readOnly && lostText === 'abc');
+    await wait(1500);
+    const lost = { text: lostText, readOnly: lostDoc.readOnly, busy: lostDoc.busy, joins: lostJoins, gets: lostGets };
+    lostDoc.destroy();
+
+    // The catch-up says the document ended, and joining it again is refused: while the joins
+    // are refused the document stays read-only, and typing is not kept.
+    let endedText = 'abc';
+    let endedJoins = 0;
+    const endedApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { endedJoins += 1; if (endedJoins > 1) throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); return { session: 's4', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' });
+      },
+      get: async () => { throw Object.assign(new Error('ended'), { status: 409, code: 'conflict' }); },
+    };
+    const endedDoc = createLiveDoc({ api: endedApi, sid: 'sb', root: 'task:t1', path: 'e', client: 'page', user: 'u', canWrite: () => true, getText: () => endedText, onRemote() {}, onReset: (t: string) => { endedText = t; }, onState() {}, onSynced() {} });
+    await endedDoc.join();
+    endedText = 'abcd'; endedDoc.local([3, 'd']);
+    await until(() => endedJoins > 1);
+    endedText = 'abcY'; endedDoc.local([3, 'Y']);
+    const ended = { readOnly: endedDoc.readOnly, busy: endedDoc.busy, text: endedText };
+    endedDoc.destroy();
+    return { refused, after, closedFast, rejoined, csrf, lost, ended };
+  });
+  expect(result).toEqual({
+    refused: { text: 'abc', readOnly: true, busy: false, saved: true, told: true },
+    after: { edits: 1, busy: false, saved: true },
+    closedFast: true,
+    rejoined: { joins: 2, readOnly: false },
+    csrf: { edits: 2, readOnly: false, text: 'abcd' },
+    lost: { text: 'abc', readOnly: true, busy: false, joins: 1, gets: 1 },
+    ended: { readOnly: true, busy: false, text: 'abc' },
+  });
+});
+
+// SPEC-483 LVE-001 in the Editor: once an edit is refused for lack of access, the file is
+// read-only and says so, shows the server's text, and reads nothing as unsaved.
+test('an edit refused for lack of access makes the file read-only in the Editor and says so', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.refuseEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'X');
+  await expect.poll(() => statusOf(browser, 'me')).toContain('Read-only: you can no longer change this folder');
+  await expect.poll(() => textOf(browser, 'me')).toBe(ON_DISK);
+  expect(await inWindow<boolean>(browser, 'me', 'return ed.getOption(w.monaco.editor.EditorOption.readOnly)')).toBe(true);
+  // Nothing reads unsaved: the file's tab is not marked modified.
+  await expect.poll(() => inWindow<string>(browser, 'me', `return [...w.document.querySelectorAll('.ed-tab')].map((tab) => tab.textContent).join('|')`)).toBe(`${FILE}×`);
 });
 
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).

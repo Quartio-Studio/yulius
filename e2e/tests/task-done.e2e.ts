@@ -412,3 +412,37 @@ test('the end banner keeps keyboard focus when the task’s details are read aga
   });
   expect(focused).toBe(label);
 });
+
+// SPEC-483 GRP-001 to GRP-003 (findings W2, D8): the sidebar's rule and its counters agree with
+// the server's (`AttentionFacts::group`): a paused run is Working whatever it waited for; the
+// onboarding task a pending sandbox waits for is counted in line; an armed merge keeps even an
+// achieved goal out of Done.
+test('a paused task, a waiting onboarding task and an armed merge are counted as the server counts them (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { counter, taskInfo } = await import(statusUrl);
+    const of = (task: Record<string, unknown>, pr: unknown = null) => {
+      const info = taskInfo(task, null, pr);
+      return [info.label, info.group, counter(task, info)];
+    };
+    const pause = { by: 'person', pending: false };
+    const pr = { number: 7, state: 'open', checks: 'success' };
+    return {
+      pausedAttention: of({ status: 'running', activity: 'needs_attention', pause }),
+      pausedHeld: of({ status: 'running', activity: 'waiting', pause, held_prompt: { text: 'x' } }),
+      onboarding: of({ status: 'closed', not_started: true, awaits_start_onboarding: true }),
+      armedGoal: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }),
+      armedGoalPr: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }, pr),
+      achieved: of({ status: 'running', activity: 'done' }, pr),
+    };
+  });
+  expect(read).toEqual({
+    pausedAttention: ['Paused', 'working', 'working'],
+    pausedHeld: ['Paused', 'working', 'working'],
+    onboarding: ['Waits for Start onboarding', 'working', 'queued'],
+    armedGoal: ['Waiting for checks or merge', 'working', 'working'],
+    armedGoalPr: ['Waiting for checks or merge', 'working', 'working'],
+    achieved: ['Done · PR #7', 'done', null],
+  });
+});

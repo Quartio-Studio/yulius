@@ -436,6 +436,14 @@ pub struct AttentionFacts {
     pub yulius_wait: bool,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
+    /// Its live run is paused by a person or held by an update (SPEC-191): it does nothing until
+    /// it resumes.
+    pub paused: bool,
+    /// A closed task that never ran and is the onboarding task its pending sandbox waits for:
+    /// it starts with Start onboarding (SPEC-153 OLC-006).
+    pub awaits_start_onboarding: bool,
+    /// The idle agent's merge is armed: Yulius merges it and tells the agent (SPEC-487 CHN-001).
+    pub merge_armed: bool,
 }
 
 /// A task's group in the web UI's sidebar (SPEC-001 UI-050). Home's cards and the sandbox tabs
@@ -457,11 +465,34 @@ pub enum TaskGroup {
 }
 
 impl AttentionFacts {
+    /// The facts of a task in `status` with `activity` and nothing else known.
+    #[must_use]
+    pub fn new(status: TaskStatus, activity: Option<Activity>) -> Self {
+        Self {
+            status,
+            activity,
+            held_prompt: false,
+            browser_request: false,
+            chain_blocked: false,
+            plan_open: false,
+            goal_unfinished: false,
+            background_shells: false,
+            yulius_wait: false,
+            pull: None,
+            paused: false,
+            awaits_start_onboarding: false,
+            merge_armed: false,
+        }
+    }
+
     /// The task's sidebar group: the one rule of `taskInfo` in the web UI's `status.js`.
     ///
-    /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
-    /// browser request needs you. After a finished turn the pull request speaks: failing checks
-    /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
+    /// The onboarding task a pending sandbox waits for is Queued (it starts with Start
+    /// onboarding); any other task being stopped or ended is Ended, whatever else holds. A run
+    /// paused by a person or an update is Working, whatever it waited for (SPEC-191). A held
+    /// prompt or a pending browser request needs you. A finished turn whose merge is armed is
+    /// Working, an achieved goal's too (SPEC-487 CHN-001). After a finished turn the pull
+    /// request speaks: failing checks need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
     /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
     /// could not run keeps it Working (In review); with the plan complete, background shells
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
@@ -476,14 +507,25 @@ impl AttentionFacts {
     #[must_use]
     pub fn group(&self) -> TaskGroup {
         use TaskGroup as G;
+        if self.awaits_start_onboarding && self.status == TaskStatus::Closed {
+            return G::Queued;
+        }
         if self.status.is_resting() || self.status == TaskStatus::Stopping {
             return G::Ended;
+        }
+        // A paused run does nothing until it resumes, whatever it waited for (SPEC-191).
+        if self.paused {
+            return G::Working;
         }
         if self.held_prompt || self.browser_request {
             return G::NeedsYou;
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        if finished && self.merge_armed {
+            return G::Working;
+        }
         // The idle agent goes on by itself: its background work wakes it, or Yulius does.
         let goes_on = self.background_shells || self.yulius_wait;
         if finished && let Some(pull) = self.pull {
@@ -869,18 +911,7 @@ mod tests {
     }
 
     fn facts(status: TaskStatus, activity: Option<Activity>) -> AttentionFacts {
-        AttentionFacts {
-            status,
-            activity,
-            held_prompt: false,
-            browser_request: false,
-            chain_blocked: false,
-            plan_open: false,
-            goal_unfinished: false,
-            background_shells: false,
-            yulius_wait: false,
-            pull: None,
-        }
+        AttentionFacts::new(status, activity)
     }
 
     /// SPEC-085 STT-002, STT-003 (task #63 on 2026-10-13: "Needs you" with failing checks while
@@ -1150,6 +1181,48 @@ mod tests {
             };
             assert_eq!(held.group(), G::NeedsYou, "{status:?}");
         }
+        // SPEC-483 GRP-001: a run paused by a person or an update does nothing until it resumes:
+        // Working, whatever it was doing or waiting for, as the sidebar shows it (SPEC-191).
+        for status in [TaskStatus::Running, TaskStatus::Switching] {
+            for activity in [A::NeedsAttention, A::Waiting, A::Done, A::Working] {
+                let paused = AttentionFacts {
+                    paused: true,
+                    held_prompt: true,
+                    browser_request: true,
+                    plan_open: true,
+                    pull: Some(P::Failing),
+                    ..facts(status, Some(activity))
+                };
+                assert_eq!(paused.group(), G::Working, "{status:?} {activity:?}");
+            }
+        }
+        // A stop asked for still ends it.
+        let stopping = AttentionFacts {
+            paused: true,
+            ..facts(TaskStatus::Stopping, None)
+        };
+        assert_eq!(stopping.group(), G::Ended);
+        // SPEC-483 GRP-002: the onboarding task a pending sandbox waits for is in line, as a
+        // prepared task waiting for Start now is; any other closed task has ended.
+        let onboarding = AttentionFacts {
+            awaits_start_onboarding: true,
+            ..facts(TaskStatus::Closed, None)
+        };
+        assert_eq!(onboarding.group(), G::Queued);
+        // SPEC-483 GRP-003: a finished turn whose merge is armed is not Done, an achieved goal
+        // neither: Yulius merges it and tells its agent (SPEC-487 CHN-001).
+        for activity in [A::Done, A::Waiting] {
+            for pull in [None, Some(P::Tested), Some(P::InReview), Some(P::Merged)] {
+                let armed = AttentionFacts {
+                    merge_armed: true,
+                    yulius_wait: true,
+                    pull,
+                    ..running(Some(activity))
+                };
+                assert_eq!(armed.group(), G::Working, "{activity:?} {pull:?}");
+            }
+        }
+
         // After a finished turn the pull request speaks (#35, #139).
         let with = |activity, pull, plan_open| AttentionFacts {
             pull: Some(pull),

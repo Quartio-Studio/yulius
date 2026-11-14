@@ -712,6 +712,22 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(summary["status"], "closed", "{summary:?}");
     assert_eq!(summary["not_started"], true, "{summary:?}");
     assert_eq!(summary["awaits_start_onboarding"], true, "{summary:?}");
+    // SPEC-483 GRP-002 (finding W2): Home's cards and the tabs count both where the sidebar
+    // lists them, in line under Working.
+    let counted = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        counted.body["counts"],
+        json!({"running": 0, "needs_attention": 0, "queued": 2}),
+        "{:?}",
+        counted.body
+    );
 
     // Nor can a CLI token continue the resting onboarding task itself.
     let prep = unchanged

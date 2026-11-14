@@ -1121,8 +1121,12 @@ export function createEditorView(ctx, sandbox, getTask) {
   function renderStatus() {
     if (!active || !editor || !active.model) { setChildren(status, h('span', { class: 'muted' }, folderText())); return; }
     const position = editor.getPosition();
-    const readOnly = readOnlyText();
     const live = active.live;
+    // The server refused this person's edit of the file (SPEC-483 LVE-001): read-only until it
+    // is opened again.
+    const refused = live.readOnly ? 'Read-only: you can no longer change this folder' : null;
+    const readOnly = readOnlyText() || refused;
+    editor.updateOptions({ readOnly: !writable() || Boolean(refused) });
     const diskSha = live.state.diskSha;
     const conflict = diskSha == null || live.saved ? null : diskSha === '' ? 'deleted' : 'changed';
     setChildren(status,

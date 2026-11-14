@@ -13,7 +13,9 @@
 // after its person's last keystroke, at once on `flush()` (focus or the file left, Ctrl+S), and
 // FALLBACK_SAVE_MS after a teammate's last step (a closed browser's typing). Never while the disk
 // moved on under unsaved text (a conflict, EDT-020): then only `save({force})` (Keep mine) or
-// `disk({force})` (Take disk version), and never for a folder it may not change. `close()` keeps
+// `disk({force})` (Take disk version), and never for a folder it may not change. An edit refused
+// for lack of access gives the server's text back and makes the document read-only until it is
+// joined again. `close()` keeps
 // the document until this tab's typing is confirmed and saved (a closed file, a switched folder).
 
 import { apply, compose, replacement, transform, transformIndex, isNoop } from './livetext.js';
@@ -67,6 +69,8 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   let catchAgain = false;
   let joining = null;
   let destroyed = false;
+  // The server refused an edit (403): this person may no longer change the folder. The server's
+  // text is taken back and nothing is sent until the document is joined again (SPEC-483 LVE-001).
   let readOnly = false;
   let closing = null; // {resolve, promise, timer}: close() waits for this tab's typing to be saved
   const log = []; // {revision, op}: the steps, as the server made them
@@ -145,6 +149,8 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
     // Its own text in its own line ending; else the server takes the disk's.
     if (own) Object.assign(body, own, { eol: state.eol });
     joining = api.post(`/api/sandboxes/${sid}/files/live`, body).then((doc) => {
+      // Joined: the server takes this person's edits again, until it refuses one.
+      readOnly = false;
       if (!destroyed) takeWhole(doc, { sent: own ? own.text : null });
       return doc;
     }).finally(() => { joining = null; });
@@ -229,10 +235,29 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
       // An ended document, or a revision older than the kept steps (the edit may be in the text
       // already): the catch-up tells, and joins again only for an ended one.
       if (status === 409) recheck(sent);
-      else if (status === 403) { readOnly = true; onState(); settle(); } else if (status === 422) resync();
+      // Refused for lack of access (not a stale session token, which is sent again): the typing
+      // cannot be sent, so it is given up and nothing of this tab's waits (a save, a close, a
+      // leaving page). Teammates' steps since are caught up; a refused catch-up asks no more.
+      else if (status === 403 && error.code === 'forbidden') { refused(); catchUp(); } else if (status === 422) resync();
       // Lost or refused for now: the steps say whether it landed; sent again if not.
       else retryTimer = setTimeout(() => recheck(sent), RETRY_MS);
     });
+  }
+
+  /** The server refused this person's edit: its typing goes, its text is the document's again. */
+  function refused() {
+    readOnly = true;
+    client = fresh();
+    outstanding = null;
+    buffer = null;
+    saveWanted = false;
+    forcedOver = null;
+    for (const timer of [sendTimer, ackTimer, retryTimer, saveTimer]) clearTimeout(timer);
+    sendTimer = 0;
+    saveTimer = 0;
+    if (shadow !== getText()) onReset(shadow, state.eol);
+    onState();
+    settle();
   }
 
   /** This tab's text is out of step: the server's text replaces it. */
@@ -342,6 +367,8 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
     /** The person typed `op` (on this tab's text before it). */
     local(op) {
       if (destroyed || isNoop(op)) return;
+      // Nothing typed is kept while the server refuses this person's edits: its text again.
+      if (readOnly) { onReset(shadow, state.eol); return; }
       buffer = buffer ? compose(buffer, op) : op;
       if (canWrite()) schedule(AUTOSAVE_MS);
       onState();
