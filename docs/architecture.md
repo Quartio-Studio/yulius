@@ -1863,8 +1863,9 @@ It manages the project through the Yulius MCP server
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served `COCKPIT_TOOLS`: the task, automation, workflow and session tools,
 `attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list`,
-`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and
-`sandbox_task_stop` for its person's other sandboxes. Those tools act for a person (`ProjectCaller`, which names its
+`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message`,
+`sandbox_task_stop`, `sandbox_tasks_list`, `sandbox_requests`, `sandbox_request_amend`,
+`sandbox_request_withdraw` and `person_ask` for its person's other sandboxes and decisions. Those tools act for a person (`ProjectCaller`, which names its
 `Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
 person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, SPEC-396);
@@ -1940,12 +1941,21 @@ Only the Superagent reaches its person's other sandboxes, and only through them
 ([SPEC-335](../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
 [decision 0227](decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
 `cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
-`sandbox_task_create` records a request in `App::cross_requests` (in memory, at most 3 per person
-and source sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes,
-below Node's 300 s headers timeout). A guard removes the request however the call ends, and a
-Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`: its shell and
-that id) ends it at once, so a dropped or cancelled call, a timeout or a restart leaves nothing
-to approve; `settle` waits for the outcome of an approval that the timeout raced. The panel reads the person's own
+`sandbox_task_create` records a request in `App::cross_requests` (at most 3 per person and source
+sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes, below Node's
+300 s headers timeout). Then, or when the call is dropped, the call answers `waiting` with the
+request's id and the request stays until the person answers it or the Superagent withdraws it
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) XRQ-001,
+[decision 0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)):
+the waiting requests and the newest 200 outcomes are written whole to `superagent-requests.json`
+beside the database at every change and put back at a start (`restore_cross_requests`, after the
+armed merges). A Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`:
+its shell and that id) withdraws it; `settle` waits for the outcome of an approval that the
+timeout raced. `sandbox_requests` reads the Superagent's own waiting requests and outcomes,
+`sandbox_request_amend` replaces a waiting one's text in place and `sandbox_request_withdraw`
+removes one; `person_ask` records a request of the action `Ask` on the Superagent's own sandbox
+(Yes / No on the same panel, nothing runs), and `sandbox_tasks_list` reads another sandbox's
+tasks without asking. The panel reads the person's own
 requests, announced by `superagent.requests` to that person only. An answer needs a browser
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
@@ -1977,7 +1987,8 @@ sequenceDiagram
     P->>Y: POST …/requests/{id} {approve: false}
     Y-->>S: declined, nothing created
   else 4 minutes, or the call dropped
-    Y-->>S: unanswered, request gone
+    Y-->>S: waiting + request id (the card stays, kept across a restart)
+    S->>Y: sandbox_requests (how it ended), or _amend / _withdraw
   end
 ```
 

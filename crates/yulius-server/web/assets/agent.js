@@ -483,7 +483,7 @@ function askedFor(request) {
       return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, failed: `send ${task} the message`, declined: 'nothing was sent', text: 'Message' };
     case 'stop':
       return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}`, failed: `stop ${task}`, declined: 'nothing was changed' };
-    // SPEC-487 REQ-005: a decision only the person makes, on the Superagent's own panel: no target.
+    // SPEC-487 XRQ-005: a decision only the person makes, on the Superagent's own panel: no target.
     case 'ask':
       return { heading: 'you to decide', own: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
     default:
@@ -509,10 +509,10 @@ export function shownPrompt(text) {
 /**
  * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
  * session. Nothing reaches that sandbox until the person presses Create task; each request is
- * answered once, and stays until it is answered or the Superagent withdraws it (SPEC-487 REQ-001). Create task takes a click only once the
+ * answered once, and stays until it is answered or the Superagent withdraws it (SPEC-487 XRQ-001). Create task takes a click only once the
  * whole prompt was in view (scrolled to its end) and the card has been there a moment. SPEC-442
  * XST-006: the same cards ask to start, re-chain, message or stop a task there (Start now, Change
- * start, Send message, Stop task); a message is read to its end as a prompt is. SPEC-487 REQ-005:
+ * start, Send message, Stop task); a message is read to its end as a prompt is. SPEC-487 XRQ-005:
  * a decision the Superagent leaves to its person (Yes, No), its question read to its end too.
  */
 function createRequests(ctx, sandbox, onCount) {

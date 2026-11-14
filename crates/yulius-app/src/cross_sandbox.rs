@@ -4,10 +4,10 @@
 //! - `sandbox_task_create` asks the person: the request waits on the panel, at most
 //!   [`MAX_WAITING`] per person and sandbox; the call waits for the answer at most
 //!   [`CROSS_REQUEST_WAIT`], and the request stays after it until the person answers it, the
-//!   Superagent withdraws it or its client cancels the call (SPEC-487 REQ-001); requests and
+//!   Superagent withdraws it or its client cancels the call (SPEC-487 XRQ-001); requests and
 //!   their outcomes are kept in [`SUPERAGENT_REQUESTS_FILE`], so a restart keeps them
-//!   (XSR-002..004, REQ-002); a waiting request is amended in place (REQ-003);
-//! - `person_ask` leaves a decision of the Superagent's own on the same panel (REQ-005);
+//!   (XSR-002..004, XRQ-002); a waiting request is amended in place (XRQ-003);
+//! - `person_ask` leaves a decision of the Superagent's own on the same panel (XRQ-005);
 //! - only that person, from a browser session, approves or declines it; an approval creates the
 //!   task as `task_create` would in the target, exactly as shown (XSR-005, XSR-006);
 //! - the same requests start, re-chain, message and stop a task of another sandbox
@@ -49,7 +49,7 @@ pub const MAX_WAITING: usize = 3;
 pub const ANSWER_GRACE: Duration = Duration::from_secs(50);
 
 /// The file beside the database that keeps the waiting requests and the recent outcomes
-/// (SPEC-487 REQ-002), written whole at every change.
+/// (SPEC-487 XRQ-002), written whole at every change.
 pub const SUPERAGENT_REQUESTS_FILE: &str = "superagent-requests.json";
 /// The outcomes kept for the Superagents to read (`sandbox_requests`), the newest.
 pub const MAX_ANSWERED: usize = 200;
@@ -137,7 +137,7 @@ pub enum CrossAction {
     /// `sandbox_task_stop`.
     Stop,
     /// `person_ask`: a decision the Superagent leaves for its person, in its own sandbox
-    /// (SPEC-487 REQ-005); approved is yes, declined is no, and nothing runs.
+    /// (SPEC-487 XRQ-005); approved is yes, declined is no, and nothing runs.
     Ask,
 }
 
@@ -258,11 +258,11 @@ struct Waiting {
     /// `notifications/cancelled` names.
     call: Option<String>,
     /// Where its answer goes while that call still waits; none once the call ended (the
-    /// request stays, and `sandbox_requests` tells the outcome, SPEC-487 REQ-001).
+    /// request stays, and `sandbox_requests` tells the outcome, SPEC-487 XRQ-001).
     answer: Option<oneshot::Sender<AppResult<Value>>>,
 }
 
-/// How a request ended, for its Superagent to read later (SPEC-487 REQ-004).
+/// How a request ended, for its Superagent to read later (SPEC-487 XRQ-004).
 #[derive(Clone, Serialize, Deserialize)]
 struct Answered {
     id: String,
@@ -333,7 +333,7 @@ impl CrossRequests {
 }
 
 /// When the call ends however it ends (a dropped call included), its request stops waiting
-/// for it and stays on the panel (SPEC-487 REQ-001).
+/// for it and stays on the panel (SPEC-487 XRQ-001).
 struct Ends<'a> {
     app: &'a App,
     id: String,
@@ -689,7 +689,7 @@ impl App {
             id: id.clone(),
         };
         self.announce_cross_requests(&user.id, &caller.sandbox);
-        // The call stops waiting; the request stays on the panel (REQ-001).
+        // The call stops waiting; the request stays on the panel (XRQ-001).
         let stop_waiting = || match self.cross_requests.lock().get_mut(&id) {
             Some(request) => {
                 request.answer = None;
@@ -854,7 +854,7 @@ impl App {
                 })),
             )
         };
-        // Kept for its Superagent to read later (REQ-004), the call gone or not.
+        // Kept for its Superagent to read later (XRQ-004), the call gone or not.
         let kept = match &answer {
             Ok(value) => value.clone(),
             Err(err) => json!({"outcome": "failed", "error": err.public_message()}),
@@ -1074,7 +1074,7 @@ impl App {
 }
 
 impl App {
-    /// Keeps how a request ended for its Superagent (REQ-004), the newest [`MAX_ANSWERED`].
+    /// Keeps how a request ended for its Superagent (XRQ-004), the newest [`MAX_ANSWERED`].
     fn keep_outcome(&self, answered: Answered) {
         {
             let mut kept = self.cross_requests.answered();
@@ -1086,7 +1086,7 @@ impl App {
         self.save_cross_requests();
     }
 
-    /// Writes [`SUPERAGENT_REQUESTS_FILE`] whole, then renames it into place (REQ-002).
+    /// Writes [`SUPERAGENT_REQUESTS_FILE`] whole, then renames it into place (XRQ-002).
     /// Failures are logged: the requests stay in memory.
     fn save_cross_requests(&self) {
         let _guard = self
@@ -1126,7 +1126,7 @@ impl App {
         }
     }
 
-    /// At a start: puts back the requests that waited and the recent outcomes (REQ-002). A
+    /// At a start: puts back the requests that waited and the recent outcomes (XRQ-002). A
     /// request whose sandbox is gone is dropped. No call waits for them any more.
     pub async fn restore_cross_requests(&self) {
         let path = self.config.data_dir.join(SUPERAGENT_REQUESTS_FILE);
@@ -1188,7 +1188,7 @@ impl App {
         }
     }
 
-    /// `sandbox_requests` (REQ-004): the Superagent's requests that wait for its person, and
+    /// `sandbox_requests` (XRQ-004): the Superagent's requests that wait for its person, and
     /// how its recent ones ended, newest first.
     ///
     /// # Errors
@@ -1242,7 +1242,7 @@ impl App {
         }))
     }
 
-    /// `sandbox_request_amend` (REQ-003): replaces what a waiting request asks (a new task's
+    /// `sandbox_request_amend` (XRQ-003): replaces what a waiting request asks (a new task's
     /// prompt and options, a message's text, a question), checked as a new request is; it keeps
     /// its place and its id. A change of a task's start, or a stop, is withdrawn and asked again.
     ///
@@ -1325,7 +1325,7 @@ impl App {
         }))
     }
 
-    /// `sandbox_request_withdraw` (REQ-003): takes back a waiting request; nothing of it runs.
+    /// `sandbox_request_withdraw` (XRQ-003): takes back a waiting request; nothing of it runs.
     ///
     /// # Errors
     /// `NotFound` for a request that is not the Superagent's or no longer waits.
@@ -1364,7 +1364,7 @@ impl App {
         Ok(json!({"request": id, "note": format!("Withdrawn: {}.", request.action.nothing())}))
     }
 
-    /// `sandbox_tasks_list` (REQ-006): `tasks_list` of another sandbox its person can work in.
+    /// `sandbox_tasks_list` (XRQ-006): `tasks_list` of another sandbox its person can work in.
     /// It only reads: nobody is asked.
     ///
     /// # Errors

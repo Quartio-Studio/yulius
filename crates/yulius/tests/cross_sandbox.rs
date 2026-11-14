@@ -260,7 +260,7 @@ async fn a_declined_request_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-001, REQ-004 (wall 6: "lost when the person is away"): nobody answers while
+/// SPEC-487 XRQ-001, XRQ-004 (wall 6: "lost when the person is away"): nobody answers while
 /// the call waits; the call says the request waits, with its id, and the request stays on the
 /// panel. Answered later, the task is created as it would have been, and the Superagent reads
 /// how it ended.
@@ -297,7 +297,7 @@ async fn an_unanswered_request_waits_and_is_answered_later() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-001 (a Superagent interrupted, a client timeout): a dropped call leaves its
+/// SPEC-487 XRQ-001 (a Superagent interrupted, a client timeout): a dropped call leaves its
 /// request waiting; answered later, it runs.
 #[tokio::test]
 async fn a_dropped_call_leaves_its_request_waiting() -> TestResult {
@@ -321,7 +321,7 @@ async fn a_dropped_call_leaves_its_request_waiting() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-003 (wall 6: "the same task was requested three times in three minutes to add
+/// SPEC-487 XRQ-003 (wall 6: "the same task was requested three times in three minutes to add
 /// one sentence"): a waiting request is amended in place, keeps its id, and what the person
 /// approves is the amended text; a request is withdrawn and nothing of it runs. Another
 /// Superagent's request is not found.
@@ -402,7 +402,7 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-002: the waiting requests and the outcomes are kept in a file beside the
+/// SPEC-487 XRQ-002: the waiting requests and the outcomes are kept in a file beside the
 /// database and put back at a start, so a restart of Yulius loses none.
 #[tokio::test]
 async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
@@ -429,7 +429,7 @@ async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-006 (wall 6: "no listing of another sandbox's tasks; it probed numbers one by
+/// SPEC-487 XRQ-006 (wall 6: "no listing of another sandbox's tasks; it probed numbers one by
 /// one"): the Superagent lists another sandbox's tasks without asking; its own sandbox, and one
 /// its person cannot work in, are refused.
 #[tokio::test]
@@ -477,7 +477,7 @@ async fn the_superagent_lists_the_tasks_of_another_sandbox() -> TestResult {
     Ok(())
 }
 
-/// SPEC-487 REQ-005 (wall 9: "I need your OK" repeated in reports nobody read): a decision the
+/// SPEC-487 XRQ-005 (wall 9: "I need your OK" repeated in reports nobody read): a decision the
 /// Superagent leaves for its person waits on its own panel, its question read in full; Yes is
 /// the answer yes, No is no, nothing runs, and the answer is kept for the Superagent to read.
 #[tokio::test]
@@ -1281,7 +1281,7 @@ async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult
     Ok(())
 }
 
-/// SPEC-487 REQ-001: a change nobody answered while the call waited stays on the panel and is
+/// SPEC-487 XRQ-001: a change nobody answered while the call waited stays on the panel and is
 /// audited only once answered, in both sandboxes.
 #[tokio::test]
 async fn an_unanswered_change_waits_and_is_audited_when_answered() -> TestResult {

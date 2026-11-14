@@ -101,7 +101,7 @@ test('Decline creates nothing, and a withdrawn request goes by itself', async ({
   await expect(browser.locator('.toast:has-text("Declined")')).toBeVisible();
   expect(await productTasks(browser)).toEqual(before);
 
-  // SPEC-487 REQ-001: a request stays until answered; the Superagent withdraws it: the card goes.
+  // SPEC-487 XRQ-001: a request stays until answered; the Superagent withdraws it: the card goes.
   const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Another one' });
   await expect(card).toBeVisible();
   await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.withdrawSuperagentRequest('sb_studio', i), id);
@@ -387,7 +387,7 @@ test('Send message takes a click only once the whole message was in view', async
   await expect(screen.getByRole('button', 'Start now')).toBeVisible();
 });
 
-// SPEC-487 REQ-005 (wall 9): a decision only the person makes waits on the Superagent's own
+// SPEC-487 XRQ-005 (wall 9): a decision only the person makes waits on the Superagent's own
 // panel, its question read to its end as a prompt is; Yes answers yes and No answers no.
 test('a decision the Superagent leaves to its person is answered Yes or No on its panel', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));

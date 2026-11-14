@@ -74,7 +74,7 @@ impl App {
             // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
             // meanwhile merges now (SPEC-358 MSB-008).
             app.resume_armed_merges().await;
-            // The Superagents' requests that waited, and their outcomes (SPEC-487 REQ-002).
+            // The Superagents' requests that waited, and their outcomes (SPEC-487 XRQ-002).
             app.restore_cross_requests().await;
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.

@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
+  [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
+  A request to create, change, message or stop a task in another sandbox ended after 4 minutes,
+  at Esc or at a restart, so a person who stepped away came back to nothing and the Superagent
+  asked the same thing again. Now the card stays on its panel until the person answers it, also
+  across a restart of Yulius; the Superagent reads how each ended (`sandbox_requests`), changes a
+  waiting one in place (`sandbox_request_amend`) or withdraws it, lists another sandbox's tasks
+  without asking (`sandbox_tasks_list`), and leaves a decision only the person makes on the same
+  panel as a question answered Yes or No (`person_ask`).
 - A task whose work is not finished no longer reads Done (SPEC-491, task #474,
   [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
   Task #465 read Done, and the tasks chained after it started, while its pull request

@@ -850,7 +850,7 @@ impl App {
                 McpCaller::Cockpit(caller) if name == "sandbox_task_get" => {
                     self.tool_sandbox_task_get(caller, &args).await
                 }
-                // Requests that last (SPEC-487 REQ-003, REQ-004, REQ-006).
+                // Requests that last (SPEC-487 XRQ-003, XRQ-004, XRQ-006).
                 McpCaller::Cockpit(caller) if name == "sandbox_tasks_list" => {
                     self.tool_sandbox_tasks_list(caller, &args).await
                 }
@@ -1201,8 +1201,8 @@ mod tests {
                 "sandbox_task_update",
                 "sandbox_task_message",
                 "sandbox_task_stop",
-                // Reading another sandbox, and the requests that wait (SPEC-487 REQ-003 to
-                // REQ-006): none deletes or archives anything either.
+                // Reading another sandbox, and the requests that wait (SPEC-487 XRQ-003 to
+                // XRQ-006): none deletes or archives anything either.
                 "sandbox_tasks_list",
                 "sandbox_requests",
                 "sandbox_request_amend",

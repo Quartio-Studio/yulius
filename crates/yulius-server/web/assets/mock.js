@@ -3677,7 +3677,7 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (!request) fail(404, 'not_found', 'not found');
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
-  // A decision the Superagent left to its person (SPEC-487 REQ-005): the answer is kept for it.
+  // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.
   if (request.view.action === 'ask') {
     db.superagentAnswers = [...(db.superagentAnswers || []), body.approve ? 'yes' : 'no'];
     return body.approve ? { outcome: 'approved', answer: 'yes' } : { outcome: 'declined', answer: 'no' };
@@ -6924,7 +6924,7 @@ export function createMockTransport(params) {
     emit(db, { type: 'superagent.requests', sandbox_id: source });
     return view.id;
   };
-  // The Superagent withdrew its request (SPEC-487 REQ-003): it goes.
+  // The Superagent withdrew its request (SPEC-487 XRQ-003): it goes.
   db.withdrawSuperagentRequest = (source, id) => {
     db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
     emit(db, { type: 'superagent.requests', sandbox_id: source });
