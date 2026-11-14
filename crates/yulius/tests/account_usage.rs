@@ -434,6 +434,49 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 SGN-002: a usage reading never makes a subscription usable that is not. One left
+/// `error` with a credential (rows written before a failed re-login kept `relogin`), like one
+/// that needs a new sign-in, is not asked by the background round, and a reading an
+/// administrator asks for stores its figures and leaves its status and its reason.
+#[tokio::test]
+async fn a_usage_reading_leaves_a_broken_subscription_broken() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    for (name, status) in [
+        ("a-error", AccountStatus::Error),
+        ("a-relogin", AccountStatus::Relogin),
+    ] {
+        account(&h, name, b"works").await?;
+        let id = AccountId::parse(name)?;
+        let why = "the sign-in ended without producing a token";
+        h.store
+            .set_account_state(&id, status, None, Some(why), Timestamp(2))
+            .await?;
+        h.app.refresh_usage_round(&mut HashMap::new()).await;
+        let kept = h.store.account(&id).await?.ok_or(name)?;
+        assert_eq!(kept.status, status, "{name}: the round asks no broken one");
+        assert_eq!(kept.usage_json, None, "{name}");
+        let refreshed = call(
+            &h.router,
+            Method::POST,
+            &format!("/api/admin/accounts/{name}/usage"),
+            None,
+            &admin,
+        )
+        .await?;
+        assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+        assert_eq!(refreshed.body["status"], status.as_str(), "{name}");
+        let read = h.store.account(&id).await?.ok_or(name)?;
+        assert_eq!(read.status, status, "{name}: a reading proves no sign-in");
+        assert_eq!(read.last_error.as_deref(), Some(why), "{name}");
+        assert!(read.usage_json.is_some(), "{name}: the figures are kept");
+    }
+    Ok(())
+}
+
 /// A failed usage reading is a note only over no error or an earlier note: a re-login error
 /// written while it ran stays (ROT-009).
 #[tokio::test]

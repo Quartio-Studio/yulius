@@ -39,9 +39,7 @@ use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::AppResult;
-use crate::model::{
-    AccountStatus, PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord,
-};
+use crate::model::{PauseKind, PauseRecord, TaskRecord, USAGE_FROM_SESSION, UsageSampleRecord};
 use crate::supervisor::RunStart;
 
 /// Default wait between two resumes of paused tasks ("resumed gently").
@@ -177,10 +175,6 @@ fn next_weekly_reset(window: &UsageWindow, now: Timestamp) -> Option<Timestamp> 
     }
     let weeks = now.millis_since(at) / WEEK_MS + 1;
     Some(at.plus_millis(weeks.saturating_mul(WEEK_MS)))
-}
-
-fn healthy(status: AccountStatus) -> bool {
-    matches!(status, AccountStatus::Ok | AccountStatus::Limited)
 }
 
 /// The family of the model a task set to `model` is launched with: the default model's when it
@@ -993,7 +987,7 @@ impl App {
             if is_available {
                 available += 1;
             }
-            if record.credential.is_some() && healthy(record.status) {
+            if record.credential.is_some() && record.status.healthy() {
                 members.push(PoolMember {
                     weekly_used: usage.secondary.and_then(|w| w.current_percent(now)),
                     weekly_resets_at: usage.secondary.and_then(|w| next_weekly_reset(&w, now)),

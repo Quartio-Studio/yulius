@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan;
+      of the Plan (merged, pull request #1268), QA2 slice 18;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -391,6 +391,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (`terminate_then_mark_lost`, SPEC-065 END-001), and a switch whose old run is lost starts
   none (SPEC-250 STW-006).
 
+### Slice 18: a subscription that needs a new sign-in
+
+- **QA2 (medium).** "This subscription works" was written four times (`ok` or `limited`:
+  the pool's input, the capacity loop, the agent gate, the login failure) and "this one
+  needs a sign-in" three more (`relogin` or `pending_login`: the usage round, the e-mail
+  round, the usage write), and the two were not each other's opposite: `error` was in
+  neither. A subscription Claude had refused (`relogin`, credential kept) whose new
+  sign-in then failed or timed out became `error`; the background round asked `error` for
+  its usage, a reading stored `ok`, and tasks were placed on the refused subscription
+  again, each losing a turn to the refusal. The administration page had the rule a fifth
+  and a sixth time, and asked an `error` subscription for its usage by itself.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -720,6 +732,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `switching` with a run that ended while Yulius was down lost its switch with the
   server: it rests as `stopped_server_lost` and is among the tasks a move brings back, as
   one found with no run is.
+- **SGN-001** A failed sign-in leaves a subscription that needs a new one (`relogin`) as
+  it is, with the reason it had. One that works keeps its status with a note (as before);
+  only a first sign-in that fails makes an `error`. Why a sign-in failed is told to its
+  viewers in its `exit` frame (`cause`), also to one who opens it after it ended, and the
+  sign-in's dialog shows that reason, never the subscription's own error. The write reads
+  the status and writes it back under the lock of every other status write.
+- **SGN-002** A subscription works while it is `ok` or `limited`
+  (`AccountStatus::healthy`), and that is the one rule: tasks are placed only on one that
+  works, only such a one is asked for its usage or its e-mail address by the background
+  rounds, and a usage reading that arrives for any other stores its figures and leaves
+  its status and its reason. Every other status ends with a sign-in that succeeds, and
+  with nothing else. The web UI has the same rule once (`works` and `needsSignIn` in
+  `usage.js`): the administration page offers and makes a reading for the subscriptions
+  that work and offers a sign-in for the others, and the pool's panel and the "run on"
+  menu call the others "needs a new sign-in".
 
 ## Plan
 
@@ -742,7 +769,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
-- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end
+- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
+- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds
 
 ## Acceptance criteria
 
@@ -1158,6 +1186,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-103** A start that finds a `switching` task whose run ended while Yulius was down
   rests it as `stopped_server_lost` (a running one whose session left is `closed`, as
   before); with the mark of a host move the task is queued again.
+- **AC-104** A subscription that signed in, was refused by Claude (`relogin` with
+  Claude's words) and whose next sign-in fails: its status is `relogin` and its error
+  Claude's words; the ended sign-in's `exit` frame is `error`, the exit code and "the
+  sign-in ended without producing a token (exit code 2)" as `cause`.
+- **AC-105** A subscription with a credential that reads `error`, and one that reads
+  `relogin`: a background usage round stores nothing for it; a reading an administrator
+  asks for answers 200 with the status unchanged, stores the usage and keeps the reason.
+- **AC-106** With one subscription that works and has no address yet, one in `error` and
+  one in `relogin`, a background round stores the first one's address and asks Claude
+  nothing about the two others.
+- **AC-107** On the Subscriptions page with every subscription but one in `error`,
+  "Refresh all" says "Usage read again for 1 subscription." and one request was made.
+- **AC-108** On the Subscriptions page a sign-in of the refused subscription that fails
+  says "Sign-in failed" with "The sign-in ended without producing a token" and without
+  Claude's refusal; the card then still shows the refusal and "Sign in again", and the
+  subscription reads `relogin`.
 
 ## Test plan
 
@@ -1350,6 +1394,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `SwitchEndsRun`);
   `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` (AC-103), on a
   host that finds every run ended.
+- Slice 18: `yulius` `accounts::a_failed_sign_in_leaves_a_refused_subscription_needing_one`
+  (AC-104, through the sign-in's own terminal with a scripted host) and
+  `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105);
+  `account_email::the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in`
+  (AC-106); e2e `subscriptions.e2e.ts` "a subscription in error is asked for no usage
+  reading" (AC-107) and "a failed sign-in of a refused subscription says its own reason
+  and leaves the refusal on the card" (AC-108); the existing
+  `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
+  keeps the two other cases of SGN-001.
 
 ## Decisions
 
@@ -1413,6 +1466,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 18 (no decision record: the comment at the usage write already stated the rule,
+  "a reading never makes a subscription that needs a new sign-in usable again"; the code
+  now has it once). `error` is kept as a status: it is what a first sign-in that failed
+  reads, with no credential. Rows that the old code left `error` with a credential stay
+  so until a sign-in succeeds; no migration turns them into `relogin`: they are out of
+  the pool either way and the page offers the sign-in for both, so it would change a word
+  and nothing else. A failed sign-in of a refused subscription keeps
+  Claude's reason and does not add its own: the card must go on saying why the
+  subscription is out. The sign-in's own reason goes where it belongs, to the sign-in:
+  its `exit` frame carries it (the frame's `cause`, which a task's terminal uses for the
+  limit a run ended at), and the dialog reads it there. The first version of this slice
+  left the dialog reading the subscription's error, which would have named Claude's
+  refusal as the reason the sign-in failed (the review, finding 1).
 - Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
   where they were not). After a switch's wait the run that had to be killed ends the
   switch, and no new session starts. The other way was weighed: go on with the switch once
@@ -1439,10 +1505,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   rests one with no run. The review went to a fourth look at that one change, against the
   rule of three rounds: the finding was a regression of this slice with its fix named by
   the reviewer, and a split would have delivered the regression or held back the rest.
-  Left as it is, by the review's own word harmless: when a run ends in the window before
-  the switch claims it and the switch reads the status before that end has settled, the
-  switch says "did not end in time" for a task that closed, and leaves its given-up mark
-  in the slot until the task's next launch clears it.
+  Left as it is, a nit by the review's word (the mark it called harmless): when a run
+  ends in the window before the switch claims it and the switch reads the status before
+  that end has settled, the switch says "did not end in time" for a task that closed, and
+  leaves its given-up mark in the slot until the task's next launch clears it.
   A finished (`Done`) task whose idle session is moved and has to be given up rests as
   stopped, not closed: RBT-001 closes only a running task, and its domain test says why
   for this very case ("a switch or a stop in flight was cut"); the review asked for
@@ -1655,12 +1721,12 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 18 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 17 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 17 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
 | E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
 | QC8 | store | `tasks.closed_at` is never cleared | low | slice 13 |
@@ -2800,3 +2866,62 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   run as a session that left, and that task missing from the tasks a move brings back.
 - **Gate after it.** `scripts/dev ci` at `b41c5d11f`: exit 0;
   `4290 tests run: 4290 passed, 17 skipped` (`target/audit/slice17/gate4.log`).
+- **Review, fourth look** (the same session, head `5690bb786`): approve; "Nothing of
+  severity minor or above remains in own code." Two nits, answered in the commit after
+  the merge: the start lists a switching task as lost only when its change was made, and
+  Decisions give the review's word as it was.
+- **Delivery.** Pull request #1268 merged into `dev` at `5690bb786`, whose own Yulius CI
+  run passed.
+
+### Slice 18 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice18/before.log`): the failed sign-in
+  left `("error", "the sign-in ended without producing a token (exit code 2)")` where
+  `("relogin", Claude's reason)` was expected, and the usage round turned the `error`
+  subscription `Ok`. The e2e test failed on the page's old rule
+  (`target/audit/slice18/e2e-old.log`: "Usage read again for 1 subscription." never shown).
+- **Tests failing without their fix** (`target/audit/slice18/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): a failed sign-in turning a refused subscription into an
+  error; replacing its reason; the usage round asking one in error; a reading making one
+  in error usable; the e-mail round asking one in error; and asking one that needs a
+  sign-in.
+- **The suites:** `2723 tests run: 2723 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice18/suite1.log`), before the e-mail round's test was added; the gate
+  ran after it.
+- **Gate.** `scripts/dev ci` at `e45fb4f59`: exit 0; `4293 tests run: 4293 passed, 17 skipped`
+  (`target/audit/slice18/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** `cd e2e && npx e2e run` at `e45fb4f59`: exit 0; `Test Files 84 passed | 1 skipped
+  (85)`, `Tests 1022 passed | 1 skipped (1023)` (`target/audit/slice18/e2e-full.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A subscription Claude really refuses (the test writes `relogin` with
+  Claude's words into the store); a row left `error` with a credential by the old code on
+  the running instance (the test writes one).
+- **Review, round 1** (a fresh session, read-only, head `1529f8d10`): request changes. One
+  major finding in this slice's code: the sign-in's dialog reads the subscription's
+  error, so for a refused subscription whose sign-in fails "It gives the refusal as the
+  reason the sign-in failed", and the sign-in's own reason "is now stored and shown
+  nowhere". The reason is in the sign-in's `exit` frame now and the dialog shows that
+  (AC-104, AC-108). Minor, answered: `docs/api.md` names the `relogin` case; the mock does
+  what the server does for a failed sign-in and for a reading; the usage-round block of
+  one test, which could not fail, is gone with its clause of AC-104; the two helpers in
+  `usage.js` no longer sit under another constant's comment. Nits answered: the
+  administration page uses `works` at its three places; the rule's comment says "the
+  background rounds". From before, taken on the way: a failed sign-in's write takes the
+  lock of the other status writes (not tested: the window is between a read and a write
+  of one function), and the start's sweep lists a task as lost only when its change was
+  made.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 8 cases, each
+  failed its test): the six above, a viewer watching a failed sign-in not told why, and
+  one who opens it later not told why. The new e2e test failed against the dialog's old
+  code (`target/audit/slice18/e2e-old2.log`: expected text containing "The sign-in ended
+  without producing a token").
+- **Gate after it.** `scripts/dev ci` at `c8f2643e6`: exit 0;
+  `4293 tests run: 4293 passed, 17 skipped` (`target/audit/slice18/gate2.log`). The run
+  before it at the same head failed in one test this change does not touch,
+  `mcp_bridge::tests::a_call_held_through_an_outage_is_answered_once_yulius_is_back`
+  (`gate2-flake.log`): its helper gives up a port and expects nobody to take it for
+  400 ms; another test's server took it. Reported as issue #1269; the gate was run again.
+- **Web UI after it.** `cd e2e && npx e2e run` at `3f6edfc0f` (the head but for a lint in a
+  Rust test): exit 0; `Test Files 84 passed | 1 skipped (85)`,
+  `Tests 1023 passed | 1 skipped (1024)` (`target/audit/slice18/e2e-full2.log`).

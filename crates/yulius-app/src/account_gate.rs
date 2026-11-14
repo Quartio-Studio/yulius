@@ -7,7 +7,7 @@ use yulius_domain::task::FailReason;
 
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{AccountRecord, AccountStatus};
+use crate::model::AccountRecord;
 
 /// Where an instance administrator connects a Claude account (Subscriptions).
 pub const CONNECT_PATH: &str = "/admin/accounts";
@@ -30,7 +30,7 @@ pub(crate) fn agent_accounts(accounts: &[AccountRecord], provider: Provider) -> 
         .filter(|a| a.provider == provider && a.credential.is_some());
     let mut any = false;
     for account in signed_in {
-        if matches!(account.status, AccountStatus::Ok | AccountStatus::Limited) {
+        if account.status.healthy() {
             return AgentAccounts::Usable;
         }
         any = true;
@@ -117,7 +117,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Sealed;
+    use crate::model::{AccountStatus, Sealed};
     use yulius_domain::ids::AccountId;
     use yulius_domain::time::Timestamp;
 

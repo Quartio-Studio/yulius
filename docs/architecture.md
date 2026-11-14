@@ -597,6 +597,12 @@ which a new sign-in takes too; it is never held across a request to the provider
 recorded while a reading is under way is kept. The write that marks a subscription refused
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
+the one rule: the pool places tasks only on one that works, the background rounds ask only such
+a one for its usage and its e-mail address, and a reading that arrives for any other stores its
+figures and leaves its status. A sign-in that fails leaves a refused subscription `relogin` with
+Claude's reason; every status but the two ends with a sign-in that succeeds, and with nothing
+else.
 
 ### The fallback model
 
