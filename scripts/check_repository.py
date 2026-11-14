@@ -689,15 +689,28 @@ DELIVERY_RULES = [
 ITEM = re.compile(r"\s*([-*+]|\d+\.)\s")
 
 
+ALONE = re.compile(r"\s*(#{1,6}\s|#{1,6}$|\||```|~~~)")
+
+
 def paragraphs(text):
     """Paragraphs and list items of `text`, each with its first line's number, its lines joined:
-    wrapped wording is read whole."""
-    block, start = [], 0
+    wrapped wording is read whole. A heading, a table row, a fence and each line inside a fence
+    stand alone (SPEC-483 slice 28)."""
+    block, start, fenced = [], 0, False
     for number, line in enumerate(text.splitlines(), 1):
-        if not line.strip() or ITEM.match(line):
+        fence = line.lstrip().startswith(("```", "~~~"))
+        alone = fenced or ALONE.match(line)
+        if fence:
+            fenced = not fenced
+        if not line.strip() or ITEM.match(line) or alone:
             if block:
                 yield start, " ".join(block)
-            block, start = ([line.strip()], number) if line.strip() else ([], 0)
+            block, start = [], 0
+            if alone and line.strip():
+                yield number, line.strip()
+                continue
+            if line.strip():
+                block, start = [line.strip()], number
             continue
         if not block:
             start = number

@@ -11,7 +11,7 @@
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
-import { relLong, dateTime } from '../format.js';
+import { relLong, dateTime, shortSha } from '../format.js';
 import { allows } from '../status.js';
 import { replaceQuietly, href } from '../router.js';
 import { loader } from './common.js';
@@ -47,7 +47,6 @@ const SHOWN_RELEASES = 3;
 
 /** A deploy's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
-const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** A release id short enough for a button or a toast: past 16 characters, its first 12 and "…" (SPEC-419). */
 const shortRelease = (id) => (String(id).length > 16 ? `${String(id).slice(0, 12)}…` : String(id));
 /** Whether an environment or a run is of the production stage (SPEC-257). */

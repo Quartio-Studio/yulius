@@ -323,3 +323,59 @@ test('a change announced while nobody watched reaches the view that watches agai
     return chip520(browser).getAttribute('title');
   }, { timeout: 5_000 }).toBe('Pull request #520 · merged');
 });
+
+// SPEC-483 slice 28 (W5): one pull request chip and one table of what its checks say, for the
+// sidebar, the Tasks list, the Git page and the task's delivery strip (three copies had drifted:
+// "checks failed" against "checks failing", unknown checks said nowhere in one of them).
+test('every pull request chip says its checks the same way (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const { prChip, prChecks, icon } = await import('/assets/dom.js' as string);
+    const { deliveryStrip, prLine } = await import('/assets/actions.js' as string);
+    const pr = (checks: string, state = 'open') => ({ number: 7, state, checks, url: 'https://github.com/o/r/pull/7', title: 'T', base: 'dev', head: 'feat/x' });
+    const out: Record<string, unknown> = {};
+    // The icon a chip draws, by its drawing, with the tone it is drawn in.
+    const glyphs = ['check', 'x', 'clock'].map((name) => [name, (icon(name) as SVGElement).innerHTML]);
+    const glyph = (el: HTMLElement) => {
+      const svg = el.querySelector('svg');
+      if (!svg) return null;
+      const name = glyphs.find(([, drawing]) => drawing === svg.innerHTML)?.[0] ?? '?';
+      return `${name} ${svg.parentElement?.className}`;
+    };
+    for (const checks of ['success', 'failure', 'pending', 'unknown', 'none']) {
+      const chip = prChip(pr(checks)) as HTMLElement;
+      const span = prChip(pr(checks), { link: false }) as HTMLElement;
+      const strip = (deliveryStrip({}, {}, { pr: pr(checks) }) as HTMLElement[])[0];
+      const line = prLine(pr(checks)) as HTMLElement;
+      const names = [chip.getAttribute('aria-label'), span.querySelector('.sr-only')?.textContent, strip.getAttribute('aria-label')];
+      const glyphsDrawn = [glyph(chip), glyph(span), glyph(strip)];
+      out[checks] = {
+        text: prChecks(pr(checks))?.text ?? null,
+        chip: chip.getAttribute('title'),
+        strip: strip.getAttribute('title'),
+        line: line.textContent,
+        name: names[0],
+        sameNames: names[1] === names[0]?.slice('PR #7'.length) && names[2] === `${names[0]} — delivery details`,
+        glyph: glyphsDrawn[0],
+        sameGlyphs: glyphsDrawn.every((g) => g === glyphsDrawn[0]),
+        tags: [chip.tagName, span.tagName, strip.tagName, strip.classList.contains('strip-pr')].join(' '),
+      };
+    }
+    out.merged = prChecks(pr('failure', 'merged'));
+    out.mergedChip = (prChip(pr('failure', 'merged')) as HTMLElement).getAttribute('title');
+    // The Git page's review column: no checks reads "In review", as before the one table.
+    const { reviewLine } = await import('/assets/pages/git.js' as string);
+    out.review = [reviewLine(pr('failure'), []), reviewLine(pr('none'), []), reviewLine(pr('unknown'), []), reviewLine(null, []), reviewLine(pr('success'), ['merge'])];
+    return out;
+  });
+  expect(read).toEqual({
+    success: { text: 'checks passed', chip: 'Pull request #7 · open · checks passed', strip: 'Pull request #7 · open · checks passed — delivery details', line: 'PR #7Topenchecks passeddev ← feat/x', name: 'PR #7, pull request, open, checks passed', sameNames: true, glyph: 'check tone-ok', sameGlyphs: true, tags: 'A SPAN BUTTON true' },
+    failure: { text: 'checks failing', chip: 'Pull request #7 · open · checks failing', strip: 'Pull request #7 · open · checks failing — delivery details', line: 'PR #7Topenchecks failingdev ← feat/x', name: 'PR #7, pull request, open, checks failing', sameNames: true, glyph: 'x tone-danger', sameGlyphs: true, tags: 'A SPAN BUTTON true' },
+    pending: { text: 'checks running', chip: 'Pull request #7 · open · checks running', strip: 'Pull request #7 · open · checks running — delivery details', line: 'PR #7Topenchecks runningdev ← feat/x', name: 'PR #7, pull request, open, checks running', sameNames: true, glyph: 'clock tone-warn', sameGlyphs: true, tags: 'A SPAN BUTTON true' },
+    unknown: { text: 'checks unknown', chip: expect.stringMatching(/^Pull request #7 · open · checks unknown\. .*can’t read this pull request’s checks/), strip: expect.stringMatching(/checks unknown\. .*can’t read.* — delivery details$/), line: 'PR #7Topenchecks unknowndev ← feat/x', name: 'PR #7, pull request, open, checks unknown', sameNames: true, glyph: null, sameGlyphs: true, tags: 'A SPAN BUTTON true' },
+    none: { text: 'no checks', chip: 'Pull request #7 · open · no checks', strip: 'Pull request #7 · open · no checks — delivery details', line: 'PR #7Topenno checksdev ← feat/x', name: 'PR #7, pull request, open, no checks', sameNames: true, glyph: null, sameGlyphs: true, tags: 'A SPAN BUTTON true' },
+    merged: null,
+    mergedChip: 'Pull request #7 · merged',
+    review: ['Checks failing', 'In review', 'Checks unknown', 'In review', 'Ready to merge'],
+  });
+});
