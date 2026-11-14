@@ -4936,6 +4936,24 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
         f.h.store.task(&carols.id).await?.ok_or("task")?.status,
         TaskStatus::Stopped(StopReason::Cancelled)
     );
+    // Whose task it is comes before any advice about its state (review round 3, R3-1): for
+    // carol's running and prepared tasks too, the answer names her and no tool to try.
+    for (id, status) in [
+        ("t-carol-runs", TaskStatus::Running),
+        ("t-carol-waits", TaskStatus::Prepared),
+    ] {
+        let hers = support::seed_task(&f.h, id, "s1", "u-carol", status, None).await?;
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "task_restart", json!({"number": hers.number})).await?;
+        assert!(
+            is_error
+                && said(&refused).contains("@carol")
+                && !said(&refused).contains("task_stop")
+                && !said(&refused).contains("task_start_now"),
+            "{id}: {refused}"
+        );
+        expected.push(("task_restart", false));
+    }
     // ...and read by everyone who can see the project.
     let (delivery, is_error) = cockpit_tool(
         &f,

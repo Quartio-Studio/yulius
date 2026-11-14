@@ -171,7 +171,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   run, sends a dev deploy to the deploy, and is refused a production deploy with where a
   person does it.
 - AC-SAR-2: the same calls on another person's task are refused with that task's owner named,
-  and change nothing; reading its delivery is allowed.
+  whatever that task is doing, and change nothing; reading its delivery is allowed.
 - AC-SAR-3: the changing calls leave exactly one `superagent.tool` audit entry each, in
   order, with the Superagent as actor, what the call was about and whether it went through;
   reads leave none.
@@ -340,9 +340,13 @@ the function the web UI's route calls, with the person's rights checked at the c
   "the dropped call left no audit entry" when the call is not detached,
   `target/evidence/s2-mutant-detached.log`); a queued task is told that it starts by itself
   (`task_start_now` takes a chained or prepared task only); Continue's advice is decided on
-  the task's state, and the onboarding refusal by one constant; the idle bound of queued news
-  is not known after a session went on from a clean Stop without a prompt. The reviewer ran
-  the real client with the new instructions: no truncation.
+  the task's state, and the onboarding refusal by one constant. The reviewer ran the real
+  client with the new instructions: no truncation.
+- **Round 3:** approved, with two minor notes and a nit, which the commit after it answers:
+  whose task it is comes before any advice about its state (another person's running or
+  prepared task is refused with its owner's name, tested); the audit's ids are trimmed as
+  the call reads them, and the test compares the exact record; the idle rule of queued news
+  has no parameter that did nothing.
 - **Gate:** `scripts/dev ci` on the head given to the review; its result is in the review's
   summary and Yulius CI's run on the pull request.
 - **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
@@ -351,4 +355,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   client by the reviewer); the restart of an open Superagent that the changed tool list
   causes at the update (the launch digest's existing rule); `task_restart` on the onboarding
   task of a project that has not started onboarding, through the endpoint (its answer is
-  unit-tested).
+  unit-tested); queued news behind a session that went on from a clean Stop without a prompt
+  (the goal's verdict "not met") and that an error then ended: the idle time still counts
+  from that earlier Stop, so for the seconds until Claude Code hands the entry on, the
+  two-minute bound may read as over.

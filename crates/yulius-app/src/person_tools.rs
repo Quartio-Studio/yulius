@@ -98,14 +98,18 @@ const SUBJECT_ID_MAX: usize = 64;
 /// and before anything checked the arguments, so nothing else of them goes into it: an audit
 /// entry never holds text of the caller's choosing (as the remote MCP's never does, RMT-015).
 pub(crate) fn subject(name: &str, args: &Value) -> Value {
+    // Trimmed, as the call itself reads its text arguments.
     let id = |key: &str| {
-        args.get(key).and_then(Value::as_str).filter(|id| {
-            !id.is_empty()
-                && id.len() <= SUBJECT_ID_MAX
-                && id
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        })
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= SUBJECT_ID_MAX
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            })
     };
     let mut about = serde_json::Map::new();
     match name {
@@ -282,9 +286,17 @@ impl App {
                 let id = task.id.as_str();
                 let summary = match name {
                     // Continue takes a resting task; what else the task is doing decides
-                    // what its person is told to do instead.
+                    // what its person is told to do instead. Whose task it is comes first, as
+                    // it does in Continue: advice is for a task the person may change (review
+                    // of slice 2, R3-1). The state is the one that check read.
                     "task_restart" if !task.status.is_resting() => {
-                        return Err(not_resting(task.number, task.status));
+                        let task = self.load_task(ctx, id, Action::Work).await?;
+                        if !task.status.is_resting() {
+                            return Err(not_resting(task.number, task.status));
+                        }
+                        self.continue_task(ctx, id, &ContinueTask { account_id: None })
+                            .await
+                            .map_err(|err| restart_refusal(err, task.number))?
                     }
                     "task_restart" => self
                         .continue_task(ctx, id, &ContinueTask { account_id: None })
@@ -434,19 +446,24 @@ mod tests {
         // An argument that is not the tool's, or has not the shape of an id or a name, is
         // left out, however long it is.
         let long = "x".repeat(1 << 20);
-        for (tool, args) in [
+        for (tool, args, about) in [
             (
                 "task_pause",
                 json!({"number": 1, "environment": long.clone()}),
+                json!({"task": 1}),
             ),
-            ("task_pause", json!({"number": 1, "run_id": "r-9"})),
+            (
+                "task_pause",
+                json!({"number": 1, "run_id": "r-9"}),
+                json!({"task": 1}),
+            ),
             (
                 "ci_cancel",
-                json!({"run_id": "r-9", "task_id": long.clone()}),
+                json!({"run_id": " r-9 ", "task_id": long.clone()}),
+                json!({"run": "r-9"}),
             ),
         ] {
-            let about = subject(tool, &args).to_string();
-            assert!(about.len() < 40, "{tool}: {} bytes", about.len());
+            assert_eq!(subject(tool, &args), about, "{tool}");
         }
         for (tool, args) in [
             ("task_pause", json!({"task_id": long.clone()})),
