@@ -737,7 +737,7 @@ pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
 /// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
 /// nothing but its audit entry, SPEC-178 VAU-003; `task_delivery` is the task page's reading,
 /// which may store the delivery stage it finds on GitHub, as opening that page does).
-pub const COCKPIT_READ_ONLY_TOOLS: [&str; 18] = [
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 20] = [
     "tasks_list",
     "task_get",
     "automations_list",
@@ -753,6 +753,8 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 18] = [
     "browser_screenshot",
     // The reading ones of the person's project tools (SPEC-487).
     "task_delivery",
+    "merge_queue",
+    "subscriptions",
     "ci_runs",
     "ci_run",
     "cd_status",
