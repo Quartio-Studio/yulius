@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- One reader of a bearer token and one GitHub-token scrub (SPEC-483 slice 29, task #465).
+  Five routes read `Authorization: Bearer` their own way (the leftovers key untrimmed) and Git's
+  and GitHub's adapters each kept the loop that removes GitHub tokens; each is written once now.
+  The welcome page of a sandbox's browser and its refresh draw the port list by one function.
 - The web UI asks about unsaved work on every way out (SPEC-483 slice 28, task #465). The
   automation, MCP server, workflow and skill editors asked only when a link was clicked; Back,
   Forward and navigation by a button or the palette now ask too, through one guard in the
