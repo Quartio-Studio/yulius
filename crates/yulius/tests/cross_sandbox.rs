@@ -13,7 +13,7 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::cross_sandbox::CrossAction;
-use yulius_app::error::AppResult;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::TaskOrigin;
 use yulius_app::ports::store::{AuditStore, TaskStore, UserStore};
 use yulius_contracts::events::UiEvent;
@@ -196,7 +196,7 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
     assert_eq!(request["prompt"], prompt);
     assert_eq!(request["title"], "API client v2");
     assert_eq!(request["options"]["prepared"], true);
-    assert!(request["ends_at"].is_string(), "{request}");
+    assert!(request["asked_at"].is_string(), "{request}");
     assert_eq!(task_count(&w, "s2").await?, 0, "nothing before the answer");
     // Only its person sees it.
     assert!(requests(&w, &w.bob, "s1").await?.is_empty());
@@ -260,25 +260,54 @@ async fn a_declined_request_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// AC-XSR-2: nobody answers within the bound: the request ends and nothing is created.
+/// SPEC-487 REQ-001, REQ-004 (wall 6: "lost when the person is away"): nobody answers while
+/// the call waits; the call says the request waits, with its id, and the request stays on the
+/// panel. Answered later, the task is created as it would have been, and the Superagent reads
+/// how it ended.
 #[tokio::test]
-async fn an_unanswered_request_ends_with_nothing_created() -> TestResult {
+async fn an_unanswered_request_waits_and_is_answered_later() -> TestResult {
     let w = world(300).await?;
     let outcome = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
-    assert_eq!(outcome["outcome"], "unanswered", "{outcome}");
-    assert!(requests(&w, &w.alice, "s1").await?.is_empty());
+    assert_eq!(outcome["outcome"], "waiting", "{outcome}");
+    let id = outcome["request"].as_str().ok_or("request")?.to_owned();
+    let listed = waiting(&w, 1).await?;
+    assert_eq!(listed[0]["id"], id.as_str());
     assert_eq!(task_count(&w, "s2").await?, 0);
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let mine = w.h.app.tool_sandbox_requests(&caller).await?;
+    assert_eq!(mine["waiting"][0]["request"], id.as_str(), "{mine}");
+    assert_eq!(mine["answered"], json!([]), "{mine}");
+    // No expiry is audited: nothing ended.
+    assert!(audited(&w, "s2").await?.is_empty());
+
+    let approved = answer(&w, &w.alice, "s1", &id, true).await?;
+    assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
+    assert_eq!(task_count(&w, "s2").await?, 1);
+    let mine = w.h.app.tool_sandbox_requests(&caller).await?;
+    assert_eq!(mine["waiting"], json!([]), "{mine}");
+    assert_eq!(mine["answered"][0]["request"], id.as_str(), "{mine}");
+    assert_eq!(
+        mine["answered"][0]["outcome"]["outcome"], "approved",
+        "{mine}"
+    );
+    assert!(
+        mine["answered"][0]["outcome"]["task"]["number"].is_number(),
+        "{mine}"
+    );
     Ok(())
 }
 
-/// XSR-004: a dropped call (the Superagent was interrupted) takes its request with it.
+/// SPEC-487 REQ-001 (a Superagent interrupted, a client timeout): a dropped call leaves its
+/// request waiting; answered later, it runs.
 #[tokio::test]
-async fn a_dropped_call_takes_its_request_with_it() -> TestResult {
+async fn a_dropped_call_leaves_its_request_waiting() -> TestResult {
     let w = world(60_000).await?;
     let call_ = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?;
     let listed = waiting(&w, 1).await?;
     call_.abort();
-    waiting(&w, 0).await?;
+    let _ = call_.await;
+    let still = waiting(&w, 1).await?;
+    assert_eq!(still[0]["id"], listed[0]["id"]);
     let late = answer(
         &w,
         &w.alice,
@@ -287,8 +316,213 @@ async fn a_dropped_call_takes_its_request_with_it() -> TestResult {
         true,
     )
     .await?;
-    assert_eq!(late.status, StatusCode::NOT_FOUND);
-    assert_eq!(task_count(&w, "s2").await?, 0);
+    assert_eq!(late.status, StatusCode::OK, "{:?}", late.body);
+    assert_eq!(task_count(&w, "s2").await?, 1);
+    Ok(())
+}
+
+/// SPEC-487 REQ-003 (wall 6: "the same task was requested three times in three minutes to add
+/// one sentence"): a waiting request is amended in place, keeps its id, and what the person
+/// approves is the amended text; a request is withdrawn and nothing of it runs. Another
+/// Superagent's request is not found.
+#[tokio::test]
+async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
+    let w = world(300).await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let first = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
+    let id = first["request"].as_str().ok_or("request")?.to_owned();
+    let amended =
+        w.h.app
+            .tool_sandbox_request_amend(
+                &caller,
+                &json!({"request": id, "prompt": "Rewrite it. Keep the logo.", "title": "Rewrite"}),
+            )
+            .await?;
+    assert_eq!(amended["request"], id.as_str(), "{amended}");
+    let listed = waiting(&w, 1).await?;
+    assert_eq!(listed[0]["id"], id.as_str());
+    assert_eq!(listed[0]["prompt"], "Rewrite it. Keep the logo.");
+    assert_eq!(listed[0]["title"], "Rewrite");
+    for (args, why) in [
+        (json!({"request": id, "prompt": ""}), "prompt"),
+        (json!({"request": id, "prompt": "x\u{202e}y"}), "cannot see"),
+        (
+            json!({"request": id, "prompt": "x", "unknown": 1}),
+            "unknown",
+        ),
+        (json!({"request": "nope", "prompt": "x"}), "not found"),
+    ] {
+        let refused =
+            w.h.app
+                .tool_sandbox_request_amend(&caller, &args)
+                .await
+                .err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|err| err.public_message().to_lowercase().contains(why)),
+            "{args}: {refused:?}"
+        );
+    }
+    let bobs = superagent("s1", &w.bob_id, "bob")?;
+    let refused =
+        w.h.app
+            .tool_sandbox_request_amend(&bobs, &json!({"request": id, "prompt": "Mine"}))
+            .await
+            .err();
+    assert!(matches!(refused, Some(AppError::NotFound)), "{refused:?}");
+    let approved = answer(&w, &w.alice, "s1", &id, true).await?;
+    assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
+    let task =
+        w.h.store
+            .tasks(&SandboxId::parse("s2")?, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("task")?;
+    assert_eq!(task.prompt, "Rewrite it. Keep the logo.");
+
+    // Withdrawn: gone from the panel, nothing created, the outcome kept nowhere but the audit.
+    let second = ask(&w, json!({"sandbox": "website", "prompt": "Another"}))?.await??;
+    let other = second["request"].as_str().ok_or("request")?.to_owned();
+    w.h.app
+        .tool_sandbox_request_withdraw(&caller, &json!({"request": other}))
+        .await?;
+    waiting(&w, 0).await?;
+    assert_eq!(task_count(&w, "s2").await?, 1);
+    let gone = answer(&w, &w.alice, "s1", &other, true).await?;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert!(
+        audited(&w, "s2")
+            .await?
+            .iter()
+            .any(|row| row["outcome"] == "withdrawn"),
+        "withdrawn is audited"
+    );
+    Ok(())
+}
+
+/// SPEC-487 REQ-002: the waiting requests and the outcomes are kept in a file beside the
+/// database and put back at a start, so a restart of Yulius loses none.
+#[tokio::test]
+async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
+    let w = world(300).await?;
+    let first = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
+    let id = first["request"].as_str().ok_or("request")?.to_owned();
+    let file =
+        w.h.app
+            .config
+            .data_dir
+            .join(yulius_app::cross_sandbox::SUPERAGENT_REQUESTS_FILE);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(saved["waiting"][0]["id"], id.as_str(), "{saved}");
+    assert_eq!(
+        saved["waiting"][0]["args"]["prompt"], "Rewrite it",
+        "{saved}"
+    );
+    // A second server on the same data: the request waits there, and is answered there.
+    let next = App::new(w.h.app.config.clone(), w.h.app.deps.clone());
+    next.restore_cross_requests().await;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let mine = next.tool_sandbox_requests(&caller).await?;
+    assert_eq!(mine["waiting"][0]["request"], id.as_str(), "{mine}");
+    Ok(())
+}
+
+/// SPEC-487 REQ-006 (wall 6: "no listing of another sandbox's tasks; it probed numbers one by
+/// one"): the Superagent lists another sandbox's tasks without asking; its own sandbox, and one
+/// its person cannot work in, are refused.
+#[tokio::test]
+async fn the_superagent_lists_the_tasks_of_another_sandbox() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Site work", "prepared": true}),
+    )
+    .await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let listed =
+        w.h.app
+            .tool_sandbox_tasks_list(&caller, &json!({"sandbox": "website"}))
+            .await?;
+    let numbers: Vec<u64> = listed["tasks"]
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter_map(|t| t["number"].as_u64())
+        .collect();
+    assert_eq!(numbers, [number], "{listed}");
+    let own =
+        w.h.app
+            .tool_sandbox_tasks_list(&caller, &json!({"sandbox": "studio"}))
+            .await
+            .err();
+    assert!(
+        own.as_ref()
+            .is_some_and(|err| err.public_message().contains("tasks_list")),
+        "{own:?}"
+    );
+    let unseen =
+        w.h.app
+            .tool_sandbox_tasks_list(&caller, &json!({"sandbox": "secret-lab"}))
+            .await
+            .err();
+    assert!(matches!(unseen, Some(AppError::NotFound)), "{unseen:?}");
+    assert!(
+        requests(&w, &w.alice, "s1").await?.is_empty(),
+        "nobody was asked"
+    );
+    Ok(())
+}
+
+/// SPEC-487 REQ-005 (wall 9: "I need your OK" repeated in reports nobody read): a decision the
+/// Superagent leaves for its person waits on its own panel, its question read in full; Yes is
+/// the answer yes, No is no, nothing runs, and the answer is kept for the Superagent to read.
+#[tokio::test]
+async fn a_decision_waits_on_the_panel_and_its_answer_is_kept() -> TestResult {
+    let w = world(300).await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let ask_person = |question: &str| {
+        let app: Arc<App> = w.h.app.clone();
+        let caller = caller.clone();
+        let args = json!({"question": question});
+        tokio::spawn(async move {
+            app.tool_sandbox_task_request(&caller, CrossAction::Ask, &args)
+                .await
+        })
+    };
+    let first = ask_person("May I merge #12 tonight?").await??;
+    assert_eq!(first["outcome"], "waiting", "{first}");
+    let id = first["request"].as_str().ok_or("request")?.to_owned();
+    let listed = waiting(&w, 1).await?;
+    assert_eq!(listed[0]["action"], "ask", "{listed:?}");
+    assert_eq!(listed[0]["prompt"], "May I merge #12 tonight?");
+    assert_eq!(listed[0]["sandbox"]["slug"], "studio", "its own panel");
+    let yes = answer(&w, &w.alice, "s1", &id, true).await?;
+    assert_eq!(yes.status, StatusCode::OK, "{:?}", yes.body);
+    assert_eq!(yes.body["answer"], "yes", "{:?}", yes.body);
+    let second = ask_person("OK to spend on the paid plan?").await??;
+    let other = second["request"].as_str().ok_or("request")?.to_owned();
+    answer(&w, &w.alice, "s1", &other, false).await?;
+    let mine = w.h.app.tool_sandbox_requests(&caller).await?;
+    let answers: Vec<&str> = mine["answered"]
+        .as_array()
+        .ok_or("answered")?
+        .iter()
+        .filter_map(|a| a["outcome"]["answer"].as_str())
+        .collect();
+    assert_eq!(answers, ["no", "yes"], "{mine}");
+    for question in ["", &"x".repeat(5000)] {
+        let refused = w
+            .h
+            .app
+            .tool_sandbox_task_request(&caller, CrossAction::Ask, &json!({"question": question}))
+            .await
+            .err();
+        assert!(matches!(refused, Some(AppError::Invalid(_))), "{refused:?}");
+    }
     Ok(())
 }
 
@@ -549,16 +783,6 @@ async fn answers_are_audited_without_the_prompt_and_announced_to_the_person_only
 }
 
 /// An unanswered request is audited `expired` on the target.
-#[tokio::test]
-async fn an_unanswered_request_is_audited_as_expired() -> TestResult {
-    let w = world(300).await?;
-    ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
-    let rows = audited(&w, "s2").await?;
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0]["outcome"], "expired");
-    Ok(())
-}
-
 /// Review finding: an approval whose page went away mid-way (its request cancelled after the
 /// request was taken) still creates the task and tells the waiting call.
 #[tokio::test]
@@ -1057,10 +1281,10 @@ async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult
     Ok(())
 }
 
-/// SPEC-442 XST-005: an unanswered change is audited `expired` in both sandboxes, and the task is
-/// as it was.
+/// SPEC-487 REQ-001: a change nobody answered while the call waited stays on the panel and is
+/// audited only once answered, in both sandboxes.
 #[tokio::test]
-async fn an_unanswered_change_is_audited_as_expired_in_both_sandboxes() -> TestResult {
+async fn an_unanswered_change_waits_and_is_audited_when_answered() -> TestResult {
     let w = world(300).await?;
     let (id, number) = task_in(
         &w,
@@ -1075,12 +1299,15 @@ async fn an_unanswered_change_is_audited_as_expired_in_both_sandboxes() -> TestR
         json!({"sandbox": "website", "number": number}),
     )?
     .await??;
-    assert_eq!(outcome["outcome"], "unanswered", "{outcome}");
+    assert_eq!(outcome["outcome"], "waiting", "{outcome}");
     assert_eq!(status_of(&w, &id).await?, TaskStatus::Prepared);
+    assert!(audited(&w, "s1").await?.is_empty());
+    let request = outcome["request"].as_str().ok_or("request")?;
+    answer(&w, &w.alice, "s1", request, false).await?;
     for sandbox in ["s1", "s2"] {
         let rows = audited(&w, sandbox).await?;
         assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
-        assert_eq!(rows[0]["outcome"], "expired");
+        assert_eq!(rows[0]["outcome"], "declined");
         assert_eq!(rows[0]["action"], "update");
     }
     Ok(())

@@ -18,7 +18,7 @@ const mock = (path: string) => mockPage(path, '&browserask=0');
 type Asking = {
   __yuliusMock: {
     askSuperagent: (source: string, request: unknown) => string;
-    endSuperagentRequest: (source: string, id: string) => void;
+    withdrawSuperagentRequest: (source: string, id: string) => void;
     askBrowserSignIn: () => boolean;
     tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string }[];
   };
@@ -89,7 +89,7 @@ test('a sign-in request from the sandbox browser cannot move a pressed Open (#97
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
 
-test('Decline creates nothing, and a request whose call ended goes by itself', async ({ app, browser, screen }) => {
+test('Decline creates nothing, and a withdrawn request goes by itself', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   const before = await productTasks(browser);
@@ -101,10 +101,10 @@ test('Decline creates nothing, and a request whose call ended goes by itself', a
   await expect(browser.locator('.toast:has-text("Declined")')).toBeVisible();
   expect(await productTasks(browser)).toEqual(before);
 
-  // The Superagent's call ended (interrupted, or nobody answered): the card goes.
+  // SPEC-487 REQ-001: a request stays until answered; the Superagent withdraws it: the card goes.
   const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Another one' });
   await expect(card).toBeVisible();
-  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', i), id);
+  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.withdrawSuperagentRequest('sb_studio', i), id);
   await expect(card).toBeHidden();
   expect(await productTasks(browser)).toEqual(before);
 });
@@ -295,7 +295,7 @@ test('a request while All sandboxes is in front marks the This sandbox tab', asy
 
   await here.click();
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
-  await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', r), id);
+  await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.withdrawSuperagentRequest('sb_studio', r), id);
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
   await expect(marker).toBeHidden();
 });
@@ -385,4 +385,28 @@ test('Send message takes a click only once the whole message was in view', async
   const start = screen.getByRole('group', `Your Superagent asks to start #${number} now in product`);
   await expect(start).toHaveText(/Supertask: runs alone/);
   await expect(screen.getByRole('button', 'Start now')).toBeVisible();
+});
+
+// SPEC-487 REQ-005 (wall 9): a decision only the person makes waits on the Superagent's own
+// panel, its question read to its end as a prompt is; Yes answers yes and No answers no.
+test('a decision the Superagent leaves to its person is answered Yes or No on its panel', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const question = 'May I merge #12 tonight?\nIts checks passed; nobody reviewed the docs.';
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'ask', prompt: question });
+  const card = screen.getByRole('group', 'Your Superagent asks you to decide');
+  await expect(card).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe(question);
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.getAttribute('aria-label') ?? null)).toBe('Question');
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Yes').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Answered yes")')).toBeVisible();
+
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'ask', prompt: 'OK to spend on the paid plan?' });
+  await expect(card).toBeVisible();
+  await screen.getByRole('button', 'No').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Answered no")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentAnswers: string[] } }).__yuliusMock.superagentAnswers)).toEqual(['yes', 'no']);
 });

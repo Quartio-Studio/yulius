@@ -483,6 +483,9 @@ function askedFor(request) {
       return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, failed: `send ${task} the message`, declined: 'nothing was sent', text: 'Message' };
     case 'stop':
       return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}`, failed: `stop ${task}`, declined: 'nothing was changed' };
+    // SPEC-487 REQ-005: a decision only the person makes, on the Superagent's own panel: no target.
+    case 'ask':
+      return { heading: 'you to decide', own: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
     default:
       return { heading: 'to start a task in ', button: 'Create task', failed: 'create the task', declined: 'nothing was created', text: 'Prompt' };
   }
@@ -506,10 +509,11 @@ export function shownPrompt(text) {
 /**
  * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
  * session. Nothing reaches that sandbox until the person presses Create task; each request is
- * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
+ * answered once, and stays until it is answered or the Superagent withdraws it (SPEC-487 REQ-001). Create task takes a click only once the
  * whole prompt was in view (scrolled to its end) and the card has been there a moment. SPEC-442
  * XST-006: the same cards ask to start, re-chain, message or stop a task there (Start now, Change
- * start, Send message, Stop task); a message is read to its end as a prompt is.
+ * start, Send message, Stop task); a message is read to its end as a prompt is. SPEC-487 REQ-005:
+ * a decision the Superagent leaves to its person (Yes, No), its question read to its end too.
  */
 function createRequests(ctx, sandbox, onCount) {
   const el = h('div', { class: 'agent-requests', hidden: true });
@@ -558,14 +562,14 @@ function createRequests(ctx, sandbox, onCount) {
       .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
       .filter(Boolean);
     const asked = askedFor(request);
-    const heading = `Your Superagent asks ${asked.heading}${slug}`;
+    const heading = `Your Superagent asks ${asked.heading}${asked.own ? '' : slug}`;
     // The text's last line: once it was on screen (not clipped by the text box, the list or the window), it was all read.
     // A request with no text (a start or a stop) has nothing to read.
     const end = asked.text ? h('span', { class: 'agent-request-end', 'aria-hidden': 'true' }) : null;
     const prompt = asked.text ? h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': asked.text }, shownPrompt(request.prompt || ''), end) : null;
-    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${asked.text === 'Message' ? 'message to send it' : 'prompt to create the task'}.`);
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it' }[asked.text] || 'prompt to create the task'}.`);
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
-    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
+    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
     let armed = false;
     let read = !end;
     let sending = false;
@@ -603,6 +607,8 @@ function createRequests(ctx, sandbox, onCount) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
           const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+        } else if (asked.own) {
+          toast(approve ? `${asked.done}.` : 'Answered no.', { kind: approve ? 'ok' : 'info' });
         } else if (!approve) {
           toast(`Declined: ${asked.declined}.`, { kind: 'info' });
         }
@@ -618,8 +624,8 @@ function createRequests(ctx, sandbox, onCount) {
     return {
       el: h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
         h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
-          h('strong', null, `Your Superagent asks ${asked.heading}`, h('span', { class: 'agent-request-target' }, slug)),
-          target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+          h('strong', null, `Your Superagent asks ${asked.heading}`, asked.own ? null : h('span', { class: 'agent-request-target' }, slug)),
+          target.repository && !asked.own ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
         request.task ? h('div', { class: 'agent-request-title' }, `#${request.task.number} ${shownText(request.task.title || '')}`, h('span', { class: 'muted' }, ` · ${request.task.status}`)) : null,
         request.title ? h('div', { class: 'agent-request-title' }, shownText(request.title)) : null,
         prompt,
