@@ -222,8 +222,9 @@ export function navigate(path, { replace = false } = {}) {
 /**
  * Back or Forward. With unsaved work the move is undone (the browser cannot be asked before it
  * moves), the guard asks, and on Leave the same move is made again; the history stays the
- * browser's own. A move of unknown length (an address typed in hash mode) is put back by a new
- * entry instead.
+ * browser's own. An address typed in hash mode makes an entry the router has not labelled, after
+ * the one in view: it is labelled there, and the page's address is put back by a new entry after
+ * it, so every entry keeps its place for the moves that follow.
  */
 function onHistory() {
   const to = entryOf(window.history.state);
@@ -249,6 +250,7 @@ function onHistory() {
       return;
     }
     const target = loc.full;
+    window.history.replaceState({ ...window.history.state, [ENTRY]: ++at }, '', window.location.href);
     window.history.pushState({ [ENTRY]: ++at }, '', urlOf(lastKey));
     mayLeave().then((leave) => { if (leave) navigate(target); });
     return;

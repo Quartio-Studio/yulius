@@ -153,7 +153,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   let servers = [];
   let canEdit = write;
   let alive = true;
-  let saved = '';
+  let saved = null; // what the page holds as saved; null until it has loaded: nothing to lose yet
   let picked = null; // catalog id
   // The form: env/header rows hold [key, value]; values are only what was typed (write-only).
   // A new server starts on every sandbox and the whole team (SPEC-332 MSC-002), which only an
@@ -176,7 +176,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   const el = h('div', { class: 'page mc-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'Add MCP server' : 'Edit MCP server'), head, body, live));
 
   const snapshot = () => JSON.stringify(state);
-  const dirty = () => snapshot() !== saved;
+  const dirty = () => saved !== null && snapshot() !== saved;
   function changed() { save.disabled = !canEdit || (!creating && !dirty()); }
 
   // ---- fill from the catalog or a paste

@@ -109,7 +109,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let workflows = [];
   let recipe = null;
   let alive = true;
-  let saved = '';
+  let saved = null; // what the page holds as saved; null until it has loaded: nothing to lose yet
   let showZone = false;
   let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
   // The start choice (SPEC-078, SPEC-155): at most one of supertask, after_task_id, start_rule and
@@ -133,7 +133,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const el = h('div', { class: 'page au-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'New automation' : 'Edit automation'), head, body, live));
 
   const snapshot = () => JSON.stringify(state);
-  const dirty = () => snapshot() !== saved;
+  const dirty = () => saved !== null && snapshot() !== saved;
   const schedule = () => readSchedule(state.cron);
   function sentence() {
     const s = schedule();

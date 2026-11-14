@@ -161,3 +161,53 @@ test('Forward from the first page of the tab is asked about and undone once', as
   await screen.getByRole('dialog', 'Leave without saving?').getByRole('button', 'Leave').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Workflows');
 });
+
+// SPEC-483 slice 28 (CI): an editor still loading has nothing unsaved; leaving it asks nothing.
+test('an editor left before it has loaded leaves without a question', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Tasks/);
+  for (const path of ['/s/studio/automations/aut_1', '/s/studio/automations/new', '/s/studio/mcp/mcp_apify', '/s/studio/workflows/wf-feature', '/s/studio/skills/new']) {
+    await browser.evaluate(async (to) => {
+      const { navigate } = await import('/assets/router.js' as string);
+      navigate(to);
+      navigate('/s/studio/tasks');
+    }, path);
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/Tasks/);
+    await expect(screen.getByRole('dialog')).toBeHidden();
+  }
+});
+
+// SPEC-483 slice 28 (review N1): an address typed with unsaved work (hash mode) is put back; the
+// typed entry keeps its place in the history, so later moves across it are counted right.
+test('an address typed over unsaved work keeps the history countable', async ({ app, browser, screen }) => {
+  const name = screen.getByRole('textbox', 'Workflow name');
+  const heading = screen.getByRole('heading', { level: 1 });
+  const leaveDialog = () => screen.getByRole('dialog', 'Leave without saving?');
+  await app.open(mock('/s/studio/tasks'));
+  await expect(heading).toHaveText(/Tasks/);
+  await browser.evaluate(async () => {
+    const { navigate } = await import('/assets/router.js' as string);
+    navigate('/s/studio/workflows/new?from=wf-feature');
+  });
+  await expect(name).toHaveValue('Feature (custom)');
+  await name.fill('Feature (typed)');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/sessions'; });
+  await leaveDialog().getByRole('button', 'Leave').click();
+  await expect(browser).toHaveURL(/sessions$/);
+
+  await browser.evaluate(() => window.history.back());
+  await expect(name).toHaveValue('Feature (custom)');
+  await browser.evaluate(() => window.history.back());
+  await expect(browser).toHaveURL(/sessions$/);
+  await expect(heading).toHaveText(/Sessions/);
+  await browser.evaluate(() => window.history.forward());
+  await expect(name).toHaveValue('Feature (custom)');
+  await name.fill('Feature (again)');
+  await browser.evaluate(() => window.history.back());
+  await leaveDialog().getByRole('button', 'Cancel').click();
+  await expect(name).toHaveValue('Feature (again)');
+  await browser.evaluate(() => window.history.back());
+  await leaveDialog().getByRole('button', 'Leave').click();
+  await expect(browser).toHaveURL(/sessions$/);
+  await expect(heading).toHaveText(/Sessions/);
+});
