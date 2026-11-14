@@ -405,8 +405,11 @@ impl App {
         let mut env = vec![
             ("USER".to_owned(), login.clone()),
             ("LOGNAME".to_owned(), login.clone()),
-            ("YULIUS_URL".to_owned(), self.config.internal_url.clone()),
-            ("YULIUS_TASK_TOKEN".to_owned(), token),
+            (
+                yulius_domain::agent_endpoint::URL_ENV.to_owned(),
+                self.config.internal_url.clone(),
+            ),
+            (yulius_domain::agent_endpoint::TOKEN_ENV.to_owned(), token),
         ];
         env.extend(crate::supervisor::git_credential_env(
             &self.config.yulius_exe,

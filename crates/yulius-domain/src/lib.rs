@@ -9,6 +9,7 @@
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
 
 pub mod agent_cli;
+pub mod agent_endpoint;
 pub mod auto_choice;
 pub mod automation_format;
 pub mod branch_policy;

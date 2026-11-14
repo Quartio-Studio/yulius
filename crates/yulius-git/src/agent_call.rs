@@ -7,7 +7,9 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use crate::credential::{LoopbackUrl, decode_chunked, header_end, parse_head};
+use yulius_domain::agent_endpoint::{AgentEndpoint, EndpointError};
+
+use crate::credential::{connect, decode_chunked, header_end, parse_head};
 
 /// The bounds of one call.
 #[derive(Debug, Clone, Copy)]
@@ -59,22 +61,22 @@ pub fn agent_call(
     env: &dyn Fn(&str) -> Option<String>,
     limits: CallLimits,
 ) -> Result<Answer, CallError> {
-    let base = env("YULIUS_URL").ok_or(CallError::Environment("YULIUS_URL is not set"))?;
-    let token =
-        env("YULIUS_TASK_TOKEN").ok_or(CallError::Environment("YULIUS_TASK_TOKEN is not set"))?;
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(CallError::Environment(
-            "YULIUS_TASK_TOKEN must be printable ASCII",
-        ));
-    }
-    let endpoint = LoopbackUrl::parse(&base)
-        .map_err(|_| CallError::Environment("YULIUS_URL must be http:// on a loopback address"))?;
+    let endpoint = AgentEndpoint::from_env(env).map_err(|error| {
+        CallError::Environment(match error {
+            EndpointError::UrlMissing => "YULIUS_URL is not set",
+            EndpointError::TokenMissing => "YULIUS_TASK_TOKEN is not set",
+            EndpointError::TokenNotPrintable => "YULIUS_TASK_TOKEN must be printable ASCII",
+            EndpointError::Url | EndpointError::NotLoopback => {
+                "YULIUS_URL must be http:// on a loopback address"
+            }
+        })
+    })?;
+    let token = &endpoint.token;
     let deadline = Instant::now() + limits.total;
     let unsent =
         |what: &str, err: &std::io::Error| CallError::Unsent(format!("{what}: {}", err.kind()));
     let mut stream =
-        TcpStream::connect_timeout(&endpoint.address, limits.connect.min(limits.total))
-            .map_err(|e| unsent("connect", &e))?;
+        connect(&endpoint, limits.connect.min(limits.total)).map_err(|e| unsent("connect", &e))?;
     let head = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\
