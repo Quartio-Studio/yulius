@@ -96,7 +96,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Create, chain, schedule, stop, archive, delete a task; automations | yes (had) | yes (had) | SPEC-037: a follow-up runs as its own task |
 | Read a start rule back as stored; "after all current tasks" | yes (slice 1) | yes (slice 1) | Both create tasks with `task_create` |
 | Restart, pause, resume, start now | yes (slice 2) | no | A person speaks to their tasks; tasks do not steer each other (ADR-0178) |
-| Start a project's onboarding (also by continuing its onboarding task before it started) | behind one confirmation in the panel (slice 8b); until then the person, on the project's page | no | SPEC-051 OBD-002, ADR-0038: a person decides that a repository is adapted |
+| Start a project's onboarding (also by continuing its onboarding task before it started) | behind the person's click in the panel (slice 8b) | no | SPEC-051 OBD-002, ADR-0038: a person decides that a repository is adapted |
 | Project variables: read | yes (slice 2) | in its environment (had) | They are not secrets |
 | Project variables: set, delete | yes (slice 10) | no | Decided with the vault's rules; a person's page today |
 | Rename, edit a prompt not started, reorder, close out, bulk actions | yes (slice 3) | no | As above |
@@ -114,7 +114,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | A task's delivery, the merge queue, why a pull request is not merging | yes (slices 2, 5) | its own (had) | A task delivers its own work |
 | Arm or re-arm a task's merge; merge a task's pull request | yes, for the task's owner (slice 5) | its own, after an independent review (had) | The person decides what of theirs merges, as the page's Merge does; an agent delivers its own reviewed work |
 | Dev deploy, CD status | yes (slice 2) | yes, when its task asks (had) | SPEC-134 |
-| Production deploy, promotion to `main` | behind one confirmation in the panel (slice 8b) | no | ADR-0110: a person decides; the Superagent prepares and asks |
+| Production deploy and rollback, promotion to `main` | behind the person's typed project slug in the panel (slice 8b); a dev-stage rollback at once | no (a dev-stage deploy and rollback, had) | ADR-0110: a person decides; the Superagent prepares and asks |
 | A task's subscription: see, move; model and effort | yes (slice 6) | sees them in the task list (slice 6) | Tasks are subscription-agnostic (SPEC-001 ROT-007); a person moves their task |
 | The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
 | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
@@ -175,6 +175,12 @@ the function the web UI's route calls, with the person's rights checked at the c
 | XRQ-005 | `person_ask {question}` (1 to 4096 bytes, no character a person cannot see) waits on the Superagent's own panel: the question read to its end, **Yes** / **No**; the answer is `yes` or `no`, the call's or read later; nothing runs on it. | `cross_sandbox::a_decision_waits_on_the_panel_and_its_answer_is_kept`; `superagent-requests.e2e.ts` "a decision the Superagent leaves to its person is answered Yes or No on its panel" |
 | XRQ-006 | `sandbox_tasks_list {sandbox}` lists another sandbox's tasks as `tasks_list` does there, without asking; its own sandbox is refused naming `tasks_list`, one the person cannot work in is not found. | `cross_sandbox::the_superagent_lists_the_tasks_of_another_sandbox` |
 | XRQ-007 | The five are the Superagent's only (no task's agent, no remote MCP, not the Global Superagent); `sandbox_tasks_list` and `sandbox_requests` are pre-allowed, the other three ask in Claude Code first as `sandbox_task_create` does; none deletes or archives a task of another sandbox. The instructions say a request stays until answered and never to ask twice. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `mcp::tests::no_tool_deletes_or_archives_a_task_of_another_sandbox`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
+| REL-001 | The Superagent's `cd_deploy` and `cd_rollback` of a production-stage environment (`prod`, or one whose stage is `prod`), `promote` and `onboarding_start` are requests on its own panel, lasting as XRQ-001 and XRQ-002 say (no amend; withdraw). A release's card names its action and environment (and a release, a part or a commit given) and takes a click only once the project's slug is typed; the server checks the typed slug, trimmed, before it takes the request (a slug mistyped is refused, 422, and the request keeps waiting). | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug`; `superagent-requests.e2e.ts` "a production deploy asked by the Superagent takes the project slug typed" |
+| REL-002 | Refused before anyone is asked: a person who is no administrator of the project (a release), an environment the project does not define, a dev-stage environment through this path, onboarding that does not wait to start, unknown arguments. | the same test; `cockpit::the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd` (over the MCP) |
+| REL-003 | A dev-stage deploy or rollback runs at once: `cd_rollback` is a person's project tool (SAR-001, SAR-002), also through the remote MCP and for the Global Superagent, dev-stage only there ("only a person rolls production back, on the project's CD page"). | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug` (`superagent_production`); `cockpit::the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
+| REL-004 | The approval runs the CD page's `cd_deploy`, `cd_rollback` or `promote_sandbox` with the answering person's browser session and the slug they typed; their checks and refusals at that moment are the answer of the click and of the waiting call. Audited `superagent.cross_task` with the action, never the slug. | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug` (production deployed to v2, rolled back to v2 from v3 with `main` unmoved, a promotion's own "nothing to promote") |
+| REL-005 | `onboarding_start {notes?}`, approved by a click, runs the project page's Start onboarding (`approve_onboarding`) as that person. | `cross_sandbox::onboarding_starts_on_the_persons_click` (the start's own answer: this harness has no Git); `superagent-requests.e2e.ts` (the click) |
+| REL-006 | The three new tools (`cd_rollback`, `promote`, `onboarding_start`) ask in Claude Code first as every changing tool does; the instructions say production, `promote` and `onboarding_start` wait on the panel. | `manage_tools::the_cockpit_asks_before_every_changing_tool`; `cockpit::a_cockpit_manages_the_project_for_its_owner`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 
 ## Plan
 
@@ -188,7 +194,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
 - [x] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
 - [x] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
-- [ ] Slice 8a: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, another sandbox's task list)
+- [x] Slice 8a: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, another sandbox's task list)
 - [ ] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
 - [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
 - [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
@@ -297,6 +303,11 @@ the function the web UI's route calls, with the person's rights checked at the c
   unanswered and a dropped request answered later, amend and withdraw with their refusals, a
   second `App` on the same data directory, another sandbox's tasks, `person_ask` yes and no;
   e2e (`superagent-requests.e2e.ts`): the Yes / No card on the mock.
+- Slice 8b, integration with the real Git adapter and ptyhost running the CD scripts
+  (`tests/cd_rollback.rs`): production deployed and rolled back through the panel with the slug
+  typed, refusals before asking, a promotion's own refusal; over the MCP (`tests/cockpit.rs`):
+  the routing of dev and production; onboarding (`tests/cross_sandbox.rs`); e2e: the typed-slug
+  card.
 - Mutation: twelve mutants of the rule and its uses, each failed by a named test
   (`target/evidence/mutants.py`).
 - Load: the three session tests 64 times each beside 96 busy loops (`target/evidence/r3-stress.log`).
@@ -491,6 +502,18 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 8b: the typed slug on the panel is the CD page's confirmation** (REL-001,
+  ADR-0334). The person decided it on 2026-11-13; ADR-0110 holds (a person decides production and
+  types the slug). The slug is checked by the server before the request is taken, so a slip
+  costs nothing. The release runs with the answering person's browser session, not with the
+  Superagent's, so the functions' checks of administration, a GitHub identity and the drill are
+  those of the CD page.
+- **Onboarding takes a click, not the slug** (REL-005): it releases nothing to production; a
+  person's own agent already starts it with an operate token (ADR-0188).
+- **A release request is not amended**: the card the person confirms never changes under them;
+  one that changes is withdrawn and asked again.
+- **A request refused before anyone is asked writes no audit row**, as every cross-sandbox
+  request refused before asking; the CD page's own audit records each run.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 
@@ -876,3 +899,16 @@ the function the web UI's route calls, with the person's rights checked at the c
     (`a_request_asked_before_the_restore_loses_none`). Until then the bound of 3 can be passed
     by the requests asked meanwhile: they all wait, nothing is refused or lost.
   Seventeen mutants now (`mutants-slice8a-r1.log`: `survived=0`).
+- **Gate, round 1:** `scripts/dev ci` passed on `09a08e1bd` (4412 tests, 17 skipped;
+  `target/evidence/gate-slice8a-r1.log`).
+- **Independent review, round 2** (head `09a08e1bd`): approve; four nits: N1, a request taken
+  and then lost to a crash leaves no outcome (answered in words: the save right after the take
+  is the guard, an "interrupted" outcome would need a second write per answer); N2, an
+  unreadable file was overwritten by the save after the restore (fixed in slice 8b, test-first:
+  it is kept as `.bad`, `a_saved_requests_file_that_cannot_be_read_is_kept`); N3, a crash while
+  the restore runs loses the requests asked in that moment (answered in words: the restore is
+  the first step of the start, before any task runs); N4 as F5.
+- **Merge train:** the merge candidate failed twice on `cd.e2e.ts` "a needs_you decision reads
+  Decide" (#1175), the sidebar still "Loading tasks…" at a one-shot read; the test polls now
+  (`b9533c662`), approved in round 3 (head `b9533c662`). Merged into `dev` by pull request #1298
+  at `0ed362b97`, whose own Yulius CI run passed.

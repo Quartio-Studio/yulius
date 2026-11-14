@@ -174,7 +174,11 @@ watching, steering and unblocking.
   how it ended, changes its text in place or withdraws it instead of asking again, lists another
   sandbox's tasks without asking, and leaves a decision only the person makes on the same panel
   as a question answered Yes or No (SPEC-487, [decision
-  0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)). What its person does on the project's pages it does for them when they
+  0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)). Asked to
+  deploy production, roll it back or promote, it asks on the same panel and the person, an
+  administrator, approves by typing the project's slug as on the CD page; the deploy then runs as
+  them. It starts a project's onboarding the same way, with a click
+  ([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)). What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the

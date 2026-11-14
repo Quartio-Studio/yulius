@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent deploys production once its person types the project's slug (SPEC-487 slice 8b,
+  task #469, [ADR-0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)).
+  Asked to deploy production, roll it back or promote, it could only send the person to the CD
+  page. Now the request waits on its panel, the person (an administrator) types the slug there as
+  the CD page asks, and the CD page's own deploy, rollback or promotion runs as them; a project's
+  onboarding starts the same way with a click. `cd_rollback` of a dev-stage environment is one of
+  the person's tools, for their Superagent and their own agent.
 - The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
   [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
   A request to create, change, message or stop a task in another sandbox ended after 4 minutes,

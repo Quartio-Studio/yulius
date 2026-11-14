@@ -287,7 +287,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "onboarding_start".into(),
-            description: "Start this project's onboarding, as its page's Start onboarding: it waits on the panel above your session for the person's click, then starts the onboarding task as them. Only while onboarding waits to start (project_get shows it); notes: what the person told you for the onboarding task, added to its request.".into(),
+            description: "Start this project's onboarding, as its page's Start onboarding: it waits on the panel above your session for the person's click, then starts the onboarding task as them. Only while onboarding waits to start (it is refused otherwise); notes: what the person told you for the onboarding task, added to its request.".into(),
             input_schema: schema(json!({
                 "notes": {"type": "string", "description": "A hand-over for the onboarding task (at most 24 KiB)"}
             }), &[]),
