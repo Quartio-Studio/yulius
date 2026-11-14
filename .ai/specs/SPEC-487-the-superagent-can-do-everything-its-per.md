@@ -443,8 +443,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   compare of the old request, the unstarted rule, the queue's swap and its stored start,
   the kept attachments, the owner check of an order, a close in the first turn, what `all`
   takes, the stop order, the owner and the minute of `with_draft`, the audit's tasks), each
-  failed by a named test (`target/evidence/mutants-slice3.py`, `mutants-slice3.log`:
-  `survived=0`).
+  failed by a named test (`target/evidence/mutants-slice3.py`; eleven more after the review).
 - **Found by the tests while writing:** a draft typed seconds ago was typed over by
   `with_draft` (the rule reads a fresh draft as a draft, not as "at the keyboard"): the
   minute now holds for the owner too. A bulk stop started queued tasks only to stop them (a
@@ -454,13 +453,39 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **The shared code keeps its other callers:** the Superagent, management, remote MCP,
   Global Superagent, message and queued-message test files pass (159 tests), and the unit
   tests of `yulius-app`, `yulius-domain`, `yulius-store` and `yulius-harness` (1341).
-- **Gate:** `scripts/dev ci` passed on `a614b0eaa` (4341 tests, 17 skipped; clippy, docs,
-  repository contracts; `target/evidence/gate-slice3.log`); the commit after it changes this
-  specification only.
+- **Independent review, round 1** (a fresh session, head `8cdf484f9`): request changes. All
+  its findings are in this slice's code and are answered, tests first (they fail on that
+  head, `target/evidence/s3-r1-red.log`, and pass now, `s3-r1-green.log`):
+  - F1, medium: after a restart of the server `with_draft` sent the message and answered
+    "the box is empty again", but the draft, known from its mark alone, stayed: every later
+    message was refused and the task was flagged after ten minutes. The submit Yulius makes
+    for the owner now counts as the prompt that follows the draft (the reviewer's probe is
+    the regression test).
+  - F10 (rated a nit, found to matter): two queued tasks that share a millisecond were not
+    swapped, and a restart queues every waiting task in one pass. The order is now written
+    along the whole queue, and the queue's query names its second key.
+  - F2, F3: a close is decided by one rule over the task's state, a turn in progress, pull
+    request news still to come and whether it has started (a held task with a live session
+    was told it "has not started"; a flag standing mid-turn read as idle; a task with an
+    armed merge could be closed and start its chain early).
+  - F4: a bulk unpause listed tasks nobody paused as done. F6: `with_draft` could carry a
+    prompt Yulius held for a decision to the agent. F7: through the remote MCP a bulk call
+    stopped when its client went away. F9: the text and the label were glued.
+  - F5: the mutants it found surviving (ties, a provider session, the 100 bound) and the
+    audit's new arm have tests; "a bulk call of more than 100 tasks" is tested now.
+  - F8: `docs/operations.md` and SPEC-480 DRF-007 say who may send past a draft.
+  Twenty-six mutants now, each failed by a named test (`mutants-slice3.log`: `survived=0`).
+- **Gate:** `scripts/dev ci` passed on `8b1d5a019` (4346 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice3-r1.log`); the commit after it changes
+  this specification only. (The first run of that gate failed at clippy on an import a test
+  did not need; removed.)
 - **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
 - **Not tested:** a real Claude Code session calling the new tools, and its prompt box with
   a real draft behind a pasted message (the fake agent echoes what it is sent as one prompt;
   that Claude Code submits a draft and a paste behind it as one prompt is SPEC-480's own
-  finding, issue #1199); a bulk call of more than 100 tasks (`not_reached` is set by a
-  count); two orders of the same queue at the same moment (one transaction each; the second
-  reads the places the first wrote).
+  finding, issue #1199); two orders of the same queue at the same moment (one transaction
+  each; the second reads the places the first wrote); a close-out refused for a turn in
+  progress or for pull request news, through a live session (the rule is unit-tested with
+  every case; the facts are read from the functions the task list uses); a prompt whose hook
+  is still being answered when the close is decided (a window of milliseconds: the close is
+  a graceful shutdown, and the task can be continued).
