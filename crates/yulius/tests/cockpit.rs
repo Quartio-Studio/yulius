@@ -5925,6 +5925,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         .as_str()
         .unwrap_or_default();
     for line in [
+        "NEEDS ITS PERSON",
         "asks its person to decide: Approve spending on DigitalOcean",
         "flagged by Yulius: The gate gave up after 5 tries. Type a prompt.",
         "holds a typed prompt (new_scope): \"Also rewrite the billing page\"",
