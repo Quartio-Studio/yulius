@@ -161,8 +161,13 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   function rejoin() {
     if (destroyed) return;
     session = null;
-    join({ text: getText(), sha256: state.sha || undefined, saved: state.saved && !pending() }).catch(() => {
-      if (!destroyed) retryTimer = setTimeout(rejoin, RETRY_MS);
+    join({ text: getText(), sha256: state.sha || undefined, saved: state.saved && !pending() }).catch((error) => {
+      if (destroyed) return;
+      // Refused for lack of access: asking again every second changes nothing. The typing is
+      // given up as for a refused edit, and the document stays read-only until the file is
+      // opened again (SPEC-483 LVE-002).
+      if (error && error.status === 403 && error.code === 'forbidden') { refused(); return; }
+      retryTimer = setTimeout(rejoin, RETRY_MS);
     });
   }
 

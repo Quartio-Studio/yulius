@@ -1707,11 +1707,9 @@ span.composer-attachment-open { cursor: default; }
 .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .toolbar .input, .toolbar .select { width: auto; min-width: 140px; height: var(--control-md); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); min-width: 0; }
-.card-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
 /* The one card title (#147): Settings sections, the task overview, Git, the Dashboard, CI, admin. */
 .card-title { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; color: var(--text); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .card-title > .icon { flex: none; color: var(--muted); }
-.card-body { padding: 16px 20px; }
 .card-pad { padding: 16px 20px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
 .list { display: flex; flex-direction: column; }
@@ -1765,7 +1763,6 @@ summary { cursor: pointer; }
 .items-center { align-items: center; }
 .justify-center { justify-content: center; }
 .space-top { margin-top: 8px; }
-.space-bottom { margin-bottom: 8px; }
 .list-plain { margin: 0; padding-left: 16px; }
 .wrap-text { white-space: normal; }
 .scroll-box { max-height: 320px; overflow: auto; }
@@ -1773,7 +1770,6 @@ summary { cursor: pointer; }
 .choice { cursor: pointer; }
 .choice.disabled { cursor: not-allowed; opacity: 0.55; }
 .select-sm { width: auto; height: var(--control-sm); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.input-priority { width: 80px; height: var(--control-sm); }
 .code-input { max-width: 220px; text-transform: uppercase; }
 .overlay-message { align-items: center; max-width: 420px; text-align: center; }
 /* Brand, nav and tasks scroll as one, so on a short screen the task list can take the full height. */
@@ -1812,7 +1808,6 @@ summary { cursor: pointer; }
 .tl-group-head[aria-expanded="false"] { border-bottom: 0; }
 .tl-group-count { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .group-needs .tl-group-head > .icon:nth-child(2), .group-needs .tl-group-head .tl-group-count { color: var(--warn-fg); }
-.group-needs .tl-what { color: var(--text-2); }
 .tl-rows { margin: 0; padding: 0; list-style: none; }
 /* Tasks as a table: one line per task, the same columns under every group; fewer columns as the list
    narrows (container queries on .tl). */
@@ -2014,9 +2009,6 @@ a.dl-task:hover { text-decoration: underline; }
 .dl-event { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 16px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .dl-event-time { flex: none; width: 40px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .dl-event-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.release-list { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
-.release-list ul { margin: 0; padding-left: 16px; }
-.release-head { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 /* The board and the cards give way to the page's width, so a tool panel beside it counts (SPEC-115). */
 @container page (max-width: 900px) {
   .dl-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2382,7 +2374,6 @@ a.dl-task:hover { text-decoration: underline; }
   .modal-full { height: calc(100dvh - 16px); }
   .toasts { top: calc(var(--tabrow-h) + 6px); bottom: auto; right: 8px; }
   .toasts.flipped { top: auto; bottom: 8px; }
-  .hbar { grid-template-columns: minmax(70px, 110px) minmax(0, 1fr) auto; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .table .hide-phone { display: none; }
 }
@@ -2421,7 +2412,6 @@ a.dl-task:hover { text-decoration: underline; }
 .term-tab-name { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
 .term-tab-rename { width: 14ch; height: var(--control-sm); padding: 0 6px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text); font: inherit; }
 .term-tab-ended .term-tab-name { text-decoration: line-through; }
-.term-tab-add { align-self: center; margin: 0 4px; }
 .term-views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .term-views > [hidden] { display: none; }
 .term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }

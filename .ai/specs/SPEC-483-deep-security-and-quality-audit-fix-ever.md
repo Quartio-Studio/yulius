@@ -54,9 +54,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
       (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
-      (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23;
+      (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
+      (merged, #1279);
   14. documents and shipped texts against the code (P1-P14, QB9);
-  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
+  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24;
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
@@ -490,6 +491,25 @@ no code path reaches; documents, texts shown to agents and people, and code that
   edit: the file read Unsaved for good, the page asked before every unload, more typing
   piled up unsent, a close waited its full 10 s and dropped it, and `readOnly`, never reset,
   had no reader.
+
+### Slice 24: what nothing reaches
+
+- **E5 (low).** ADR-15 removed the browser panel's frames: previews open in their own window
+  (`browser.js`, `window.open(…, 'noopener')`), and no Yulius page has a `message` listener.
+  The preview proxy still appended a bridge script to every proxied HTML document (which
+  posted the page's address to a parent that does not exist), and for that fetched every
+  document uncompressed (`Accept-Encoding` removed) and dropped its `Content-Length`; it
+  removed the app's `X-Frame-Options` and `frame-ancestors` and allowed the Yulius origin to
+  frame previews. The landing page told of "cookies in frames".
+- **D7 (low).** `webhook_secret` was copied from the App manifest's answer into the stored App
+  configuration and into `AppCredentials`; Yulius has no webhook route and reads it nowhere.
+- **W7 (low).** `linkify` and `URL_RE` (`dom.js`), `kindLabel` (`stages.js`) and the style
+  rules `.card-head`, `.card-body`, `.space-bottom`, `.input-priority`, `.group-needs
+  .tl-what`, `.release-list` (and its `ul`), `.release-head`, the phone rule of `.hbar` and
+  `.term-tab-add` had no user (`.st-blocked` and `.tone-stopped-abnormal`, also reported, are
+  built from a status and a tone, so they stay).
+- **W8 (low, review of slice 23).** A live document whose rejoin is refused for lack of access
+  tried again every second for as long as the file stayed open.
 
 ## Requirements
 
@@ -937,6 +957,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   read-only and says "Read-only: you can no longer change this folder". Only a successful join
   (the file opened again) makes it writable again. A 403 for a stale session token
   (`csrf_invalid`) is not a refusal of access: the edit is sent again.
+- **PRV-001** A proxied response reaches the browser with its body, `Content-Length` and
+  `Content-Encoding` as the app sent them (the browser's `Accept-Encoding` reaches the app);
+  the app's `X-Frame-Options` and CSP are kept (loopback sources mapped) and
+  `frame-ancestors 'self'` is added; `/__yulius/bridge.js` is gone (404); the proxy's own
+  pages carry no script and the same framing rule.
+- **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
+  secret; a stored configuration that still names one parses as before.
+- **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
+  the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
+  waiting, until the file is opened again.
 
 ## Plan
 
@@ -965,7 +995,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
-- [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved
+- [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
+- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles
 
 ## Acceptance criteria
 
@@ -1504,6 +1535,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   catch-up). In the Editor the status says "Read-only: you can no longer change this folder",
   the editor is read-only, the text is the file's and the tab reads `notes.txt×` (not marked
   modified).
+- **AC-135** A proxied document arrives byte for byte with its length; the app's
+  `X-Frame-Options: DENY` and its CSP (with `frame-ancestors 'none'`, the WebSocket source
+  mapped) are kept beside `frame-ancestors 'self'`; `/__yulius/bridge.js` answers 404; a
+  gzip document keeps `Content-Encoding: gzip` and its length, and the app saw the
+  browser's `Accept-Encoding: gzip, br`.
+- **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
+  document is read-only and not busy, the text is the document's, and after 2.5 s it asked
+  for no second rejoin. The same when the edit itself meets an ended document (409), its
+  catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
+  one edit, two joins, and a close ends within a second. The proxy's refusal page (the
+  landing's) has the CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors
+  'self'` and no script.
 
 ## Test plan
 
@@ -1757,6 +1800,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   refused for lack of access gives the text back and leaves nothing waiting" (the document
   against a scripted server) and "… makes the file read-only in the Editor and says so" (the
   mock refuses edits on a switch).
+- Slice 24: `yulius`
+  `preview::responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin` (AC-135,
+  a compressed document added to the fixture app; the test was named for the frames it no
+  longer allows), the handshake test's landing page (AC-136, the proxy's own pages) and the
+  preview proxy's unit test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended`
+  and `gone` cases); the
+  configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
+  parse); the gate's lint and e2e for the deleted web code.
 
 ## Decisions
 
@@ -1820,6 +1871,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 24 (no decision record: ADR-15 decided that nothing frames a preview; this slice
+  removes what that left). A preview keeps `frame-ancestors 'self'` of Yulius's own rather
+  than only the app's policy: a dev server rarely sets one, and a page that holds a person's
+  preview grant should not be framed by another site; the app's stricter policy and its
+  `X-Frame-Options` are kept, so a stricter app stays stricter. `webhook_secret` is removed
+  rather than kept for a future webhook: a webhook route would need its own secret, set up
+  with it. The deleted web code has no history to keep (it is in Git).
 - Slice 23 (no decision record: SPEC-191, SPEC-153 and SPEC-487 already decided each case;
   the slice makes the second rule say what the first said). The pause wins over everything
   but an end, as the sidebar always had it: a paused run cannot answer a prompt or a person
@@ -2192,7 +2250,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
-| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 23 (the case left after SPEC-487 CHN-001: an achieved goal) |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | fixed (slice 23; the case left after SPEC-487 CHN-001: an achieved goal) |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
@@ -2204,14 +2262,15 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | fixed (slice 22) |
 | E7 | move | An unreadable move mark does nothing and stays | low | fixed (slice 22) |
 | QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 23 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 23 |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
 | P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 15 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |
+| W7 | web UI | Dead exports and CSS rules | low | slice 24 |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 24 |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 24 |
+| W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | slice 24 |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 15 |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
 | QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
@@ -2407,3 +2466,45 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Not tested.** A real server refusing an edit after a worktree's owner changed (the mock
   refuses on a switch; the server's 403 for that case is `forbidden`, as the mock's); the
   counts with a real update's hold (the domain test and a person's pause cover the fact).
+- **Review, round 2** (the same session, head `f9c68ec17`): approve; two nits, answered in
+  slice 24: a doc line of the group rule over the wrap, and a refused rejoin retried every
+  second (pre-existing, W8).
+- **Delivery.** Pull request #1279 merged into `dev` at `d6fe5d400`, the approved head
+  `f9c68ec17` squashed, whose own Yulius CI run passed.
+
+### Slice 24 (2026-11-14)
+
+- **Tests failing before the fix**: the proxied document came back without the app's
+  `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
+  `Accept-Encoding` for a document; a refused rejoin was asked again every second (three joins
+  in 2.5 s instead of two). After the review: a 409 edit whose rejoin was refused left the
+  tab busy, unsaved, with "abcd" and a close that waited.
+- **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
+  `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
+  app's `X-Frame-Options` removed again; no `frame-ancestors` of Yulius's own; the app's
+  `frame-ancestors` dropped again; a refused rejoin retried every second; after the review,
+  a script or the Yulius origin back on the proxy's own pages, and a forbidden rejoin that
+  only marks the document read-only.
+- **Gate.** `scripts/dev ci` at `91f197b4e`: exit 0; `4371 tests run: 4371 passed (1 slow),
+  17 skipped` (`target/audit/slice24/gate.log`). The whole e2e suite at the same head: `84
+  passed | 1 skipped` files, `1026 passed | 1 skipped` tests (`target/audit/slice24/e2e-all.log`;
+  it covers the deleted web code: nothing imported it).
+- **Review, round 1** (a fresh session, head `91f197b4e`): request changes. One major in own
+  code: a rejoin refused as `forbidden` "sets only `readOnly = true; onState()`, leaving this
+  tab's unconfirmed typing (`outstanding`/`buffer`), its timers and its text in place", the
+  W3 state again behind a read-only banner, which the `ended` case could not reach. Two
+  minor: PRV-001's "the proxy's own pages carry no script and the same framing rule" had no
+  test; SPEC-002 (ADR-14's framing and bridge paragraphs) and SPEC-001 AC-BRW-7 still
+  described the old proxy. Nits: `docs/operations.md` justified same-site preview origins by
+  "the panel's frames" and the web README suggested `frame-src` for previews (pre-existing);
+  two lines over the wrap; the preview test's name. All answered in `92c51654d`: the
+  forbidden rejoin calls `refused()` (the `gone` case), the landing's page is asserted, the
+  two specs, operations and the README say what the proxy does now, the lines are rewrapped
+  and the test renamed.
+- **Gate after it.** `scripts/dev ci` at `92c51654d`: exit 0; `4371 tests run: 4371 passed
+  (1 slow), 17 skipped` (`target/audit/slice24/gate2.log`); e2e `live-editor.e2e.ts` and
+  `editor.e2e.ts` at the same head: 49 passed (`target/audit/slice24/e2e-r1.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real browser on a real preview (the proxy is tested over HTTP with a
+  fixture app; framing and compression are header and body checks); a real GitHub manifest
+  answer (the fake answers the field, as GitHub does, and it parses).

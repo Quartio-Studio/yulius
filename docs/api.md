@@ -1249,10 +1249,10 @@ resolves to nothing, the run gets the server without that variable or token.
   - On a preview origin, `/__yulius/` is the proxy's: `handshake` (trades the token for the
     `__Host-yulius_preview` cookie — `yulius_preview` over HTTP —, host-only, `HttpOnly`,
     `SameSite=Lax`, 12 h; then 303 to `landing`), `landing?to` (303 to `to` when the cookie
-    stuck, else an explanation), `bridge.js` (the script appended to proxied documents),
-    `ping` (204, reachability), `denied`. Any other request needs the grant cookie: a GET
-    navigation without one gets 302 to `/api/previews/authorize`, anything else 401. Grants are
-    re-checked against the Yulius session and write access every 30 s and live in memory.
+    stuck, else an explanation), `ping` (204, reachability), `denied`. Any other request needs
+    the grant cookie: a GET navigation without one gets 302 to `/api/previews/authorize`,
+    anything else 401. Grants are re-checked against the Yulius session and write access every
+    30 s and live in memory.
   - Refused: a host that names no sandbox (404), a port outside the sandbox's range or one of
     Yulius's own (403), credentialed requests and WebSockets from other origins than the
     preview itself and the same sandbox's other previews (403; navigations from anywhere are
@@ -1260,16 +1260,15 @@ resolves to nothing, the run gets the server without that variable or token.
   - Forwarded to `127.0.0.1:<port>` (HTTP/1.1, WebSocket upgrades spliced, bodies streamed):
     `Host: localhost:<port>`; `Origin` and `Referer` of the sandbox's previews become
     `http://localhost:<port>`; the grant and Yulius cookies, hop-by-hop and `X-Forwarded-*`
-    headers are removed; documents are requested without compression.
-  - Responses: `X-Frame-Options`, `Strict-Transport-Security` and every CSP `frame-ancestors` are
-    removed and `Content-Security-Policy: frame-ancestors 'self' <public URL>` added;
-    `http(s)`/`ws(s)` URLs on the VM's loopback with a sandbox port in `Location`,
-    `Content-Location`, `Refresh`, `Link`, `Access-Control-Allow-Origin` and CSP sources point at
-    the preview origins; `Set-Cookie` loses `Domain` (and gains `Secure` over HTTPS); HTML
-    documents get `<script src="/__yulius/bridge.js" async>` appended. The bridge posts
-    `{"source":"yulius-preview","type":"location","href","title","back","forward"}` (and
-    `type: "f6"`) to the public URL's origin only and accepts `{"source":"yulius","type":
-    "back|forward|reload|hello"}` only from the window that frames it.
+    headers are removed; `Accept-Encoding` is passed as the browser sent it.
+  - Responses: bodies pass unchanged, with their `Content-Length` and `Content-Encoding`.
+    `Strict-Transport-Security` is removed; the app's `X-Frame-Options` and CSP are kept and
+    `Content-Security-Policy: frame-ancestors 'self'` is added (nothing frames a preview: the
+    browser panel opens it in its own window, ADR-15; SPEC-483 PRV-001 removed the script that
+    reported a framed preview's address to Yulius); `http(s)`/`ws(s)` URLs on the VM's loopback
+    with a sandbox port in `Location`, `Content-Location`, `Refresh`, `Link`,
+    `Access-Control-Allow-Origin` and CSP sources point at the preview origins; `Set-Cookie`
+    loses `Domain` (and gains `Secure` over HTTPS).
   - Bounds: connect 5 s, response head 120 s, 512 requests awaiting a head and 256 WebSockets
     (503 beyond).
 - `GET /internal/preview-tls?domain=<host>` on the internal (loopback) listener: the `ask`

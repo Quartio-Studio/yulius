@@ -1144,8 +1144,6 @@ export function meter(percent, { label, detail } = {}) {
   );
 }
 
-const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
-
 /** Whether `uri` points at the VM itself (localhost, loopback): such links open in the sandbox
  *  browser, every other link in a new tab of the user's browser (UI-018). */
 export function isLocalUrl(uri) {
@@ -1155,30 +1153,4 @@ export function isLocalUrl(uri) {
   } catch {
     return false;
   }
-}
-
-/**
- * Turn http(s) URLs in plain text into links. `onLink(url, event)` decides how a click
- * is handled (Yulius browser links open the browser panel; others a new tab).
- */
-export function linkify(text, onLink) {
-  const frag = document.createDocumentFragment();
-  let last = 0;
-  for (const match of String(text).matchAll(URL_RE)) {
-    let url = match[0];
-    // Strip trailing punctuation that is almost never part of a URL.
-    while (/[.,;:!?)\]}]$/.test(url)) {
-      const ch = url.at(-1);
-      const opener = { ')': '(', ']': '[', '}': '{' }[ch];
-      if (opener && url.split(opener).length > url.split(ch).length - 1) break;
-      url = url.slice(0, -1);
-    }
-    frag.append(text.slice(last, match.index));
-    const a = h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', class: 'link' }, url);
-    if (onLink) a.addEventListener('click', (event) => { if (event.button === 0 && !event.metaKey && !event.ctrlKey) { event.preventDefault(); onLink(url, event); } });
-    frag.append(a);
-    last = match.index + url.length;
-  }
-  frag.append(text.slice(last));
-  return frag;
 }

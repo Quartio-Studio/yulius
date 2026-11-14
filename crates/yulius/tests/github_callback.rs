@@ -491,7 +491,6 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
         client_id: credentials.client_id.clone(),
         client_secret: credentials.client_secret.expose().to_owned(),
         private_key_pem: credentials.private_key_pem.expose().to_owned(),
-        webhook_secret: None,
     };
     fake.set_callback_urls(&["https://old.example/api/auth/github/callback"]);
     assert!(

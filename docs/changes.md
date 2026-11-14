@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Previews pass pages through as the dev server sends them (SPEC-483 slice 24, task #465).
+  The preview proxy appended a script to every page for a framed browser panel that no longer
+  exists, and fetched every page uncompressed for it. Pages now keep their compression and
+  length, and the dev server's own framing rules; a preview is framed by nothing but itself.
+  Also gone: the stored GitHub App webhook secret (Yulius has no webhook), web code and styles
+  nothing used, and an Editor file whose access was withdrawn no longer asks the server again
+  every second.
 - Home, the project tabs and the sidebar count a task the same way (SPEC-483 slice 23, task
   #465). A paused task that had been waiting for a person was counted as needing you while
   the sidebar showed it Paused under Working; a new project's onboarding task waiting for

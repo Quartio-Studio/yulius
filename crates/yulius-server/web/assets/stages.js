@@ -61,11 +61,6 @@ export function stageTitle(row) {
   return `${SUBJECT_NAMES[row.subject_kind] || row.subject_kind} · ${stageLabel(row)}`;
 }
 
-/** The sort of stage, in words. */
-export function kindLabel(kind) {
-  return KIND_NAMES[kind] || kind;
-}
-
 /** The subject kind, in words. */
 export function subjectLabel(kind) {
   return SUBJECT_NAMES[kind] || kind;
