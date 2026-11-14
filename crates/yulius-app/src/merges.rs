@@ -407,7 +407,7 @@ mod tests {
     /// in the order the merges were armed.
     #[test]
     fn the_queue_lists_one_being_decided_first_then_by_when_armed() {
-        let mut entries = vec![
+        let mut entries = [
             json!({"number": 1, "armed_at": 300}),
             json!({"number": 2}),
             json!({"number": 3, "deciding": true}),
