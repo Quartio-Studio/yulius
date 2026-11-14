@@ -2860,4 +2860,18 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   slow), 17 skipped` (`target/audit/slice27/gate2.log`); the mutation cases, the check's
   updated (`mutations-r1.log`, 9 cases; "any line that says refused" was first written so
   that it could not fail and is rerun as the old behaviour), all failed their tests.
+- **Review, round 2** (the same session, head `3d6240361`): approve, with two minor findings in
+  own code, fixed here rather than deferred (ADR-0141): the self-merge pattern no longer caught
+  the old `git.md` wording "squash-merges their own PR", and the rule read one line at a time,
+  so the old AGENTS.md promotion sentence, wrapped over two lines, passed. Nits: two legitimate
+  sentences refused, a greedy `gh pr checks` pattern, an exemption not tied to its match, the
+  Decisions' "four content hashes", wraps, no test of the scanned files. All answered in
+  `ed3193394`: the rule reads paragraphs and list items; the old AGENTS.md, `git.md`, pull
+  request template, `yulius-git` skill and `workflow.md` from `8a7fc3955` are all refused by
+  it; a match that says the rule ("not", "never", "a person's") is not refused; the scanned
+  files have a test.
+- **Gate after it.** `scripts/dev ci` at `ed3193394`: exit 0; `4374 tests run: 4374 passed (1
+  slow), 17 skipped` (`target/audit/slice27/gate3.log`); the mutation cases
+  (`mutations-r2.log`, 11) all failed their tests (the paragraph case was first written to
+  change only the first of the two places that join a paragraph, and is rerun on the other).
 - **Not tested.** An agent following the rewritten instructions (the check reads the wording).
