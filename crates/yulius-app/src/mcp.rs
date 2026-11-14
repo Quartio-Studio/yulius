@@ -30,7 +30,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
 /// tasks for its person (SPEC-230, ADR-0178), and asking its person to start, change, message or
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
-/// for its person what they do on the project's pages ([`crate::person_tools`], SPEC-487,
+/// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
 pub const COCKPIT_TOOLS: [&str; 51] = [
     "tasks_list",
@@ -72,7 +72,7 @@ pub const COCKPIT_TOOLS: [&str; 51] = [
     "browser_screenshot",
     "browser_request_user_action",
     "browser_fill_secret",
-    // The person's project tools ([`crate::person_tools::PERSON_TOOLS`]).
+    // The person's project tools (`crate::person_tools::PERSON_TOOLS`).
     "task_delivery",
     "task_restart",
     "task_pause",
