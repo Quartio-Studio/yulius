@@ -44,7 +44,7 @@ use crate::delivery::DeliveryProfile;
 use crate::ids::TaskId;
 use markdown::{Line, checklist_item, heading, is_meaningful, normalize_title};
 
-/// Longest slug produced by [`slug_or`].
+/// Longest slug a spec file name gets from its title.
 pub const MAX_SLUG_LEN: usize = 50;
 
 /// Where architecture decisions live.

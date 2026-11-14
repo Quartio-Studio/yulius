@@ -5,13 +5,13 @@
 //! The `yulius onboard` CLI (alias `yulius import`) authenticates with `Authorization: Bearer
 //! yul_…` (obtained through the device approval flow, [`DeviceStart`]/[`DevicePoll`]) and then:
 //!
-//! 0. `POST` [`ONBOARD_PLAN_PATH`] with [`OnboardPlanRequest`] → [`OnboardPlan`]: the sandbox of
+//! 0. `POST /api/onboard/plan` with [`OnboardPlanRequest`] → [`OnboardPlan`]: the sandbox of
 //!    the repository (and its onboarding state, what is pending), whether the caller may create
 //!    it, and for every offered session fingerprint whether the server already holds it
 //!    (`unchanged`), holds an older version (`changed`) or not at all (`new`). The CLI then
 //!    offers only new and changed sessions (IMP-006). Sessions are redacted on the computer
 //!    before they are fingerprinted (IMP-008), so the fingerprint is the digest of what is sent.
-//! 1. `POST` [`CREATE_IMPORT_PATH`] with [`CreateImportRequest`] → [`CreateImportResponse`]. The
+//! 1. `POST /api/import` with [`CreateImportRequest`] → [`CreateImportResponse`]. The
 //!    server verifies the repository and the caller's permission (IMP-002), creates the job and
 //!    lists every manifest file it still needs together with the bytes it already holds. Files
 //!    are content addressed by `sha256`, so a file the server already stored for this repository
