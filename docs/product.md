@@ -172,7 +172,7 @@ watching, steering and unblocking.
   approve (SPEC-335). What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
-  (its pull request, checks, whether its merge is armed and why it is not merging), reads the
+  (its pull request, checks, what comes next and what is refused now and why), reads the
   CI runs and a run's failing output, runs a run again or cancels it, reads the deployments and
   deploys a dev-stage environment. It no longer hands such a job back as steps to click or
   uses a finished task as hands; an ability it lacks it names

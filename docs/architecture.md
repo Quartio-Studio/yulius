@@ -1862,11 +1862,13 @@ the audit actor, never on the caller's own task
 What a person does on a project's pages is one list of tools, `person_tools::PERSON_TOOLS`
 (a task's Continue, Pause, Resume and Start now, its delivery, the CI page's runs, run again
 and cancel, the CD page's state and dev deploy, the variables): `App::person_project_tool`
-runs the function the page's route calls with the person's `AuthContext`, and three callers
-serve it: the Cockpit (`cockpit_person_tool`: the person's rights as they are at the call, one
-`superagent.tool` audit entry for a tool that changes something), the remote MCP (with
-`project`, its token's scope and `remote.tool`) and the Global Superagent (without what it is
-withheld). A task's agent is served none of them; it keeps the tools about its own work
+runs the function the page's route calls with the person's `AuthContext`, and two callers
+serve it: the Cockpit (`cockpit_person_tool`: the person's rights as they are at the call, and
+one `superagent.tool` audit entry for a tool that changes something, which names the task, run
+or environment and is written even when the client went away) and the remote MCP (with
+`project`, its token's scope and `remote.tool`), which the Global Superagent calls too (without
+what it is withheld). Every text served to a client (instructions, tool descriptions) stays
+within the 4096 characters Claude Code reads (`CLIENT_TEXT_MAX`). A task's agent is served none of them; it keeps the tools about its own work
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
