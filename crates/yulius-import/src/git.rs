@@ -114,12 +114,6 @@ impl GitHubRemote {
     pub fn https_url(&self) -> String {
         format!("https://github.com/{}/{}", self.owner, self.name)
     }
-
-    /// `true` when both name the same repository (GitHub names are case-insensitive).
-    #[must_use]
-    pub fn same_repository(&self, other: &Self) -> bool {
-        self.owner.eq_ignore_ascii_case(&other.owner) && self.name.eq_ignore_ascii_case(&other.name)
-    }
 }
 
 /// Parses GitHub remote URLs in HTTPS, SSH (`ssh://` and scp-like `git@github.com:`) and `git://`
@@ -702,10 +696,11 @@ mod tests {
     }
 
     #[test]
-    fn same_repository_ignores_case_and_form() {
-        let a = parse_github_remote("git@github.com:Quartio-Studio/Studio.git");
-        let b = parse_github_remote("https://github.com/quartio-studio/studio");
-        assert!(matches!((a, b), (Some(a), Some(b)) if a.same_repository(&b)));
+    fn a_github_remote_parses_in_either_form() {
+        let ssh = parse_github_remote("git@github.com:Quartio-Studio/Studio.git");
+        let https = parse_github_remote("https://github.com/quartio-studio/studio");
+        assert!(matches!((ssh, https), (Some(a), Some(b))
+            if a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)));
         assert_eq!(
             remote("o", "r").map(|r| r.https_url()),
             Some("https://github.com/o/r".to_owned())

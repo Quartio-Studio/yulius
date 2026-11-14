@@ -1111,7 +1111,7 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
         .await?;
     assert_eq!(
         store.task_messages(&b.id, 10).await?,
-        [msg.clone()],
+        std::slice::from_ref(&msg),
         "the recipient's export has it"
     );
     assert_eq!(
