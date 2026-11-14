@@ -416,7 +416,7 @@ impl App {
         // Changing a task's worktree is its owner's: its agent commits and pushes what is there
         // as them (SPEC-070).
         if let Some(ctx) = writer {
-            self.require_owner(ctx, &task).await?;
+            self.require_control(ctx, &task).await?;
         }
         let no_worktree = || AppError::Conflict("the task has no worktree yet".into());
         let path = task.worktree_path.ok_or_else(no_worktree)?;
@@ -471,7 +471,7 @@ impl App {
                 }
                 roots.push(FileRoot {
                     root: format!("task:{}", task.id),
-                    writable: task.owner == user,
+                    writable: crate::tasks::owns(&task, &user),
                     branch: task.branch,
                     task_number: Some(task.number),
                     task_title: Some(task.title),

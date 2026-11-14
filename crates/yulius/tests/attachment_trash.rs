@@ -136,6 +136,37 @@ async fn attachments_another_request_names_stay_until_the_last_naming_task_goes(
     Ok(())
 }
 
+/// SPEC-490 OWN-004: files restored into a task are an attachment to it, so they go only into
+/// a task of the person the caller acts for; another person's task gets nothing and the trash
+/// keeps the entry.
+#[tokio::test]
+async fn attachments_are_restored_only_into_ones_own_task() -> TestResult {
+    let (h, attachments) = world().await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    attach(&attachments, "t1", "a.txt", "precious")?;
+    let (n1, bobs) = (number(&h, "t1").await?, number(&h, "t-bob").await?);
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"number": n1})).await?;
+    assert!(!is_error, "{deleted}");
+
+    let (refused, is_error) = tool(
+        &h,
+        "attachments_trash",
+        json!({"restore": n1, "into": bobs}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("@bob") && refused.to_string().contains("only they steer it"),
+        "{refused}"
+    );
+    assert!(
+        !attachments.join("tasks/t-bob").exists(),
+        "nothing restored"
+    );
+    assert_eq!(trash(&attachments).len(), 1, "the entry stays");
+    Ok(())
+}
+
 /// AC ATR-002, ATR-005: a deleted task's folder nobody names goes to the trash; the tool lists it
 /// and restores its files into another task under free names, then into the caller's own task.
 #[tokio::test]

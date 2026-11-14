@@ -224,7 +224,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_message".into(),
-            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal and sent no prompt since (their text may still be in its prompt box, however long ago they typed: tell the person to send it, or to clear it and send any prompt; when the task's owner tells you to send past it, pass with_draft: true, and the message is typed behind that text and both go to the agent as one prompt) or typed there in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it with task_restart, or create a new task). A message that is sent ends what the task's agent asked of its person (needs_you): it is the answer. Answers delivered: queued or sent. Audited.".into(),
+            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). Only a task that person owns: a message steers a task, so another person's is refused with its owner's name (your person asks them for control on the task's page). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal and sent no prompt since (their text may still be in its prompt box, however long ago they typed: tell the person to send it, or to clear it and send any prompt; when the task's owner tells you to send past it, pass with_draft: true, and the message is typed behind that text and both go to the agent as one prompt) or typed there in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it with task_restart, or create a new task). A message that is sent ends what the task's agent asked of its person (needs_you): it is the answer. Answers delivered: queued or sent. Audited.".into(),
             input_schema: schema(json!({
                 "task_id": {"type": "string", "description": "Task id"},
                 "number": {"type": "integer", "description": "Task number within this sandbox"},
@@ -286,12 +286,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_stop".into(),
-            description: "Stop another task of this project (by task_id or number), as Stop in the UI: a queued or waiting task is cancelled, a running one is interrupted. Not your own task. Acts on behalf of the person you work for and is audited.".into(),
+            description: "Stop another task of this project (by task_id or number), as Stop in the UI: a queued or waiting task is cancelled, a running one is interrupted. Anyone who may work in the project stops any of its tasks, so another person's task too, when it is the one meant: the audit names its owner. Not your own task. Acts on behalf of the person you work for and is audited.".into(),
             input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
             name: "task_archive".into(),
-            description: "Archive another task of this project (by task_id or number), as Archive in the UI: only a stopped or finished task (a Done one is closed first); archived: false restores it. Not your own task. Audited.".into(),
+            description: "Archive another task of this project (by task_id or number), as Archive in the UI: only a stopped or finished task (a Done one is closed first); archived: false restores it. Another person's task too. Not your own task. Audited.".into(),
             input_schema: schema(json!({
                 "task_id": {"type": "string", "description": "Task id"},
                 "number": {"type": "integer", "description": "Task number within this sandbox"},
@@ -314,12 +314,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_delete".into(),
-            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. Its attachments stay where they are while another task's request or an automation's prompt names them (the answer's kept_for, kept_for_automations), otherwise they wait 7 days in the trash (the answer's trash; attachments_trash restores them); not_moved: true says they stayed where they are because moving them to the trash failed or was not tried (a link in the way is never followed, or the tasks could not be read). A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
+            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. Its attachments stay where they are while another task's request or an automation's prompt names them (the answer's kept_for, kept_for_automations), otherwise they wait 7 days in the trash (the answer's trash; attachments_trash restores them); not_moved: true says they stayed where they are because moving them to the trash failed or was not tried (a link in the way is never followed, or the tasks could not be read). A running task must be stopped first (a Done one is closed first). Another person's task too, when it is the one meant: it cannot be undone, and the audit names its owner. Not your own task. Audited.".into(),
             input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
             name: "attachments_trash".into(),
-            description: "The attachments of this project's deleted tasks (files pasted or dropped onto them), kept 7 days after the deletion: lists each deleted task's files and until when they can be restored. With restore (the deleted task's id or number) it moves that task's files into the attachments of the task into names (your own task by default) and answers their new paths. Restoring is audited.".into(),
+            description: "The attachments of this project's deleted tasks (files pasted or dropped onto them), kept 7 days after the deletion: lists each deleted task's files and until when they can be restored. With restore (the deleted task's id or number) it moves that task's files into the attachments of the task into names (your own task by default; a task of the person you work for, never another person's) and answers their new paths. Restoring is audited.".into(),
             input_schema: schema(json!({
                 "restore": {"type": ["string", "integer"], "description": "The deleted task's id or number whose files to restore"},
                 "into": {"type": "integer", "description": "Number of the task to restore them into (default: your own task)"}

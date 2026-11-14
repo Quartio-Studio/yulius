@@ -1613,8 +1613,28 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         "{}",
         content.body
     );
-    // Changing someone's task is theirs alone, also for the superadmin (SPEC-070): it acts on
-    // GitHub as them.
+    // Steering someone's task is theirs alone, also for the superadmin (SPEC-070, SPEC-490
+    // OWN-004): it acts on GitHub as them. Putting it away is open to whoever may work in the
+    // project (OWN-002).
+    let continued = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t2/continue",
+        Some(json!({})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(
+        continued.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        continued.body
+    );
+    assert!(
+        continued.body.to_string().contains("Ask them for control"),
+        "{}",
+        continued.body
+    );
     let archived = call(
         &h.router,
         Method::POST,
@@ -1623,12 +1643,8 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         &admin,
     )
     .await?;
-    assert_eq!(archived.status, StatusCode::FORBIDDEN, "{}", archived.body);
-    assert!(
-        archived.body.to_string().contains("Ask them for control"),
-        "{}",
-        archived.body
-    );
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.body);
+    assert_eq!(archived.body["owner"]["login"], "alice");
 
     // Nothing was mirrored from GitHub for the superadmin.
     let superadmin = h.store.superadmin().await?.ok_or("superadmin")?;

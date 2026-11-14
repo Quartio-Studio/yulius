@@ -996,7 +996,8 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
             Some(run.id.clone()),
             "the same run, reattached"
         );
-        // Bob does not message the session that holds the administrator's server.
+        // Bob does not message the administrator's session (SPEC-490 OWN-004), which holds
+        // the administrator's server.
         let caller = yulius_app::coordination::ProjectCaller {
             sandbox: sandbox.clone(),
             user: bob.id.clone(),
@@ -1009,7 +1010,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
             .tool_task_message(&caller, &serde_json::json!({"task_id": id.as_str(), "text": "hi"}))
             .await;
         assert!(
-            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("MCP servers")),
+            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("only they steer it")),
             "{refused:?}"
         );
         // Control passes to Bob: the run is resumed without the administrator's server.
@@ -1258,7 +1259,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             .tool_task_message(&caller, &serde_json::json!({"task_id": id.as_str(), "text": "hi"}))
             .await;
         assert!(
-            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("MCP servers")),
+            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("only they steer it")),
             "{refused:?}"
         );
         let mut on = fleet.clone();

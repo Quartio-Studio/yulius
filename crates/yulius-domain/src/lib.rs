@@ -42,6 +42,7 @@ pub mod stages;
 pub mod steps;
 pub mod sweep;
 pub mod task;
+pub mod task_access;
 pub mod time;
 pub mod update;
 pub mod usage;

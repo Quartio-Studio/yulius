@@ -423,8 +423,8 @@ export function allows(access, minimum) {
 }
 
 /**
- * Who owns `task` when it is not `me` (the viewer's login), else null: only a task's owner changes
- * it, as it acts on GitHub with their token (SPEC-070).
+ * Who owns `task` when it is not `me` (the viewer's login), else null: only a task's owner steers
+ * it, as it acts on GitHub with their token (SPEC-070, SPEC-490).
  */
 export function otherOwner(task, me) {
   const owner = task && task.owner && task.owner.login;
@@ -432,12 +432,16 @@ export function otherOwner(task, me) {
 }
 
 /**
- * Actions available for a task given sandbox access (UI-013, §6.3) and the viewer's login `me`:
- * write actions are the owner's (SPEC-070). `pr` is the task's pull request (store.pullsOf()), so
- * a task the sidebar shows as Done can be archived or deleted.
+ * Actions available for a task given sandbox access (UI-013, §6.3) and the viewer's login `me`,
+ * by the server's one rule (SPEC-490, ADR-0331): anyone who may work in the project tidies a task
+ * (stop, archive, restore, delete), and everything that steers it is its owner's. `pr` is the
+ * task's pull request (store.pullsOf()), so a task the sidebar shows as Done can be archived or
+ * deleted.
  */
 export function taskActions(task, access, pr, me) {
-  const write = allows(access, 'write') && !otherOwner(task, me);
+  const tidy = allows(access, 'write');
+  const owner = otherOwner(task, me);
+  const write = tidy && !owner;
   const live = isLive(task.status);
   // A chained or prepared task waits to start (TSK-012, SPEC-105): Start now or Cancel.
   const prepared = task.status === 'prepared';
@@ -447,7 +451,7 @@ export function taskActions(task, access, pr, me) {
   return {
     // A stopping task can be stopped again: a stop whose session could not be ended is retried
     // (SPEC-065).
-    stop: write && (live || chained),
+    stop: tidy && (live || chained),
     // A person pauses a running task and resumes it (SPEC-191 PER-006); an update's pause ends
     // by itself.
     pause: write && task.status === 'running' && !task.pause,
@@ -463,8 +467,10 @@ export function taskActions(task, access, pr, me) {
     // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its
     // pull request merged or tested, and no shell left) is closed as it is archived (TSK-014) or
     // deleted (SPEC-039).
-    archive: write && (ended || finished) && !task.archived,
-    restore: write && task.archived,
-    delete: write && (ended || chained || finished) && task.status !== 'stopping',
+    archive: tidy && (ended || finished) && !task.archived,
+    restore: tidy && task.archived,
+    delete: tidy && (ended || chained || finished) && task.status !== 'stopping',
+    // Someone else's task: its owner is asked for control (SPEC-070), from wherever its menu opens.
+    askControl: tidy && Boolean(owner),
   };
 }

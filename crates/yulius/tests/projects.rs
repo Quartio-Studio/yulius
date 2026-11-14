@@ -1881,6 +1881,115 @@ async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResul
     Ok(())
 }
 
+// SPEC-490 OWN-004: Start onboarding starts the onboarding task, which is control of it. A task
+// that exists is started by its owner alone, and anyone else is told to ask for control; a
+// sandbox without one gets it created for the person who starts onboarding, so it never acts on
+// GitHub as someone who did not start it.
+#[tokio::test(flavor = "multi_thread")]
+async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let alice_browser = w.browser(&alice_user).await?;
+    let (bob_user, _) = w.user("bob", false).await?;
+    let bob_browser = w.browser(&bob_user).await?;
+
+    // Alice's token import leaves onboarding pending; a new task creates its resting task,
+    // Alice's as the sandbox's creator.
+    w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    w.grant("alice", "shop", "admin");
+    w.grant("bob", "shop", "push");
+    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    assert_eq!(shop.body["onboarding"], "pending", "{:?}", shop.body);
+    let sid = SandboxId::parse(text(&shop.body["id"]))?;
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "add a cart"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let prep = record.onboarding_task_id.ok_or("onboarding task")?;
+    let before = w.h.store.task(&prep).await?.ok_or("task")?;
+    assert_eq!(before.owner, alice_user.id);
+
+    let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
+    assert!(
+        message.contains("@alice") && message.contains("Ask them for control"),
+        "{message}"
+    );
+    assert_eq!(w.h.store.task(&prep).await?.ok_or("task")?, before);
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "pending");
+    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing", "{}", started.body);
+
+    // A sandbox nobody started onboarding in has no task: Bob starts it, and it is Bob's.
+    w.remote(OWNER, "docs", &[("README.md", "# Docs\n")], &[])?;
+    w.grant("alice", "docs", "admin");
+    w.grant("bob", "docs", "push");
+    let docs = import(&w, &alice, "Quartio-Studio/docs").await?;
+    assert_eq!(docs.body["onboarding"], "pending", "{:?}", docs.body);
+    let docs_id = SandboxId::parse(text(&docs.body["id"]))?;
+    unstarted(&w, &docs_id).await?;
+    let approve = format!("/api/sandboxes/{docs_id}/onboarding/approve");
+    let started = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    let record = w.h.store.sandbox(&docs_id).await?.ok_or("sandbox")?;
+    let task = record.onboarding_task_id.ok_or("onboarding task")?;
+    let task = w.h.store.task(&task).await?.ok_or("task")?;
+    assert_eq!(task.owner, bob_user.id, "the starter's");
+    assert_eq!(task.created_by, bob_user.id);
+
+    // Two people start onboarding at once: Alice's start creates the task after Bob's start
+    // read that there is none. The task is Alice's, so Bob's start is refused and starts
+    // nothing.
+    w.remote(OWNER, "wiki", &[("README.md", "# Wiki\n")], &[])?;
+    w.grant("alice", "wiki", "admin");
+    w.grant("bob", "wiki", "push");
+    let wiki = import(&w, &alice, "Quartio-Studio/wiki").await?;
+    let wiki_id = SandboxId::parse(text(&wiki.body["id"]))?;
+    unstarted(&w, &wiki_id).await?;
+    let mut alices = before.clone();
+    alices.id = yulius_domain::ids::TaskId::parse("t-wiki-onboarding")?;
+    alices.sandbox_id = wiki_id.clone();
+    {
+        let (store, sid, task) = (w.h.store.clone(), wiki_id.clone(), alices.clone());
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            yulius_app::race::Point::OnboardingApproved,
+            std::path::Path::new(wiki_id.as_str()),
+            move || {
+                let created = tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        store.insert_task(&task).await?;
+                        store.set_onboarding(&sid, "pending", Some(&task.id)).await
+                    })
+                });
+                assert!(created.is_ok(), "{created:?}");
+            },
+        );
+    }
+    let approve = format!("/api/sandboxes/{wiki_id}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(
+        text(&refused.body["error"]["message"]).contains("@alice"),
+        "{:?}",
+        refused.body
+    );
+    let record = w.h.store.sandbox(&wiki_id).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "pending");
+    assert_eq!(w.h.store.task(&alices.id).await?.ok_or("task")?, alices);
+    Ok(())
+}
+
 // SPEC-246 CLA-006: an onboarding whose task failed to start for want of an account stays
 // `pending`; Start onboarding (the gate's Retry onboarding) is refused until an account is
 // connected, then starts the same task again.

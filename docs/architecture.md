@@ -2056,11 +2056,12 @@ or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, per
 team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
 per name by rank and attaches the enabled winners. The holder is ADR-0186's: a task's owner unless
 an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
-MCP API answers 404 for another person's server, administrators included, and `task_message` from
-anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
-`TaskRuntime::personal_mcp_of`, was started with one; the run directory's `personal-mcp-of` gives
-that back to a server that restarted, which also restarts a run whose record names someone who is
-not the task's holder any more, SPEC-483 RST-001); a hand-over resumes such a run with the new
+MCP API answers 404 for another person's server, administrators included, and `task_message` is
+the task owner's alone (SPEC-490), so nobody else's words reach a run holding their personal
+server. `TaskRuntime::personal_mcp_of` records whose servers a live run was started with (the run
+directory's `personal-mcp-of` gives that back to a server that restarted, which also restarts a
+run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
+hand-over resumes such a run with the new
 owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
@@ -2310,8 +2311,8 @@ project and the person (SPEC-287), never a shadowed or switched-off one.
 The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
 its task's current holder on every request, so a hand-over or a deleted task applies also to
 connections opened before it, a hand-over (also one during a launch) rewrites the run's
-fingerprint file in place for the new owner (SPEC-248), and `task_message` from anyone but the
-owner refuses a task holding personal secrets. A personal secret is never copied
+fingerprint file in place for the new owner (SPEC-248), and `task_message` is the
+owner's alone, as every message to a task is (SPEC-490). A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's and only what can be in its sandbox (`App::matcher_for`: no
@@ -2869,20 +2870,35 @@ A task acts on GitHub with one person's token, so it is that person's: its owner
 until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
 [decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
-agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
-owner. Anyone else who may work in the project asks for control; the owner hands it over or
-declines, and an absent owner's task passes at once.
+agent; `created_by` stays who asked.
+
+What a person does to a task is one of three things, decided in one place
+(`yulius_domain::task_access`, [SPEC-490](../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md),
+[decision 0331](decisions/0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md)):
+**view** (read access), **tidy** (stop, close out, archive, restore, delete: write access,
+whoever owns the task) and **control** (everything that steers it: write access and ownership).
+`App::load_task` and `App::require_control` apply it; a sandbox-level action above view passed
+to `load_task` means control, so a new task function is the owner's unless it asks for tidy by
+name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
+worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
+Start onboarding all ask the same rule. Anyone else who may work in the project asks for
+control; the owner hands it over or declines, and an absent owner's task passes at once.
 
 ```mermaid
 flowchart LR
-  B["Bob: Request control"] -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  P["A person, or an agent for them"] --> RULE{"task_access::decide<br/>(action, access, owns)"}
+  RULE -->|"view: read access"| READ["detail, transcript, delivery"]
+  RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
+  TIDY --> AUD[("audit: who, and the owner")]
+  RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
+  RULE -->|"control, not the owner"| ASK["403: ask the owner for control"]
+  ASK -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
   REQ -->|"owner absent"| PASS["pass_control"]
-  A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
+  A["Owner: Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ
-  PASS --> OWN[("tasks.owner_id = Bob")]
-  OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
-  OWN --> ID["worktree commit identity: Bob"]
-  OWN --> GATE["load_task: only Bob writes"]
+  PASS --> OWN[("tasks.owner_id = the asker")]
+  OWN --> TOK["Yulius's pushes, PRs, merges as the new owner"]
+  OWN --> ID["worktree commit identity"]
 ```
 
 Everyone but the owner watches the task as its live transcript, not its terminal: the terminal is

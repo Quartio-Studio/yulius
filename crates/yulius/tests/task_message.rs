@@ -624,7 +624,7 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
         let theirs = app.tool_task_message(&caller, &past).await.err();
         assert!(
             matches!(&theirs, Some(AppError::Forbidden(why))
-                if why.contains("@bob") && why.contains("only its owner")),
+                if why.contains("@bob") && why.contains("only they steer it")),
             "{theirs:?}"
         );
         assert!(
