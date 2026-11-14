@@ -914,10 +914,10 @@ async fn limit_request(
     }))
 }
 
-/// Why requests of `id` ended without a person or its agent (`task.needs_you.resolved`).
 /// [`resolved`] once it says something, or at the bound: a request ends in one write and why it
-/// ended is audited in the next (`end_limit_requests`), so a read right after the end can come
-/// before the audit (SPEC-483 slice 26: CI failed so under load).
+/// ended is audited in the next (`stalled_request_resolved`, from `end_limit_requests` and
+/// `goal_pause_overtaken`), so a read right after the end can come before the audit (SPEC-483
+/// slice 26: CI failed so under load).
 async fn resolved_soon(app: &App, id: &TaskId) -> Vec<String> {
     let started = std::time::Instant::now();
     loop {
@@ -929,6 +929,7 @@ async fn resolved_soon(app: &App, id: &TaskId) -> Vec<String> {
     }
 }
 
+/// Why requests of `id` ended without a person or its agent (`task.needs_you.resolved`).
 async fn resolved(app: &App, id: &TaskId) -> Vec<String> {
     app.deps
         .store
