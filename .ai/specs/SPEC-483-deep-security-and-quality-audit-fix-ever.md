@@ -964,8 +964,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   pages carry no script and the same framing rule.
 - **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
   secret; a stored configuration that still names one parses as before.
-- **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again: the document
-  stays read-only until the file is opened again.
+- **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
+  the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
+  waiting, until the file is opened again.
 
 ## Plan
 
@@ -995,7 +996,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
-- [ ] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles
+- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles
 
 ## Acceptance criteria
 
@@ -1541,7 +1542,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   browser's `Accept-Encoding: gzip, br`.
 - **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
   document is read-only and not busy, the text is the document's, and after 2.5 s it asked
-  for no second rejoin.
+  for no second rejoin. The same when the edit itself meets an ended document (409), its
+  catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
+  one edit, two joins, and a close ends within a second. The proxy's refusal page (the
+  landing's) has the CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors
+  'self'` and no script.
 
 ## Test plan
 
@@ -1795,9 +1800,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   refused for lack of access gives the text back and leaves nothing waiting" (the document
   against a scripted server) and "… makes the file read-only in the Editor and says so" (the
   mock refuses edits on a switch).
-- Slice 24: `yulius` `preview::responses_are_rewritten_to_work_inside_the_yulius_page`
-  (AC-135, a compressed document added to the fixture app) and the preview proxy's unit
-  test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended` case); the
+- Slice 24: `yulius`
+  `preview::responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin` (AC-135,
+  a compressed document added to the fixture app; the test was named for the frames it no
+  longer allows), the handshake test's landing page (AC-136, the proxy's own pages) and the
+  preview proxy's unit test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended`
+  and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 
@@ -2463,3 +2471,40 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   second (pre-existing, W8).
 - **Delivery.** Pull request #1279 merged into `dev` at `d6fe5d400`, the approved head
   `f9c68ec17` squashed, whose own Yulius CI run passed.
+
+### Slice 24 (2026-11-14)
+
+- **Tests failing before the fix**: the proxied document came back without the app's
+  `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
+  `Accept-Encoding` for a document; a refused rejoin was asked again every second (three joins
+  in 2.5 s instead of two). After the review: a 409 edit whose rejoin was refused left the
+  tab busy, unsaved, with "abcd" and a close that waited.
+- **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
+  `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
+  app's `X-Frame-Options` removed again; no `frame-ancestors` of Yulius's own; the app's
+  `frame-ancestors` dropped again; a refused rejoin retried every second; after the review,
+  a script or the Yulius origin back on the proxy's own pages, and a forbidden rejoin that
+  only marks the document read-only.
+- **Gate.** `scripts/dev ci` at `91f197b4e`: exit 0; `4371 tests run: 4371 passed (1 slow),
+  17 skipped` (`target/audit/slice24/gate.log`). The whole e2e suite at the same head: `84
+  passed | 1 skipped` files, `1026 passed | 1 skipped` tests (`target/audit/slice24/e2e-all.log`;
+  it covers the deleted web code: nothing imported it).
+- **Review, round 1** (a fresh session, head `91f197b4e`): request changes. One major in own
+  code: a rejoin refused as `forbidden` "sets only `readOnly = true; onState()`, leaving this
+  tab's unconfirmed typing (`outstanding`/`buffer`), its timers and its text in place", the
+  W3 state again behind a read-only banner, which the `ended` case could not reach. Two
+  minor: PRV-001's "the proxy's own pages carry no script and the same framing rule" had no
+  test; SPEC-002 (ADR-14's framing and bridge paragraphs) and SPEC-001 AC-BRW-7 still
+  described the old proxy. Nits: `docs/operations.md` justified same-site preview origins by
+  "the panel's frames" and the web README suggested `frame-src` for previews (pre-existing);
+  two lines over the wrap; the preview test's name. All answered in `92c51654d`: the
+  forbidden rejoin calls `refused()` (the `gone` case), the landing's page is asserted, the
+  two specs, operations and the README say what the proxy does now, the lines are rewrapped
+  and the test renamed.
+- **Gate after it.** `scripts/dev ci` at `92c51654d`: exit 0; `4371 tests run: 4371 passed
+  (1 slow), 17 skipped` (`target/audit/slice24/gate2.log`); e2e `live-editor.e2e.ts` and
+  `editor.e2e.ts` at the same head: 49 passed (`target/audit/slice24/e2e-r1.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real browser on a real preview (the proxy is tested over HTTP with a
+  fixture app; framing and compression are header and body checks); a real GitHub manifest
+  answer (the fake answers the field, as GitHub does, and it parses).
