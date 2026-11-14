@@ -2273,6 +2273,10 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
         );
         let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
         assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            app.deps.store.open_pause(&id).await?.is_none(),
+            "the start that was made ended the pause"
+        );
         assert_eq!(indexed_bytes(&app, &doc).await?, 0, "indexed again");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
