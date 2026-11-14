@@ -286,7 +286,9 @@ impl App {
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
+        let task = self
+            .load_task_to(ctx, id, yulius_domain::task_access::TaskAction::Tidy)
+            .await?;
         let running = task.status == TaskStatus::Running;
         let facts = CloseFacts {
             status: task.status,
@@ -306,8 +308,15 @@ impl App {
         }
         self.close_task_now(&task.id).await?;
         let login = self.login_of(&ctx.user.id).await;
-        self.audit_task_edit(&login, "task.closed_by_person", &task, &json!({}))
+        // Closed by someone who does not own it: the audit names the owner and the terminal
+        // says who (SPEC-490 OWN-005).
+        let mut detail = json!({});
+        if !crate::tasks::owns(&task, &ctx.user.id) {
+            detail["owner"] = json!(self.login_of(&task.owner).await);
+        }
+        self.audit_task_edit(&login, "task.closed_by_person", &task, &detail)
             .await;
+        self.say_ended_by_another(ctx, &task, "Closed").await;
         let task = self
             .deps
             .store
@@ -345,7 +354,7 @@ impl App {
                 .task_by_number(sandbox, *number)
                 .await?
                 .ok_or_else(|| AppError::Invalid(format!("no task #{number} in this project")))?;
-            self.require_owner(ctx, &task).await?;
+            self.require_control(ctx, &task).await?;
             if task.status != TaskStatus::Queued {
                 return Err(not_queued(&task));
             }
@@ -431,7 +440,7 @@ impl App {
                     if own || !action.applies(task.status, paused) {
                         continue;
                     }
-                    if task.owner == ctx.user.id {
+                    if crate::tasks::owns(&task, &ctx.user.id) {
                         targets.push(Ok(task));
                     } else {
                         others += 1;

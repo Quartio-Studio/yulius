@@ -432,7 +432,8 @@ impl App {
         }
     }
 
-    /// `POST /api/tasks/{tid}/stop`.
+    /// `POST /api/tasks/{tid}/stop`: anyone who may work in the project stops a task, or
+    /// cancels one that waits to start (SPEC-490 OWN-002).
     ///
     /// # Errors
     /// Access errors, `Conflict` when not stoppable.
@@ -441,8 +442,27 @@ impl App {
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
+        self.stop_task_as(ctx, id, None).await
+    }
+
+    /// [`App::stop_task`] for a person on a page, or for a `tool` acting for them, which its
+    /// audit then names. A stop by someone who does not own the task is audited with the owner
+    /// and said in the task's terminal (SPEC-490 OWN-005).
+    ///
+    /// # Errors
+    /// As [`App::stop_task`].
+    pub(crate) async fn stop_task_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        tool: Option<crate::tasks::ToolAudit<'_>>,
+    ) -> AppResult<TaskSummary> {
+        let task = self
+            .load_task_to(ctx, id, yulius_domain::task_access::TaskAction::Tidy)
+            .await?;
         self.stop_task_now(&task.id).await?;
+        self.record_tidy(ctx, &task, "task.stopped", tool).await;
+        self.say_ended_by_another(ctx, &task, "Stopped").await;
         let task = self
             .deps
             .store
