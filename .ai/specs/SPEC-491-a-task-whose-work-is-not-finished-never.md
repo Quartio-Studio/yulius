@@ -175,8 +175,9 @@ Run in this task's worktree on 14 November 2026; logs in the ignored `target/evi
 - **Fixtures changed with the rule:** the merge-train fixture's spec and two delivery count
   tests now model a finished task with a spec that says `done`; the multi-slice delivery test
   ends with its spec set to `done` before the chained task starts.
-- **Gate** `scripts/dev ci` at `d1eaac4e6` (dev merged in at `1f984f366`): passed, 4393 tests
-  run, 4393 passed, 17 skipped; repository contracts passed (`gate-4.txt`). Earlier runs: at
+- **Gate** `scripts/dev ci` at `1a8a13505` (dev merged in at `1f984f366`): passed, 4394 tests
+  run, 4394 passed, 17 skipped; repository contracts passed (`gate-5.txt`). At `d1eaac4e6`:
+  4393 of 4393 (`gate-4.txt`). Earlier runs: at
   `e5f9443f7` one failure, `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run`
   (`switch_timeout` recorded where `lost` was expected), in switch code this change does not
   touch; it passed 20 of 20 alone and 120 of 120 at 48 in parallel and is filed as #1291; the
@@ -194,6 +195,17 @@ Run in this task's worktree on 14 November 2026; logs in the ignored `target/evi
   check asked different heads). All are own code but the `task_create` text, which the change
   should have updated; all fixed in `cf3aa7b92`, `594ee7ae8` and `d1eaac4e6`, with the tests
   above.
+- **Independent review, round 2** (at `32157e8d1`): approve, every round-1 finding fixed; one
+  minor in this round's own code (the live sync read the specs folder every few seconds for a
+  task whose allocated spec file does not exist, since every task is given a path at its start)
+  and a nit (the decision index's order). Fixed in `1a8a13505`: the sync looks for a moved spec
+  only while a status is kept, with the test
+  `delivery::the_sync_looks_for_a_moved_spec_only_while_a_status_is_kept`, which failed before
+  the fix ("not looked for"). In the same run one delivery test of this change failed once
+  (`a_pull_request_without_checks_is_done_where_none_are_required`); it passed 30 of 30 alone
+  and four whole-file runs. Its cause: a released chained task is started in a spawned
+  background job, so its status can already be past `queued`; the tests asserted `queued`. They
+  now assert that the task left `chained`, which is the behaviour under test.
 - **Not tested here:** the instance itself. It runs `main` at `ec07d1331`, older than ADR-0328,
   and gets this change only with a person's promotion. GitHub's real `mergeable` answer is
   modelled by the fake.
