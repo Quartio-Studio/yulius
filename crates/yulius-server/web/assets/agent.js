@@ -465,6 +465,11 @@ const OPTION_LABELS = {
   start_at: (v) => `Starts at ${v}`,
   model: (v) => `Model: ${v}`,
   effort: (v) => `Effort: ${v}`,
+  // A production release (SPEC-487 REL-001).
+  environment: (v) => `Environment: ${v}`,
+  expect: (v) => `Commit: ${v}`,
+  release: (v) => `Release: ${v}`,
+  part: (v) => `Part: ${v}`,
 };
 
 /**
@@ -486,6 +491,19 @@ function askedFor(request) {
     // SPEC-487 XRQ-005: a decision only the person makes, on the Superagent's own panel: no target.
     case 'ask':
       return { heading: 'you to decide', own: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
+    // SPEC-487 REL-001: production, on the Superagent's own panel; the slug typed, as on the CD page.
+    case 'deploy': {
+      const env = (request.options && request.options.environment) || 'production';
+      return { heading: `to deploy ${env} in `, button: 'Deploy', done: 'Deploy started', failed: `deploy ${env}`, declined: 'nothing was deployed', typed: true };
+    }
+    case 'rollback': {
+      const env = (request.options && request.options.environment) || 'production';
+      return { heading: `to roll ${env} back in `, button: 'Roll back', done: 'Rollback started', failed: `roll ${env} back`, declined: 'nothing was rolled back', typed: true };
+    }
+    case 'promote':
+      return { heading: 'to promote production in ', button: 'Promote', done: 'Promotion done', failed: 'promote', declined: 'nothing was promoted', typed: true };
+    case 'onboard':
+      return { heading: 'to start onboarding in ', button: 'Start onboarding', done: 'Onboarding started', failed: 'start onboarding', declined: 'onboarding did not start', text: request.prompt ? 'Hand-over' : null };
     default:
       return { heading: 'to start a task in ', button: 'Create task', failed: 'create the task', declined: 'nothing was created', text: 'Prompt' };
   }
@@ -570,6 +588,8 @@ function createRequests(ctx, sandbox, onCount) {
     const end = asked.text ? h('span', { class: 'agent-request-end', 'aria-hidden': 'true' }) : null;
     const prompt = asked.text ? h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': asked.text }, shownPrompt(request.prompt || ''), end) : null;
     const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it' }[asked.text] || 'prompt to create the task'}.`);
+    // A production release takes the project's slug typed (SPEC-487 REL-001), as the CD page does.
+    const typed = asked.typed ? h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Type ${slug} to confirm`, onInput: () => update() }) : null;
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
     let armed = false;
@@ -578,7 +598,7 @@ function createRequests(ctx, sandbox, onCount) {
     // Answered: the card only waits to go; it takes no second click.
     let done = false;
     const update = () => {
-      create.disabled = !armed || !read || sending || done;
+      create.disabled = !armed || !read || sending || done || (typed !== null && typed.value.trim() !== slug);
       decline.disabled = !armed || sending || done;
       hint.hidden = read;
     };
@@ -604,7 +624,9 @@ function createRequests(ctx, sandbox, onCount) {
       update();
       try {
         // The revision it showed: one the Superagent amended since is refused (409).
-        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve, revision: request.revision || 0 });
+        const body = { approve, revision: request.revision || 0 };
+        if (typed && approve) body.confirm = typed.value.trim();
+        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, body);
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
@@ -612,6 +634,8 @@ function createRequests(ctx, sandbox, onCount) {
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
         } else if (asked.own) {
           toast(approve ? `${asked.done}.` : 'Answered no.', { kind: approve ? 'ok' : 'info' });
+        } else if (approve && asked.done) {
+          toast(`${asked.done} in ${slug}.`, { kind: 'ok' });
         } else if (!approve) {
           toast(`Declined: ${asked.declined}.`, { kind: 'info' });
         }
@@ -634,6 +658,7 @@ function createRequests(ctx, sandbox, onCount) {
         prompt,
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,
+        typed ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Type “${slug}” to confirm`), typed) : null,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
       revision: request.revision || 0,

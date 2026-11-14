@@ -1287,7 +1287,13 @@ impl App {
         let saved: SavedRequests = match serde_json::from_slice(&bytes) {
             Ok(saved) => saved,
             Err(err) => {
-                tracing::warn!(error = %err, "the Superagents' requests could not be read");
+                // Kept for a person to read: the save that follows the restore would replace it
+                // (review of slice 8a, N2).
+                let kept = path.with_extension("json.bad");
+                tracing::warn!(error = %err, kept = %kept.display(), "the Superagents' requests could not be read");
+                if let Err(err) = std::fs::rename(&path, &kept) {
+                    tracing::warn!(error = %err, "the unreadable requests file was not kept");
+                }
                 return;
             }
         };

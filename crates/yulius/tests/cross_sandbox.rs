@@ -1740,3 +1740,26 @@ async fn onboarding_starts_on_the_persons_click() -> TestResult {
     assert_eq!(mine["answered"][0]["action"], "onboard", "{mine}");
     Ok(())
 }
+
+/// Review of slice 8a, N2: a file of saved requests that cannot be read is kept beside the new
+/// one (`.bad`), never overwritten by the save after the restore.
+#[tokio::test]
+async fn a_saved_requests_file_that_cannot_be_read_is_kept() -> TestResult {
+    let w = world(300).await?;
+    let file =
+        w.h.app
+            .config
+            .data_dir
+            .join(yulius_app::cross_sandbox::SUPERAGENT_REQUESTS_FILE);
+    std::fs::write(&file, b"{not json")?;
+    let next = App::new(w.h.app.config.clone(), w.h.app.deps.clone());
+    next.begin_cross_restore();
+    next.restore_cross_requests().await;
+    assert_eq!(
+        std::fs::read(file.with_extension("json.bad"))?,
+        b"{not json"
+    );
+    let saved: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(saved["waiting"], json!([]), "{saved}");
+    Ok(())
+}

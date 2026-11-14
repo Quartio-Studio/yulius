@@ -3678,6 +3678,16 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if ((body.revision ?? 0) !== request.view.revision) fail(409, 'conflict', 'the Superagent changed this request since you read it: read it again');
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  // A production release or onboarding (SPEC-487 REL-001): the slug typed, as the server checks it.
+  if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
+    const typedSlug = ['deploy', 'rollback', 'promote'].includes(request.view.action);
+    if (body.approve && typedSlug && String(body.confirm || '').trim() !== request.view.sandbox.slug) fail(422, 'invalid', `type the project's slug \`${request.view.sandbox.slug}\` to confirm`);
+    db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
+    emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+    if (!body.approve) return { outcome: 'declined' };
+    db.superagentReleases = [...(db.superagentReleases || []), { action: request.view.action, confirm: body.confirm ?? null }];
+    return { outcome: 'approved', note: 'The person approved.' };
+  }
   // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.
   if (request.view.action === 'ask') {
     db.superagentAnswers = [...(db.superagentAnswers || []), body.approve ? 'yes' : 'no'];
