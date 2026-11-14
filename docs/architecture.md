@@ -2009,7 +2009,7 @@ end and remove. Its person types into its terminal as into the sandbox Superagen
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
-settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. An
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge` nor `task_merge`. An
 image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
 into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
 which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
