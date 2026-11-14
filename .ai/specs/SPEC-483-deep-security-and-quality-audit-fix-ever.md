@@ -2751,3 +2751,17 @@ slices follow.
   on the old line.
 - **Merged.** Pull request #1295 was squash-merged into `dev` (`dcc00aa24`) after its merge
   train passed; #1278 closed.
+
+### Slice 31 (2026-11-14)
+
+- **Test failing before the change**: `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
+  did not compile (no reader in the domain). GitHub's test that a fraction was dropped
+  (`2024-02-29T12:00:00.123+02:00` read as `…:00.000`) went with its reader; the domain's test
+  pins the fraction kept.
+- **Tests failing without their fix** (`target/audit/slice31/mutate.py`, `mutations.log`, 10
+  cases, each failed its test): an impossible day taken, the fraction dropped, a leap second as
+  one more second, no space separator, offset hours unchecked, trailing text taken, the
+  formatter's or the egress certificate authority's or analytics' or the app's date wrong.
+- **Gate.** `scripts/dev ci` at `5306dd677`: exit 0; `4391 tests run: 4391 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
