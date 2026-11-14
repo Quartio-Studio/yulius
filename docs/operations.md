@@ -619,7 +619,8 @@ that only points at one: serve it on one of the sandbox's ports and open it as
 ### Sandbox isolation
 
 Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
-shells and CI jobs join it. A sandbox gets:
+shells and CI jobs join it (a user's shell runs `--shell` / `YULIUS_SHELL`, default the service's
+`$SHELL`, then `/bin/bash`, then `/bin/sh`). A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
   range;

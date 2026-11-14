@@ -57,8 +57,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
       (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
       (merged, #1279);
   14. documents and shipped texts against the code (P1-P14, QB9): what Yulius ships and shows
-      (P1, P5-P7, P9-P13, P15) is slice 26, the repository's own instruction documents (P2-P4,
-      P14, QB9) slice 27;
+      (P1, P5-P7, P9-P13, P15) is slice 26 (merged, #1283), the repository's own instruction
+      documents (P2-P4, P14, QB9) slice 27;
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -584,6 +584,33 @@ went; two of the auditors' items had gained a user since and stay.
 - **P15 (low).** `docs/api.md` listed the error code `unavailable` (503); no error kind or route
   produces it.
 
+
+### Slice 27: the repository's own instructions
+
+- **P2, P3 (medium).** The documents AGENTS.md routes to (`docs/engineering/git.md`,
+  `workflow.md`, the `yulius-git` skill, the pull request template) told the author to
+  self-review and `gh pr merge` their own pull request, to poll checks, and gave four rules for
+  promotion, among them "complete the full sequence through `main` after each finished
+  feature" and "promote only when the task asks". Yulius refuses a hand merge, takes only a
+  reviewed head, and leaves promotion to a person (ADR-0110). `git.md` also named the old
+  repository (`Quartio-Studio/yulius-v2`) and a branch rule "checked by hand until #223".
+- **P4 (medium).** The spec template the documents route to (`.ai/templates/spec.md`) had the
+  sections and statuses of the first product specs ("Status: proposed", Problem and evidence,
+  Scope …); `spec_check` and `delivery_merge` refuse that form. `specifications.md` and
+  AGENTS.md said a routine fix needs no spec; the Fix workflow and the briefing require one.
+- **P14 (low).** `docs/engineering/architecture.md`, `development.md` and
+  `runtime-contracts.md` still described a workspace with only the task runner and no doctest
+  target.
+- **QB9 (low).** Undocumented: `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX`,
+  `YULIUS_CHROMIUM` as a variable, `YULIUS_PROJECT`, `POST /internal/agent/wait`, and that
+  `[commands] test`, `lint` and `build` are for agents to read, and `--shell` /
+  `YULIUS_SHELL` (now in `docs/operations.md`'s sandbox isolation section).
+- **Slice 26's review leftovers.** The Git page's sentences named integration environments a
+  profile may not have; the delivery skill dropped the way to close an issue on a project
+  whose integration branch is the default, and lacked the `auto_promote` exception; SPEC-001
+  GIT-002 and UI-025, SPEC-441 MQ-011 and the web and skills READMEs still said agents release
+  or merge the integration branch only for a conflict; wraps and test comments.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1037,6 +1064,15 @@ went; two of the auditors' items had gained a user since and stay.
   pages carry no script and the same framing rule.
 - **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
   secret; a stored configuration that still names one parses as before.
+- **DOC-001** The repository's spec template, its task id filled in, is a spec `validate_spec`
+  accepts; the spec workflow, AGENTS.md and the `yulius-spec` skill say features and fixes get
+  one in that form.
+- **DOC-002** No instruction an agent follows in the repository (AGENTS.md, CLAUDE.md,
+  README.md, the pull request template, `docs/engineering/`, the repository and catalog
+  skills, the catalog workflows) tells it to run `gh pr merge` (other than as refused), to
+  self- or author-merge, to promote when asked, or to poll; `scripts/check_repository.py`
+  refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
+  merge queue, `yulius wait`, promotion by a person on the CD page.
 - **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
   definition of done (short and full, and the request file) and the merge news pass
   `cd::production_instruction`; they say promotion is not the agent's (a person's, to be asked
@@ -1094,7 +1130,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
 - [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
-- [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing
+- [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing (merged, #1283)
+- [ ] Slice 27: the repository's own instructions deliver, specify and describe the code as it is
 
 ## Acceptance criteria
 
@@ -1659,6 +1696,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   another profile ends "a person releases on the CD page."; no "Agents merge and release"; the
   delivery dialog says "a person releases on the CD page"; a refused `gh pr merge` says
   "skips the queue's order, its test on the current base" and never "does not end".
+- **AC-141** The spec template with a task id filled in validates, with status draft.
+- **AC-142** `delivery_instruction_errors` reports `gh pr merge 12 --squash …`, "squash-merges",
+  "promote only when the task asks" and "Poll live run IDs", and accepts "Merging by hand
+  (`gh pr merge`) is refused", "Promotion … is a person's" and "never poll"; the repository
+  check passes on the repository.
+- **AC-143** The Git page's sentence for a profile with no integration environment says
+  "Agents merge; a person releases on the CD page." (with `auto_promote`: "…right away. …
+  Agents merge; Yulius releases each merge."); with an integration environment "staging":
+  "Agents merge and deploy staging" and, with `auto_promote`, "…once it passed staging. …
+  Yulius releases each merge then."
 
 ## Test plan
 
@@ -1920,6 +1967,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 27: `yulius-domain` `spec_format::tests::the_repository_spec_template_validates`
+  (AC-141); `scripts/test_check_repository.py`
+  `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote` and the repository check
+  itself (AC-142); e2e `git.e2e.ts` (AC-143, four profiles in the page).
 - Slice 26: `yulius-domain`
   `request::tests::the_request_file_has_the_request_the_files_and_the_definition_of_done` and
   `yulius-app` `agent_wait::tests::a_merge_with_steps_ahead_says_the_task_goes_on` (AC-138);
@@ -1994,6 +2045,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 27 (no decision record: the product decided; its own repository follows). The
+  instructions keep the `git worktree` commands for work by hand and drop the `gh` merge and
+  promotion commands: a person promotes on the CD page, and the hand merge an agent would copy
+  is refused. The check is a list of phrases, not a parser: it catches the wording that was
+  there and its obvious variants; a new way to say the same needs a review, as before. The
+  `apm` lock keeps the version its last writer used: only the four content hashes changed
+  (apm-cli 0.35.1 would also have renamed a target).
 - Slice 26 (no decision record: ADR-0110 and SPEC-441 decided; the texts follow). The Docs
   workflow keeps the review rather than `delivery_merge` waiving it for a documentation-only
   branch: a wrong instruction to an agent is as costly as wrong code, and the review of a
@@ -2402,10 +2460,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
 | W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
 | W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
-| P1, P5-P7, P9-P13 | documents | Shipped texts against the code: promotion "when asked", the Docs workflow's review, the Chore workflow's deploy, UI copy on who releases and where commands run, the skill's "machine-checked" gates and issue link, the promotion row (already right since slice 4), the guard's reason, the briefing's Git line | medium | slice 26 |
+| P1, P5-P7, P9-P13 | documents | Shipped texts against the code: promotion "when asked", the Docs workflow's review, the Chore workflow's deploy, UI copy on who releases and where commands run, the skill's "machine-checked" gates and issue link, the promotion row (already right since slice 4), the guard's reason, the briefing's Git line | medium | fixed (slice 26) |
 | P2-P4, P14 | documents | The repository's own instruction documents: hand merges and polling, four promotion rules, a spec template the validator refuses, engineering documents without product code | medium | slice 27 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 27 |
-| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 26 |
+| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | fixed (slice 26) |
 | W7 | web UI | Dead exports and CSS rules | low | fixed (slice 24) |
 | D7 | GitHub | `webhook_secret` is stored and never read | low | fixed (slice 24) |
 | E5 | previews | The preview bridge has no listener since ADR-15 | low | fixed (slice 24) |
@@ -2750,7 +2808,14 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   end. With a 300 ms delay before the audit write two tests failed
   (`flake-probe-before.log`); with the reads waiting for the audit (`resolved_soon`, bounded
   at 10 s) all 23 passed with the delay in (`flake-probe-after.log`). Fixed in `14a5821c3`.
+  (The probe reproduced two of the six reads; the other four have the same order. The "8 of
+  8 alone" runs kept no log.)
 - **Gate after it.** `scripts/dev ci` at `14a5821c3`: exit 0; `4373 tests run: 4373 passed (1
   slow), 17 skipped` (`target/audit/slice26/gate3.log`).
+- **Review, round 3** (the same session, head `1cec0323b`): approve; three nits answered in
+  slice 27 (the helpers' doc comments, naming `stalled_request_resolved`, the Evidence's
+  reproduction note above).
+- **Delivery.** CI at `1cec0323b` passed; pull request #1283 merged into `dev` at `8a7fc3955`,
+  the approved head squashed.
 - **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
   behaviour).
