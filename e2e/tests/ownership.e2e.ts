@@ -69,6 +69,8 @@ test("someone else's task is archived from the sidebar and deleted from its menu
   await expect(screen.getByText('Task #13 archived.')).toBeVisible();
   await expect(done).toBeHidden();
   const stopped = browser.locator('.task-row:has-text("Payment webhook")');
+  // Its menu is built from the task the page holds: wait until it shows this one as @anna-q's.
+  await expect(browser.locator('.task-row:has-text("Payment webhook") .task-owner')).toBeVisible();
   await stopped.hover();
   await stopped.getByRole('button', 'Task actions').click();
   await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: request control to do this')).toBeDisabled();
