@@ -70,6 +70,10 @@ pub struct AppConfig {
     /// How long a person gets to answer Claude Code's folder-trust prompt before the task is
     /// flagged ([`crate::supervisor::TRUST_ANSWER_TIMEOUT`], SPEC-106 OTR-002). Tests shorten it.
     pub trust_answer_ms: u64,
+    /// How long the compaction of a full session waits for a person's possible draft to leave
+    /// the prompt box before it is typed all the same
+    /// ([`crate::context_full::COMPACT_DRAFT_HOLD`], SPEC-483 TYP-001). Tests shorten it.
+    pub compact_hold_ms: u64,
     /// How long Claude Code gets to record a goal given as the launch prompt once its session
     /// reads input, before the task is flagged (the sum of the typed goal's submit waits,
     /// SPEC-117 ONE-001). Tests shorten it.
@@ -159,6 +163,8 @@ impl AppConfig {
                 .unwrap_or(10_000),
             goal_ready_ms: u64::try_from(crate::supervisor::GOAL_READY_TIMEOUT.as_millis())
                 .unwrap_or(90_000),
+            compact_hold_ms: u64::try_from(crate::context_full::COMPACT_DRAFT_HOLD.as_millis())
+                .unwrap_or(600_000),
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
                 .unwrap_or(300_000),
             launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),

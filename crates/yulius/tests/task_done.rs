@@ -940,12 +940,23 @@ async fn continued_goal_task(
     sandbox: &SandboxId,
     user: &UserId,
 ) -> Result<TaskId, BoxError> {
+    continued_goal_task_with(app, sandbox, user, |_| {}).await
+}
+
+/// [`continued_goal_task`]; `before` runs with the task's id before the task is continued.
+async fn continued_goal_task_with(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    before: impl FnOnce(&TaskId),
+) -> Result<TaskId, BoxError> {
     let id = goal_task(app, sandbox, user, "Tidy the parser").await?;
     wait_for("the launch goal", Duration::from_secs(60), || {
         screen_contains(app, &id, "GOAL SET")
     })
     .await?;
     stop(app, &id).await?;
+    before(&id);
     let ctx = yulius_app::auth::AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,
         csrf_token: None,
@@ -1011,6 +1022,68 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-002: the TUI dropped the typed goal's submit, so the goal may still sit in the
+/// prompt box until a later try submits it. A message for the task that comes meanwhile is
+/// refused, as while a message is being typed: typed now, it would be sent with the goal by the
+/// next Enter, or erased when the goal is typed again.
+#[test]
+fn nothing_is_typed_while_a_typed_goal_is_not_taken() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            drop_lines: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let refused = Arc::new(std::sync::Mutex::new(None));
+        let id = continued_goal_task_with(&app, &sandbox, &user, |id| {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let refused = refused.clone();
+            let caller = yulius_app::coordination::ProjectCaller {
+                sandbox: sandbox.clone(),
+                user: user.clone(),
+                task: None,
+                channel: yulius_app::coordination::Channel::Superagent,
+                actor: "cockpit:admin".into(),
+                detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+            };
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineEntered,
+                Path::new(key.as_str()),
+                move || {
+                    let answer = wait_in_hook(
+                        &handle,
+                        app.tool_task_message(
+                            &caller,
+                            &serde_json::json!({"task_id": id.as_str(), "text": "one more thing"}),
+                        ),
+                    );
+                    if let Ok(mut slot) = refused.lock() {
+                        *slot = Some(answer.map(|_| ()).map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        })
+        .await?;
+        goal_typed_into_the_resumed_session(&app, &id).await?;
+        let answer = refused.lock().map_err(|_| "poisoned")?.clone();
+        let answer = answer.ok_or("no message was tried after the goal's Enter")?;
+        assert!(
+            matches!(&answer, Err(why) if why.contains("is being typed")),
+            "{answer:?}"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

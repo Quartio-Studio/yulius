@@ -58,6 +58,16 @@ pub enum Point {
     /// A switch (SPEC-250) knows it was overtaken; it has not said why yet. The path is the task
     /// id.
     SwitchOvertaken,
+    /// Yulius typed a line of its own into a session (SPEC-483 TYP-002): the text is in the
+    /// prompt box; its Enter is not sent yet. The path is the task id.
+    LineTyped,
+    /// Yulius is about to type a line of its own into a session (SPEC-483 TYP-002): the
+    /// terminal is quiet and nobody typed; the typing mark is not taken yet. The path is the
+    /// task id.
+    LineReady,
+    /// Yulius sent the Enter of a line it typed into a session (SPEC-483 TYP-002); what Claude
+    /// Code does with it is not known yet. The path is the task id.
+    LineEntered,
     /// A run's end reached its recorder (SPEC-483): the task's end intent was taken; nothing is
     /// recorded yet. The path is the task id.
     RunEndTaken,

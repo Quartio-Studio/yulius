@@ -914,9 +914,9 @@ next successful reply. Each stage is said in the task's terminal and audited as
 ```mermaid
 stateDiagram-v2
     [*] --> Clear
-    Clear --> Compacting: ContextFull / type "/compact <focus>"
+    Clear --> Compacting: ContextFull / type "/compact <focus>" (held up to 10 min for a possible draft)
     Compacting --> Compacted: Compacted / type the wake-up line
-    Compacting --> Restarted: CompactFailed or 10 min / fresh session + handoff
+    Compacting --> Restarted: CompactFailed, 10 min, or the command refused behind a draft / fresh session + handoff
     Compacted --> Restarted: ContextFull / fresh session + handoff
     Restarted --> GaveUp: ContextFull in the fresh session / needs attention + reason
     Compacting --> Clear: a successful reply
@@ -1545,8 +1545,10 @@ command): the request when it fits, else the request file named; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
 (only keystrokes count as typing; focus and mouse reports and terminal answers do not). While that
 goal is still to be typed the run directory holds `typed-goal-pending`: a server that restarts
-then has no typist for it, watches the reattached run as it watches a launch goal, and flags a
-task that Claude Code recorded no goal for
+then has no typist for it, gives a run whose opening turn has not ended that turn back (the
+mark says the session opens with one, and no Stop of the run was answered), watches the
+reattached run from that turn's end as it watches a launch goal, and flags a task that Claude
+Code recorded no goal for
 ([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) RST-002). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
@@ -1912,8 +1914,14 @@ and its terminal says so once the person's last key is ten minutes old; the key 
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run), while Claude Code's
 folder-trust dialog shows
-(`trust_prompt_shown`), while Yulius types the first message or while another
-message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
+(`trust_prompt_shown`), while Yulius types the first message or while anything else
+is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
+`/compact` and the line that wakes a compacted session, and by a typed goal until Claude Code
+took it; the first message has a mark of its own, and "Send anyway" is only an Enter. A
+compaction is held, at most ten minutes and with the task flagged, while anything typed since
+the box was last emptied may sit there; typed after the hold behind real text, the command is
+refused as a prompt, which fails the compaction at once (`ContextEpisode::Compacting`'s
+`behind_draft`), SPEC-483 TYP-001, TYP-002); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
@@ -2042,7 +2050,8 @@ an automation started it (`Holder::of_task`), the Superagent's person, nobody fo
 MCP API answers 404 for another person's server, administrators included, and `task_message` from
 anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
 `TaskRuntime::personal_mcp_of`, was started with one; the run directory's `personal-mcp-of` gives
-that back to a server that restarted, SPEC-483 RST-001); a hand-over resumes such a run with the new
+that back to a server that restarted, which also restarts a run whose record names someone who is
+not the task's holder any more, SPEC-483 RST-001); a hand-over resumes such a run with the new
 owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
