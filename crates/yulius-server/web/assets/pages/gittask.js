@@ -8,7 +8,7 @@
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, statusMark, prChip, keepFocus, loadError, bar } from '../dom.js';
 import { href, replaceQuietly } from '../router.js';
-import { relShort, dateTime, plural, shortSha } from '../format.js';
+import { relShort, dateTime, plural } from '../format.js';
 import { taskInfo } from '../status.js';
 import { readJson, writeJson } from '../store.js';
 
@@ -276,7 +276,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
     if (!commits.length) return h('p', { class: 'gt-empty-note' }, `No commits on ${task.branch || 'the task branch'} yet${changes && changes.uncommitted ? '; its changes are not committed' : ''}.`);
     const repoUrl = sandbox.repo && sandbox.repo.url;
     return h('ol', { class: 'gt-commits' }, commits.map((c) => h('li', { class: 'gt-commit' },
-      repoUrl ? h('a', { class: 'mono gt-sha', href: `${repoUrl}/commit/${c.sha}`, target: '_blank', rel: 'noopener noreferrer', title: c.sha }, shortSha(c.sha)) : h('code', { class: 'gt-sha', title: c.sha }, shortSha(c.sha)),
+      repoUrl ? h('a', { class: 'mono gt-sha', href: `${repoUrl}/commit/${c.sha}`, target: '_blank', rel: 'noopener noreferrer', title: c.sha }, c.sha.slice(0, 7)) : h('code', { class: 'gt-sha', title: c.sha }, c.sha.slice(0, 7)),
       h('span', { class: 'gt-commit-subject' }, c.subject),
       c.insertions !== undefined ? diffStat(c.insertions, c.deletions || 0) : null,
       h('span', { class: 'muted small' }, c.author || ''),

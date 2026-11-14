@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
-import { relLong, dateTime, duration, plural, shortSha } from '../format.js';
+import { relLong, dateTime, duration, plural } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
 import { loader } from './common.js';
@@ -39,6 +39,7 @@ const POLL_IDLE_MS = 20000;
 /** A CI run's or job's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const stateBadge = (state) => badge(stateOf(state).label, stateOf(state).tone);
+const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** What a run's card's open button is called. */
 const openLabel = (run) => `Open the run of ${run.label} at ${shortSha(run.sha)}`;
 

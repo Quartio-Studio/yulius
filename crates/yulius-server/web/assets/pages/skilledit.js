@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, iconBadge, confirmDialog, toast } from '../dom.js';
-import { href, guardLeave } from '../router.js';
+import { href, navigate, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
 import { createMarkdownEditor } from '../mdeditor.js';
@@ -90,12 +90,20 @@ export function mountSkillEditor(ctx, sandbox, name) {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
 
-  // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
-  const leaveGuard = guardLeave({
-    dirty: () => Boolean(dirty),
-    ask: () => confirmDialog({ title: 'Leave without saving?', message: `Your changes to ${name} are not saved.`, confirmLabel: 'Leave', danger: true }),
-    onLeave: () => { setDirty(false); },
-  });
+  // Unsaved changes: the browser asks before the tab closes; links inside the app ask here.
+  const onBeforeUnload = (event) => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
+  const onLink = async (event) => {
+    const link = event.target.closest && event.target.closest('a[data-route]');
+    if (!dirty || !link || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const ok = await confirmDialog({ title: 'Leave without saving?', message: `Your changes to ${name} are not saved.`, confirmLabel: 'Leave', danger: true });
+    if (!ok) return;
+    setDirty(false);
+    navigate(linkTarget(link));
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
+  document.addEventListener('click', onLink, true);
 
   async function load() {
     try {
@@ -142,7 +150,8 @@ export function mountSkillEditor(ctx, sandbox, name) {
       alive = false;
       reads.abort();
       cancelAnimationFrame(changeFrame);
-      leaveGuard();
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('click', onLink, true);
       if (editor) editor.destroy();
     },
   };

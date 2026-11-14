@@ -5,9 +5,9 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar, prChip, checksOf } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
-import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime, shortSha } from './format.js';
+import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
 import { limitInEffect, limitsNow, modelWindow, needsSignIn, placingModel, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
@@ -432,18 +432,31 @@ export function stageLabel(stage) {
   return (STAGES.find(([s]) => s === stage) || [null, stage || 'Unknown'])[1];
 }
 
+/** Why "checks unknown" (#111): unreadable checks never count as passed. */
+export const UNKNOWN_CHECKS = `${BRAND.name} can’t read this pull request’s checks, so they don’t count as passed: merges that require checks wait.`;
+
+const CHECKS = {
+  success: ['checks passed', 'ok'],
+  failure: ['checks failed', 'danger'],
+  pending: ['checks running', 'warn'],
+  none: ['no checks', ''],
+  unknown: ['checks unknown', 'warn'],
+};
+
 /** PR line with state and checks badges (`checks: unknown` when GitHub could not be read). */
 export function prLine(pr) {
   if (!pr) return h('span', { class: 'muted' }, 'No pull request');
-  const checks = checksOf(pr);
+  const checks = CHECKS[pr.checks] || [pr.checks || 'checks unknown', 'warn'];
   const state = { open: 'accent', merged: 'violet', closed: '' }[pr.state] || '';
   return h('span', { class: 'row-wrap' },
     h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${pr.number}`),
     h('span', { class: 'ellipsis' }, pr.title),
     badge(pr.state, state),
-    badge(checks.text, checks.tone, checks.why || null),
+    badge(checks[0], checks[1], pr.checks === 'unknown' ? UNKNOWN_CHECKS : null),
     h('span', { class: 'muted small mono' }, `${pr.base} ← ${pr.head}`));
 }
+
+const CHECK_ICONS = { success: 'check', failure: 'x', pending: 'clock' };
 
 /**
  * The task view's delivery line (UX2-18): the pull request with its checks, opening the delivery
@@ -454,7 +467,13 @@ export function deliveryStrip(ctx, task, delivery, { reload = () => {} } = {}) {
   if (!delivery) return [];
   const pr = delivery.pr;
   const out = [];
-  if (pr) out.push(prChip(pr, { suffix: ' — delivery details', onClick: () => openDeliveryDialog(ctx, task).result.then(reload) }));
+  if (pr) {
+    const checks = pr.state === 'open' ? CHECKS[pr.checks] : null;
+    const glyph = checks ? CHECK_ICONS[pr.checks] : null;
+    const label = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
+    out.push(h('button', { type: 'button', class: ['tl-pr-chip', 'strip-pr', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], title: label, 'aria-label': label, onClick: () => openDeliveryDialog(ctx, task).result.then(reload) },
+      `PR #${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
+  }
   return out;
 }
 
@@ -790,7 +809,7 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
       const run = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs/${enc(runId)}`);
       setChildren(stateEl, run.state || 'unknown');
       stateEl.className = `badge badge-${RUN_TONE[run.state] || 'warn'}`;
-      setChildren(meta, [run.kind === 'manual' ? 'Marked verified' : 'Deploy', run.commit ? `of ${shortSha(run.commit)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
+      setChildren(meta, [run.kind === 'manual' ? 'Marked verified' : 'Deploy', run.commit ? `of ${String(run.commit).slice(0, 7)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
       const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
       output.textContent = run.output || (run.kind === 'manual' ? 'Manual confirmation (no command output).' : '');
       if (atBottom) output.scrollTop = output.scrollHeight;

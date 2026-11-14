@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, setChildren, pollPaused, badge, bar } from '../dom.js';
-import { relLong, shortSha } from '../format.js';
+import { relLong } from '../format.js';
 import { href, currentLocation } from '../router.js';
 import { soFar } from '../runview.js';
 import { stateOf as ciState, jobsLine, ACTIVE } from './ci.js';
@@ -15,6 +15,7 @@ import { stateOf as cdState } from './cd.js';
 
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 20000;
+const shortSha = (sha) => String(sha || '').slice(0, 7);
 const envTitle = (name) => (name === 'dev' ? 'Dev' : 'Production');
 // The overviews last read, per sandbox: `{ ci, ciAt, cd, cdAt }`, each kept until a read of it
 // succeeds, and drawn on a mount only while its read is younger than KEPT_MS (an older one may

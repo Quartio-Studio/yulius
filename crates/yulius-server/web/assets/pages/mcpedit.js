@@ -10,7 +10,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate, currentLocation, replaceQuietly, placeFor, guardLeave } from '../router.js';
+import { href, navigate, currentLocation, replaceQuietly, linkTarget, placeFor } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
 import { notFound } from './common.js';
@@ -153,7 +153,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   let servers = [];
   let canEdit = write;
   let alive = true;
-  let saved = null; // what the page holds as saved; null until it has loaded: nothing to lose yet
+  let saved = '';
   let picked = null; // catalog id
   // The form: env/header rows hold [key, value]; values are only what was typed (write-only).
   // A new server starts on every sandbox and the whole team (SPEC-332 MSC-002), which only an
@@ -176,7 +176,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   const el = h('div', { class: 'page mc-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'Add MCP server' : 'Edit MCP server'), head, body, live));
 
   const snapshot = () => JSON.stringify(state);
-  const dirty = () => saved !== null && snapshot() !== saved;
+  const dirty = () => snapshot() !== saved;
   function changed() { save.disabled = !canEdit || (!creating && !dirty()); }
 
   // ---- fill from the catalog or a paste
@@ -445,12 +445,16 @@ export function mountMcpEditor(ctx, sandbox, id) {
     }
   }
 
-  // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
-  const leaveGuard = guardLeave({
-    dirty: () => Boolean(dirty()),
-    ask: () => confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this server are not saved.', confirmLabel: 'Leave', danger: true }),
-    onLeave: () => { saved = snapshot(); },
-  });
+  const onBeforeUnload = (event) => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } };
+  const onLink = async (event) => {
+    const link = event.target.closest && event.target.closest('a[data-route]');
+    if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this server are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
+  document.addEventListener('click', onLink, true);
   el.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
@@ -487,6 +491,6 @@ export function mountMcpEditor(ctx, sandbox, id) {
 
   return {
     el,
-    destroy() { alive = false; leaveGuard(); },
+    destroy() { alive = false; window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
   };
 }

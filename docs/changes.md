@@ -6,13 +6,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
-- The web UI asks about unsaved work on every way out (SPEC-483 slice 28, task #465). The
-  automation, MCP server, workflow and skill editors asked only when a link was clicked; Back,
-  Forward and navigation by a button or the palette now ask too, through one guard in the
-  router. Every pull request chip says its checks one way ("checks failing", not "checks
-  failed" in some places), and sizes and short commits are worded in one place. The
-  repository's instruction check no longer joins a heading, a table row or a code fence to
-  the text around it.
+- The Superagent tells and changes what a task runs on (SPEC-487 slice 6, task #469). It
+  could not say which subscription a task was on, move it, or change its model. Now
+  `subscriptions` shows the pool as the Subscriptions panel does, `tasks_list` and `task_get`
+  name each task's subscription, model and effort, `task_switch` moves a task to the
+  subscription its person names, and `task_model` sets its model or effort for its session's
+  next start.
+
+- The Superagent merges for its person and reads the merge queue (SPEC-487 slice 5, task
+  #469). It could not say why a pull request that passed was not merging, nor arm a merge,
+  and handed both back to the person. `task_delivery` now says where a task's merge stands
+  (armed, its head, why it has not merged, how the last one ended), `merge_queue` lists the
+  project's armed merges and merge train, `task_merge` merges a task's pull request for its
+  owner (at once on green, otherwise armed until its checks pass) and `ci_prioritize` puts a
+  queued CI run first in its project's queue. The person's own agent has them too through
+  the remote MCP.
+
 - The repository's own instructions deliver as Yulius does (SPEC-483 slice 27, task #465).
   AGENTS.md, the Git and workflow documents, the Git skill and the pull request template no
   longer tell an agent to merge its own pull request by hand, to poll, or to promote; they

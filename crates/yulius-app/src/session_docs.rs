@@ -61,6 +61,11 @@ pub const MAX_LIST: usize = 500;
 pub const READ_CHARS_DEFAULT: usize = 24_000;
 /// Largest `session_read` text for agents.
 pub const READ_CHARS_MAX: usize = 100_000;
+
+/// The entries a tail reads beyond twice `limit`, for notes that show no text (a system note,
+/// an interruption), which `limit` does not count (SPEC-487 QST-003).
+const TAIL_EXTRA: usize = 20;
+
 /// Snippet match markers produced by the store.
 const MARK_OPEN: char = '\u{2}';
 const MARK_CLOSE: char = '\u{3}';
@@ -1376,7 +1381,12 @@ impl App {
                     if tail {
                         // Bounded below by the text shown, where a tool's result is cut to a
                         // few lines: what the transcript holds says little about it.
-                        transcripts::read_tail(file, limit, transcripts::MAX_PAGE_CHARS)
+                        // More entries than `limit`: notes that show nothing do not count.
+                        transcripts::read_tail(
+                            file,
+                            limit.saturating_mul(2).saturating_add(TAIL_EXTRA),
+                            transcripts::MAX_PAGE_CHARS,
+                        )
                     } else {
                         transcripts::read_page(file, from, limit, max_chars * 2)
                     }
@@ -1405,14 +1415,20 @@ impl App {
             // Entries that show no text (a system note) do not count as that last one.
             let entries = page.entries.as_slice();
             let mut first = entries.len().saturating_sub(1);
-            let (mut shown, mut shown_before) = (0, 0);
+            let (mut shown, mut shown_before, mut counted) = (0, 0, 0);
             for (index, entry) in entries.iter().enumerate().rev() {
-                shown += transcripts::render_text(std::slice::from_ref(entry), usize::MAX)
+                let size = transcripts::render_text(std::slice::from_ref(entry), usize::MAX)
                     .0
                     .len();
-                if shown > max_chars && index + 1 < entries.len() && shown_before > 0 {
+                shown += size;
+                // `limit` counts the entries that show text.
+                let full = counted >= limit;
+                if (full && size > 0)
+                    || (shown > max_chars && index + 1 < entries.len() && shown_before > 0)
+                {
                     break;
                 }
+                counted += usize::from(size > 0);
                 shown_before = shown;
                 first = index;
             }

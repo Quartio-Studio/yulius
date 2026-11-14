@@ -12,7 +12,7 @@
 //   their end and in a legend, with a crosshair and a table.
 
 import { h, svgEl, setChildren, icon } from './dom.js';
-import { bytes, duration, int, shortSha } from './format.js';
+import { bytes, duration, int } from './format.js';
 
 const STATE_NAMES = {
   queued: 'Queued', chained: 'Waiting for another task', prepared: 'Prepared, waiting to start',
@@ -109,7 +109,7 @@ function figureParts(span) {
   if (d.exit_code !== undefined && d.exit_code !== null && d.exit_code !== 0) parts.push(`exit ${d.exit_code}`);
   if (typeof d.reason === 'string' && d.reason) parts.push(d.reason);
   if (typeof d.requested_by === 'string' && span.kind === 'run') parts.push(`by ${d.requested_by}`);
-  if (typeof d.sha === 'string' && span.kind === 'run') parts.push(shortSha(d.sha));
+  if (typeof d.sha === 'string' && span.kind === 'run') parts.push(d.sha.slice(0, 7));
   if (typeof d.action === 'string') parts.push(d.action);
   if (d.measured_by === 'page') parts.push('measured by the page');
   return parts;

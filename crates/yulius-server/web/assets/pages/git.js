@@ -9,21 +9,23 @@
 // arrive as `checks_access`, one quiet line for instance administrators (#111).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf, prChip, prChecks } from '../dom.js';
-import { relShort, dateTime, plural, shortSha } from '../format.js';
+import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf } from '../dom.js';
+import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href, currentLocation } from '../router.js';
-import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer } from '../actions.js';
+import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer, UNKNOWN_CHECKS } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
 import { productionProtectionCard, watchProductionProtection, PROTECTION_ID } from './gitprotection.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
+const CHECK_TEXT = { success: 'checks passed', failure: 'checks failing', pending: 'checks running', unknown: 'checks unknown' };
 // A task's worktree when it is not there (the overview's `worktree`, SPEC-343); `present` opens.
 const WORKTREE_TEXT = { not_created: 'No worktree yet', gone: 'Worktree gone' };
 /** Why a task's Git overview row has no changes view to open (no worktree), or null when it has one. */
 export const worktreeMissing = (row) => WORKTREE_TEXT[row.worktree] || null;
+const CHECK_ICON = { success: ['check', 'ok'], failure: ['x', 'danger'], pending: ['clock', 'warn'] };
 
 /** Environments of a profile, split by where they run. */
 function environments(profile) {
@@ -33,17 +35,6 @@ function environments(profile) {
 
 const ago = (iso) => { const rel = relShort(iso); return rel === 'now' ? 'just now' : `${rel} ago`; };
 const listNames = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
-
-/**
- * What a card in the review column says: ready to merge, what an open pull request's checks
- * say (none says nothing: "In review"), or "In review".
- */
-export function reviewLine(pr, next) {
-  if (next.includes('merge')) return 'Ready to merge';
-  const checks = prChecks(pr);
-  if (!checks || pr.checks === 'none') return 'In review';
-  return checks.text[0].toUpperCase() + checks.text.slice(1);
-}
 
 /** "How this project ships", in one or two plain sentences generated from the profile. */
 export function profileSentence(profile) {
@@ -74,6 +65,17 @@ function columnOf(delivery, profile) {
   if (stage === 'env_done') return environments(profile).integration.some((e) => e.name === delivery.environment) ? 'waiting' : 'live';
   if (stage === 'promoted' || stage === 'production_done') return 'live';
   return 'built';
+}
+
+/** Pull request chip: "PR #N" (a bare #N is a task, SPEC-122) and checks in Claude's colours (merged violet). */
+function prChip(pr) {
+  if (!pr) return null;
+  const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
+  const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
+  const title = pr.state === 'open' && pr.checks === 'unknown' ? `${label}. ${UNKNOWN_CHECKS}` : label;
+  const name = `PR #${pr.number}, pull request, ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? `, ${CHECK_TEXT[pr.checks]}` : ''}`;
+  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': name },
+    `PR #${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
 /** The board's columns for a delivery profile. */
@@ -367,7 +369,7 @@ export function mountGitPage(ctx, sandbox) {
     if (item.column === 'built') {
       line = item.info ? [statusMark(item.info, 12), ` ${item.info.label}`] : 'Being built';
     } else if (item.column === 'review') {
-      line = reviewLine(pr, next);
+      line = next.includes('merge') ? 'Ready to merge' : pr && CHECK_TEXT[pr.checks] ? CHECK_TEXT[pr.checks][0].toUpperCase() + CHECK_TEXT[pr.checks].slice(1) : 'In review';
     } else if (item.column === 'waiting') {
       const env = next.find((a) => a.startsWith('run_env:') || a.startsWith('confirm_env:'));
       line = env ? `${env.slice(env.indexOf(':') + 1)}: ${env.startsWith('run_env:') ? 'waiting to be deployed' : 'waiting to be verified'}` : next.includes('promote') ? 'Ready to release' : d.stage === 'env_done' ? `Verified on ${d.environment}` : 'Merged';
@@ -389,7 +391,7 @@ export function mountGitPage(ctx, sandbox) {
       h('div', { class: 'dl-card-title' }, title, stuck ? h('span', { class: 'dl-dot', title: 'Checks failing' }, h('span', { class: 'sr-only' }, 'Checks failing')) : null),
       h('div', { class: 'dl-card-line' }, line),
       noWorktree ? h('div', { class: 'dl-card-line' }, noWorktree) : null,
-      h('div', { class: 'dl-card-meta' }, pr ? prChip(pr) : null, files,
+      h('div', { class: 'dl-card-meta' }, prChip(pr), files,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Details') : null));
   }
 
@@ -413,7 +415,7 @@ export function mountGitPage(ctx, sandbox) {
             e.run.kind === 'manual' ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRunViewer(ctx, sb(), e.run.run_id, e.run.environment) }, 'Output')]
           : [h('span', { class: 'muted' }, icon('branch', { size: 14 })),
             h('span', { class: 'dl-event-text' }, e.commit.subject, h('span', { class: 'muted' }, ` · ${e.commit.author}`)),
-            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, shortSha(e.commit.sha)) : h('code', { class: 'xs' }, shortSha(e.commit.sha))])))
+            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, String(e.commit.sha).slice(0, 7)) : h('code', { class: 'xs' }, String(e.commit.sha).slice(0, 7))])))
         : h('p', { class: 'dl-empty' }, 'No deploys or commits yet.'),
       events.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllActivity = true; render(); } }, `Show ${events.length - shown.length} more`) : null);
   }

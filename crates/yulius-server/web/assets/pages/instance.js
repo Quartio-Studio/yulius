@@ -9,7 +9,7 @@
 // Vidoc keys.
 
 import { h, icon, setChildren, toast, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
-import { relLong, dateTime, shortSha } from '../format.js';
+import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { keySettingsCard } from '../instancekeys.js';
@@ -35,8 +35,12 @@ const RESTART_STEPS = [
   ['resuming', 'Resume', 'Tasks continue one by one.'],
 ];
 
+function short(commit) {
+  return commit ? commit.slice(0, 7) : 'unknown';
+}
+
 function commitLink(sha, text) {
-  return h('a', { class: 'mono', href: `${REPO_URL}/commit/${sha}`, target: '_blank', rel: 'noopener noreferrer' }, text || shortSha(sha) || 'unknown');
+  return h('a', { class: 'mono', href: `${REPO_URL}/commit/${sha}`, target: '_blank', rel: 'noopener noreferrer' }, text || short(sha));
 }
 
 function progressBar(progress, label) {
@@ -101,7 +105,7 @@ function outcome(run) {
     failed: 'The last restart failed',
     cancelled: 'The last restart was cancelled',
   }[run.state] : {
-    succeeded: `Updated to ${shortSha(run.target.commit) || 'unknown'}`,
+    succeeded: `Updated to ${short(run.target.commit)}`,
     failed: 'The last update failed',
     rolled_back: 'The last update was rolled back',
     cancelled: 'The last update was cancelled',
@@ -187,8 +191,8 @@ export function mountInstancePage(ctx) {
     if (running) {
       parts.push(h('div', { class: 'update-run' },
         run.restart
-          ? h('div', { class: 'row' }, h('strong', null, `Restarting ${BRAND.name}`), h('span', { class: 'muted small' }, `with ${shortSha(run.target.commit) || 'unknown'}`))
-          : h('div', { class: 'row' }, h('strong', null, `Updating to ${shortSha(run.target.commit) || 'unknown'}`), h('span', { class: 'muted small' }, run.summary)),
+          ? h('div', { class: 'row' }, h('strong', null, `Restarting ${BRAND.name}`), h('span', { class: 'muted small' }, `with ${short(run.target.commit)}`))
+          : h('div', { class: 'row' }, h('strong', null, `Updating to ${short(run.target.commit)}`), h('span', { class: 'muted small' }, run.summary)),
         stepper(run),
         h('div', { class: 'row' },
           run.can_proceed && run.tasks && run.tasks.waiting.length
