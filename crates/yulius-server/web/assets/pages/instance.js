@@ -36,7 +36,7 @@ const RESTART_STEPS = [
 ];
 
 function commitLink(sha, text) {
-  return h('a', { class: 'mono', href: `${REPO_URL}/commit/${sha}`, target: '_blank', rel: 'noopener noreferrer' }, text || (shortSha(sha) || 'unknown'));
+  return h('a', { class: 'mono', href: `${REPO_URL}/commit/${sha}`, target: '_blank', rel: 'noopener noreferrer' }, text || shortSha(sha) || 'unknown');
 }
 
 function progressBar(progress, label) {
@@ -101,7 +101,7 @@ function outcome(run) {
     failed: 'The last restart failed',
     cancelled: 'The last restart was cancelled',
   }[run.state] : {
-    succeeded: `Updated to ${(shortSha(run.target.commit) || 'unknown')}`,
+    succeeded: `Updated to ${shortSha(run.target.commit) || 'unknown'}`,
     failed: 'The last update failed',
     rolled_back: 'The last update was rolled back',
     cancelled: 'The last update was cancelled',
@@ -187,8 +187,8 @@ export function mountInstancePage(ctx) {
     if (running) {
       parts.push(h('div', { class: 'update-run' },
         run.restart
-          ? h('div', { class: 'row' }, h('strong', null, `Restarting ${BRAND.name}`), h('span', { class: 'muted small' }, `with ${(shortSha(run.target.commit) || 'unknown')}`))
-          : h('div', { class: 'row' }, h('strong', null, `Updating to ${(shortSha(run.target.commit) || 'unknown')}`), h('span', { class: 'muted small' }, run.summary)),
+          ? h('div', { class: 'row' }, h('strong', null, `Restarting ${BRAND.name}`), h('span', { class: 'muted small' }, `with ${shortSha(run.target.commit) || 'unknown'}`))
+          : h('div', { class: 'row' }, h('strong', null, `Updating to ${shortSha(run.target.commit) || 'unknown'}`), h('span', { class: 'muted small' }, run.summary)),
         stepper(run),
         h('div', { class: 'row' },
           run.can_proceed && run.tasks && run.tasks.waiting.length

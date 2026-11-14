@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The web UI asks about unsaved work on every way out (SPEC-483 slice 28, task #465). The
+  automation, MCP server, workflow and skill editors asked only when a link was clicked; Back,
+  Forward and navigation by a button or the palette now ask too, through one guard in the
+  router. Every pull request chip says its checks one way ("checks failing", not "checks
+  failed" in some places), and sizes and short commits are worded in one place. The
+  repository's instruction check no longer joins a heading, a table row or a code fence to
+  the text around it.
 - The repository's own instructions deliver as Yulius does (SPEC-483 slice 27, task #465).
   AGENTS.md, the Git and workflow documents, the Git skill and the pull request template no
   longer tell an agent to merge its own pull request by hand, to poll, or to promote; they

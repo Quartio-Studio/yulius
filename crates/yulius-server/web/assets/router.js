@@ -61,7 +61,7 @@ export function placeFor(path, restore) {
 }
 
 /** Where an `a[data-route]` link goes: its route, or the place it restores (`data-restore`). */
-export function linkTarget(anchor) {
+function linkTarget(anchor) {
   return anchor.dataset.restore ? placeFor(anchor.dataset.route, anchor.dataset.restore) : anchor.dataset.route;
 }
 

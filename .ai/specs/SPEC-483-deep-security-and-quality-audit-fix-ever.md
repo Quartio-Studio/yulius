@@ -58,10 +58,11 @@ no code path reaches; documents, texts shown to agents and people, and code that
       (merged, #1279);
   14. documents and shipped texts against the code (P1-P14, QB9): what Yulius ships and shows
       (P1, P5-P7, P9-P13, P15) is slice 26 (merged, #1283), the repository's own instruction
-      documents (P2-P4, P14, QB9) slice 27;
+      documents (P2-P4, P14, QB9) slice 27 (merged, #1284);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
       #1281), the rest slice 25 (merged, #1282);
-  16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
+  16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28, with the
+      review of slice 27's last finding (R3-1);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -611,6 +612,30 @@ went; two of the auditors' items had gained a user since and stay.
   GIT-002 and UI-025, SPEC-441 MQ-011 and the web and skills READMEs still said agents release
   or merge the integration branch only for a conflict; wraps and test comments.
 
+### Slice 28: one way in the web UI
+
+- **W4 (low).** The five editors (automation, MCP server, workflow, new skill, skill) each kept
+  their own unsaved-changes guard: a `beforeunload` handler and a capturing click handler on
+  `a[data-route]` links. Back and Forward (`popstate`, `hashchange`) and a navigation by code
+  (`navigate()`, from a breadcrumb button or a palette command) left without asking, and the
+  work was lost.
+- **W5 (low).** The pull request chip was drawn three ways (`dom.js` for the sidebar and the
+  Tasks list, the Git page, the delivery strip) from three tables of what checks say: a
+  failure read "checks failed" in two and "checks failing" in the third, and unknown checks
+  were explained in one. The delivery strip's chip drew no icon for unknown checks and its
+  table had no wording of its own for an unknown state.
+- **W6 (low).** The upload limit's wording (`formatSize` in `filedrop.js`, the server's
+  `human_size`) and a commit's short form (four copies of `slice(0, 7)`, two saying
+  "unknown" without one) were written in each page; the editor's "too large" message gave
+  kilobytes whatever the size.
+- **R3-1 (minor, own code of slice 27, from its third review round).** `paragraphs()` in
+  `scripts/check_repository.py` ended a block only at a blank line or a list item, so a
+  heading, a table row and a fence joined the text around them: "## Promote" followed by "when
+  the task asks for it, open needs_you." was refused, so was a table whose rows together read
+  "promote … when the task asks", and a heading ending in "No" negated a `gh pr merge` on the
+  next line. Slice 27 merged with it at the round limit (its third round approved); it is
+  fixed here, in the first change after it (ADR-0141).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1101,6 +1126,19 @@ went; two of the auditors' items had gained a user since and stay.
 - **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
   the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
   waiting, until the file is opened again.
+- **ONE-001** A page with unsaved work asks before it is left, by one guard in the router: a
+  link, a navigation by code, Back and Forward each ask; leaving on the answer goes where the
+  person was going, staying keeps the page and its address; closing or reloading the tab gets
+  the browser's own question. The guard ends with the page (its `destroy`), and only one is
+  set at a time.
+- **ONE-002** Every pull request chip and line says its checks from one table: "checks passed",
+  "checks failing", "checks running", "checks unknown" (with why), "no checks", for an open
+  pull request only.
+- **ONE-003** An upload limit and the editor's "too large" message use the server's wording of
+  a size; a commit's short form is its first seven characters, or the page's own word without
+  one.
+- **DOC-003** The instruction check reads a heading, a table row and each line of a fence as a
+  block of its own, never joined to the text around it.
 
 ## Plan
 
@@ -1133,7 +1171,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
 - [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
 - [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing (merged, #1283)
-- [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is
+- [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is (merged, #1284)
+- [ ] Slice 28: the web UI asks about unsaved work on every way out, and says checks, sizes and commits one way
 
 ## Acceptance criteria
 
@@ -1708,6 +1747,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   Agents merge; Yulius releases each merge."); with an integration environment "staging":
   "Agents merge and deploy staging" and, with `auto_promote`, "…once it passed staging. …
   Yulius releases each merge then."
+- **AC-144** In the workflow editor with an unsaved change, Back asks "Leave without saving?";
+  Cancel keeps the editor and its address; asked again, Leave goes back. A navigation by code
+  (`navigate()`) asks the same and goes on after Leave. Without a change, Back asks nothing
+  (ONE-001).
+- **AC-145** The chips of an open pull request with failing, passing, running and unknown
+  checks, as a link, a span and a button, say "checks failing", "checks passed", "checks
+  running" and "checks unknown" (with why) in their names, the icon of each where it has one;
+  a merged one says no checks (ONE-002).
+- **AC-146** `limitSize` words 1 GiB, 1.5 GiB, 12 GiB, 1023 MiB, 3.4 MiB, 300 KiB and 12 bytes
+  as "1 GB", "1.5 GB", "12 GB", "1023 MB", "3.4 MB", "300 KB" and "12 bytes", as the server
+  does, while `bytes` words a measurement ("3.0 GiB"); `shortSha` gives the first seven
+  characters and '' without a commit (ONE-003).
+- **AC-147** The check refuses neither "## Promote" followed by "when the task asks…" nor a
+  table whose rows say "promote" and "when the task asks", and refuses a `gh pr merge` under
+  a heading that ends in "No" (DOC-003).
 
 ## Test plan
 
@@ -1969,6 +2023,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 28: e2e `workflows.e2e.ts` "unsaved changes are asked about on Back and on navigation
+  by code too" (AC-144; the editors' existing link tests keep the link case), `pulls.e2e.ts`
+  "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
+  `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
+  the page)" (AC-146); `scripts/test_check_repository.py`
+  `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote`'s heading, table and
+  fence cases (AC-147).
 - Slice 27: `yulius-domain` `spec_format::tests::the_repository_spec_template_validates`
   (AC-141); `scripts/test_check_repository.py`
   `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote` and the repository check
@@ -2047,6 +2108,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 28 (no decision record: a refactor inside the web UI). The guard lives in the router,
+  which owns every way a page is left, rather than in a helper each page wires to the events:
+  Back cannot be refused after the fact, so the router puts the page's address back, asks, and
+  on Leave navigates to where Back went (a new history entry rather than a move in history; the
+  browser offers no way to ask before it moves). A size keeps two wordings: `limitSize` is the
+  server's wording of a limit (the uploads' messages, which tests on both sides read) and
+  `bytes` the wording of a measurement (`3.0 GiB`); one would change a message the server
+  sends or the disk figures people compare with `df`. "Checks failing" is the wording kept: it
+  is the state while the pull request is open, which is the only time a chip says it.
 - Slice 27 (no decision record: the product decided; its own repository follows). The
   instructions keep the `git worktree` commands for work by hand and drop the `gh` merge and
   promotion commands: a person promotes on the CD page, and the hand merge an agent would copy
@@ -2435,7 +2505,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 18 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | open (item 18 of the Context) |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | fixed (slice 9) |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
@@ -2464,19 +2534,20 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
 | W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
 | P1, P5-P7, P9-P13 | documents | Shipped texts against the code: promotion "when asked", the Docs workflow's review, the Chore workflow's deploy, UI copy on who releases and where commands run, the skill's "machine-checked" gates and issue link, the promotion row (already right since slice 4), the guard's reason, the briefing's Git line | medium | fixed (slice 26) |
-| P2-P4, P14 | documents | The repository's own instruction documents: hand merges and polling, four promotion rules, a spec template the validator refuses, engineering documents without product code | medium | slice 27 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 27 |
+| P2-P4, P14 | documents | The repository's own instruction documents: hand merges and polling, four promotion rules, a spec template the validator refuses, engineering documents without product code | medium | fixed (slice 27) |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | fixed (slice 27) |
+| R3-1 | documents | The instruction check joins a heading, a table row or a fence to the text around it (review of slice 27, round 3) | low | slice 28 |
 | P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | fixed (slice 26) |
 | W7 | web UI | Dead exports and CSS rules | low | fixed (slice 24) |
 | D7 | GitHub | `webhook_secret` is stored and never read | low | fixed (slice 24) |
 | E5 | previews | The preview bridge has no listener since ADR-15 | low | fixed (slice 24) |
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
-| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
-| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
-| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 17 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 18 |
+| W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | slice 28 |
+| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | open (item 16 of the Context) |
+| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | open (item 16 of the Context) |
+| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
 
 ## Evidence
 
@@ -2874,4 +2945,9 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   slow), 17 skipped` (`target/audit/slice27/gate3.log`); the mutation cases
   (`mutations-r2.log`, 11) all failed their tests (the paragraph case was first written to
   change only the first of the two places that join a paragraph, and is rerun on the other).
+- **Review, round 3** (the same session, head `bed1d9ee2`): approve, with one minor finding in
+  own code (R3-1: a heading, a table row and a fence joined the text around them) and one nit
+  (R3-2: an exemption by "not" anywhere in a match, within the decision above). The merge was
+  armed at the approved head; R3-1 is fixed in slice 28, the first change after it, and R3-2
+  stays as the decision's known limit.
 - **Not tested.** An agent following the rewritten instructions (the check reads the wording).

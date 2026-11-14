@@ -56,7 +56,7 @@ export const hostCheckItems = (report) => items(hostCheckProblems(report).length
 function hostCheck(report) {
   if (!report) return null;
   const when = report.checked_at ? relLong(new Date(report.checked_at).toISOString()) : '';
-  const head = `The last host check (yulius ${(shortSha(report.commit) || 'unknown')}${when ? `, ${when}` : ''})`;
+  const head = `The last host check (yulius ${shortSha(report.commit) || 'unknown'}${when ? `, ${when}` : ''})`;
   if (report.ok) {
     return h('p', { class: 'muted small sandbox-docker-recheck' }, icon('check', { size: 14 }), ` ${head}: the host gives sandboxes Docker.`);
   }
