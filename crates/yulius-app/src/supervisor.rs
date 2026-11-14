@@ -2773,6 +2773,10 @@ impl App {
                 crate::task_message::TYPING_TURN_WAIT,
             )
             .await;
+            // Asked again with the mark held: the wait for it gives a person time to type.
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                return true;
+            }
             if !input.is_empty()
                 && let Err(err) = app.send_input(task_id, &input).await
             {

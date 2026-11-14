@@ -426,8 +426,9 @@ impl App {
         }
     }
 
-    /// Ends the flag that says a message of Yulius's own waits for a person's draft
-    /// ([`Self::tell_of_held_message`]) once no draft holds the prompt box (SPEC-480 DRF-007).
+    /// Ends the flag that says a message of Yulius's own, or the compaction of a full session
+    /// (SPEC-483 TYP-001), waits for a person's draft ([`Self::tell_of_held_message`]) once no
+    /// draft holds the prompt box (SPEC-480 DRF-007).
     /// A prompt that starts a turn sets the task Working, which ends every flag; one that starts
     /// none (`/compact`, a prompt answered after its turn ended) leaves the task as it was, so
     /// the flag would outlast its reason and keep the pull-request watch quiet (a flagged task
@@ -437,8 +438,10 @@ impl App {
         let held = runtime.attention_lock.lock().await;
         let store = &self.deps.store;
         let flagged = match store.task_attention(task_id).await {
+            // Both flags that wait for the box: a held message's and a held compaction's.
             Ok(Some((reason, flagged)))
-                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION) =>
+                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION)
+                    || reason == crate::context_full::held_for_a_draft() =>
             {
                 flagged
             }

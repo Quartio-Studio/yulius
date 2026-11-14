@@ -1090,6 +1090,77 @@ fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 RST-001 (review): the reattached run that holds another person's servers sits at a
+/// usage limit. How it is resumed is read from its transcript, which the new server replays
+/// first: the restart waits for that and resumes the run past the limit (the interrupted turn
+/// continued, on a subscription with room), not into the limit's error.
+#[test]
+fn a_reattached_run_at_a_limit_is_restarted_past_it() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let build = || {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        build_with_github(
+            &data,
+            &fake,
+            probe.clone(),
+            agent,
+            Arc::new(FakeGitHub::default()),
+        )
+    };
+    let first = runtime()?;
+    let (admin, id) = first.block_on(async {
+        let app = build()?;
+        let (sandbox, admin) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &admin, "b-second").await?;
+        second_person(&app, &admin).await?;
+        let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
+        let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        std::fs::write(Path::new(&run.run_dir).join("personal-mcp-of"), "u-bob")?;
+        Ok::<_, Box<dyn std::error::Error>>((admin, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build()?;
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &admin, "b-second").await?;
+        app.reconcile().await?;
+        wait_for("the restarted run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-332 MSC-004, MSC-009: a person's task run gets their personal MCP server, a task an
 /// automation of theirs started does not, and a hand-over restarts a live run holding the previous
 /// owner's personal server, resuming it with the new owner's servers.
