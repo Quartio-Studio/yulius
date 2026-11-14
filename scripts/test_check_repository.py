@@ -104,6 +104,8 @@ class RepositoryContracts(unittest.TestCase):
             "Poll live run IDs until the checks pass.": "Poll live run",
             "gh pr checks <number> --required --watch": "gh pr checks",
             "## Is a hand merge allowed? No\n`gh pr merge 12 --squash`": "gh pr merge",
+            # A wrapped line that starts with an issue number is no heading.
+            "Promote the release\n#465 when the task asks for it.": "the task asks",
         }
         for line, word in bad.items():
             errors = delivery_instruction_errors(line, "AGENTS.md")

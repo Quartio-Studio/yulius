@@ -1128,15 +1128,16 @@ went; two of the auditors' items had gained a user since and stay.
   waiting, until the file is opened again.
 - **ONE-001** A page with unsaved work asks before it is left, by one guard in the router: a
   link, a navigation by code, Back and Forward each ask; leaving on the answer goes where the
-  person was going, staying keeps the page and its address; closing or reloading the tab gets
-  the browser's own question. The guard ends with the page (its `destroy`), and only one is
-  set at a time.
+  person was going, staying keeps the page and its address, and either way the tab's history
+  is what the browser made of the move (no entry added or lost); closing or reloading the tab
+  gets the browser's own question. The guard ends with the page (its `destroy`), not with a
+  Leave the page outlives (a way out to its own address), and only one is set at a time.
 - **ONE-002** Every pull request chip and line says its checks from one table: "checks passed",
   "checks failing", "checks running", "checks unknown" (with why), "no checks", for an open
   pull request only.
 - **ONE-003** An upload limit and the editor's "too large" message use the server's wording of
-  a size; a commit's short form is its first seven characters, or the page's own word without
-  one.
+  a size (`human_size`: a whole unit, else one decimal cut); a commit's short form is its first
+  seven characters, or the page's own word without one, everywhere the web UI shows one.
 - **DOC-003** The instruction check reads a heading, a table row and each line of a fence as a
   block of its own, never joined to the text around it.
 
@@ -1748,20 +1749,28 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   "Agents merge and deploy staging" and, with `auto_promote`, "…once it passed staging. …
   Yulius releases each merge then."
 - **AC-144** In the workflow editor with an unsaved change, Back asks "Leave without saving?";
-  Cancel keeps the editor and its address; asked again, Leave goes back. A navigation by code
-  (`navigate()`) asks the same and goes on after Leave. Without a change, Back asks nothing
-  (ONE-001).
+  Cancel keeps the editor, its address and the history's length; asked again, Leave goes back,
+  and Back and Forward then reach the pages around it as before. Forward is asked about too,
+  and after Cancel, Back and Leave go to the page before the editor. The second event hash mode
+  sends for one move changes nothing, also from the tab's first entry. A navigation by code
+  (`navigate()`) asks the same and goes on after Leave; Leave to the address in view keeps the
+  page, and a later change is asked about again (the new skill's page too). Without a change,
+  Back asks nothing (ONE-001).
 - **AC-145** The chips of an open pull request with failing, passing, running and unknown
   checks, as a link, a span and a button, say "checks failing", "checks passed", "checks
-  running" and "checks unknown" (with why) in their names, the icon of each where it has one;
-  a merged one says no checks (ONE-002).
-- **AC-146** `limitSize` words 1 GiB, 1.5 GiB, 12 GiB, 1023 MiB, 3.4 MiB, 300 KiB and 12 bytes
-  as "1 GB", "1.5 GB", "12 GB", "1023 MB", "3.4 MB", "300 KB" and "12 bytes", as the server
-  does, while `bytes` words a measurement ("3.0 GiB"); `shortSha` gives the first seven
+  running" and "checks unknown" (with why) in their titles and names (a span's screen-reader
+  text, the strip's label), the same icon and tone in each where it has one; a merged one says
+  no checks; the Git page's review column says "Checks failing", and "In review" for a pull
+  request without checks (ONE-002).
+- **AC-146** `limitSize` words 1 GiB, 1.5 GiB, 12 GiB, 1023 MiB, 3.5 MiB, 300 KiB, 12 bytes,
+  12.5 GiB, 1.99 GiB, 10.5 MiB, 1945 bytes and 10 000 000 000 bytes as "1 GB", "1.5 GB", "12 GB",
+  "1023 MB", "3.5 MB", "300 KB", "12 bytes", "12.5 GB", "1.9 GB", "10.5 MB", "1 KB" and "9.3 GB",
+  as the server does, while `bytes` words a measurement ("3.0 GiB"); `shortSha` gives the first seven
   characters and '' without a commit (ONE-003).
-- **AC-147** The check refuses neither "## Promote" followed by "when the task asks…" nor a
-  table whose rows say "promote" and "when the task asks", and refuses a `gh pr merge` under
-  a heading that ends in "No" (DOC-003).
+- **AC-147** The check refuses neither "## Promote" followed by "when the task asks…", nor a
+  table whose rows say "promote" and "when the task asks", nor two lines of a fence that do
+  together; it refuses a `gh pr merge` under a heading that ends in "No", and a wrapped
+  sentence whose second line starts with an issue number ("#465 when the task asks") (DOC-003).
 
 ## Test plan
 
@@ -2024,8 +2033,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 28: e2e `workflows.e2e.ts` "unsaved changes are asked about on Back and on navigation
-  by code too" (AC-144), `places.e2e.ts` "leaving a new skill unsaved for another sandbox goes
-  where that sandbox was left" (a link, through the router's guard), `pulls.e2e.ts`
+  by code too" and "Forward from the first page of the tab is asked about and undone once"
+  (AC-144), `places.e2e.ts` "leaving a new skill unsaved for another sandbox goes where that
+  sandbox was left" (a link, through the router's guard) and "a new skill left for its own
+  address still asks about a later change", `pulls.e2e.ts`
   "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
   `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
   the page)" (AC-146); `scripts/test_check_repository.py`
@@ -2110,10 +2121,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 28 (no decision record: a refactor inside the web UI). The guard lives in the router,
-  which owns every way a page is left, rather than in a helper each page wires to the events:
-  Back cannot be refused after the fact, so the router puts the page's address back, asks, and
-  on Leave navigates to where Back went (a new history entry rather than a move in history; the
-  browser offers no way to ask before it moves). A size keeps two wordings: `limitSize` is the
+  which owns every way a page is left, rather than in a helper each page wires to the events.
+  The browser moves before a page hears of Back or Forward, so the router undoes the move and
+  makes it again on Leave: each entry it makes carries its place in the tab's history
+  (`history.state`), which says how far a move went (`history.go(-steps)`, then
+  `history.go(steps)`); the events of its own moves are let by. Putting the address back with a
+  new entry (the first version) added an entry on every answer and sent a later Back to the
+  page Forward had been declined (review of slice 28). Only a move of unknown length, an address
+  typed in hash mode, is still put back by a new entry. A size keeps two wordings: `limitSize` is the
   server's wording of a limit (the uploads' messages, which tests on both sides read) and
   `bytes` the wording of a measurement (`3.0 GiB`); one would change a message the server
   sends or the disk figures people compare with `df`. "Checks failing" is the wording kept: it

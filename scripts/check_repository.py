@@ -689,7 +689,7 @@ DELIVERY_RULES = [
 ITEM = re.compile(r"\s*([-*+]|\d+\.)\s")
 
 
-ALONE = re.compile(r"\s*(#|\||```|~~~)")
+ALONE = re.compile(r"\s*(#{1,6}\s|#{1,6}$|\||```|~~~)")
 
 
 def paragraphs(text):
