@@ -2623,3 +2623,22 @@ The evidence of slices 1 to 20, all merged, is in
 [evidence/SPEC-483-slices-1-20.md](evidence/SPEC-483-slices-1-20.md), and of slices 21 to 28,
 all merged, in [evidence/SPEC-483-slices-21-28.md](evidence/SPEC-483-slices-21-28.md), word for
 word as they stood here (this file is bounded at 256 KiB); the later slices follow.
+
+### Slice 29 (2026-11-14)
+
+- **Tests failing before the change**: `one_bearer_reader…` and
+  `github_tokens_are_replaced_whole_by_one_scrub` did not compile (no shared function); the
+  welcome page test's new refresh case passes before and after (it pins the shared output).
+- **Tests failing without their fix** (`target/audit/slice29/mutate.py`, `mutations.log`, 9
+  cases, each failed its test): the bearer token untrimmed; any scheme read as a bearer; the
+  scrub missing a prefix; `ghs_` not first; a stateless token cut; a bare prefix replaced;
+  Git's or GitHub's adapter scrubbing no tokens; the refresh listing nothing. (A first "missing
+  prefix" case only reordered two prefixes, which changes nothing, and was rewritten:
+  `mutations-b.log`.)
+- **Gate.** `scripts/dev ci` at `4359dbbb6`: the first run failed one test,
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (#1278, open since slice
+  23; it passed alone 5 of 5); the second exited 0, `4382 tests run: 4382 passed (1 slow), 17
+  skipped` (`gate.log`, `gate2.log`). Reading the code for it found a product race: each stop of
+  a bulk stop ends with `drain_queue()`, so stopping the first queued task lets the queue start
+  the next before the bulk reaches it (commented on #1278); it is slice 30.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
