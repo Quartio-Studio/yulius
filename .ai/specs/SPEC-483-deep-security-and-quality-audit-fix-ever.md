@@ -1148,11 +1148,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the switch claims the run's end: the task is `closed` with its one run `exited`, the
   switch ends with "the task was closed during the switch", and nothing says a session
   did not end in time.
-- **AC-102** A run of a finished (`Done`) task whose agent died and whose end is being
-  recorded (its recorder holds the given-up intent) when the kill is refused and the task is put back to
-  `running`: the switch waits for the record; the task is `stopped_switch_timeout` (not
-  closed: the same label as from `switching`), its run ended `switch_timeout`, and nothing
-  says a session could not be ended.
+- **AC-102** A run whose agent died and whose end is being recorded (its recorder holds
+  the given-up intent) when the kill is refused and the task is put back to `running`:
+  the switch waits for the record; the task is `stopped_switch_timeout`, its run ended
+  `switch_timeout`, and nothing says a session could not be ended.
 
 ## Test plan
 
@@ -1429,7 +1428,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   A finished (`Done`) task whose idle session is moved and has to be given up rests as
   stopped, not closed: RBT-001 closes only a running task, and its domain test says why
   for this very case ("a switch or a stop in flight was cut"); the review asked for
-  `Closed`, which would change that rule for every loss during a switch, not only this one.
+  `Closed`, which would change that rule for every loss during a switch, not only this
+  one. (A task's activity is cleared when it becomes `switching`, so the question does
+  not even arise in the store: a mutation that asked RBT-001's rule at the exit of a
+  given-up run changed no outcome.)
   The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
   task's intent before it knows it is the first to record), is not changed: no path
   records a run's end while its reader still serves it and then starts another run.
