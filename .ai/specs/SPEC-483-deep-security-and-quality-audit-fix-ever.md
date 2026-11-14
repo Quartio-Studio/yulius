@@ -2743,3 +2743,27 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   app and the binary (`target/audit/slice17/suite2.log`).
 - **Gate after it.** `scripts/dev ci` at `ea43f41d6`: exit 0;
   `4287 tests run: 4287 passed, 17 skipped` (`target/audit/slice17/gate2.log`).
+- **Review, round 2** (the same session, head `188a85514`): request changes. One major
+  finding: "A run that ends by itself after the switch has made the task Switching, but
+  before the switch puts its sender in the slot, still leaves the task switching with no
+  run." Such an end now ends the task as from `running` and the switch gives way
+  (AC-101). One minor: after a refused kill the run was asked about before an end that
+  was being recorded was written down, which left "a stale Needs-your-action flag and
+  notice"; the switch waits for that record now (AC-102). Its round-1 finding on a `Done`
+  task it withdrew ("the answer holds"). Nits answered: the status's text says
+  "Restarting the session took too long" (a restart on a newer Claude Code ends there
+  too); SWT-002 says that a stop after the give-up decides nothing about the label; the
+  words are "the session did not end in time"; the one test that assumes a time says so.
+- **Tests failing before those fixes** (`target/audit/slice17/before3.log`): both new
+  tests failed, one with "the session could not be ended, so it was not switched" for a
+  run that had ended, one with "it did not end in time" for a session that had left.
+- **Tests failing without their fix, after round 2** (`mutations3.log`, 13 cases, each
+  failed its test): the eleven above, a run that ends by itself under a switch that has
+  not claimed it left with no way out, and a refused kill not waiting for an end being
+  recorded. A fourteenth, asking RBT-001's rule at the exit of a given-up run, changed no
+  outcome (a task's activity is cleared when it becomes `switching`) and is not counted.
+- **The suites after it:** `3224 tests run: 3224 passed, 17 skipped`
+  (`target/audit/slice17/suite3.log`).
+- **Gate after it.** `scripts/dev ci` at `80e18ff9f`: exit 0;
+  `4289 tests run: 4289 passed, 17 skipped` (`target/audit/slice17/gate3.log`). The web
+  UI's one changed line is the text of a status; the e2e suite was not run.
