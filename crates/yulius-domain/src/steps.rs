@@ -690,13 +690,6 @@ impl Nudge {
             Self::Complete { .. } => "complete".to_owned(),
         }
     }
-
-    /// Whether the nudge is about the pace of the work (worth interrupting a turn for) rather
-    /// than the shape of the plan.
-    #[must_use]
-    pub fn is_pace(&self) -> bool {
-        matches!(self, Self::Stale { .. } | Self::Burst { .. })
-    }
 }
 
 impl fmt::Display for Nudge {
@@ -1389,7 +1382,11 @@ mod tests {
             }),
             "{found:?}"
         );
-        assert!(found.iter().any(Nudge::is_pace));
+        assert!(
+            found
+                .iter()
+                .any(|nudge| matches!(nudge, Nudge::Stale { .. } | Nudge::Burst { .. }))
+        );
         // Later, the same history is no longer news.
         assert!(
             !pace_nudges(&steps, Timestamp(1_020 * MIN))
@@ -1432,7 +1429,6 @@ mod tests {
              is not done (a later slice or pull request, the review of a fix), add its steps now \
              (`steps_set`)."
         );
-        assert!(!Nudge::Complete { count: 2 }.is_pace());
         // One step ahead, or no plan: nothing to ask.
         for open in [
             StepStatus::Pending,

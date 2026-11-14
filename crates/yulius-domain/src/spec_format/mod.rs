@@ -44,7 +44,7 @@ use crate::delivery::DeliveryProfile;
 use crate::ids::TaskId;
 use markdown::{Line, checklist_item, heading, is_meaningful, normalize_title};
 
-/// Longest slug produced by [`spec_slug`].
+/// Longest slug produced by [`slug_or`].
 pub const MAX_SLUG_LEN: usize = 50;
 
 /// Where architecture decisions live.
@@ -611,13 +611,7 @@ fn transliterate(c: char) -> Option<&'static str> {
 
 /// ASCII kebab-case slug of a title, at most [`MAX_SLUG_LEN`] characters, cut at a word
 /// boundary when possible; common Latin diacritics are transliterated (`Żółw` → `zolw`).
-/// Returns `task` when nothing usable remains.
-#[must_use]
-pub fn spec_slug(title: &str) -> String {
-    slug_or(title, "task")
-}
-
-/// [`spec_slug`] with a custom fallback.
+/// Returns `fallback` when nothing usable remains.
 pub(crate) fn slug_or(title: &str, fallback: &str) -> String {
     let mut slug = String::new();
     let mut dash = false;
@@ -1018,24 +1012,25 @@ mod tests {
 
     #[test]
     fn slugs() {
-        assert_eq!(spec_slug("Checkout API"), "checkout-api");
+        assert_eq!(slug_or("Checkout API", "task"), "checkout-api");
         assert_eq!(
-            spec_slug("  Fix: login (OAuth) -- again!  "),
+            slug_or("  Fix: login (OAuth) -- again!  ", "task"),
             "fix-login-oauth-again"
         );
         assert_eq!(
-            spec_slug("Zrób sklep internetowy z płatnościami"),
+            slug_or("Zrób sklep internetowy z płatnościami", "task"),
             "zrob-sklep-internetowy-z-platnosciami"
         );
-        assert_eq!(spec_slug("Straße & Café"), "strasse-cafe");
-        assert_eq!(spec_slug("🚀🚀"), "task");
-        assert_eq!(spec_slug(""), "task");
-        let long = spec_slug(
+        assert_eq!(slug_or("Straße & Café", "task"), "strasse-cafe");
+        assert_eq!(slug_or("🚀🚀", "task"), "task");
+        assert_eq!(slug_or("", "task"), "task");
+        let long = slug_or(
             "implement the complete customer checkout flow with card payments and receipts",
+            "task",
         );
         assert_eq!(long, "implement-the-complete-customer-checkout-flow-with");
         assert!(long.len() <= MAX_SLUG_LEN);
-        let unbroken = spec_slug(&"a".repeat(80));
+        let unbroken = slug_or(&"a".repeat(80), "task");
         assert_eq!(unbroken.len(), MAX_SLUG_LEN);
     }
 }

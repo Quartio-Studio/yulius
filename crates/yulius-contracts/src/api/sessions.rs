@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::common::UserRef;
 
-
 /// A session in lists and search results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDoc {

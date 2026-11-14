@@ -25,4 +25,3 @@ pub struct UserRef {
     /// GitHub login (or `superadmin`).
     pub login: String,
 }
-
