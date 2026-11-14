@@ -16,6 +16,27 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "Your turn", not Done, and chains and start rules wait. The step tools and `spec_check` tell
   the agent so, and the pull request watch tells a conflict also where no CI run exists.
 
+- The Superagent reads and updates Yulius itself (SPEC-487 slice 7, task #469). Asked whether
+  Yulius was up to date or loaded, or to update or restart it, it sent the person to
+  Settings. Now `instance` shows the build, an update offered or under way, the host's load,
+  memory and disk and the sessions, and for a superadmin `instance_update` checks, installs,
+  restarts or cancels with the buttons' functions and refusals. The Global Superagent is not
+  served `instance_update`.
+
+- Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
+  30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
+  bulk stop start its next waiting task in the tests before stopping it.
+- Anyone who may work in a project stops, archives, restores and deletes any of its tasks;
+  steering a task stays its owner's (SPEC-490, ADR-0331, task #473; amends ADR-0060). Stop,
+  Archive and Delete are enabled on other people's tasks in the task menu, the sidebar and the
+  task's page, the confirmation names the owner, and the audit says who did it. Everything else
+  (typing, messages, answers, continue, start, pause, the subscription, delivery, files and
+  shells in the worktree) is refused to anyone but the owner by one rule
+  (`yulius_domain::task_access`), with a message that says how to ask for control. That rule
+  now also covers three ways in that it did not: a Superagent's `task_message` to another
+  person's running task, a restore of attachments into another person's task, and Start
+  onboarding of an onboarding task someone else owns (a sandbox without one gets it created
+  for whoever starts onboarding). Request control is in the task's menu too.
 - One reader of a bearer token and one GitHub-token scrub (SPEC-483 slice 29, task #465).
   Five routes read `Authorization: Bearer` their own way (the leftovers key untrimmed) and Git's
   and GitHub's adapters each kept the loop that removes GitHub tokens; each is written once now.

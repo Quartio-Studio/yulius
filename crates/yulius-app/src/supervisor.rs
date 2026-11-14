@@ -3859,8 +3859,12 @@ impl App {
             self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
             self.advance_chains(task_id).await;
-            // A cancelled supertask no longer holds its project (SUP-005).
-            self.drain_queue().await;
+            // A cancelled supertask no longer holds its project (SUP-005): the queue may go on.
+            // Any other task that waited frees no session, so it starts nothing (a pass here
+            // would start the next waiting task of a bulk stop before the stop reaches it).
+            if task.supertask {
+                self.drain_queue().await;
+            }
             return Ok(true);
         }
         // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One

@@ -83,6 +83,7 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("subscriptions", Reach::Project, Action::View),
     ("task_switch", Reach::Project, Action::Work),
     ("task_model", Reach::Project, Action::Work),
+    ("instance", Reach::Project, Action::View),
     ("merge_queue", Reach::Project, Action::View),
     ("ci_prioritize", Reach::Project, Action::Work),
     ("task_archive", Reach::Project, Action::Work),
@@ -363,7 +364,13 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         .chain(
             project
                 .into_iter()
-                .chain(crate::person_tools::descriptors())
+                .chain(
+                    crate::person_tools::descriptors()
+                        .into_iter()
+                        .filter(|tool| {
+                            !crate::person_tools::SUPERAGENT_ONLY.contains(&tool.name.as_str())
+                        }),
+                )
                 .map(with_project),
         )
         .collect()
@@ -997,11 +1004,10 @@ mod tests {
     #[test]
     fn every_persons_project_tool_is_served_by_both_callers_with_one_action() {
         for (name, action) in crate::person_tools::PERSON_TOOLS {
-            assert_eq!(
-                remote_tool(name),
-                Some((Reach::Project, *action)),
-                "`{name}` in REMOTE_TOOLS"
-            );
+            // The Superagent's only (SPEC-487 INS-004): no token's agent updates Yulius.
+            let remote = (!crate::person_tools::SUPERAGENT_ONLY.contains(name))
+                .then_some((Reach::Project, *action));
+            assert_eq!(remote_tool(name), remote, "`{name}` in REMOTE_TOOLS");
             assert!(
                 crate::mcp::COCKPIT_TOOLS.contains(name),
                 "`{name}` in COCKPIT_TOOLS"

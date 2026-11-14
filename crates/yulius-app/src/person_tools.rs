@@ -45,6 +45,8 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("subscriptions", Action::View),
     ("task_switch", Action::Work),
     ("task_model", Action::Work),
+    ("instance", Action::View),
+    ("instance_update", Action::Work),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -54,6 +56,11 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("cd_deploy", Action::Work),
     ("variables_list", Action::View),
 ];
+
+/// The person's tools the remote MCP does not serve (review of slice 7, F3): updating or
+/// restarting the instance is decided for a superadmin's Superagent (2026-11-13), not for a
+/// long-lived token's agent.
+pub(crate) const SUPERAGENT_ONLY: &[&str] = &["instance_update"];
 
 /// The action the person's project tool `name` needs, when it is one.
 pub(crate) fn action(name: &str) -> Option<Action> {
@@ -153,6 +160,16 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
                         .find(|known| *known == action)
                 })
             {
+                about.insert("do".into(), json!(action));
+            }
+        }
+        // What an instance update did (review of slice 7, F4), when it is one of the actions.
+        "instance_update" => {
+            if let Some(action) = args.get("do").and_then(Value::as_str).and_then(|action| {
+                crate::instance_tools::INSTANCE_ACTIONS
+                    .into_iter()
+                    .find(|known| *known == action)
+            }) {
                 about.insert("do".into(), json!(action));
             }
         }
@@ -281,7 +298,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "task_close",
-            "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan says. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. Background shells it left running end with its session, and a task chained after it may start. Refused, with the reason, for a task in a turn (wait for its end, or interrupt it with task_stop), for one Yulius still has pull request news for (a merge armed or not told yet: it goes on by itself), and for one that waits or has ended. The task's owner only.",
+            "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan says. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. Background shells it left running end with its session, and a task chained after it may start. Refused, with the reason, for a task in a turn (wait for its end, or interrupt it with task_stop), for one Yulius still has pull request news for (a merge armed or not told yet: it goes on by itself), and for one that waits or has ended. Another person's task too, as task_stop.",
             task_ref.clone(),
             &[],
         ),
@@ -293,7 +310,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "tasks_bulk",
-            "One action on several tasks in one call: do is stop (as task_stop: a waiting task is cancelled, a running one interrupted), pause (as task_pause: frozen where it is, nothing lost), unpause, or message (as task_message, the same text to each). Name the tasks with numbers, or pass all: true for every task of the person's own that the action applies to: stop, all that have not ended; pause, all that run; unpause, all a person paused; message, all that run or have not started. Use it for \"pause all tasks\", \"stop everything\", \"tell all tasks ...\": never one call per task, and never a message asking tasks to wait when pause is meant. Each task gets what the single tool does; the answer lists done and refused (with the reason for each), and with all how many tasks of other people were left alone (others_left_alone). At most 100 tasks a call.",
+            "One action on several tasks in one call: do is stop (as task_stop: a waiting task is cancelled, a running one interrupted), pause (as task_pause: frozen where it is, nothing lost), unpause, or message (as task_message, the same text to each). Name the tasks with numbers, or pass all: true for every task of the person's own that the action applies to: stop, all that have not ended; pause, all that run; unpause, all a person paused; message, all that run or have not started. Use it for \"pause all tasks\", \"stop everything\", \"tell all tasks ...\": never one call per task, and never a message asking tasks to wait when pause is meant. Each task gets what the single tool does; the answer lists done and refused (with the reason for each), and with all how many tasks of other people were left alone (others_left_alone). Another person's task is stopped when named by number; pause, unpause and message are its owner's. At most 100 tasks a call.",
             json!({
                 "do": {"type": "string", "enum": ["stop", "pause", "unpause", "message"]},
                 "numbers": {"type": "array", "items": {"type": "integer"}, "description": "1 to 100 task numbers"},
@@ -358,6 +375,21 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
                 properties
             },
             &[],
+        ),
+        tool(
+            "instance",
+            "This Yulius instance as Settings and the Status panel show it to the person: the build it runs and whether an update is offered or under way (update), the host's CPU load, memory and disk, the sessions in use and their bound, the sandboxes and subscriptions (status). Use it for \"is Yulius up to date?\", \"is the server loaded?\".",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "instance_update",
+            "For a superadmin, the update and restart buttons of Settings, when the person asks: do check (look for an update now), update (install the offered update, or commit; tasks pause for the restart and go on after it), restart (restart the server with the build it runs; tasks pause meanwhile) or cancel (stop an update that is building or pausing tasks). The person's ask is the confirmation the button asks for. Their refusals come back as they are (no update helper on this server, nothing offered, an update or a move under way). Anyone else is refused. Your own session ends with the restart and comes back after it.",
+            json!({
+                "do": {"type": "string", "enum": crate::instance_tools::INSTANCE_ACTIONS},
+                "commit": {"type": "string", "description": "update: the full commit id to install (default: the offered one)"}
+            }),
+            &["do"],
         ),
         tool(
             "ci_runs",
@@ -440,6 +472,13 @@ impl App {
             "merge_queue" => self.merge_queue_for_person(ctx, &sandbox.id).await,
             // The Subscriptions panel as everyone signed in sees it (SPEC-487 SUB-001).
             "subscriptions" => record(&self.capacity_view(ctx).await?),
+            // The instance (SPEC-487 INS-001 to INS-003).
+            "instance" => self.instance_for_person(ctx).await,
+            "instance_update" => {
+                let action = args.get("do").and_then(Value::as_str).unwrap_or_default();
+                let commit = args.get("commit").and_then(Value::as_str);
+                self.instance_update_for_person(ctx, action, commit).await
+            }
             "task_switch" => {
                 let task = self.agent_task_ref(project, args).await?;
                 let name = match args.get("subscription") {
@@ -771,6 +810,14 @@ mod tests {
             json!({"task": 7})
         );
         assert_eq!(subject("subscriptions", &json!({"number": 7})), json!({}));
+        assert_eq!(
+            subject("instance_update", &json!({"do": "restart"})),
+            json!({"do": "restart"})
+        );
+        assert_eq!(
+            subject("instance_update", &json!({"do": "x".repeat(1 << 20)})),
+            json!({})
+        );
         // A decision on a held prompt names the task and the decision, when it is one.
         assert_eq!(
             subject("task_held_prompt", &json!({"number": 5, "action": "after"})),

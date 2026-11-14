@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::permission::Action;
+use yulius_domain::task_access::{self, TaskAction};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -102,10 +103,14 @@ impl App {
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
         }
-        // Only the owner types into the task (SPEC-070 R3).
-        let can_write = level.allows(Action::Work)
-            && ctx.user.disabled_at.is_none()
-            && task.owner == ctx.user.id;
+        // Typing into the task is control: its owner's alone (SPEC-490 OWN-004).
+        let can_write = ctx.user.disabled_at.is_none()
+            && task_access::decide(
+                TaskAction::Control,
+                level,
+                crate::tasks::owns(&task, &ctx.user.id),
+            )
+            .is_ok();
         let viewer_id = runtime.hub.new_viewer_id();
         if can_write {
             let before = runtime.hub.size();
@@ -347,17 +352,17 @@ impl App {
         .await
     }
 
-    /// Whether the caller still owns the task and has write access to its sandbox (SPEC-070).
+    /// Whether the caller still controls the task: they own it and have write access to its
+    /// sandbox (SPEC-070, SPEC-490 OWN-004).
     pub async fn can_work(&self, ctx: &AuthContext, task_id: &TaskId) -> bool {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return false;
         };
-        if ctx.user.disabled_at.is_some() || task.owner != ctx.user.id {
-            return false;
-        }
-        self.require_for(ctx, &task.sandbox_id, Action::Work)
-            .await
-            .is_ok()
+        ctx.user.disabled_at.is_none()
+            && self
+                .require_task(ctx, &task, TaskAction::Control)
+                .await
+                .is_ok()
     }
 
     /// Whether the caller can still view the task.
