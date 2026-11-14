@@ -1150,7 +1150,10 @@ export function createSidebar(ctx) {
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
     row.num.title = `Task #${task.number}`;
-    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
+    // A request for control of the viewer's own task waits for their answer (SPEC-490 OWN-008).
+    const asks = task.control_request && !otherOwner(task, ctx.store.state.me?.user?.login) ? `@${task.control_request.by.login} asks for control` : null;
+    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null,
+      asks ? h('span', { class: 'badge badge-warn', title: asks }, icon('lock', { size: 12 }), h('span', { class: 'sr-only' }, asks)) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
     row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;

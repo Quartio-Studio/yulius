@@ -5,7 +5,7 @@
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
 // on (Settings), entries also reach the operating system while the tab is in the background.
 
-import { h, icon, iconButton, setChildren, popoverFocus, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, popoverFocus, keepFocus, toast } from './dom.js';
 import { relShort, dateTime } from './format.js';
 import { taskInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -179,6 +179,23 @@ export function createNotificationCenter(ctx) {
     const current = ctx.currentTask();
     return Boolean(current && current.id === taskId && document.visibilityState === 'visible' && document.hasFocus());
   }
+
+  // A request for control of one of the viewer's tasks (SPEC-490 OWN-008): heard wherever they
+  // are, as an entry under the bell (once per request, also across a reload) and a toast that
+  // opens the task, where they hand it over or decline. An answered request's entry is read.
+  watch('task', (task) => {
+    const me = ctx.store.state.me?.user?.login;
+    const request = task.control_request;
+    if (!me || !task.owner || task.owner.login !== me) return;
+    if (!request) { markRead((n) => n.key && n.key.startsWith(`control:${task.id}:`)); return; }
+    const key = `control:${task.id}:${request.by.login}:${request.at}`;
+    if (items.some((n) => n.key === key) || watching(task.id)) return;
+    const title = `@${request.by.login} asks for control of #${task.number} ${task.title || 'Task'}`;
+    const sandbox = sandboxOf(task.sandbox_id);
+    const route = taskRoute(task);
+    add({ kind: 'warn', title, detail: `It would act on GitHub as them${sandbox ? ` · ${sandbox.name}` : ''}`, route, key, once: true });
+    toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  });
 
   watch('task', (task) => {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks

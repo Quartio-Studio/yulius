@@ -188,3 +188,25 @@ test('a read answered before a hand-over and arriving after it changes nothing b
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
 });
+
+// SPEC-490 OWN-008 (AC-8): a request for control reaches the owner wherever they are: a toast
+// that opens the task, an entry under the bell, and a mark on the task's row in the sidebar until
+// it is answered.
+test('the owner hears of a request for control on another page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
+  const asked = '@anna-q asks for control of #12 Checkout API';
+  await expect(browser.locator('.toast').filter({ hasText: asked })).toBeVisible();
+  const mark = browser.locator('.task-row:has-text("Checkout API") [title="@anna-q asks for control"]');
+  await expect(mark).toBeVisible();
+  await screen.getByRole('button', /^Notifications \(1 unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${asked}`))).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Escape');
+  await browser.locator('.toast').filter({ hasText: asked }).getByRole('button', 'Open').click();
+  await expect(screen.getByRole('button', 'Hand over')).toBeVisible();
+  // Answered elsewhere: the mark goes.
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: null });
+  await expect(mark).toBeHidden();
+});
