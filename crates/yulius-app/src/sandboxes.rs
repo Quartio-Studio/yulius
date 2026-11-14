@@ -134,7 +134,7 @@ impl App {
                 .is_some_and(yulius_domain::task::Activity::is_idle);
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
-        let (pull, plan_open) = if finished {
+        let (pull, plan_open, spec_unfinished) = if finished {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                 Some(observed) => observed,
                 // Not read since the server started: a merge recorded earlier is still known.
@@ -145,9 +145,9 @@ impl App {
                     .map(|_| PullSignal::Merged),
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            (pull, plan_open)
+            (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {
-            (None, false)
+            (None, false, false)
         };
         Ok(AttentionFacts {
             status: task.status,
@@ -156,6 +156,7 @@ impl App {
             browser_request: requested.contains(task.id.as_str()),
             chain_blocked,
             plan_open,
+            spec_unfinished,
             goal_unfinished: finished && self.goal_unfinished(&task.id),
             background_shells: finished
                 && self
@@ -211,6 +212,38 @@ impl App {
             .map_err(|_| crate::error::AppError::NotFound)?;
         let (record, level) = self.require_for(ctx, &id, Action::View).await?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+impl App {
+    /// Whether the task's spec, as Yulius last read it, says that its work is not finished
+    /// (SPEC-491 DON-004): the task's own record that work it declared is left, however
+    /// complete its plan reads. A task without a spec, or whose spec was never read, declares
+    /// its work by its steps alone; a status that cannot be read counts as none.
+    pub(crate) async fn spec_unfinished(&self, task: &yulius_domain::ids::TaskId) -> bool {
+        use yulius_domain::spec_format::SpecStatus;
+        matches!(
+            self.deps.store.spec_status(task).await,
+            Ok(Some(status)) if SpecStatus::parse(&status).is_some_and(SpecStatus::work_left)
+        )
+    }
+
+    /// Keeps what the task's spec says of its work, whenever Yulius reads the spec (DON-004);
+    /// `None` when the task has no spec (any more). A change is published to the pages that show
+    /// the task. A failed write is logged and changes nothing.
+    pub(crate) async fn note_spec_status(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        status: Option<yulius_domain::spec_format::SpecStatus>,
+    ) {
+        let status = status.map(yulius_domain::spec_format::SpecStatus::as_str);
+        match self.deps.store.set_spec_status(task, status).await {
+            Ok(true) => self.publish_task(task).await,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(task = %task, error = %err, "keeping the spec's status failed");
+            }
+        }
     }
 }
 

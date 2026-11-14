@@ -5,7 +5,10 @@
 Accepted. Specified in [SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md)
 (slice 1, CHN-001 to CHN-006); task #469. Amends
 [ADR-0012](0012-task-intake-and-chains.md) and [ADR-0018](0018-task-start-rules.md) (when a
-chained task starts) and SPEC-085 STT-002 (what "waits for Yulius" means).
+chained task starts) and SPEC-085 STT-002 (what "waits for Yulius" means). Amended by
+[0332](0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md): a pull
+request counts as tested only when it would merge, and a task whose spec does not say `done`
+has work left ("Final states stay as they were" holds for an achieved goal).
 
 ## Context
 

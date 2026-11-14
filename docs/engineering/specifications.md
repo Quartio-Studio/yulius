@@ -10,7 +10,12 @@ The form: a frontmatter with `yulius-task` (the task's id) and `status`, then th
 Context, Requirements, Plan (a `- [ ]` checklist), Acceptance criteria, Test plan and Decisions.
 The status moves draft → approved (optional) → in-progress → done, or abandoned; `done` needs
 every Plan item ticked and an Evidence section with the commands run and their results.
-`delivery_merge` refuses a head whose spec does not validate.
+`delivery_merge` refuses a head whose spec does not validate. The status is also the task's own
+record of whether its work is finished: Yulius keeps it with the task, and a task whose spec
+says `draft`, `approved` or `in-progress` is not Done, however complete its plan reads, so the
+tasks waiting for it do not start. A task that delivers slice by slice keeps `in-progress` until
+its last slice and sets `done` with it
+([ADR-0332](../decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
 
 Use stable requirement IDs and acceptance scenarios. Separate user requirements, source
 observations and proposed defaults. Decide open questions with a reversible default and

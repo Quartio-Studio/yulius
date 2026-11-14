@@ -1484,6 +1484,7 @@ mod tests {
                 state: "open".into(),
                 base: "dev".into(),
                 head: "feat/63".into(),
+                conflicts: false,
                 checks: "pending".into(),
             }),
             spec_path: Some(".ai/specs/SPEC-080.md".into()),

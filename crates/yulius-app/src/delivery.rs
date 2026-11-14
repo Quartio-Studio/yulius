@@ -680,6 +680,19 @@ fn pull_view(pull: &GhPull, checks: &str) -> PullView {
         base: pull.base.clone(),
         head: pull.head.clone(),
         checks: checks.to_owned(),
+        // Decided per task by `App::pull_conflicts`, never by GitHub's flag alone (SPEC-491).
+        conflicts: false,
+    }
+}
+
+/// The checks word of an open pull request as "tested" reads it (SPEC-491 DON-002): where the
+/// delivery profile requires checks, a pull request whose checks have not reported is `pending`,
+/// not "none required" (#68). The Git overview and `task_is_done` both ask here.
+pub(crate) fn tested_checks_word(profile: &DeliveryProfile, word: &'static str) -> &'static str {
+    if profile.require_checks && word == "none" {
+        "pending"
+    } else {
+        word
     }
 }
 
@@ -1446,6 +1459,11 @@ impl App {
         let path = match self.task_spec_path(task, &worktree).await {
             Ok(path) => path,
             Err(dir) => {
+                // No spec (any more) in a worktree that is there: nothing it said is left to
+                // keep the task from Done (review of SPEC-491, m2).
+                if worktree.is_dir() {
+                    self.note_spec_status(&task.id, None).await;
+                }
                 return SpecCheck::problem(
                     None,
                     format!(
@@ -1458,6 +1476,7 @@ impl App {
         match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
             Ok(text) => {
                 let report = spec_format::validate_spec_for(&text, &task.id);
+                self.note_spec_status(&task.id, report.status).await;
                 SpecCheck {
                     path: Some(path),
                     valid: report.is_valid(),
@@ -1982,20 +2001,14 @@ impl App {
         let checks_access = self
             .dlv_checks_access(&sandbox, &checks_unreadable, Some(&ctx.user))
             .await;
-        // With required checks, a pull request whose checks have not reported yet is pending,
-        // not "none": it is not tested until they pass (#68).
         let checks_of = |number: u64| {
             let state = checks_by_pr
                 .iter()
                 .find(|(n, _)| *n == number)
                 .map_or("unknown", |(_, state)| *state);
-            if profile.require_checks && state == "none" {
-                "pending"
-            } else {
-                state
-            }
+            tested_checks_word(&profile, state)
         };
-        let pulls: Vec<PullView> = open_pulls
+        let mut pulls: Vec<PullView> = open_pulls
             .iter()
             .map(|p| pull_view(p, checks_of(p.number)))
             .collect();
@@ -2025,6 +2038,17 @@ impl App {
                     .map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
+            // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
+            if let Some(pull) = open_pulls.iter().find(|p| p.head == branch)
+                && self.pull_conflicts(&task, &sandbox, pull).await
+            {
+                if let Some(pr) = view.pr.as_mut() {
+                    pr.conflicts = true;
+                }
+                if let Some(listed) = pulls.iter_mut().find(|p| p.number == pull.number) {
+                    listed.conflicts = true;
+                }
+            }
             if cloned
                 && self
                     .deps
@@ -2069,6 +2093,12 @@ impl App {
                     &pull,
                     if is_open(&pull) { "unknown" } else { "none" },
                 ));
+                if is_open(&pull)
+                    && self.pull_conflicts(&task, &sandbox, &pull).await
+                    && let Some(pr) = view.pr.as_mut()
+                {
+                    pr.conflicts = true;
+                }
                 let observed_state = if pull.merged {
                     PrState::Merged
                 } else if is_open(&pull) {
@@ -2108,12 +2138,13 @@ impl App {
                     base: profile.integration_branch.clone(),
                     head: branch.clone(),
                     checks: "none".into(),
+                    conflicts: false,
                 });
             }
             if let Some(signal) = view
                 .pr
                 .as_ref()
-                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks))
+                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
             {
                 observed.insert(task.id.clone(), signal);
             }
@@ -3264,7 +3295,7 @@ impl App {
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
-    /// shell runs, and the goal is achieved or the plan is complete with the change merged. The
+    /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
@@ -3287,18 +3318,28 @@ impl App {
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
-        match self.deps.store.steps(&task.id).await {
-            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
-            _ => return false,
+        if self.work_left(&task.id).await {
+            return false;
         }
         matches!(record, Some(record) if past_merge(&record.stage))
+    }
+
+    /// Whether work the task declared is left (SPEC-491 DON-004): steps of its plan not
+    /// finished, or a spec that does not say `done`. A plan that cannot be read counts as open.
+    async fn work_left(&self, task: &TaskId) -> bool {
+        match self.deps.store.steps(task).await {
+            Ok(steps) if !crate::sandboxes::plan_open(&steps) => self.spec_unfinished(task).await,
+            _ => true,
+        }
     }
 
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
     /// ended (the agent is idle, or the session was closed), no background shell of the agent is
     /// known to run, and either Claude Code recorded its goal as achieved (activity `done`) or
-    /// its plan is complete and its pull request is merged, or open with checks green or none
-    /// required, and Yulius has no news of that pull request left for its agent
+    /// no work it declared is left (its plan is complete and its spec does not say otherwise,
+    /// SPEC-491 DON-004) and its pull request is merged, or open and tested (mergeable into
+    /// its base, with checks green or none required: [`PullSignal::from_wire`], SPEC-491
+    /// DON-001), and Yulius has no news of that pull request left for its agent
     /// ([`App::pr_news_due`]). Anything unknown (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
@@ -3325,10 +3366,10 @@ impl App {
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
-        // A pull request makes a task Done only when its plan is complete (#139, TSK-014).
-        match self.deps.store.steps(&task.id).await {
-            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
-            _ => return false,
+        // A pull request makes a task Done only when no work it declared is left: its plan is
+        // complete (#139, TSK-014) and its spec does not say otherwise (SPEC-491 DON-004).
+        if self.work_left(&task.id).await {
+            return false;
         }
         let Some(record) = record else {
             return false;
@@ -3354,11 +3395,43 @@ impl App {
                 // Merged on GitHub before the record says so: its news is as due as then.
                 PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
                 PrState::Open => {
-                    matches!(observed.checks, ChecksState::Success | ChecksState::None)
+                    let Some(pull) = observed.pr.as_ref() else {
+                        return false;
+                    };
+                    let word = if observed.checks_errored {
+                        "error"
+                    } else {
+                        observed.checks.as_str()
+                    };
+                    // Tested, by the reading the sidebar and the counts have (DON-001).
+                    PullSignal::from_wire(
+                        "open",
+                        tested_checks_word(&profile, word),
+                        self.pull_conflicts(task, &sandbox, pull).await,
+                    ) == Some(PullSignal::Tested)
                 }
                 PrState::Absent | PrState::Closed => false,
             },
             Err(_) => false,
+        }
+    }
+
+    /// Whether an open pull request of `task` conflicts with its base (SPEC-491 DON-001). Yulius's
+    /// own merge of its head with the integration branch, as last fetched and with the clone's
+    /// merge drivers, decides (what the pull request watch tells the agent, PRN-004): GitHub
+    /// knows nothing of the union rules Yulius gives the changes log and the decision index, so
+    /// it calls a collision there a conflict that Yulius's merge resolves (review of SPEC-491,
+    /// M1). Only where the clone cannot answer (no worktree) does GitHub's flag decide; a list
+    /// of pull requests carries none, so there it is no conflict.
+    pub(crate) async fn pull_conflicts(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pull: &GhPull,
+    ) -> bool {
+        match self.local_conflict(task, sandbox, &pull.head_sha).await {
+            Some(conflicts) => conflicts,
+            None => pull.mergeable == Some(false),
         }
     }
 
@@ -4884,10 +4957,24 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let nudges: Vec<String> = yulius_domain::steps::plan_nudges(&plan, !spec.required)
+        let mut nudges: Vec<String> = yulius_domain::steps::plan_nudges(&plan, !spec.required)
             .iter()
             .map(ToString::to_string)
             .collect();
+        // Every Plan item ticked beside a status that does not say done (SPEC-491 DON-007).
+        if let Some(report) = &spec.report
+            && !plan.is_empty()
+            && report
+                .plan
+                .iter()
+                .filter(|item| item.depth == 0)
+                .all(|item| item.checked)
+            && let Some(note) = report
+                .status
+                .and_then(spec_format::SpecStatus::unfinished_note)
+        {
+            nudges.push(note);
+        }
         // A task that needs no spec and has none has nothing to fix: no "No spec is
         // registered…" problem beside "needs no spec" (F 2026-10-11).
         let unneeded = !spec.required && spec.path.is_none();
