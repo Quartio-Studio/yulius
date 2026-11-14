@@ -6,7 +6,8 @@ Accepted. Specified in [SPEC-335](../../.ai/specs/SPEC-335-superagents-should-be
 task #319. Extends [0029](0029-cockpit-manages-through-mcp.md) (the Superagent's tools act in its
 own sandbox) with one tool that reaches the person's other sandboxes. Leaves
 [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md) (the approval bypass)
-unchanged.
+unchanged. Amended by [0333](0333-the-superagents-requests-to-its-person-last-until-answered.md)
+(SPEC-487): a request lasts until answered or withdrawn, past its call and a restart.
 
 ## Context
 
