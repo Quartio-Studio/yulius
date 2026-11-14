@@ -159,7 +159,10 @@ export function statusInfo(task) {
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
       const shells = backgroundShells(task);
-      return shells ? stillWorking(shells, task.background_shells_since) : { ...DONE };
+      if (shells) return stillWorking(shells, task.background_shells_since);
+      // Its merge is armed: Yulius merges it and tells the agent, an achieved goal's too
+      // (SPEC-487 CHN-001).
+      return task.merge_armed === true ? { ...WAITING_ON_YULIUS } : { ...DONE };
     }
     if (activity === 'waiting') {
       // Background shells keep the agent going: it wakes by itself when they report, so the next
@@ -388,8 +391,9 @@ function taskInfoOf(task, actionRequests, pr) {
     const shells = backgroundShells(task);
     if (shells) return { ...info, ...stillWorking(shells, task.background_shells_since), pr };
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
-    // An achieved goal is done whatever the checks are still doing (TSK-014).
-    if (task.activity === 'done') return done;
+    // An achieved goal is done whatever the checks are still doing (TSK-014), unless its merge
+    // is armed (SPEC-487 CHN-001).
+    if (task.activity === 'done' && task.merge_armed !== true) return done;
     // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
     if (task.yulius_wait === true) return { ...info, pr };
     // Tested means known green (or no required checks); running or unreadable checks are not.
@@ -401,14 +405,16 @@ function taskInfoOf(task, actionRequests, pr) {
 
 /**
  * The counter a task adds to on Home's cards and the sandbox tabs (#170), from its taskInfo:
- * `needs`, `queued` (queued or chained: the Working group's tasks in line) or `working` (the rest
- * of the Working group), or null for Done and ended tasks. So a card's working + queued is the
- * sidebar's Working count. The server counts the same way (`AttentionFacts::group`).
+ * `needs`, `queued` (queued, chained, prepared, or the onboarding task waiting for Start
+ * onboarding: the Working group's tasks in line) or `working` (the rest of the Working group), or
+ * null for Done and ended tasks. So a card's working + queued is the sidebar's Working count. The
+ * server counts the same way (`AttentionFacts::group`).
  */
 export function counter(task, info) {
   if (info.group === 'needs') return 'needs';
   if (info.group !== 'working') return null;
-  return task.status === 'queued' || task.status === 'chained' || task.status === 'prepared' ? 'queued' : 'working';
+  const inLine = task.status === 'queued' || task.status === 'chained' || task.status === 'prepared' || info.notStarted === true;
+  return inLine ? 'queued' : 'working';
 }
 
 const RANK = { read: 1, write: 2, admin: 3 };

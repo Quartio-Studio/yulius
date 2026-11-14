@@ -3185,7 +3185,8 @@ the merge and stops, the checks pass, the merge queue merges, and the pull reque
 the news into the session, which then goes on (the next slice, the closing summary). While
 Yulius has such news for the agent, the task goes on by itself: `yulius_wait` is true, the list
 reads "Waiting for checks or merge", and `task_is_done` answers no, so no chain or start rule
-starts on it, no supertask takes it for finished and Home counts it as working. One rule says
+starts on it (an armed merge also keeps an achieved goal's task out of Done, and `merge_armed`
+says so in the task's view; archiving it is refused rather than ending the merge), no supertask takes it for finished and Home counts it as working. One rule says
 when (`news_due` in `pr_watch.rs`, asked through `App::pr_news_due`): a merge is armed or being
 decided (known from the armed merges' file until a restarted server put them back); or, for a
 task the watch types into, news was typed and its turn has not begun, a merge the watch saw

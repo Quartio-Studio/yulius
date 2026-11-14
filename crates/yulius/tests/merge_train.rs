@@ -1928,6 +1928,71 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
     Ok(())
 }
 
+/// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
+/// achieved is not Done while the merge is armed: a task chained after it waits, Home's counts
+/// it as working, and archiving it is refused (it would have ended the armed merge, said to
+/// nobody); the merge stays armed.
+#[tokio::test]
+async fn an_achieved_goal_with_an_armed_merge_is_not_done() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    assert!(
+        f.h.store
+            .transition_task(
+                &first,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                Timestamp(10),
+            )
+            .await?
+    );
+    app.advance_chains(&first).await;
+    assert_eq!(status_of_task(&f, &next).await, Some(TaskStatus::Chained));
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(shown.body["merge_armed"], true, "{}", shown.body);
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        (
+            sandbox.body["counts"]["running"].as_u64(),
+            sandbox.body["counts"]["queued"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "{}",
+        sandbox.body
+    );
+    let archived = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/archive",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(archived.status, StatusCode::CONFLICT, "{}", archived.body);
+    assert_eq!(status_of_task(&f, &first).await, Some(TaskStatus::Running));
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(
+        shown.body["merge_armed"], true,
+        "still armed: {}",
+        shown.body
+    );
+    Ok(())
+}
+
 /// A task chained after `t1`, created by Alice (who has a Claude account connected, SPEC-246).
 async fn chained_after_t1(f: &Fixture) -> BoxResult<TaskId> {
     use yulius_app::model::{AccountRecord, AccountStatus};
