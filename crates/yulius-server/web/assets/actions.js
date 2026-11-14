@@ -1,6 +1,6 @@
 // Task actions (UI-013, §6.3) and shared dialogs: feedback, delivery status, deploy output,
-// sandbox create/import and removal. Delivery is shown, not driven: agents merge, deploy and
-// release as part of their workflow (GIT-002), so no dialog here merges or releases. Tasks are
+// sandbox create/import and removal. Delivery is shown, not driven: agents merge (GIT-002) and a
+// person releases on the CD page (ADR-0110), so no dialog here merges or releases. Tasks are
 // subscription-agnostic (F 2026-10-10): the pool picks and changes a task's Claude subscription by
 // itself, so no action chooses one.
 
@@ -563,7 +563,7 @@ export function openDeliveryDialog(ctx, task) {
             next.map((action) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-ok' }, icon('check', { size: 12 })), `${actionLabel(action)}: ready`)),
             blocked.map((b) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-warn' }, icon('clock', { size: 12 })), h('span', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))))
           : h('span', { class: 'muted small' }, 'Nothing is pending at this stage.')),
-      h('p', { class: 'muted xs' }, 'Agents open, merge, deploy and release as part of their workflow, following this sandbox’s delivery profile. This shows where the task is.'),
+      h('p', { class: 'muted xs' }, 'Agents open and merge pull requests, following this sandbox’s delivery profile; a person releases on the CD page. This shows where the task is.'),
     );
   };
   load();

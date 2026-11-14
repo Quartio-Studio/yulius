@@ -38,7 +38,8 @@ test('members who cannot change the GitHub App do not see it', async ({ app, scr
 });
 
 // "git should be presentation layer strictly because all responsibilities will be handled by
-// agents" (F 2026-10-10, #136): status, links and output only; agents merge, deploy and release.
+// agents" (F 2026-10-10, #136): status, links and output only; agents merge, and a person
+// releases on the CD page (ADR-0110; SPEC-483 SHP-004: the page said agents release).
 const ACTIONS = /^(merge|release|deploy|mark .* verified|verify|open pull request|deliver\b)/i;
 
 test('the Git page shows delivery state without merge, release, deploy or verify buttons', async ({ app, browser, screen }) => {
@@ -46,7 +47,16 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
   await expect(screen.getByRole('heading', /^Where every task is/)).toBeVisible();
   await expect(screen.getByRole('heading', /^Blocked/)).toBeVisible();
-  await expect(screen.getByText(/Agents merge and release as part of their workflow/)).toBeVisible();
+  // Studio puts every merge live (auto_promote): Yulius releases it, not an agent.
+  await expect(screen.getByText(/Agents merge; Yulius releases each merge\./)).toBeVisible();
+  await expect(screen.getByText(/Agents merge and release/)).toHaveCount(0);
+  const sentences = await browser.evaluate(async () => {
+    const { profileSentence } = await import('/assets/pages/git.js' as string);
+    const profile = { integration_branch: 'dev', production_branch: 'main', environments: [] };
+    return [profileSentence(profile), profileSentence({ ...profile, auto_promote: true })];
+  });
+  expect(sentences[0]).toContain('Agents merge; a person releases on the CD page.');
+  expect(sentences[1]).toContain('Agents merge; Yulius releases each merge.');
   await expect(screen.getByRole('link', 'Pull requests')).toHaveAttribute('href', /\/pulls$/);
   const labels = await browser.evaluate(() => [...document.querySelectorAll('#main button, #main a.btn')].map((b) => (b.textContent ?? '').trim()));
   expect(labels.filter((label) => ACTIONS.test(label))).toEqual([]);
@@ -55,7 +65,7 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   await browser.locator('.dl-deliver').first().click();
   const dialog = screen.getByRole('dialog', /^Delivery · #/);
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/Agents open, merge, deploy and release as part of their workflow/)).toBeVisible();
+  await expect(dialog.getByText(/Agents open and merge pull requests, following this sandbox’s delivery profile; a person releases on the CD page\./)).toBeVisible();
   const dialogLabels = await browser.evaluate(() => [...document.querySelectorAll('dialog[open] button')].map((b) => (b.textContent ?? '').trim()));
   expect(dialogLabels.filter((label) => ACTIONS.test(label))).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);

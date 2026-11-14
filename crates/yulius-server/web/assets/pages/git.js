@@ -1,6 +1,6 @@
 // Git page (GIT-001/002, DLV-001..005, UI-025): delivery at a glance, as a presentation layer.
-// Agents merge, deploy and release as part of their workflow, governed by the delivery profile;
-// this page only shows where things are. Top to bottom: how this project ships (one sentence from
+// Agents merge, governed by the delivery profile, and a person releases on the CD page
+// (ADR-0110); this page only shows where things are. Top to bottom: how this project ships (one sentence from
 // the profile), what is live and what is waiting to go live, what is stuck, where every task is on
 // the way to production (a board with columns from the profile), and recent activity. Its only
 // controls are harmless: refresh, links to GitHub, deploy output, a task's delivery details and,
@@ -42,8 +42,8 @@ export function profileSentence(profile) {
   const prod = profile.production_branch || 'production';
   const envs = environments(profile);
   const checks = profile.require_checks === false ? 'Checks don’t block merging.' : 'Merges wait for green checks.';
-  const agents = 'Agents merge and release as part of their workflow; this page shows where things are.';
-  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} ${agents}`;
+  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} Agents merge; Yulius releases each merge. This page shows where things are.`;
+  const agents = 'Agents merge; a person releases on the CD page. This page shows where things are.';
   let text = `Merged work collects on ${int}`;
   if (envs.integration.length) text += `, is checked on ${listNames(envs.integration.map((e) => e.name))}`;
   text += `, then is released to ${prod}`;
@@ -501,7 +501,7 @@ async function openProfileEditor(ctx, sandbox) {
       h('label', { class: 'check' }, autoPromote, h('span', null, `Release automatically after each merge through ${BRAND.name} (continuous, like Studio)`)),
       h('label', { class: 'check' }, requireChecks, h('span', null, 'Merges wait for green checks')),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environments'), envHost),
-      h('p', { class: 'muted xs' }, 'Agents follow this profile when they merge, deploy and release. Environment commands are shell text run on the server (/bin/sh -c in the sandbox clone). Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),
+      h('p', { class: 'muted xs' }, 'Agents follow this profile when they merge. Environment commands are shell text run on the server (/bin/sh -c in the run’s own checkout of the stage branch, contained as a CD run). Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),
     actions: [
       { label: 'Cancel', value: false },
       { label: 'Save profile', kind: 'primary', run: async () => {
