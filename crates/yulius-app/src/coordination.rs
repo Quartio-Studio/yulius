@@ -122,10 +122,20 @@ impl App {
         requested: &std::collections::HashSet<String>,
         person: bool,
     ) -> AppResult<Value> {
+        let group = self.shown_group(task, requested).await?;
+        self.task_brief_shown(task, group, person).await
+    }
+
+    /// [`Self::task_brief_among`] for a task whose group is read already.
+    async fn task_brief_shown(
+        &self,
+        task: &TaskRecord,
+        group: yulius_domain::task::TaskGroup,
+        person: bool,
+    ) -> AppResult<Value> {
         let mut brief = self.task_brief_plain(task).await?;
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
         // QST-001): what its page says, so nobody has to paste it.
-        let group = self.shown_group(task, requested).await?;
         brief["shows"] = json!(crate::task_questions::group_name(group));
         if let Some(fields) = brief.as_object_mut() {
             fields.extend(self.waits_why(task, person).await);
@@ -193,14 +203,12 @@ impl App {
                 break;
             }
             // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
-            if scope == "needs_you"
-                && self.shown_group(t, &requested).await?
-                    != yulius_domain::task::TaskGroup::NeedsYou
-            {
+            let group = self.shown_group(t, &requested).await?;
+            if scope == "needs_you" && group != yulius_domain::task::TaskGroup::NeedsYou {
                 continue;
             }
             out.push(
-                self.task_brief_among(t, &requested, caller.task.is_none())
+                self.task_brief_shown(t, group, caller.task.is_none())
                     .await?,
             );
         }

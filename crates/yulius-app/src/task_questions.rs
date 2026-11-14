@@ -84,9 +84,16 @@ impl App {
                 why.insert(key.to_owned(), value);
             }
         };
+        // An ended task waits for nobody (ADR-0111): a request left from before its end is not
+        // shown, as its summary shows none.
+        let request = if task.status.is_resting() {
+            None
+        } else {
+            self.needs_you_view(&task.id).await
+        };
         add(
             "needs_you",
-            self.needs_you_view(&task.id).await.and_then(|view| {
+            request.and_then(|view| {
                 // A request stored before its words were cleaned is shown as one now is.
                 let mut view = serde_json::to_value(view).ok()?;
                 for key in ["action", "happened", "problem", "link"] {
@@ -140,6 +147,14 @@ impl App {
     pub async fn dismiss_task_question(&self, ctx: &AuthContext, id: &str) -> AppResult<String> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let store = &self.deps.store;
+        if task.status.is_resting() {
+            return Err(AppError::Conflict(format!(
+                "task #{} asks nothing of a person that can be dismissed: it has ended ({}), \
+                 and an ended task waits for nobody",
+                task.number,
+                task.status.as_str()
+            )));
+        }
         let Some(request) = store.task_needs_you(&task.id).await? else {
             let flagged = self.attention_view(&task).await.map(|flag| {
                 let said = [flag.problem, flag.action]
@@ -184,7 +199,8 @@ impl App {
             tracing::warn!(task = %task.id, error = %err, "a dismissed request was not audited");
         }
         self.publish_task(&task.id).await;
-        Ok(request.action)
+        // What was asked, as the brief shows it.
+        Ok(crate::attention::shown_line(&request.action, SHOWN_TEXT_CHARS).unwrap_or_default())
     }
 
     /// Decides the prompt Yulius held in `task` (TSK-013), for the task's owner, as its card

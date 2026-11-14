@@ -1036,6 +1036,39 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     );
     assert!(body.len() <= 24_000, "{}", body.len());
 
+    // An entry that shows no text (a system note) at the very end does not take the place of
+    // the last one that does (review of slice 4, R2-2).
+    let noted = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "noted",
+        "A session with a note at its end",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let noted_lines = [
+        line(&json!({"type": "user", "message": {"role": "user", "content": "summarise the work"}})),
+        line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": format!("summary {}", "y".repeat(1500))}
+        ]}})),
+        line(&json!({"type": "system", "subtype": "informational", "content": "Conversation compacted"})),
+    ]
+    .concat();
+    let noted_copy = data.join("copies/noted.jsonl");
+    write(&noted_copy, &noted_lines)?;
+    task_session(&h.store, &noted, "sess-noted", &noted_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": noted.number, "tail": true, "max_chars": 1000}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("summary yyy"), "{end}");
+
     // The end, or a place: not both.
     let (both, err) = mcp_tool(
         &internal,

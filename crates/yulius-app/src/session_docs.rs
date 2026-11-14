@@ -1402,16 +1402,18 @@ impl App {
         let text = if tail {
             // The bound keeps the end: entries are left out at the front until the text they
             // show fits (the last one is shown whatever its size, cut at its own end).
+            // Entries that show no text (a system note) do not count as that last one.
             let entries = page.entries.as_slice();
             let mut first = entries.len().saturating_sub(1);
-            let mut shown = 0;
+            let (mut shown, mut shown_before) = (0, 0);
             for (index, entry) in entries.iter().enumerate().rev() {
                 shown += transcripts::render_text(std::slice::from_ref(entry), usize::MAX)
                     .0
                     .len();
-                if shown > max_chars && index + 1 < entries.len() {
+                if shown > max_chars && index + 1 < entries.len() && shown_before > 0 {
                     break;
                 }
+                shown_before = shown;
                 first = index;
             }
             let entries = &entries[first..];

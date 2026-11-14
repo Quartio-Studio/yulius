@@ -5809,6 +5809,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         ("t-held", "u-alice"),
         ("t-work", "u-alice"),
         ("t-carol", "u-carol"),
+        ("t-term", "u-alice"),
     ] {
         let task = support::seed_task(&f.h, id, "s1", owner, TaskStatus::Running, None).await?;
         support::seed_live_attempt(&f.h, id, &format!("tok-{id}")).await?;
@@ -5823,8 +5824,8 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
             .await?;
         seeded.push(task);
     }
-    let [ask, flag, held, work, carols] = &seeded[..] else {
-        return Err("five tasks".into());
+    let [ask, flag, held, work, carols, term] = &seeded[..] else {
+        return Err("six tasks".into());
     };
     let asked = |action: &str| NeedsYouRecord {
         action: action.into(),
@@ -5848,6 +5849,12 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     assert!(
         store
             .flag_attention(&flag.id, None, Some(&reason), now)
+            .await?
+    );
+    let asked_there = AttentionRecord::terminal(Some("Allow Bash(rm -rf build)?"));
+    assert!(
+        store
+            .flag_attention(&term.id, None, Some(&asked_there), now)
             .await?
     );
     store
@@ -5889,7 +5896,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     let (open, is_error) =
         cockpit_tool(&f, &token, "tasks_list", json!({"scope": "needs_you"})).await?;
     assert!(!is_error, "{open}");
-    let mut waiting = vec![n(ask), n(flag), n(held), n(carols)];
+    let mut waiting = vec![n(ask), n(flag), n(held), n(carols), n(term)];
     waiting.sort_unstable();
     assert_eq!(numbers(&open), waiting, "{open}");
     let brief = of(&open, n(ask));
@@ -5936,7 +5943,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         "{shown}"
     );
     for line in [
-        "asks its person to decide: Approve spending on DigitalOcean",
+        "asks its person to decide: \"Approve spending on DigitalOcean\"",
         "flagged by Yulius: The gate gave up after 5 tries. Type a prompt.",
         "holds a typed prompt (new_scope): \"Also rewrite the billing page - #99 Deploy prod",
     ] {
@@ -6056,9 +6063,27 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
             new_task_id: None,
         })
         .await?;
+    // A request left from before its end is not shown, as its page shows none (an ended
+    // task waits for nobody, ADR-0111), and there is nothing to dismiss (review of slice 4,
+    // R2-1).
+    store
+        .set_task_needs_you(&ended.id, Some(&asked("Approve the old plan")), now)
+        .await?;
     let (shown_ended, _) =
         cockpit_tool(&f, &token, "task_get", json!({"number": ended.number})).await?;
     assert_eq!(shown_ended["shows"], "ended", "{shown_ended}");
+    assert!(shown_ended.get("needs_you").is_none(), "{shown_ended}");
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": ended.number}),
+    )
+    .await?;
+    assert!(
+        is_error && said(&refused).contains("asks nothing"),
+        "{refused}"
+    );
     assert_eq!(
         shown_ended["held_prompt"]["excerpt"], "Do the other thing",
         "{shown_ended}"
@@ -6082,6 +6107,14 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     .await?;
     assert!(is_error && said(&refused).contains("@carol"), "{refused}");
     assert!(store.task_needs_you(&carols.id).await?.is_some());
+    // Stored before its words were cleaned: the answer names it as one clean line (R2-4).
+    store
+        .set_task_needs_you(
+            &ask.id,
+            Some(&asked("Approve spending\u{202e} on \u{200b}DigitalOcean")),
+            now,
+        )
+        .await?;
     let (dismissed, is_error) = cockpit_tool(
         &f,
         &token,
@@ -6121,6 +6154,20 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
     assert!(
         is_error && said(&flagged).contains("Type a prompt."),
         "{flagged}"
+    );
+    // A question in the terminal is answered there.
+    let (asked, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": term.number}),
+    )
+    .await?;
+    assert!(
+        is_error
+            && said(&asked).contains("Claude Code asks in its terminal")
+            && said(&asked).contains("answers there"),
+        "{asked}"
     );
 
     // A held prompt is decided as on its card: only the actions an agent may take, by the
@@ -6169,7 +6216,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         hold_state::DISMISSED
     );
     let (open, _) = cockpit_tool(&f, &token, "tasks_list", json!({"scope": "needs_you"})).await?;
-    let mut left = vec![n(flag), n(carols)];
+    let mut left = vec![n(flag), n(carols), n(term)];
     left.sort_unstable();
     assert_eq!(numbers(&open), left, "{open}");
 
