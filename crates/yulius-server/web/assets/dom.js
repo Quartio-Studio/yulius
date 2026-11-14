@@ -1013,27 +1013,45 @@ export function statusMark(info, size = 14) {
   return h('span', { class: ['glyph', `tone-${info.tone}`], role: 'img', 'aria-label': info.label, title: info.label }, icon(info.icon, { size }));
 }
 
-const PR_CHECKS = {
-  success: ['check', 'ok', 'checks passed'],
-  failure: ['x', 'danger', 'checks failed'],
-  pending: ['clock', 'warn', 'checks running'],
+/** Why "checks unknown" (#111): unreadable checks never count as passed. */
+const UNKNOWN_CHECKS = `${BRAND.name} can’t read this pull request’s checks, so they don’t count as passed: merges that require checks wait.`;
+
+/** What a pull request's checks say: the one table of every chip and line (SPEC-483 slice 28). */
+const CHECKS = {
+  success: { icon: 'check', tone: 'ok', text: 'checks passed' },
+  failure: { icon: 'x', tone: 'danger', text: 'checks failing' },
+  pending: { icon: 'clock', tone: 'warn', text: 'checks running' },
+  unknown: { icon: null, tone: 'warn', text: 'checks unknown', why: UNKNOWN_CHECKS },
+  none: { icon: null, tone: '', text: 'no checks' },
 };
+
+/** What the checks of `pr` say, from the table above: `{icon, tone, text, why?}`. */
+export function checksOf(pr) {
+  return CHECKS[pr.checks] || CHECKS.unknown;
+}
+
+/** What the checks of an open pull request say, or null for a merged or closed one. */
+export function prChecks(pr) {
+  return pr && pr.state === 'open' ? checksOf(pr) : null;
+}
 
 /**
  * A pull request chip: "PR #N" and checks. A link to GitHub, or (`link: false`) a plain chip that
- * can sit inside another link, such as a sidebar row. The word, not an icon, tells it from a task's
- * bare #N (SPEC-122).
+ * can sit inside another link, such as a sidebar row, or (`onClick`) a button. The word, not an
+ * icon, tells it from a task's bare #N (SPEC-122).
  */
-export function prChip(pr, { link = true } = {}) {
+export function prChip(pr, { link = true, onClick = null, suffix = '' } = {}) {
   const merged = pr.state === 'merged';
-  const checks = merged || pr.state === 'closed' ? null : PR_CHECKS[pr.checks];
-  const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks[2]}` : ''}`;
+  const checks = prChecks(pr);
+  const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks.text}` : ''}`;
+  const title = `${checks && checks.why ? `${label}. ${checks.why}` : label}${suffix}`;
   // The name starts with what the chip shows (WCAG 2.5.3), then says what it is.
-  const name = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks[2]}` : ''}`;
-  const parts = [`PR #${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
+  const name = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks.text}` : ''}${suffix}`;
+  const parts = [`PR #${pr.number}`, checks && checks.icon ? h('span', { class: `tone-${checks.tone}` }, icon(checks.icon, { size: 12 })) : null];
   const cls = ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'];
-  if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': name }, parts);
-  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, name.slice(`PR #${pr.number}`.length)));
+  if (onClick) return h('button', { type: 'button', class: [...cls, 'strip-pr'], title, 'aria-label': name, onClick }, parts);
+  if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': name }, parts);
+  return h('span', { class: cls, title }, parts, h('span', { class: 'sr-only' }, name.slice(`PR #${pr.number}`.length)));
 }
 
 /** Small colored badge. */

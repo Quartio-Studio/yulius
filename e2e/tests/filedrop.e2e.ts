@@ -352,9 +352,19 @@ test('an image opened from the tray fits the window and zooms to its actual size
 test('sizes from a gibibyte read in GB, as the server words the limit (unit, in the page)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/git', '&ambient=0'));
   const sizes = await browser.evaluate(async () => {
-    const url = '/assets/filedrop.js';
-    const { formatSize } = await import(url);
-    return [1024 ** 3, 1.5 * 1024 ** 3, 12 * 1024 ** 3, 1023 * 1024 ** 2, 3.4 * 1024 ** 2].map((n) => formatSize(n));
+    // SPEC-483 slice 28 (W6): one home for the size wordings and the short commit.
+    const url = '/assets/format.js';
+    const { limitSize, bytes, shortSha } = await import(url);
+    return {
+      limit: [1024 ** 3, 1.5 * 1024 ** 3, 12 * 1024 ** 3, 1023 * 1024 ** 2, 3.5 * 1024 ** 2, 300 * 1024, 12, 12.5 * 1024 ** 3, 1.99 * 1024 ** 3, 10.5 * 1024 ** 2, 1945, 10_000_000_000].map((n) => limitSize(n)),
+      measured: [3 * 1024 ** 3, 312 * 1024 ** 3].map((n) => bytes(n)),
+      sha: [shortSha('0123456789abcdef'), shortSha(null), shortSha('abc')],
+    };
   });
-  expect(sizes).toEqual(['1 GB', '1.5 GB', '12 GB', '1023 MB', '3.4 MB']);
+  expect(sizes).toEqual({
+    // `human_size` in uploads.rs: whole units, else one decimal cut, not rounded.
+    limit: ['1 GB', '1.5 GB', '12 GB', '1023 MB', '3.5 MB', '300 KB', '12 bytes', '12.5 GB', '1.9 GB', '10.5 MB', '1 KB', '9.3 GB'],
+    measured: ['3.0 GiB', '312 GiB'],
+    sha: ['0123456', '', 'abc'],
+  });
 });

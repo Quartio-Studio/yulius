@@ -1,10 +1,7 @@
 //! Credential redaction for text that may reach logs or error messages (SEC-002).
 
-use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
+use yulius_domain::redact::scrub_github_tokens;
 
-/// `ghs_` first: a stateless installation token is removed whole before another prefix found
-/// inside its base64url payload or signature could cut it.
-const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const REDACTED: &str = "[redacted]";
 
 /// Removes credential-shaped substrings from `text`: URL user information
@@ -46,37 +43,7 @@ fn redact_line(line: &str) -> String {
 }
 
 fn redact_word(word: &str) -> String {
-    let mut word = redact_userinfo(word);
-    for prefix in TOKEN_PREFIXES {
-        let mut from = 0;
-        while let Some(found) = word[from..].find(prefix) {
-            let start = from + found;
-            let tail = &word[start + prefix.len()..];
-            let len = token_len(prefix, tail);
-            if len == 0 {
-                // A bare prefix: search on after it.
-                from = start + prefix.len();
-                continue;
-            }
-            word.replace_range(start..start + prefix.len() + len, REDACTED);
-            from = start + REDACTED.len();
-        }
-    }
-    word
-}
-
-/// Length of the token after `prefix`: a stateless installation token (`ghs_<APPID>_<JWT>`)
-/// through its signature, any other through its `[A-Za-z0-9_]` run.
-fn token_len(prefix: &str, tail: &str) -> usize {
-    let stateless = if prefix == INSTALLATION_TOKEN_PREFIX {
-        stateless_installation_token_len(tail)
-    } else {
-        None
-    };
-    stateless.unwrap_or_else(|| {
-        tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(tail.len())
-    })
+    scrub_github_tokens(&redact_userinfo(word), REDACTED)
 }
 
 fn redact_userinfo(word: &str) -> String {

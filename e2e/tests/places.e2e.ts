@@ -352,3 +352,21 @@ test('the Git back link of a task’s changes returns to Git', async ({ app, bro
   await browser.locator('.gt-back').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/git$/);
 });
+
+// SPEC-483 slice 28 (review): Leave to the address in view keeps the new skill's page, and a
+// later change on it is asked about again.
+test('a new skill left for its own address still asks about a later change', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/skills/new'));
+  const name = screen.getByRole('textbox', 'Skill name');
+  await name.fill('half-written');
+  const go = (path: string) => browser.evaluate(async (to) => {
+    const { navigate } = await import('/assets/router.js' as string);
+    navigate(to);
+  }, path);
+  await go('/s/studio/skills/new');
+  await screen.getByRole('dialog', 'Leave without creating?').getByRole('button', 'Leave').click();
+  await expect(name).toHaveValue('half-written');
+  await name.fill('half-written, more');
+  await go('/s/studio/git');
+  await expect(screen.getByRole('dialog', 'Leave without creating?')).toBeVisible();
+});
