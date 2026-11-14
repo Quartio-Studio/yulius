@@ -408,7 +408,7 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     const api = {
       post: async (url: string) => {
         if (url.endsWith('/files/live')) { joins += 1; return { session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
-        if (url.endsWith('/edit')) { edits += 1; throw Object.assign(new Error('forbidden'), { status: 403 }); }
+        if (url.endsWith('/edit')) { edits += 1; throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); }
         return { session: 's1', revision: 0, sha256: 'x', saved: true, disk_sha256: null };
       },
       get: async () => ({ session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }),
@@ -429,13 +429,58 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     await doc.join();
     const rejoined = { joins, readOnly: doc.readOnly };
     doc.destroy();
-    return { refused, after, closedFast, rejoined };
+
+    // A refusal of a stale session token (403 csrf_invalid) is not a refusal of access: the edit
+    // is sent again once the page has its token.
+    let csrfText = 'abc';
+    let csrfEdits = 0;
+    const csrfApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) return { session: 's2', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null };
+        if (url.endsWith('/edit')) {
+          csrfEdits += 1;
+          if (csrfEdits === 1) throw Object.assign(new Error('stale'), { status: 403, code: 'csrf_invalid' });
+          return { revision: 1 };
+        }
+        return { session: 's2', revision: 1, sha256: 'x', saved: true, disk_sha256: null };
+      },
+      get: async () => ({ session: 's2', revision: 0, steps: [], sha256: 'x', saved: true, disk_sha256: null }),
+    };
+    const csrfDoc = createLiveDoc({ api: csrfApi, sid: 'sb', root: 'task:t1', path: 'c', client: 'page', user: 'u', canWrite: () => true, getText: () => csrfText, onRemote() {}, onReset: (t: string) => { csrfText = t; }, onState() {}, onSynced() {} });
+    await csrfDoc.join();
+    csrfText = 'abcd'; csrfDoc.local([3, 'd']);
+    await until(() => csrfEdits === 2);
+    const csrf = { edits: csrfEdits, readOnly: csrfDoc.readOnly, text: csrfText };
+    csrfDoc.destroy();
+
+    // A person who lost all access: the catch-up after the refused edit is refused too. The
+    // document stays read-only with the text it had, and asks nothing more.
+    let lostText = 'abc';
+    let lostJoins = 0;
+    let lostGets = 0;
+    const lostApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { lostJoins += 1; if (lostJoins > 1) throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); return { session: 's3', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' });
+      },
+      get: async () => { lostGets += 1; throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); },
+    };
+    const lostDoc = createLiveDoc({ api: lostApi, sid: 'sb', root: 'task:t1', path: 'l', client: 'page', user: 'u', canWrite: () => true, getText: () => lostText, onRemote() {}, onReset: (t: string) => { lostText = t; }, onState() {}, onSynced() {} });
+    await lostDoc.join();
+    lostText = 'abcd'; lostDoc.local([3, 'd']);
+    await until(() => lostDoc.readOnly && lostText === 'abc');
+    await wait(1500);
+    const lost = { text: lostText, readOnly: lostDoc.readOnly, busy: lostDoc.busy, joins: lostJoins, gets: lostGets };
+    lostDoc.destroy();
+    return { refused, after, closedFast, rejoined, csrf, lost };
   });
   expect(result).toEqual({
     refused: { text: 'abc', readOnly: true, busy: false, saved: true, told: true },
     after: { edits: 1, busy: false, saved: true },
     closedFast: true,
     rejoined: { joins: 2, readOnly: false },
+    csrf: { edits: 2, readOnly: false, text: 'abcd' },
+    lost: { text: 'abc', readOnly: true, busy: false, joins: 1, gets: 1 },
   });
 });
 
@@ -448,7 +493,8 @@ test('an edit refused for lack of access makes the file read-only in the Editor 
   await expect.poll(() => statusOf(browser, 'me')).toContain('Read-only: you can no longer change this folder');
   await expect.poll(() => textOf(browser, 'me')).toBe(ON_DISK);
   expect(await inWindow<boolean>(browser, 'me', 'return ed.getOption(w.monaco.editor.EditorOption.readOnly)')).toBe(true);
-  expect(await statusOf(browser, 'me')).not.toContain('Unsaved');
+  // Nothing reads unsaved: the file's tab is not marked modified.
+  await expect.poll(() => inWindow<string>(browser, 'me', `return [...w.document.querySelectorAll('.ed-tab')].map((tab) => tab.textContent).join('|')`)).toBe(`${FILE}×`);
 });
 
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).

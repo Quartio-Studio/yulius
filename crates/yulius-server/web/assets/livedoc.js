@@ -145,11 +145,12 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   /** Joins the file's document (`own`: start it from this tab's text, when nobody edits it). */
   function join(own = null) {
     if (joining) return joining;
-    readOnly = false;
     const body = { ...base(), client };
     // Its own text in its own line ending; else the server takes the disk's.
     if (own) Object.assign(body, own, { eol: state.eol });
     joining = api.post(`/api/sandboxes/${sid}/files/live`, body).then((doc) => {
+      // Joined: the server takes this person's edits again, until it refuses one.
+      readOnly = false;
       if (!destroyed) takeWhole(doc, { sent: own ? own.text : null });
       return doc;
     }).finally(() => { joining = null; });
@@ -234,12 +235,29 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
       // An ended document, or a revision older than the kept steps (the edit may be in the text
       // already): the catch-up tells, and joins again only for an ended one.
       if (status === 409) recheck(sent);
-      // Refused for lack of access: the typing cannot be sent, so the server's text comes back
-      // and nothing of this tab's waits (a save, a close, a leaving page).
-      else if (status === 403) { readOnly = true; resync(); onState(); } else if (status === 422) resync();
+      // Refused for lack of access (not a stale session token, which is sent again): the typing
+      // cannot be sent, so it is given up and nothing of this tab's waits (a save, a close, a
+      // leaving page). Teammates' steps since are caught up; a refused catch-up asks no more.
+      else if (status === 403 && error.code === 'forbidden') { refused(); catchUp(); } else if (status === 422) resync();
       // Lost or refused for now: the steps say whether it landed; sent again if not.
       else retryTimer = setTimeout(() => recheck(sent), RETRY_MS);
     });
+  }
+
+  /** The server refused this person's edit: its typing goes, its text is the document's again. */
+  function refused() {
+    readOnly = true;
+    client = fresh();
+    outstanding = null;
+    buffer = null;
+    saveWanted = false;
+    forcedOver = null;
+    for (const timer of [sendTimer, ackTimer, retryTimer, saveTimer]) clearTimeout(timer);
+    sendTimer = 0;
+    saveTimer = 0;
+    if (shadow !== getText()) onReset(shadow, state.eol);
+    onState();
+    settle();
   }
 
   /** This tab's text is out of step: the server's text replaces it. */
@@ -350,7 +368,7 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
     local(op) {
       if (destroyed || isNoop(op)) return;
       // Nothing typed is kept while the server refuses this person's edits: its text again.
-      if (readOnly) { resync(); return; }
+      if (readOnly) { onReset(shadow, state.eol); return; }
       buffer = buffer ? compose(buffer, op) : op;
       if (canWrite()) schedule(AUTOSAVE_MS);
       onState();
