@@ -29,6 +29,7 @@ import { createPresence, PRESENCE_SWEEP_MS, CLIENT_ID } from './presence.js';
 import { textEdit } from './textlayer.js';
 import { createLiveDoc } from './livedoc.js';
 import { apply as applyOp, baseLength, fromChanges, targetLength, toEdits } from './livetext.js';
+import { limitSize } from './format.js';
 import { createTabDrag, movedBy } from './tabdrag.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
@@ -720,7 +721,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   /** Why `file`, read from `path`, does not open in the editor. */
-  const notEditable = (path, file) => (file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`);
+  const notEditable = (path, file) => (file.too_large ? `${path} is too large for the editor (${limitSize(file.size)}).` : `${path} is a binary file.`);
 
   /** Saved, or its typing not confirmed or written yet, or a conflict waiting for a choice. */
   const dirtyOf = (tab) => !tab.live.saved || tab.live.state.diskSha != null;

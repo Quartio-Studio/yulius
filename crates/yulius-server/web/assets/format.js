@@ -137,6 +137,29 @@ export function bytes(n) {
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+/**
+ * A size as the server words a limit (`uploads.rs` `human_size`): `512 KB`, `3.4 MB`, `1 GB`,
+ * binary units with the short names. [`bytes`] words a measurement (`3.0 GiB`); the two stay
+ * apart because the server and the e2e tests share each wording (SPEC-483 slice 28).
+ */
+export function limitSize(n) {
+  if (n >= 1024 * 1024 * 1024) {
+    const gb = n / (1024 * 1024 * 1024);
+    return `${gb >= 10 || Number.isInteger(gb) ? Math.round(gb) : gb.toFixed(1)} GB`;
+  }
+  if (n >= 1024 * 1024) {
+    const mb = n / (1024 * 1024);
+    return `${mb >= 10 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;
+  }
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} bytes`;
+}
+
+/** The first seven characters of a commit, or '' without one. */
+export function shortSha(sha) {
+  return sha ? String(sha).slice(0, 7) : '';
+}
+
 /** "UTC+02:00" from an offset in minutes. */
 export function utcOffset(minutes) {
   const m = Number(minutes) || 0;

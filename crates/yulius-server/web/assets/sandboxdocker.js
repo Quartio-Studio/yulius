@@ -5,7 +5,7 @@
 // with each check as it ends.
 
 import { h, icon, setChildren, errorToast, badge, skeleton } from './dom.js';
-import { relLong, dateTime } from './format.js';
+import { relLong, dateTime, shortSha } from './format.js';
 
 const API = '/api/admin/sandbox-docker';
 /** While a smoke test runs, the card asks again this often (ms); while a rebuild runs or waits,
@@ -13,10 +13,6 @@ const API = '/api/admin/sandbox-docker';
 const POLL_MS = 2000;
 const REBUILD_POLL_MS = 30000;
 const RETRY_MS = 10000;
-
-function short(commit) {
-  return commit ? commit.slice(0, 7) : 'unknown';
-}
 
 /** The base's rebuild: running or waiting for the host to settle, and its estimate. */
 function rebuildBanner(rebuild) {
@@ -60,7 +56,7 @@ export const hostCheckItems = (report) => items(hostCheckProblems(report).length
 function hostCheck(report) {
   if (!report) return null;
   const when = report.checked_at ? relLong(new Date(report.checked_at).toISOString()) : '';
-  const head = `The last host check (yulius ${short(report.commit)}${when ? `, ${when}` : ''})`;
+  const head = `The last host check (yulius ${(shortSha(report.commit) || 'unknown')}${when ? `, ${when}` : ''})`;
   if (report.ok) {
     return h('p', { class: 'muted small sandbox-docker-recheck' }, icon('check', { size: 14 }), ` ${head}: the host gives sandboxes Docker.`);
   }
