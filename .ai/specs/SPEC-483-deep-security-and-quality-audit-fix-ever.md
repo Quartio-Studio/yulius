@@ -1091,7 +1091,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
 - [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
-- [ ] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing
+- [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing
 
 ## Acceptance criteria
 
@@ -2695,3 +2695,25 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   task module's doc missing the one switch outcome that goes through the table.
 - **Delivery.** Pull request #1282 merged into `dev` at `debab9992` (by its merge train), the
   approved head `3706b94f8` squashed, whose own Yulius CI run passed.
+
+### Slice 26 (2026-11-14)
+
+- **Tests failing before the fix**: the request file named "**Never promote to `main`**", which
+  `production_instruction` reads as an instruction to promote; the merge news said "Do not
+  promote unless the task asks for it"; the Chore workflow named neither `cd_deploy` nor
+  "production is a person's"; the Docs workflow said "no independent review"; the guard's
+  refusal said "does not end your goal's delivery"; the Git page's sentence said agents
+  release.
+- **Tests failing without their fix** (`target/audit/slice26/mutate.py`, `mutations.log`, 7
+  cases, each failed its test): each old text brought back (the goal's sentence, the
+  definition of done's bullet, the merge news, the Chore and Docs workflows' lines, the guard's
+  reason, the Git page's sentence).
+- **Gate.** The first run failed at the repository check: the new auto-promote sentence named
+  the product in a string (`BRAND.name` instead). `scripts/dev ci` at `87f1f76be`: exit 0;
+  `4373 tests run: 4373 passed (1 slow), 17 skipped` (`target/audit/slice26/gate.log`; four
+  more than slice 25 came with `dev`). e2e `git.e2e.ts`, `cd.e2e.ts` and `workflows.e2e.ts`:
+  33 passed (`target/audit/slice26/e2e.log`, before the brand fix), `git.e2e.ts` again after
+  it: 6 passed.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
+  behaviour).
