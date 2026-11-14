@@ -63,7 +63,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
-      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33;
+      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33
+      (merged, #1300), QB2 slice 34;
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -698,6 +699,19 @@ went; two of the auditors' items had gained a user since and stay.
   sign-in's `DeviceStart` and `DevicePollRequest` printed the polling code, which fetches the
   token until it expires, in their derived `Debug`.
 
+### Slice 34: one reader of a sandbox's way to Yulius
+
+- **QB2 (low).** Five clients inside a sandbox (`credential_get` and `agent_post` in
+  `yulius-git/src/credential.rs`, `agent_call`, and the hook and redaction clients' `forward`
+  and `post_internal` in `yulius-harness/src/hook_client.rs`) each read `YULIUS_URL` and
+  `YULIUS_TASK_TOKEN`, checked the token and parsed the URL, with two parsers that differed:
+  the Git one took a non-ASCII path and mapped `localhost` to 127.0.0.1, the hook one refused a
+  non-printable path and asked the name resolver for `localhost`. `yulius wait`, `yulius tool`
+  and the MCP bridge reach Yulius through the Git one. The variables' names were written in
+  three places.
+- **Slice 33's review nits.** Two lines past the width, a missing blank line, a test doc that
+  named its scope without the reason.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1224,6 +1238,11 @@ went; two of the auditors' items had gained a user since and stay.
   function and answers `initialize` by one; every tool the remote MCP lists is dispatched; a
   task asked for in another sandbox takes `model` and `effort` as `task_create` describes them.
   The device sign-in's `Debug` hides the polling code as it hides the token.
+- **ONE-009** Every client in a sandbox reads its way to Yulius by one function
+  (`AgentEndpoint::from_env`): `YULIUS_URL` plain HTTP, printable ASCII, no user information,
+  query or fragment, to a literal loopback address or `localhost` (127.0.0.1 then ::1, no name
+  lookup), and a non-empty printable `YULIUS_TASK_TOKEN`; each keeps its own messages and its own
+  way of reading answers, and connects to the first address that takes the connection.
 
 ## Plan
 
@@ -1262,7 +1281,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 30: a cancelled waiting task starts the queue only when it was a supertask (merged, #1295)
 - [x] Slice 31: one reader of RFC 3339 time, the calendar from the domain (merged, #1296)
 - [x] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read (merged, #1297)
-- [ ] Slice 33: one dispatch of the shared project tools and one handshake for every MCP
+- [x] Slice 33: one dispatch of the shared project tools and one handshake for every MCP (merged, #1300)
+- [ ] Slice 34: one reader of a sandbox's way to Yulius for every client in it
 
 ## Acceptance criteria
 
@@ -1895,6 +1915,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `effort` equal `task_create`'s, each with a description; `DeviceStart` and
   `DevicePollRequest` show no polling code in `Debug` (ONE-008).
 
+- **AC-154** `http://127.0.0.1:7171/base/` gives that address and the path `/base`; `[::1]`
+  and `localhost` (both loopback addresses) are taken, port 80 when absent; `https`, an empty
+  host, user information, a bad port, a space, a query or a non-ASCII byte in the path are
+  refused as malformed, `10.0.0.1`, `0.0.0.0` and a host name as not loopback; an empty or
+  unprintable token and missing variables are refused; `Debug` hides the token; the Git
+  credential, `agent_call`, hook and redaction clients' tests pass through it (ONE-009).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2155,6 +2182,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`
+  (AC-154); the clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`,
+  `yulius-harness` `hook_client::tests`) and the `yulius` tests of `wait`, `tool`, the MCP
+  bridge and the hooks.
 - Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
   `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says` and
   `initialize_speaks_the_asked_version_or_the_newest`,
@@ -2266,6 +2297,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 34 (no decision record: a refactor). What the clients share is how they find Yulius,
+  not how they read its answers: the Git client decodes chunked bodies, `agent_call` streams with
+  limits, the hook client holds and retries; those stay theirs. The reader is pure and sits in
+  the domain, which both adapter crates use, so neither depends on the other. `localhost`
+  becomes 127.0.0.1 then ::1 without asking the resolver (the sandbox's `/etc/hosts` is not
+  Yulius's), which the hook client did and the Git client half did; the strictest URL rules of
+  the two win (printable ASCII anywhere, no empty host).
 - Slice 33 (no decision record: a refactor). The shared tools live in `mcp.rs` beside the
   descriptors they share; each dispatch keeps its own order of precedence (the Superagent's
   person tools come before them, the remote MCP's own tools after), which this slice does not
@@ -2744,8 +2782,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
-| QB2 | duplication | Three loopback HTTP clients | low | open (item 16 of the Context) |
-| QB7 | duplication | The Superagent's tools dispatched twice, the handshake twice | low | slice 33 |
+| QB2 | duplication | Three loopback HTTP clients: five copies of the environment preamble, two URL parsers | low | slice 34 |
+| QB7 | duplication | The Superagent's tools dispatched twice, the handshake twice | low | fixed (slice 33) |
 | QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | fixed (slice 32) |
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
@@ -2907,3 +2945,7 @@ slices follow.
   lines, AC-153 and the test's doc say a person's token.
 - **Gate after it.** `scripts/dev ci` at `96612dc2b`: exit 0; `4408 tests run: 4408 passed (1
   slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `04a639909`): approve; three cosmetic nits (two
+  lines past the width, a missing blank line, the test's reason), answered in slice 34.
+- **Merged.** Pull request #1300 was squash-merged into `dev` (`1fa35c08e`) after its merge
+  train passed.
