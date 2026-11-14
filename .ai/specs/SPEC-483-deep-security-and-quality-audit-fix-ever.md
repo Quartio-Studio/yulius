@@ -2713,3 +2713,5 @@ slices follow.
   the corrected claim on #1278. Answered: `supertask::stopping_a_waiting_task_that_is_no_supertask_starts_no_other`
   fails 10 of 10 with the old line and passes 10 of 10 with the fix (`--stress-count 10`,
   `test-old-line.log`, `test-fixed.log`).
+- **Gate after it.** `scripts/dev ci` at `0767c877e`: exit 0; `4384 tests run: 4384 passed (1
+  slow), 17 skipped` (`gate2.log`).
