@@ -42,10 +42,16 @@ export function profileSentence(profile) {
   const prod = profile.production_branch || 'production';
   const envs = environments(profile);
   const checks = profile.require_checks === false ? 'Checks don’t block merging.' : 'Merges wait for green checks.';
-  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} Agents merge and deploy the integration environments; ${BRAND.name} releases each merge once they pass. This page shows where things are.`;
-  const agents = 'Agents merge and deploy the integration environments; a person releases on the CD page. This page shows where things are.';
+  const checked = listNames(envs.integration.map((e) => e.name));
+  const work = envs.integration.length ? `Agents merge and deploy ${checked}` : 'Agents merge';
+  if (profile.auto_promote) {
+    const when = envs.integration.length ? `once it passed ${checked}` : 'right away';
+    const then = envs.integration.length ? ' then' : '';
+    return `Merging a pull request into ${int} puts it live on ${prod} ${when}. ${checks} ${work}; ${BRAND.name} releases each merge${then}. This page shows where things are.`;
+  }
+  const agents = `${work}; a person releases on the CD page. This page shows where things are.`;
   let text = `Merged work collects on ${int}`;
-  if (envs.integration.length) text += `, is checked on ${listNames(envs.integration.map((e) => e.name))}`;
+  if (envs.integration.length) text += `, is checked on ${checked}`;
   text += `, then is released to ${prod}`;
   if (envs.production.length) text += ` and verified on ${listNames(envs.production.map((e) => e.name))}`;
   return `${text}. ${checks} ${agents}`;

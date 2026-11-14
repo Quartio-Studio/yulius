@@ -665,6 +665,80 @@ def check_ui():
     print("UI contracts passed: design tokens, contrast in every theme, brand, copy, inline styles")
 
 
+# Instructions an agent follows in this repository (AGENTS.md routes to them). Yulius refuses a
+# hand merge and only a person promotes (ADR-0110, SPEC-483 DOC-002); waiting is `yulius wait`.
+INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "README.md", ".github/pull_request_template.md"]
+INSTRUCTION_GLOBS = [
+    "docs/engineering/*.md", ".apm/skills/*/SKILL.md", "catalog/skills/**/*.md",
+    "catalog/workflows/*.md", "catalog/automations/*.md", ".ai/templates/*.md",
+]
+# The only way an instruction names a hand merge: as refused, right at the name.
+REFUSED_HAND_MERGE = re.compile(r"`?gh pr merge[^`]*`\)? (is|are) refused")
+NEGATED = re.compile(r"\b(not|never|no)\s+$", re.I)
+# A match that itself says the rule (a person's job, a negation) is not an instruction to break it.
+SAYS_THE_RULE = re.compile(r"\b(not|never)\b|a person's", re.I)
+DELIVERY_RULES = [
+    (re.compile(r"gh pr merge"), "merging by hand is refused: name it only as refused, or deliver with `delivery_merge`"),
+    (re.compile(r"\b(self-merges?|author-merges?)\b|squash-merges? (your|their|its) own|\bmerge by (its|the|their) author|Author self-review", re.I),
+     "Yulius merges through `delivery_merge` after an independent review; nobody merges their own pull request"),
+    (re.compile(r"\bpromot\w*\b[^.]{0,120}?\bwhen (a|the) (task|user|request) asks|\bpromote (only )?(when|if|unless) (asked|the (task|user|request) asks)", re.I),
+     "promotion is a person's (ADR-0110), never an agent's when asked"),
+    (re.compile(r"\b(through|via) `?dev`? and promote\b", re.I), "promotion is a person's (ADR-0110)"),
+    (re.compile(r"\bPoll live run|gh pr checks [^;\n]*?--watch", re.I), "to wait, start `yulius wait` in the background; never poll"),
+]
+ITEM = re.compile(r"\s*([-*+]|\d+\.)\s")
+
+
+def paragraphs(text):
+    """Paragraphs and list items of `text`, each with its first line's number, its lines joined:
+    wrapped wording is read whole."""
+    block, start = [], 0
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or ITEM.match(line):
+            if block:
+                yield start, " ".join(block)
+            block, start = ([line.strip()], number) if line.strip() else ([], 0)
+            continue
+        if not block:
+            start = number
+        block.append(line.strip())
+    if block:
+        yield start, " ".join(block)
+
+
+def delivery_instruction_errors(text, label):
+    errors = []
+    for number, paragraph in paragraphs(text):
+        for pattern, why in DELIVERY_RULES:
+            for match in pattern.finditer(paragraph):
+                at = match.start() - 1 if match.start() and paragraph[match.start() - 1] == "`" else match.start()
+                if match.group(0) == "gh pr merge" and REFUSED_HAND_MERGE.match(paragraph, at):
+                    continue
+                if NEGATED.search(paragraph[:match.start()]) or SAYS_THE_RULE.search(match.group(0)):
+                    continue
+                errors.append(f"{label}:{number}: '{match.group(0)}': {why}")
+                break
+    return errors
+
+
+def instruction_files():
+    paths = [ROOT / name for name in INSTRUCTION_FILES]
+    for pattern in INSTRUCTION_GLOBS:
+        paths.extend(sorted(ROOT.glob(pattern)))
+    unique = []
+    for path in paths:
+        if path.is_file() and path not in unique:
+            unique.append(path)
+    return unique
+
+
+def instruction_errors():
+    errors = []
+    for path in instruction_files():
+        errors.extend(delivery_instruction_errors(path.read_text(), path.relative_to(ROOT)))
+    return errors
+
+
 def check():
     errors = []
     names = list(filter(None, output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")))
@@ -680,6 +754,7 @@ def check():
         errors.extend(skill_errors(path))
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
     errors.extend(decision_errors(ROOT / "docs/decisions"))
+    errors.extend(instruction_errors())
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
@@ -692,7 +767,7 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, UI design tokens, one product test binary")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, delivery instructions, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":

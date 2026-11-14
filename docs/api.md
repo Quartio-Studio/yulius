@@ -752,6 +752,8 @@ exclusive = true            # optional: one run of it (each matrix value apart) 
                             #   sandbox; a later run's job waits for its turn, outside its limit,
                             #   holding no slot (ADR-0279)
 # or, for one job: [commands] gate = "…"   (not both)
+# [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
+#                            lint are set (the briefing says so when one is missing)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
 CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at most 32 variables,
@@ -1926,6 +1928,13 @@ boundary and the client sends the same request again after `Retry-After` seconds
 2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
+
+`POST /internal/agent/wait` (the run's task token), what `yulius wait` blocks on (SPEC-011):
+body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; answers a
+`WaitState` (`{"head", "checks": "none|queued|running|passed|failed|error|cancelled",
+"checks_detail", "stage", "merge_armed", "merge_outcome", "merge_outcome_head",
+"push_problem", …}`) once it differs from `since`, or when the timeout (default 50 s, at most
+55 s) passed.
 
 Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
 `/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application

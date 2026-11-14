@@ -346,11 +346,11 @@ The source of truth for paths and methods is the route table in
   scrolls horizontally instead of resizing it; a shell's `exit` frame ends it for good.
 - **Browser.** An `upstream` error followed by a 1011 close (Chromium missing or stopped) shows
   the reason with a Retry button instead of reconnecting in a loop.
-- **Delivery.** Shown, never driven (GIT-002): agents open, merge, deploy and release through
-  their workflow. Next steps come from the server (`open_pr`, `merge`, `run_env:<name>`,
-  `confirm_env:<name>`, `promote`) and show as status, `blocked` ones with their reason. Profile
-  presets come from `GET /api/delivery/presets`; a running deploy's output is polled via
-  `GET …/delivery/runs/{id}`.
+- **Delivery.** Shown, never driven (GIT-002): agents open and merge pull requests and deploy the
+  integration environments; a person releases on the CD page (ADR-0110). Next steps come from the
+  server (`open_pr`, `merge`, `run_env:<name>`, `confirm_env:<name>`, `promote`) and show as status,
+  `blocked` ones with their reason. Profile presets come from `GET /api/delivery/presets`; a running
+  deploy's output is polled via `GET …/delivery/runs/{id}`.
 - **Uploads.** `api.put|post(path, file, {onProgress})` sends a `Blob` as the raw body; the real
   transport uses XMLHttpRequest for upload progress (`transport.upload`), and the timeout then
   counts from the last progress. Dropped files use `PUT /api/sandboxes/{sid}/files/upload` and the

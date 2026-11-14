@@ -97,8 +97,9 @@ pull requests of one task, each slice a step from the start. The body says what 
 (`Fixes #N`), and lists the evidence: commands run and their results, the review verdict and its
 head. (In Yulius the pull request is opened for you when your work is ready; its body names no
 issue. GitHub closes an issue by `Fixes #N` only for a merge into the repository's default
-branch: when the integration branch is not the default (`dev` before `main`), close the issue
-yourself after the merge.)
+branch: when the integration branch is the default, add `Fixes #N` with `gh pr edit`;
+otherwise (default branch `main`, integration branch `dev`), close the issue yourself after the
+merge.)
 
 ## 6. Merge on green
 
@@ -145,9 +146,11 @@ dev ran before, first roll dev back to the previous release (in Yulius: `cd_roll
 environment that deploys has a `rollback` and a `migrations` line (SPEC-415): a change to the
 schema or the data keeps the previous release working (expand, then contract a release later)
 or makes its deploy print a rollback barrier. Yulius drills the rollback after each dev deploy,
-and production deploys wait for the drill of their commit. Production, with its
-promotion, and every production-stage environment are always a person's decision and action: never promote or deploy it; when your task
-needs it, ask a person (in Yulius: `needs_you`) and finish the rest.
+and production deploys wait for the drill of their commit. Production, with its promotion, and
+every production-stage environment are a person's decision and action (where the delivery
+profile promotes by itself, Yulius promotes after the integration environments; a production
+deploy stays a person's): when your task needs one, ask a person (in Yulius: `needs_you`) and
+finish the rest.
 
 ## 8. Clean up
 

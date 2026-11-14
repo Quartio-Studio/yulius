@@ -1763,7 +1763,9 @@ mod tests {
             "No `git stash`",
             "Yulius pushes plainly",
             "merging `origin/",
-            // SPEC-441 MQ-011: the merge queue orders merges; nobody holds a green one back.
+            // SPEC-441 MQ-011 (amended by SPEC-483 slice 26): merge the integration branch before
+            // the review or for a conflict; the merge queue orders merges; nobody holds a green
+            // one back.
             "before the review or for a conflict; rerun the tests",
             "the queue merges in turn: never hold a green one back",
             // SPEC-444 PRN-012: Yulius tells the task; it keeps its hands off when told.
