@@ -244,7 +244,7 @@ test('picked conditions become the canonical start rule text (unit, in the page)
         { id: 'c', number: 5, title: 'Five', archived: true },
       ]).map((t: { number: number }) => t.number),
       empty: ruleChoices([{ id: 'c', number: 5, title: 'Five', archived: true }]).length,
-      // The server takes at most 16 tasks in a rule (MAX_ATOMS in yulius-domain).
+      // The editor builds at most 16 conditions; the server takes 64 (MAX_ATOMS in yulius-domain).
       max: RULE_MAX_CONDITIONS,
       // A picked task that is no longer offered stays in its row. The store lists only tasks that
       // are not archived, so a live one beyond the offered choices keeps its title, and one the
@@ -351,7 +351,7 @@ test('a picked rule opens again with its conditions, can be changed, and Start n
   await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
 });
 
-test('a rule takes at most 16 conditions, as the server does', async ({ app, screen }) => {
+test('the rule editor builds at most 16 conditions', async ({ app, screen }) => {
   await app.open(mock('/s/studio'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
@@ -363,7 +363,7 @@ test('a rule takes at most 16 conditions, as the server does', async ({ app, scr
     await expect(editor.getByRole('combobox', `Task of condition ${n}`)).toBeVisible();
   }
   await expect(add).toBeDisabled();
-  await expect(editor.getByText('A rule names at most 16 conditions.')).toBeVisible();
+  await expect(editor.getByText('The editor adds at most 16 conditions.')).toBeVisible();
   await editor.getByRole('button', 'Remove condition 16').click();
   await expect(add).toBeEnabled();
 });

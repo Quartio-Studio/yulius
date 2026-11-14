@@ -317,6 +317,9 @@ pub struct TaskRuntime {
     pub(crate) mcp_reconnects: Mutex<crate::mcp_watch::Reconnects>,
     /// Why its pull request is stalled, while it is (SPEC-444 PRN-009): the task list shows it.
     pub(crate) pr_stalled: Mutex<Option<String>>,
+    /// News the pull request watch typed into the session whose turn has not begun yet: until
+    /// then the task goes on by itself (SPEC-487 CHN-002).
+    pub(crate) pr_news: Mutex<Option<crate::pr_watch::TypedNews>>,
     /// The last head and integration commit pair whose conflict was checked, and whether they
     /// conflict (PRN-004).
     pub(crate) pr_conflict: Mutex<Option<(String, bool)>>,
@@ -513,6 +516,15 @@ impl TaskRuntime {
     pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
         if let Ok(mut queue) = self.queue.lock() {
             change(&mut queue);
+            // News the watch typed while a turn ran shows in the queue, which decides from
+            // here on how long it waits (SPEC-487 CHN-002). Whatever the queue hands on after
+            // the typing counts: what leaves it leaves in the order it came.
+            if queue.hands_on()
+                && let Ok(mut news) = self.pr_news.lock()
+                && let Some(news) = news.as_mut()
+            {
+                news.in_queue = true;
+            }
         }
     }
 
@@ -573,6 +585,7 @@ impl TaskRuntime {
             mcp_pinged_ms: AtomicI64::new(0),
             mcp_reconnects: Mutex::new(crate::mcp_watch::Reconnects::default()),
             pr_stalled: Mutex::new(None),
+            pr_news: Mutex::new(None),
             pr_conflict: Mutex::new(None),
             pr_merged_note: Mutex::new(None),
             background_shells: AtomicI64::new(-1),
@@ -5087,6 +5100,9 @@ impl App {
                     .store
                     .set_activity(task_id, Some(Activity::Working), self.now())
                     .await;
+                // When this turn began after the pull request watch typed, it is that news'
+                // turn (SPEC-487 CHN-002); a prompt read late is another turn's.
+                self.pr_news_turn_began(task_id, at.map(|at| at.0));
                 self.publish_task(task_id).await;
                 self.keep_working_stretch(task_id, stretch).await;
                 // Only now, with the task reading Working: the turn of what Claude Code handed

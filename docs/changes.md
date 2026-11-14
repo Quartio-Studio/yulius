@@ -16,6 +16,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-13
 
+- A task that waits for another starts when that one has really finished (SPEC-487 slice 1,
+  task #469, ADR-0328). On 13 November tasks #466 to #469, created to run after the audit
+  (#465), started while it was still running. A task was Done once its turn had ended with a
+  complete plan and a pull request that was green or merged; a task that merges its own pull
+  request passes through that state: for as long as the merge queue takes after its checks
+  pass, and for up to 20 seconds between its merge and the moment the pull request watch
+  tells its agent, which then goes on. Now a running task is neither Done nor a person's turn
+  while Yulius has such news for its agent (a merge armed or being decided, an armed merge's
+  end or a merge not told yet, news typed whose turn has not begun): it reads "Waiting for
+  checks or merge", and chains, start rules and a supertask's wait keep waiting. Achieved
+  goals, closed tasks, tasks a person paused and playgrounds are as before. The tools
+  (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
+  waiting task's start as stored: `start_rule` with the whole rule (it read "after" the
+  rule's first task only), `runs_after` for a task chained after one task, `start_blocked`
+  with the reason when it will not start by itself. `after_all_tasks: true` on `task_create`
+  and `task_update` waits for every task of the project with work still coming (not the ended,
+  the prepared, or those the list shows Done or Answered), written as the rule that names
+  them; a rule names at most 64 tasks (16 before; the editor builds 16).
 - A switch to another subscription ends no work it cannot answer for (SPEC-483 slice 17,
   task #465). At a turn's end a look at the session's background work that gave no answer
   (a loaded host) read as "none", and the session was ended with the build or review it

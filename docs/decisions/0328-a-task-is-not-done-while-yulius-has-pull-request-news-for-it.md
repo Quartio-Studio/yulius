@@ -1,0 +1,125 @@
+# 0328. A task is not Done while Yulius has pull request news for it
+
+## Status
+
+Accepted. Specified in [SPEC-487](../../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md)
+(slice 1, CHN-001 to CHN-006); task #469. Amends
+[ADR-0012](0012-task-intake-and-chains.md) and [ADR-0018](0018-task-start-rules.md) (when a
+chained task starts) and SPEC-085 STT-002 (what "waits for Yulius" means).
+
+## Context
+
+A task is Done when its turn ended, its plan is complete and its pull request is merged, or
+open with green checks (TSK-014). Chains, start rules, a supertask's wait and the task list ask
+that one function. The rule was written when a person merged pull requests. Since tasks merge
+their own (ADR-0141) and are told of their pull request by a watch instead of a `yulius wait`
+shell they keep alive (SPEC-444, ADR-0287), a task passes through that state on its way:
+
+- its agent arms the merge and ends its turn; once the checks pass, the pull request is open
+  and green while the merge queue works;
+- Yulius merges, and the watch types the news into the session within 20 seconds; until then
+  the agent is idle with a merged pull request.
+
+On 13 November 2026 task #465 delivered fourteen pull requests in a row. Tasks #466, #467 and
+#468, created to run after it, started while it went from one slice to the next, and #469
+started from its unmerged branch while pull request #1257 waited, armed and green, in the
+queue. A person who reads "Done · PR #1257" for a minute and then "Working" again was shown
+the same mistake. A rule over several tasks started early the same way, and the tools answered
+such a rule as "runs after" its first task, so nobody could see what the task waited for.
+
+## Decision
+
+- **Pull request news that is due means the task goes on by itself.** One rule says so
+  (`news_due`, asked through `App::pr_news_due`): a merge is armed or being decided; or, for a
+  task the watch types into, news was typed and the turn it starts has not begun, the pull
+  request is merged and the watch, which saw it open, has not said so, or an armed merge ended
+  without merging and the watch has not said how. The watch's own conditions (`merge_untold`,
+  `outcome_key`) decide both what it types and what is due.
+- **Typed is not heard.** After the watch typed into an idle session, the task still reads
+  idle until Claude Code's prompt hook (or the transcript's turn) makes it Working. The news
+  stays due until the task goes from idle to Working by a turn that began after the typing
+  (a prompt hook sent before it, or a prompt the transcript's watcher reads late, is another
+  turn's), for at most two minutes (`NEWS_TURN_WAIT_MS`: a paste Claude Code swallowed must
+  not hold a chain for ever). News
+  typed while a turn runs is queued by Claude Code (its prompt hook comes at the Enter and
+  starts nothing) and handed on after that turn. Once Claude Code's queue shows it, the queue
+  says how long it waits (`Queue::hands_on`, SPEC-471 and SPEC-479), however long the running
+  turn takes and whichever entry gets its turn first (a notification or a slash command is
+  handed on alone, the news at the next turn's end): no turn's start ends it, and an idle
+  session waits two minutes for a hand-over whose turn never shows. Until the queue showed
+  it, the two minutes from the typing apply.
+- **One reading per decision.** `task_is_done` and `task_is_done_locally` read the task's
+  delivery once and ask the news rule about that reading; a merge GitHub reports before the
+  record says so is news like any other merge.
+- **An armed merge is known before it is restored.** A server that started again serves
+  hooks and chain passes, and runs the watch, before it put the saved armed merges back;
+  until it did, their file answers (`App::merge_is_armed`), for the news rule and for what
+  the watch types.
+- **Only a person's pause mutes news.** A task a person paused is frozen: what is typed into
+  it waits with it, and that pause may never end, so no news is due to it, except an armed
+  merge, which Yulius makes whatever the agent does. An update's hold and a pause for
+  capacity end by themselves and the watch types right after: news stays due through them.
+- **Such a task is not Done and not a person's turn.** `task_is_done` and
+  `task_is_done_locally` answer no, and the task's `yulius_wait` fact is true, so the list
+  reads "Waiting for checks or merge", as it does for an agent that waits in `yulius wait`.
+  The news is typed, the agent's turn runs, and what that turn leaves decides: more work, or
+  Done.
+- **Final states stay as they were.** An achieved goal, a closed task, a pull request whose
+  news was all told, and a task the watch tells nothing (a playground's, a pull request it
+  never saw open) are Done by the old rule.
+- **A start rule is answered as stored.** `tasks_list`, `task_get`, `task_create` and
+  `task_update` answer `start_rule` (the whole rule), `runs_after` only for a task chained
+  after one task, and `start_blocked` with the reason when the task will not start by itself.
+- **"After all current tasks"** is `after_all_tasks` on `task_create` and `task_update`: the
+  tool writes the rule that names every task of the project with work still coming. Left
+  out: tasks that ended or are stopping; tasks the list shows under Done (done, or
+  "Answered": an idle session with nothing open never becomes `done`, and would hold the rule
+  for good); prepared tasks; and the task whose start changes, with the tasks waiting on it.
+  A rule names at most 64 tasks (16 before) in at most 1400 characters (500 before); the web
+  editor keeps building 16.
+
+## Alternatives
+
+- **Done only with an achieved goal.** A task whose goal evaluator never says "met" holds its
+  chain for good while its pull request is merged and its agent idle; prompt-mode tasks have
+  no goal at all.
+- **"Run after" waits for the merge.** A prompt-mode task that opens a pull request for a
+  person to merge is done; `#N merged` already says the other thing, and the tools now name
+  it.
+- **A delay after the merge before Done.** A guess at how long the watch takes; the watch
+  knows what it told.
+- **A new state for the task list.** The list already has the fact ("goes on by itself when
+  Yulius has news"); a second one would be the same thing twice.
+- **A new rule word for "all current tasks".** The set is fixed at the call; a rule that names
+  the tasks reads back, shows in the editor and needs no second evaluation.
+
+## Consequences
+
+- A chained task starts later than before by the time the merge queue and the watch take
+  (seconds to minutes), and from the integration branch, not from its predecessor's unmerged
+  branch, when that predecessor merges its own pull request.
+- While the watch cannot type (a person's draft sits in the prompt box, a person must act
+  first), the task keeps waiting and so does its chain; the list says it waits. For the same
+  time a merged task is not archived or deleted without stopping it first (the list does not
+  show it Done yet): seconds, in the usual case.
+- A task a person paused with a merged pull request it was not told of reads Done, as before
+  this decision; when it is resumed it is told, and goes on if it has more to do.
+- When the news' turn ends before its lines were read (a turn of milliseconds, a loaded
+  host), that turn's own chain pass still finds news due; the watch's next pass (20 s) takes
+  the spent mark away and lets the chains go on.
+- News typed in the instant before a restart of the server is not remembered as "typed":
+  the task may read Done until its turn begins.
+- A turn Claude Code starts by itself in the third of a second between the watch's stamp and
+  its Enter (a background shell's notification) looks like the news' own turn: its prompt
+  hook ends the mark, and the news waits in the queue behind it with no mark to keep. Times
+  cannot tell the two turns apart; the task may read Done at that turn's end until the news'
+  turn begins.
+- For a run without hooks the end of a turn is read from the transcript only, so the two
+  minutes of an idle session do not apply to queued news: the queue alone decides.
+- A rule of 64 tasks reads each named task once per pass, and a reading may ask GitHub (an
+  idle task with an open pull request and no armed merge); passes run at every turn's end in
+  the sandbox and every minute.
+- What the watch told is kept in memory beside its file, since the task list asks for every
+  idle task with a merged pull request.
+- A rule written by `after_all_tasks` needs a person once one of its tasks ends other than
+  done, as every chain does.

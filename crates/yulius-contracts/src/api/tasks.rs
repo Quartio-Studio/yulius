@@ -105,8 +105,10 @@ pub struct TaskSummary {
     #[serde(default)]
     pub background_shells_since: Option<String>,
     /// While the agent is idle: it waits in `yulius wait` for its checks, its delivery or an
-    /// armed merge (not counted in `background_shells`, SPEC-050 DSK-102). It goes on by itself
-    /// when Yulius has news, so the task is not the person's turn (SPEC-085 STT-002).
+    /// armed merge (not counted in `background_shells`, SPEC-050 DSK-102), or Yulius has news of
+    /// its pull request for it without such a wait: a merge is armed, or its merge or how an
+    /// armed merge ended is not said yet (SPEC-487 CHN-001). It goes on by itself
+    /// when Yulius has news, so the task is neither Done nor the person's turn (SPEC-085 STT-002).
     #[serde(default)]
     pub yulius_wait: bool,
     /// While the agent is idle: Claude Code last recorded its goal as set, not met or failed, so
