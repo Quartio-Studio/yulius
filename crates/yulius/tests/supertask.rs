@@ -314,6 +314,26 @@ async fn end_attempt(h: &Harness, task: &str) -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 QUE-001 (#1278): stopping one of two waiting tasks, neither a supertask, in a world
+/// with free sessions runs no pass of the queue: the other stays waiting (a pass would start it
+/// before a bulk stop reached it). The check is bounded: it can only miss the pass, never fail
+/// without one (this harness has no background tick).
+#[tokio::test]
+async fn stopping_a_waiting_task_that_is_no_supertask_starts_no_other() -> TestResult {
+    let h = support::harness()?;
+    support::seed_sandbox(&h, "s1", "shop", "u-alice").await?;
+    let first = support::seed_task(&h, "t-q1", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let second = support::seed_task(&h, "t-q2", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    h.app.stop_task_now(&first.id).await?;
+    let until = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
+    while tokio::time::Instant::now() < until {
+        let status = h.store.task(&second.id).await?.ok_or("task")?.status;
+        assert_eq!(status, TaskStatus::Queued, "the second task left the queue");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
 /// SUP-005 (review): a queued supertask stopped while slots are free lets the tasks it held start
 /// without waiting for the next tick of the queue.
 #[tokio::test]

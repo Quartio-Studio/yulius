@@ -9,9 +9,10 @@ use yulius_contracts::api::tasks::{
 };
 use yulius_domain::agent_cli::Version;
 use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, claude_effort};
-use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::permission::Action;
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task_access::{self, TaskAction, TaskRefusal};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -143,6 +144,23 @@ fn step_view(s: &StepRecord) -> StepView {
 #[must_use]
 pub fn progress(steps: &[StepRecord]) -> StepProgress {
     crate::discipline::progress_view(steps, None)
+}
+
+/// A tool that tidies a task for a person, as its audit names it (SPEC-490 OWN-005): the
+/// caller's actor and its audit detail.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ToolAudit<'a> {
+    /// Who the audit names, as the tool's other entries do.
+    pub actor: &'a str,
+    /// The caller's audit detail (a JSON object).
+    pub detail: &'a serde_json::Value,
+}
+
+/// Whether `user` owns `task`: the one comparison of a task's owner in the application
+/// (SPEC-490 OWN-001). What follows from it is [`yulius_domain::task_access::decide`]'s.
+#[must_use]
+pub(crate) fn owns(task: &TaskRecord, user: &UserId) -> bool {
+    task.owner == *user
 }
 
 impl App {
@@ -398,44 +416,160 @@ impl App {
         self.publish_task(task_id).await;
     }
 
-    /// The task `id` for `action` by `ctx`'s person: viewing needs access to its sandbox;
-    /// anything more changes the task, which only its owner may (SPEC-070 R3): it acts on GitHub
-    /// with their token.
+    /// The task `id` for a sandbox-level `action` by `ctx`'s person: viewing needs access to its
+    /// sandbox, and anything more is control, which only its owner has ([`TaskAction::of`],
+    /// SPEC-490 OWN-001): a path that changes a task is the owner's unless it asks
+    /// [`App::load_task_to`] for [`TaskAction::Tidy`].
     ///
     /// # Errors
-    /// `NotFound` without access, `Forbidden` with insufficient access or for a non-owner.
+    /// As [`App::load_task_to`].
     pub(crate) async fn load_task(
         &self,
         ctx: &AuthContext,
         id: &str,
         action: Action,
     ) -> AppResult<TaskRecord> {
+        self.load_task_to(ctx, id, TaskAction::of(action)).await
+    }
+
+    /// The task `id` for `ctx`'s person to view, tidy or control (SPEC-490 OWN-001, ADR-0331):
+    /// the one rule every way to a task asks ([`yulius_domain::task_access::decide`]).
+    ///
+    /// # Errors
+    /// `NotFound` without access, `Forbidden` with insufficient access, and for control by
+    /// anyone but the owner.
+    pub(crate) async fn load_task_to(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        action: TaskAction,
+    ) -> AppResult<TaskRecord> {
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
-        self.require_for(ctx, &task.sandbox_id, action).await?;
-        if action != Action::View {
-            self.require_owner(ctx, &task).await?;
-        }
+        self.require_task(ctx, &task, action).await?;
         Ok(task)
     }
 
-    /// Refuses `ctx`'s person unless they own `task` (SPEC-070 R3).
+    /// Refuses `ctx`'s person unless they may do `action` to `task`: their access to its
+    /// project (with their token's scope), then the task rule.
     ///
     /// # Errors
-    /// `Forbidden`, naming the owner and the way to control.
-    pub(crate) async fn require_owner(
+    /// As [`App::load_task_to`].
+    pub(crate) async fn require_task(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        action: TaskAction,
+    ) -> AppResult<AccessLevel> {
+        let (_, level) = self
+            .require_for(ctx, &task.sandbox_id, action.sandbox_action())
+            .await?;
+        match task_access::decide(action, level, owns(task, &ctx.user.id)) {
+            Ok(()) => Ok(level),
+            Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task).await),
+            // `require_for` refused a level below the action's already.
+            Err(TaskRefusal::Access) => Err(AppError::Forbidden(
+                "this needs write access to the project".into(),
+            )),
+        }
+    }
+
+    /// Refuses `ctx`'s person unless they own `task` (SPEC-490 OWN-004): for a path that
+    /// checked their access to the project itself.
+    ///
+    /// # Errors
+    /// `Forbidden`, naming the owner, the way to control and what is open to everyone.
+    pub(crate) async fn require_control(
         &self,
         ctx: &AuthContext,
         task: &TaskRecord,
     ) -> AppResult<()> {
-        if task.owner == ctx.user.id {
+        if owns(task, &ctx.user.id) {
             return Ok(());
         }
-        Err(AppError::Forbidden(format!(
-            "Task #{} is @{}'s: it acts on GitHub as them. Ask them for control.",
+        Err(self.not_the_owner(task).await)
+    }
+
+    /// The refusal of control of `task` (SPEC-490 OWN-004): whose it is, why, how to ask, and
+    /// what anyone may still do.
+    async fn not_the_owner(&self, task: &TaskRecord) -> AppError {
+        AppError::Forbidden(format!(
+            "Task #{} is @{}'s and only they steer it: it acts on GitHub as them. Ask them for \
+             control on the task's page. You can still stop, archive or delete it.",
             task.number,
             self.login_of(&task.owner).await
-        )))
+        ))
+    }
+
+    /// Records a tidy of `task` (SPEC-490 OWN-005): by a tool always, under its actor; by a
+    /// person on a page only when the task is someone else's, under their login. Either names
+    /// the owner when the person is not the owner. An owner's own page action leaves none, as
+    /// before. A failed write is logged: the change happened.
+    pub(crate) async fn record_tidy(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        action: &str,
+        tool: Option<ToolAudit<'_>>,
+    ) {
+        let Some((actor, detail)) = self.tidy_audit(ctx, task, tool).await else {
+            return;
+        };
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                &actor,
+                action,
+                Some(task.id.as_str()),
+                Some(&detail.to_string()),
+            )
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, action, "a tidy was not audited");
+        }
+    }
+
+    /// The actor and the detail [`App::record_tidy`] writes, or none for an owner's own page
+    /// action.
+    async fn tidy_audit(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        tool: Option<ToolAudit<'_>>,
+    ) -> Option<(String, serde_json::Value)> {
+        let another = !owns(task, &ctx.user.id);
+        if tool.is_none() && !another {
+            return None;
+        }
+        let mut detail = tool.map_or_else(|| serde_json::json!({}), |tool| tool.detail.clone());
+        detail["task"] = serde_json::json!(format!("#{} {}", task.number, task.title));
+        if another {
+            detail["owner"] = serde_json::json!(self.login_of(&task.owner).await);
+        }
+        let actor = match tool {
+            Some(tool) => tool.actor.to_owned(),
+            None => self.login_of(&ctx.user.id).await,
+        };
+        Some((actor, detail))
+    }
+
+    /// Says in `task`'s terminal who ended it, when that is not its owner (SPEC-490 OWN-005):
+    /// "Stopped by @login." (`what` is the verb's past).
+    pub(crate) async fn say_ended_by_another(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        what: &str,
+    ) {
+        if owns(task, &ctx.user.id) {
+            return;
+        }
+        let login = self.login_of(&ctx.user.id).await;
+        self.runtime(&task.id)
+            .hub
+            .notice(format!("{what} by @{login}."));
     }
 
     /// Tasks of a sandbox (archived or active).
@@ -632,7 +766,22 @@ impl App {
         id: &str,
         archive: bool,
     ) -> AppResult<TaskSummary> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
+        self.archive_task_as(ctx, id, archive, None).await
+    }
+
+    /// [`App::archive_task`] for a person on a page, or for a `tool` acting for them, which its
+    /// audit then names (SPEC-490 OWN-005).
+    ///
+    /// # Errors
+    /// As [`App::archive_task`].
+    pub(crate) async fn archive_task_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        archive: bool,
+        tool: Option<ToolAudit<'_>>,
+    ) -> AppResult<TaskSummary> {
+        let task = self.load_task_to(ctx, id, TaskAction::Tidy).await?;
         // Done, or answered (SPEC-429 ANS-007): what the sidebar shows under Done.
         let done = task.status == TaskStatus::Running
             && (self.task_is_done(&task).await || self.shows_done(&task).await);
@@ -655,6 +804,12 @@ impl App {
             ..TaskFieldUpdate::default()
         };
         self.deps.store.update_task(&task.id, &update, now).await?;
+        let action = if archive {
+            "task.archived"
+        } else {
+            "task.unarchived"
+        };
+        self.record_tidy(ctx, &task, action, tool).await;
         self.publish_task(&task.id).await;
         if archive {
             // Its build output goes now, not in the next round (SPEC-276 RDA-008).
@@ -704,7 +859,7 @@ impl App {
         actor: &str,
         caller_detail: Option<&serde_json::Value>,
     ) -> AppResult<crate::attachment_trash::DeletedAttachments> {
-        let mut task = self.load_task(ctx, id, Action::Work).await?;
+        let mut task = self.load_task_to(ctx, id, TaskAction::Tidy).await?;
         if task.status == TaskStatus::Running
             && (self.task_is_done(&task).await || self.shows_done(&task).await)
         {
@@ -779,14 +934,12 @@ impl App {
         );
         let attachments = self.settle_attachments(&task).await;
         self.forget_runtime(&task.id);
-        let named = format!("#{} {}", task.number, task.title);
-        let detail = match caller_detail {
-            Some(caller) => {
-                let mut detail = caller.clone();
-                detail["task"] = serde_json::json!(named);
-                detail.to_string()
-            }
-            None => named,
+        // A tool's deletion, and anyone's of a task that is not theirs, names the task and its
+        // owner (SPEC-490 OWN-005); an owner's own keeps the task's name alone.
+        let tool = caller_detail.map(|detail| ToolAudit { actor, detail });
+        let detail = match self.tidy_audit(ctx, &task, tool).await {
+            Some((_, detail)) => detail.to_string(),
+            None => format!("#{} {}", task.number, task.title),
         };
         let _ = self
             .deps

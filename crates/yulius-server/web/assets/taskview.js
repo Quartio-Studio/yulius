@@ -417,7 +417,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const mine = request && request.by.login === me();
       control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
-          : [h('strong', null, `You are watching @${owner()}'s task. `), `Only @${owner()} can type in it; it acts on GitHub as them.`, request ? ` @${request.by.login} asked for control.` : '']),
+          : [h('strong', null, `You are watching @${owner()}'s task. `), `You can stop, archive or delete it; to type in it or change it, ask @${owner()} for control.`, request ? ` @${request.by.login} asked for control.` : '']),
       mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
         : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
