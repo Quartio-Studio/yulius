@@ -97,6 +97,11 @@ export function bindPlaces(userId) {
 /** Start listening to navigation. */
 export function initRouter({ hash = false } = {}) {
   hashMode = hash;
+  at = entryOf(window.history.state);
+  if (at === null) {
+    at = 0;
+    window.history.replaceState({ ...window.history.state, [ENTRY]: at }, '', window.location.href);
+  }
   window.addEventListener('popstate', onHistory);
   if (hash) window.addEventListener('hashchange', onHistory);
   document.addEventListener('click', onDocumentClick);
@@ -139,7 +144,7 @@ export function href(path) {
  */
 export function replaceQuietly(path) {
   const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;
-  window.history.replaceState(window.history.state, '', url);
+  window.history.replaceState({ ...window.history.state, [ENTRY]: at }, '', url);
   const loc = currentLocation();
   lastKey = loc.full;
   remember(loc);
@@ -168,6 +173,18 @@ export function guardLeave({ dirty, ask, onLeave = () => {} }) {
 let guard = null;
 let asking = false;
 
+// Where in the tab's history the page is: each entry the router makes carries its place
+// (`history.state[ENTRY]`), so a guarded Back or Forward knows how far it went and can be
+// undone and made again exactly (SPEC-483 slice 28). `travel` is the entry a move the router
+// made itself is to reach; the events before it arrives are that move's own.
+const ENTRY = 'yuliusEntry';
+let at = 0;
+let travel = null;
+
+function entryOf(state) {
+  return state && Number.isInteger(state[ENTRY]) ? state[ENTRY] : null;
+}
+
 /** Whether leaving may go on now; asks the guard's question when there is work to lose. */
 async function mayLeave() {
   if (!guard || !guard.dirty()) return true;
@@ -177,7 +194,6 @@ async function mayLeave() {
   try {
     if (!(await current.ask())) return false;
     current.onLeave();
-    if (guard === current) guard = null;
     return true;
   } finally {
     asking = false;
@@ -195,20 +211,50 @@ export function navigate(path, { replace = false } = {}) {
     mayLeave().then((leave) => { if (leave) navigate(path, { replace }); });
     return;
   }
-  if (replace) window.history.replaceState(null, '', urlOf(path));
-  else window.history.pushState(null, '', urlOf(path));
+  if (replace) window.history.replaceState({ [ENTRY]: at }, '', urlOf(path));
+  else {
+    travel = null;
+    window.history.pushState({ [ENTRY]: ++at }, '', urlOf(path));
+  }
   emit();
 }
 
-/** Back or Forward: a guarded page with unsaved work is put back, then asks. */
+/**
+ * Back or Forward. With unsaved work the move is undone (the browser cannot be asked before it
+ * moves), the guard asks, and on Leave the same move is made again; the history stays the
+ * browser's own. A move of unknown length (an address typed in hash mode) is put back by a new
+ * entry instead.
+ */
 function onHistory() {
+  const to = entryOf(window.history.state);
+  if (travel !== null) {
+    if (to !== travel) return;
+    travel = null;
+    at = to;
+    emit();
+    return;
+  }
   const loc = currentLocation();
   if (loc.full !== lastKey && lastKey !== null && guard && guard.dirty()) {
+    const steps = to === null ? null : to - at;
+    if (steps) {
+      const from = at;
+      travel = from;
+      window.history.go(-steps);
+      mayLeave().then((leave) => {
+        if (!leave) return;
+        travel = from + steps;
+        window.history.go(steps);
+      });
+      return;
+    }
     const target = loc.full;
-    window.history.pushState(null, '', urlOf(lastKey));
+    window.history.pushState({ [ENTRY]: ++at }, '', urlOf(lastKey));
     mayLeave().then((leave) => { if (leave) navigate(target); });
     return;
   }
+  if (to !== null) at = to;
+  else window.history.replaceState({ ...window.history.state, [ENTRY]: ++at }, '', window.location.href);
   emit();
 }
 

@@ -109,12 +109,15 @@ export function mountSkillCreator(ctx, sandbox) {
     }
   }
 
-  const dirty = () => !created && (nameInput.value.trim() || useInput.value.trim() || editor.getMarkdown() !== pristine);
+  // What the page held when the person chose to leave it (and stayed, at the same address).
+  let left = null;
+  const held = () => JSON.stringify([nameInput.value.trim(), useInput.value.trim(), editor.getMarkdown()]);
+  const dirty = () => !created && (left === null ? (nameInput.value.trim() || useInput.value.trim() || editor.getMarkdown() !== pristine) : held() !== left);
   // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
   const leaveGuard = guardLeave({
     dirty: () => Boolean(dirty()),
     ask: () => confirmDialog({ title: 'Leave without creating?', message: 'The new skill is not saved.', confirmLabel: 'Leave', danger: true }),
-    onLeave: () => { created = true; },
+    onLeave: () => { left = held(); },
   });
   el.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doCreate(); }
