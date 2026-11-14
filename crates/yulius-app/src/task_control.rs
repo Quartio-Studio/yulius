@@ -18,11 +18,13 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, TaskRecord, UserRecord};
 
-/// How control passes: on a request the owner accepted, or past an absent owner (R5).
+/// How control passes: on a request the owner accepted, past an absent owner (R5), or of an
+/// onboarding task that never ran to the person who starts onboarding (SPEC-490 OWN-004).
 #[derive(Debug, Clone, Copy)]
-enum Handover {
+pub(crate) enum Handover {
     Requested,
     OwnerAbsent,
+    Unstarted,
 }
 
 impl App {
@@ -224,7 +226,7 @@ impl App {
     /// Passes control of `task` from its owner to `to` (R6): whose request waits, or anyone
     /// when the owner is absent. One conditional update, then the worktree's commit identity, the
     /// run's fingerprint file, the terminal notice, the audit entry and the published summary.
-    async fn pass_task_control(
+    pub(crate) async fn pass_task_control(
         self: &Arc<Self>,
         task: &TaskRecord,
         to: &UserRecord,
@@ -250,7 +252,7 @@ impl App {
                     .pass_control(&task.id, &task.owner, &to.id, now)
                     .await?
             }
-            Handover::OwnerAbsent => {
+            Handover::OwnerAbsent | Handover::Unstarted => {
                 store
                     .take_control(&task.id, &task.owner, &to.id, now)
                     .await?

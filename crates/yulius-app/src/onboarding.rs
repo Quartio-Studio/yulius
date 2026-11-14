@@ -1103,6 +1103,16 @@ impl App {
         // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
         self.ensure_agent_account(Harness::ClaudeCode.provider())
             .await?;
+        // An onboarding task that has run is its owner's to start (SPEC-490 OWN-004): anyone
+        // else is refused before anything is prepared, so a refusal pushes no first commit.
+        if let Some(ctx) = starter
+            && let Some(id) = &record.onboarding_task_id
+            && let Some(existing) = self.deps.store.task(id).await?
+            && !crate::tasks::owns(&existing, &ctx.user.id)
+            && self.task_ran(&existing).await?
+        {
+            self.require_control(ctx, &existing).await?;
+        }
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
         let for_person = starter.map(|ctx| &ctx.user);
@@ -1113,12 +1123,13 @@ impl App {
             return Ok(false);
         };
         // Starting onboarding starts its task, with the hand-over added to its request: that is
-        // control of the task (SPEC-490 OWN-004). One that exists (an earlier start that failed,
-        // or another person's start that created it a moment ago) is its owner's to start, and
-        // anyone else asks for control on its page; the one created just now is the starter's.
-        if let Some(ctx) = starter {
-            self.require_control(ctx, &task).await?;
-        }
+        // control of the task (SPEC-490 OWN-004). One Yulius created by itself that has never run
+        // is nobody's yet, so the starter takes it, as a hand-over; one that has run is its
+        // owner's, and anyone else asks for control on its page.
+        let task = match starter {
+            Some(ctx) => self.claim_onboarding_task(ctx, task).await?,
+            None => task,
+        };
         if let Some(notes) = notes {
             self.add_handover(&task, actor, notes).await?;
         }
@@ -1485,6 +1496,49 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+impl App {
+    /// The onboarding `task` for `ctx`'s person who starts onboarding (SPEC-490 OWN-004): theirs
+    /// already, or passed to them when it has never run (Yulius created it by itself, so nobody
+    /// gave it anything yet); one that has run stays its owner's.
+    ///
+    /// # Errors
+    /// `Forbidden` naming the owner of a task that has run; the hand-over's `Conflict`s.
+    async fn claim_onboarding_task(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        task: TaskRecord,
+    ) -> AppResult<TaskRecord> {
+        if crate::tasks::owns(&task, &ctx.user.id) {
+            return Ok(task);
+        }
+        if self.task_ran(&task).await? {
+            self.require_control(ctx, &task).await?;
+        }
+        self.pass_task_control(
+            &task,
+            &ctx.user,
+            ctx,
+            crate::task_control::Handover::Unstarted,
+        )
+        .await?;
+        self.deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    /// Whether `task` ever had a session: a run or a provider session on record.
+    ///
+    /// # Errors
+    /// Store failures.
+    async fn task_ran(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        Ok(!store.attempts(&task.id).await?.is_empty()
+            || !store.provider_sessions(&task.id).await?.is_empty())
     }
 }
 
