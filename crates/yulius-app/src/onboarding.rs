@@ -1103,15 +1103,13 @@ impl App {
         // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
         self.ensure_agent_account(Harness::ClaudeCode.provider())
             .await?;
-        // An onboarding task that has run is its owner's to start (SPEC-490 OWN-004): anyone
-        // else is refused before anything is prepared, so a refusal pushes no first commit.
+        // Starting onboarding starts its task: control of it (SPEC-490 OWN-004). One that exists
+        // is claimed before anything is prepared, so a refusal pushes no first commit.
         if let Some(ctx) = starter
             && let Some(id) = &record.onboarding_task_id
             && let Some(existing) = self.deps.store.task(id).await?
-            && !crate::tasks::owns(&existing, &ctx.user.id)
-            && self.task_ran(&existing).await?
         {
-            self.require_control(ctx, &existing).await?;
+            self.claim_onboarding_task(ctx, existing).await?;
         }
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
