@@ -165,7 +165,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | INS-001 | `instance` shows the Status panel and Settings' update section as the caller may see them: the build Yulius runs, an update offered or under way, the host's CPU load, memory and disk, the sessions and their bound, the sandboxes and subscriptions. | `cockpit::the_superagent_reads_the_instance_and_a_superadmins_updates_it` |
 | INS-002 | `instance_update` runs, for a superadmin, the update buttons' functions: check now, install the offered update (or a given commit), restart with the build it runs, cancel an update under way. The ask is the confirmation the buttons ask for (the person's decision of 2026-11-13); the functions' refusals pass as they are. | the same test (the superadmin's four, against a server without an update helper) |
 | INS-003 | Anyone else is refused with whose it is ("only a superadmin …"); an action that is none is refused. | the same test |
-| INS-004 | Both are the person's project tools (SAR-001, SAR-002), to no task's agent; `instance` is pre-allowed; the Global Superagent is not served `instance_update` (text read in one sandbox must not pause everyone's work). | the same test; `global_superagent::tests::it_is_not_served_change_merge`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
+| INS-004 | Both are the person's project tools (SAR-001, SAR-002), to no task's agent; `instance` is pre-allowed; `instance_update` is the Superagent's only: not served through the remote MCP (a long-lived token's agent; the person decided it for a superadmin's Superagent) nor to the Global Superagent (text read in one sandbox must not pause everyone's work). The audit entry names the action. The instructions keep naming web pages among the text that is data. | the same test (through the tool as a stored superadmin, the audit's action); `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action`; `global_superagent::tests::it_is_not_served_change_merge`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
 
 ## Plan
 
@@ -795,3 +795,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Not tested:** an update or a restart that runs (the test server has no update helper; the
   buttons' functions, with real helpers, are tested by the update suites); the Superagent's
   own session across the restart (slice 9).
+- **Independent review, round 1** (head `83258419`): request changes, one medium: shortening
+  the instructions had turned "web pages" into "pages", the browser being the Superagent's
+  main source of text that is data; restored, and a test holds it. Answered too: a task being
+  stopped reads its subscription again (`is_live`, not the armed-merge rule); `instance_update`
+  is the Superagent's only (no remote MCP: a long-lived token's agent, which the person's
+  decision did not cover); the audit entry names the action; the superadmin's path is tested
+  through the tool with the flag in the store; the API row names `GET /api/update`.

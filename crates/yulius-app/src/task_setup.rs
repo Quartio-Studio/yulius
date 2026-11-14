@@ -85,8 +85,15 @@ impl App {
     /// The label of the subscription `task`'s live run is on, if it has one (a removed
     /// subscription is no task's, as in its summary).
     pub(crate) async fn run_subscription(&self, task: &crate::model::TaskRecord) -> Option<String> {
-        // Only a task with a live run can be on one: the others cost no read.
-        if !task.status.keeps_an_armed_merge() {
+        // Only a task whose run may be live can be on one: the others cost no read (a task
+        // being stopped still has its run; one held for capacity or queued again may too).
+        use yulius_domain::task::TaskStatus;
+        if !(task.status.is_live()
+            || matches!(
+                task.status,
+                TaskStatus::WaitingCapacity | TaskStatus::Queued
+            ))
+        {
             return None;
         }
         let store = &self.deps.store;

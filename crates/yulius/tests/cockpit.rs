@@ -6750,6 +6750,37 @@ async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> Tes
             "{action}: {refused:?}"
         );
     }
+    // Through the tool, as the store says she is now a superadmin (review of slice 7, F5): the
+    // person's flag is read at the call, and the restart's own refusal comes back.
+    f.h.store
+        .execute_for_tests(
+            "UPDATE users SET is_superadmin = 0; \
+             UPDATE users SET is_superadmin = 1 WHERE id = 'u-alice';",
+        )
+        .await?;
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "instance_update", json!({"do": "restart"})).await?;
+    assert!(
+        is_error && said(&refused).contains("not available on this server"),
+        "{refused}"
+    );
+    let audited: Vec<Value> = yulius_app::ports::store::AuditStore::audit_details(
+        &f.h.store,
+        "s1",
+        "superagent.tool",
+        50,
+    )
+    .await?
+    .iter()
+    .filter_map(|detail| serde_json::from_str(detail).ok())
+    .collect();
+    assert!(
+        audited
+            .iter()
+            .any(|d| d["tool"] == "instance_update" && d["do"] == "restart" && d["ok"] == false),
+        "{audited:?}"
+    );
+
     // A task's agent is served neither.
     support::seed_task(
         &f.h,

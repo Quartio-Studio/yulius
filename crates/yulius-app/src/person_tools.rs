@@ -57,6 +57,11 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("variables_list", Action::View),
 ];
 
+/// The person's tools the remote MCP does not serve (review of slice 7, F3): updating or
+/// restarting the instance is decided for a superadmin's Superagent (2026-11-13), not for a
+/// long-lived token's agent.
+pub(crate) const SUPERAGENT_ONLY: &[&str] = &["instance_update"];
+
 /// The action the person's project tool `name` needs, when it is one.
 pub(crate) fn action(name: &str) -> Option<Action> {
     PERSON_TOOLS
@@ -155,6 +160,26 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
                         .find(|known| *known == action)
                 })
             {
+                about.insert("do".into(), json!(action));
+            }
+        }
+        // What an instance update did (review of slice 7, F4), when it is one of the actions.
+        "instance_update" => {
+            if let Some(action) = args.get("do").and_then(Value::as_str).and_then(|action| {
+                crate::instance_tools::INSTANCE_ACTIONS
+                    .into_iter()
+                    .find(|known| *known == action)
+            }) {
+                about.insert("do".into(), json!(action));
+            }
+        }
+        // What an instance update did (review of slice 7, F4), when it is one of the actions.
+        "instance_update" => {
+            if let Some(action) = args.get("do").and_then(Value::as_str).and_then(|action| {
+                crate::instance_tools::INSTANCE_ACTIONS
+                    .into_iter()
+                    .find(|known| *known == action)
+            }) {
                 about.insert("do".into(), json!(action));
             }
         }
@@ -795,6 +820,22 @@ mod tests {
             json!({"task": 7})
         );
         assert_eq!(subject("subscriptions", &json!({"number": 7})), json!({}));
+        assert_eq!(
+            subject("instance_update", &json!({"do": "restart"})),
+            json!({"do": "restart"})
+        );
+        assert_eq!(
+            subject("instance_update", &json!({"do": "x".repeat(1 << 20)})),
+            json!({})
+        );
+        assert_eq!(
+            subject("instance_update", &json!({"do": "restart"})),
+            json!({"do": "restart"})
+        );
+        assert_eq!(
+            subject("instance_update", &json!({"do": "x".repeat(1 << 20)})),
+            json!({})
+        );
         // A decision on a held prompt names the task and the decision, when it is one.
         assert_eq!(
             subject("task_held_prompt", &json!({"number": 5, "action": "after"})),
