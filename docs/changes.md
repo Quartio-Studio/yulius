@@ -15,6 +15,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   waiting one in place (`sandbox_request_amend`) or withdraws it, lists another sandbox's tasks
   without asking (`sandbox_tasks_list`), and leaves a decision only the person makes on the same
   panel as a question answered Yes or No (`person_ask`).
+- The CLI's sign-in has one contract (SPEC-483 slice 32, task #465). The server and `yulius
+  login` each defined the device sign-in's answers, the server's state a free word the CLI might
+  not read; both now use one definition, and a state the CLI does not know reads as expired.
 - One reader of RFC 3339 time (SPEC-483 slice 31, task #465). GitHub's, the transcripts', the
   imports' and the app's readers took different inputs (GitHub's took 31 February); every crate
   now reads timestamps one way, and converts dates with the domain's calendar.

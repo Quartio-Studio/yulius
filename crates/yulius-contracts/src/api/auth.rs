@@ -107,36 +107,9 @@ pub struct InstanceInfo {
     pub vidoc: bool,
 }
 
-/// `POST /api/device/start` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceStart {
-    /// Secret code the CLI polls with.
-    pub device_code: String,
-    /// Short code the user confirms in the browser.
-    pub user_code: String,
-    /// Page where the user approves.
-    pub verification_url: String,
-    /// Poll interval in seconds.
-    pub interval_s: u32,
-    /// Lifetime in seconds.
-    pub expires_in_s: u32,
-}
-
-/// `POST /api/device/poll` request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePollRequest {
-    /// Device code from [`DeviceStart`].
-    pub device_code: String,
-}
-
-/// `POST /api/device/poll` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DevicePoll {
-    /// `pending`, `approved`, `denied` or `expired`.
-    pub status: String,
-    /// API token once approved (returned exactly once).
-    pub token: Option<String>,
-}
+// The device sign-in's start and poll are the CLI's contract, one definition read by both ends
+// (SPEC-483 slice 32): the poll's state is an enum, and its `Debug` keeps the token out.
+pub use crate::import::{DevicePoll, DevicePollRequest, DeviceStart, DeviceStatus};
 
 /// `POST /api/device/approve`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -63,7 +63,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
-      #1290); QC3 slice 31;
+      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32;
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -672,6 +672,17 @@ went; two of the auditors' items had gained a user since and stay.
   analytics, the app's `civil_from_days` that the egress certificate authority borrowed) stood
   beside the domain's `CivilDate`.
 
+### Slice 32: one contract of the CLI's sign-in
+
+- **QB3 (low).** The device sign-in's start and poll were defined twice in the contracts crate:
+  `api::auth` (the server's: seconds as `u32`, the poll's state a free string taken from the
+  stored grant, a derived `Debug` that prints the token) and `import` (the CLI's: `u64`, an enum
+  of four states, a `Debug` that hides the token). A stored state the CLI does not know would have
+  broken `yulius login` with an unreadable answer, and nothing tied the two at compile time.
+- **Slice 31's review nits.** Its Decisions misstated what changed for the app's reader and left
+  out the import reader's change; a test case was refused by the length check before the padding
+  it names; the formatter's doc claimed a round trip for every year.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1191,6 +1202,9 @@ went; two of the auditors' items had gained a user since and stay.
   `Z`, `z` or `±HH:MM`; every field padded, the day within its month, the offset within a day,
   a fraction cut to milliseconds, a leap second read as `:59`; and converts days and dates with
   `CivilDate`.
+- **ONE-007** The device sign-in's start and poll have one contract, which the server sends and
+  the CLI reads: the poll's state is `pending`, `approved`, `denied` or `expired` (a consumed
+  grant, or a state the CLI does not know, is `expired`), and its `Debug` hides the token.
 
 ## Plan
 
@@ -1227,7 +1241,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 28: the web UI asks about unsaved work on every way out, and says checks, sizes and commits one way (merged, #1287)
 - [x] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out (merged, #1290)
 - [x] Slice 30: a cancelled waiting task starts the queue only when it was a supertask (merged, #1295)
-- [ ] Slice 31: one reader of RFC 3339 time, the calendar from the domain
+- [x] Slice 31: one reader of RFC 3339 time, the calendar from the domain (merged, #1296)
+- [ ] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read
 
 ## Acceptance criteria
 
@@ -1849,6 +1864,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   fraction, unpadded fields, a sign before the year and trailing text; `format_rfc3339` reads
   back; the transcript, GitHub and import tests pass through it (ONE-006).
 
+- **AC-152** The server's device poll says a stored `pending`, `approved` or `denied` grant as
+  that state, a `consumed` one or one of an unknown state as `expired`, on the wire as the
+  lowercase word the CLI reads (`{"status":"denied","token":null}`); the CLI's device tests and
+  the server's sign-in tests pass on the one contract (ONE-007).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2109,6 +2129,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 32: `yulius-app` `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`, the
+  `yulius` sign-in tests (`http_auth`) and the CLI's `import::device` tests (AC-152).
 - Slice 31: `yulius-domain` `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
   and `rfc3339_text_round_trips` (AC-151); the import crate's `time::tests`, GitHub's
   `time::tests`, the transcripts' and analytics' tests through it.
@@ -2213,12 +2235,20 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 32 (no decision record: a refactor). The CLI's definitions are kept (an enum and a
+  `Debug` that hides the token) and `api::auth` names them, rather than the server's: a state the
+  CLI cannot read is the failure this slice removes. A stored state the CLI does not know reads
+  as expired, so the CLI stops and says so rather than polling on. The server's
+  `DeviceApprove` stays its own: only the browser sends it.
 - Slice 31 (no decision record: a refactor). The reader kept is the strictest, the
   transcripts': it refuses what no writer of these timestamps sends (GitHub, Claude Code and
-  Yulius write padded UTC with `Z`), so the inputs that change are malformed ones: GitHub's and
-  the app's readers now refuse an impossible day or an unpadded field, GitHub's keeps a fraction
-  as milliseconds and reads a leap second as `:59`, the app's takes a space as GitHub's and the
-  transcripts' did. It sits beside `Timestamp`, on `CivilDate`. The fake agent keeps its own
+  Yulius write padded UTC with `Z`), so the inputs that change are malformed ones: GitHub's
+  reader now refuses an impossible day, an unpadded or overlong field and a junk fraction, keeps
+  a fraction as milliseconds and reads a leap second as `:59`; the app's takes a space between
+  date and time, refuses an offset beyond a day and reads a leap second as `:59` (it counted one
+  more second); the imports' refuses seconds 61 to 99 (it read them as `:59`); the transcripts'
+  is unchanged (a differential run of the four over 3 million real-shaped inputs, review of
+  slice 31). It sits beside `Timestamp`, on `CivilDate`. The fake agent keeps its own
   formatter: it stands in for an external program and depends on no Yulius crate.
 - Slice 30 (no decision record: SUP-005 decided it). The pass follows what frees a session or
   a hold, as the delete path already did, rather than the test seeding its tasks differently:
@@ -2676,9 +2706,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
-| QB2, QB3, QB7 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice | low | open (item 16 of the Context) |
+| QB2, QB7 | duplication | Three loopback HTTP clients, the Superagent's tools dispatched twice | low | open (item 16 of the Context) |
+| QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | slice 32 |
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
-| QC3 | duplication | RFC 3339 parsing four times with different inputs | low | slice 31 |
+| QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
 | QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
 | Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
@@ -2765,3 +2796,46 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `5306dd677`: exit 0; `4391 tests run: 4391 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `fabe6bae1`): approve; a differential run of the
+  four old readers against the new one (3 million mutations of real-shaped timestamps) showed
+  only malformed inputs read differently, no real writer affected. Four nits, answered in slice
+  32: the Decisions' account of the app's and imports' readers (corrected), a test case refused
+  by the length check (two full-length unpadded cases added), the formatter's round trip (true
+  for four-digit years; the doc says so), the fake's formatter at absurd inputs (no change: no
+  caller comes near).
+- **Merged.** Pull request #1296 was squash-merged into `dev` (`98eb2af79`) after its merge
+  train passed.
+
+### Slice 32 (2026-11-14)
+
+- **Test failing before the change**: `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`
+  did not compile (the server's poll had no state type and no mapping).
+- **Tests failing without their fix** (`target/audit/slice32/mutate.py`, `mutations.log`): an
+  unknown state said as pending, `denied` said as expired, an approved token not given: each
+  failed its test. Two survived: the check that a consumed grant gives no token again guards two
+  concurrent polls, code this slice moved but did not change, which a sequential test cannot
+  reach (a second poll reads the `consumed` state anyway); and dropping the separators at
+  positions 7 and 16 of a timestamp, which no case had a wrong character at: four cases with a
+  wrong separator were added and the mutation now fails (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `e36541b04`: exit 0; `4405 tests run: 4405 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `f3095f36c`): approve, three nits (two own: the two
+  "unpadded" cases are refused by the separator check the new separator cases cover; "a
+  sequential test cannot reach" the consumed-grant check is too strong, a test store could;
+  one pre-existing: `DeviceStart`'s derived `Debug` prints the device code). The merge was armed.
+- **CI at `f3095f36c`** (run `ca58bbe9`): `e2e` failed in `ownership.e2e.ts` "Archive all leaves
+  other people's Done tasks", a test added by #1292 the same day, which this slice does not
+  touch: the toast said "Archived 2 Done tasks.", the other person's task archived too. "Archive
+  all" and a row's menu act on the task the page holds; the test changed the task's owner
+  through the mock and pressed the button before the page had the change. A 500 ms delay of the
+  mock's change (`touchTask`) made it fail 2 of 2 and the menu test of the same file fail too;
+  waiting until the row shows its owner's mark before pressing, the file passed 9 of 9 with the
+  delay (`probe-file-after.log`; the run without it was not kept). No open pull request touched
+  the file; the fix is its own commit (`6287e8220`).
+- **Review, round 2** (the same session, head `593fd0e83`): request changes. At a 2.5 s delay a
+  third test of the file ("…archived from the sidebar and deleted from its menu") opened task
+  #4's menu before #4's owner change (the 500 ms probe hid it behind #13's archive). Answered:
+  the same wait before its menu; with a 2.5 s delay the file passes 9 of 9 twice
+  (`probe-2500-after.log`), without it 9 of 9 twice (`no-probe-after.log`). Every other
+  `touchTask` of the file waits on something the change shows before acting.
