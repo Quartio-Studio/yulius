@@ -172,6 +172,14 @@ impl SpecStatus {
         }
     }
 
+    /// Whether a spec with this status says that its task's work is not finished (SPEC-491
+    /// DON-004): everything but `done` (every Plan item ticked, Evidence present) and
+    /// `abandoned`. Such a task is not Done, however complete its plan reads.
+    #[must_use]
+    pub fn work_left(self) -> bool {
+        !matches!(self, Self::Done | Self::Abandoned)
+    }
+
     /// Parses the frontmatter spelling.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {

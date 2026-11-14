@@ -1321,8 +1321,9 @@ impl App {
     /// order; checked items are `done`; unchecked items keep the status and effort of the
     /// existing step with the same title (agents may mark them `in_progress` before ticking the
     /// box), so unticking never reopens a finished step; new items start `pending`. Writes only
-    /// on change. Returns whether the steps changed. It runs at a session start, at a turn end and
-    /// every few seconds of a live run (SPEC-341 LSS-001), under the task's steps lock.
+    /// on change. Returns whether the steps changed. It also keeps the spec's `status` with the
+    /// task (SPEC-491 DON-004). It runs at a session start, at a turn end and every few seconds
+    /// of a live run (SPEC-341 LSS-001), under the task's steps lock.
     ///
     /// # Errors
     /// Store failures.
@@ -1338,13 +1339,20 @@ impl App {
         let _steps = runtime.steps_lock.lock().await;
         let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
         let expected = task.id.clone();
-        let plan = tokio::task::spawn_blocking(move || {
-            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected).plan)
+        let report = tokio::task::spawn_blocking(move || {
+            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected))
         })
         .await
         .map_err(AppError::internal)?;
-        let Some(plan) = plan else { return Ok(false) };
-        let items: Vec<_> = plan
+        let Some(report) = report else {
+            return Ok(false);
+        };
+        // What the spec says of the task's work decides Done with the steps (SPEC-491 DON-004).
+        if self.note_spec_status(&task.id, report.status).await {
+            self.publish_task(&task.id).await;
+        }
+        let items: Vec<_> = report
+            .plan
             .into_iter()
             .filter(|item| item.depth == 0 && !item.text.trim().is_empty())
             .take(crate::coordination::MAX_STEPS)

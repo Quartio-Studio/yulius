@@ -257,6 +257,9 @@ impl App {
             goal_unfinished: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.goal_unfinished(&task.id),
+            spec_unfinished: task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && self.spec_unfinished(&task.id).await,
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,

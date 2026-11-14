@@ -69,7 +69,7 @@ supertask's wait and the tools.
 
 | ID | Requirement |
 | --- | --- |
-| DON-001 | An open pull request is **tested** only when it does not conflict with its base and its checks passed at its head, or none are required. It conflicts when GitHub says it is not mergeable, or when Yulius's own merge of its head with the integration branch, as last fetched, conflicts (the check of PRN-004). One domain function (`PullSignal::of`) decides it for `task_is_done`, the Git overview and the counts. |
+| DON-001 | An open pull request is **tested** only when it does not conflict with its base and its checks passed at its head, or none are required. It conflicts when GitHub says it is not mergeable, or when Yulius's own merge of its head with the integration branch, as last fetched, conflicts (the check of PRN-004). One domain function (`PullSignal::from_wire`) decides it for `task_is_done`, the Git overview and the counts. |
 | DON-002 | "None required" means the project requires none: no Yulius CI run is due at the head and the delivery profile does not require checks. With a profile that requires checks, a pull request without reported checks is pending (as the Git overview reads it since #68), in `task_is_done` too. |
 | DON-003 | A conflicting pull request of a finished turn reads "In review · PR #N · conflicts with `<base>`" (Working): its agent is told by the pull request watch (PRN-004) and goes on by itself. Failing or errored checks keep their own reading, whatever the conflict. An achieved goal stays Done (CHN-003). |
 | DON-004 | A task's spec is its record of the work it declared. Yulius keeps the spec's `status` with the task whenever it reads the spec (`tasks.spec_status`). While it says `draft`, `approved` or `in-progress`, the task has work left even when every step is finished: it is not Done by its plan and pull request, merged or tested; idle, it reads "Your turn", as with open steps. `done` and `abandoned` say nothing is left. A task without a spec, or whose spec was never read, declares its work by its steps alone. |
@@ -81,8 +81,8 @@ supertask's wait and the tools.
 ## Plan
 
 - [x] The cause verified against the code, the running server and #465's transcript; the spec written and validated
-- [ ] A pull request that conflicts or lacks required checks is not tested, and a chained task waits (DON-001 to DON-003)
-- [ ] A task whose spec does not say done has work left, and a chained task waits (DON-004, DON-005)
+- [x] A pull request that conflicts or lacks required checks is not tested, and a chained task waits (DON-001 to DON-003)
+- [x] A task whose spec does not say done has work left, and a chained task waits (DON-004, DON-005)
 - [ ] The API, the web UI and the counts say the same as the chains (DON-006)
 - [ ] The agent is told what keeps its task from Done (DON-007)
 - [ ] ADR-0332, SPEC-001, SPEC-487, the architecture, the API reference and the changes log state one rule (DON-008)
@@ -107,7 +107,7 @@ supertask's wait and the tools.
 
 ## Test plan
 
-- Domain unit tests: `PullSignal::of` over state, checks, the profile's requirement and a
+- Domain unit tests: `PullSignal::from_wire` over state, checks, the profile's requirement and a
   conflict; `AttentionFacts::group` with a conflicting pull request and with work declared.
 - Integration tests in `crates/yulius/tests/merge_train.rs` (real Git, the fake GitHub): AC-1 and
   AC-3 with a chained task, each run first without the fix to see it fail; AC-2 in

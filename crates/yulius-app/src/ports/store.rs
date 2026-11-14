@@ -678,6 +678,12 @@ pub trait CoordinationStore: Send + Sync {
     /// [`Self::update_step`]), so a plan that grew later can say so (SPEC-484 PLN-009). `None`
     /// while no step is finished, and for an unknown task.
     async fn plan_first_steps(&self, task: &TaskId) -> AppResult<Option<u32>>;
+    /// Keeps what the task's spec says of its work, the `status` of its frontmatter as written
+    /// (SPEC-491 DON-004); `None` when the spec names none. Returns whether it changed.
+    async fn set_spec_status(&self, task: &TaskId, status: Option<&str>) -> AppResult<bool>;
+    /// What the task's spec said of its work when Yulius last read it. `None` for a task without
+    /// a spec, one whose spec was never read, and an unknown task.
+    async fn spec_status(&self, task: &TaskId) -> AppResult<Option<String>>;
     /// When each step of a task last started and finished, from `step_events`.
     async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<crate::model::StepTiming>>;
     /// Updates one step and records an event; `NotFound` if absent.

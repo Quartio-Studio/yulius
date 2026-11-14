@@ -138,16 +138,19 @@ impl FakeRemote for Origin {
     }
 }
 
+/// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
+/// whose spec does not say done is not Done, SPEC-491 DON-004).
 fn valid_spec(task: &str) -> String {
     format!(
-        "---\nyulius-task: {task}\nstatus: in-progress\n---\n# Change {task}\n\n\
+        "---\nyulius-task: {task}\nstatus: done\n---\n# Change {task}\n\n\
          ## Goal\nShip change {task}.\n\n\
          ## Context\nParallel tasks deliver at once.\n\n\
          ## Requirements\n- It lands.\n\n\
          ## Plan\n- [x] Write the spec\n- [x] Make the change\n\n\
          ## Acceptance criteria\n- It is merged.\n\n\
          ## Test plan\n- The merge train test.\n\n\
-         ## Decisions\n- None yet.\n"
+         ## Decisions\n- None yet.\n\n\
+         ## Evidence\n- The gate: passed.\n"
     )
 }
 
@@ -1968,6 +1971,21 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     let worktree = f.task(1, &[("shared.txt", "mine\n")]).await?;
     let first = TaskId::parse("t1")?;
     let next = chained_after_t1(&f).await?;
+    // A task that waits on a start rule naming it asks the same question.
+    let number = TaskStore::task(&f.h.store, &first)
+        .await?
+        .ok_or("t1")?
+        .number;
+    let ruled = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "after change 1", "start_rule": format!("#{number} done")})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(ruled.body["status"], "chained", "{}", ruled.body);
+    let ruled = TaskId::parse(ruled.body["id"].as_str().ok_or("id")?)?;
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &head).await?;
     // `dev` moves in the same file, and Yulius's clone learns of it.
@@ -1975,10 +1993,16 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     git(&f.repo, &["fetch", "-q", "origin"])?;
 
     app.advance_chains(&first).await;
+    app.advance_all_chains().await;
     assert_eq!(
         status_of_task(&f, &next).await,
         Some(TaskStatus::Chained),
         "its pull request cannot merge"
+    );
+    assert_eq!(
+        status_of_task(&f, &ruled).await,
+        Some(TaskStatus::Chained),
+        "`#1 done` is false"
     );
     let overview = call(
         &f.h.router,
@@ -2030,11 +2054,14 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     );
     f.record_passed(&app, 1, &merged_head).await?;
     app.advance_chains(&first).await;
-    assert_ne!(
-        status_of_task(&f, &next).await,
-        Some(TaskStatus::Chained),
-        "it merges cleanly and is tested: it starts"
-    );
+    app.advance_all_chains().await;
+    for waiting in [&next, &ruled] {
+        assert_ne!(
+            status_of_task(&f, waiting).await,
+            Some(TaskStatus::Chained),
+            "it merges cleanly and is tested: it starts"
+        );
+    }
     Ok(())
 }
 

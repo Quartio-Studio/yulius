@@ -1470,6 +1470,7 @@ impl App {
         match read_repo_file(&worktree, &path, MAX_SPEC_BYTES).await {
             Ok(text) => {
                 let report = spec_format::validate_spec_for(&text, &task.id);
+                self.note_spec_status(&task.id, report.status).await;
                 SpecCheck {
                     path: Some(path),
                     valid: report.is_valid(),
@@ -3282,7 +3283,7 @@ impl App {
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background
-    /// shell runs, and the goal is achieved or the plan is complete with the change merged. The
+    /// shell runs, and the goal is achieved or no declared work is left with the change merged. The
     /// session limit counts tasks by it (SES-101), many times a minute.
     pub(crate) async fn task_is_done_locally(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
@@ -3305,17 +3306,26 @@ impl App {
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
-        match self.deps.store.steps(&task.id).await {
-            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
-            _ => return false,
+        if self.work_left(&task.id).await {
+            return false;
         }
         matches!(record, Some(record) if past_merge(&record.stage))
+    }
+
+    /// Whether work the task declared is left (SPEC-491 DON-004): steps of its plan not
+    /// finished, or a spec that does not say `done`. A plan that cannot be read counts as open.
+    async fn work_left(&self, task: &TaskId) -> bool {
+        match self.deps.store.steps(task).await {
+            Ok(steps) if !crate::sandboxes::plan_open(&steps) => self.spec_unfinished(task).await,
+            _ => true,
+        }
     }
 
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
     /// ended (the agent is idle, or the session was closed), no background shell of the agent is
     /// known to run, and either Claude Code recorded its goal as achieved (activity `done`) or
-    /// its plan is complete and its pull request is merged, or open and tested (mergeable into
+    /// no work it declared is left (its plan is complete and its spec does not say otherwise,
+    /// SPEC-491 DON-004) and its pull request is merged, or open and tested (mergeable into
     /// its base, with checks green or none required: [`PullSignal::from_wire`], SPEC-491
     /// DON-001), and Yulius has no news of that pull request left for its agent
     /// ([`App::pr_news_due`]). Anything unknown (no pull request, GitHub unreachable) is not Done.
@@ -3344,10 +3354,10 @@ impl App {
         if self.pr_news_due_of(task, record.as_ref(), false).await {
             return false;
         }
-        // A pull request makes a task Done only when its plan is complete (#139, TSK-014).
-        match self.deps.store.steps(&task.id).await {
-            Ok(steps) if !crate::sandboxes::plan_open(&steps) => {}
-            _ => return false,
+        // A pull request makes a task Done only when no work it declared is left: its plan is
+        // complete (#139, TSK-014) and its spec does not say otherwise (SPEC-491 DON-004).
+        if self.work_left(&task.id).await {
+            return false;
         }
         let Some(record) = record else {
             return false;

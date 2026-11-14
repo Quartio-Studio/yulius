@@ -3532,7 +3532,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -3636,7 +3636,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -4901,9 +4901,15 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
         task.body
     );
 
-    // Every step finished on the merged head: the task is Done, and the one chained after it
-    // no longer waits.
+    // Every step finished on the merged head, and the spec still says in-progress: the task has
+    // not said that nothing is left (SPEC-491 DON-004), so the one chained after it waits.
     set_steps(&f, "t1", &["done", "done", "done", "skipped", "skipped"]).await?;
+    assert_eq!(successor().await?, "chained", "its spec says in-progress");
+    // Its spec says done, read at the turn's end: the task is Done, and the one chained after
+    // it no longer waits.
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec: done")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
     assert_ne!(successor().await?, "chained");
     Ok(())
 }
@@ -5236,6 +5242,95 @@ async fn a_green_pull_request_that_conflicts_is_not_done() -> TestResult {
     );
     set_mergeable(true);
     assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    Ok(())
+}
+
+/// SPEC-491 DON-004, DON-005 (the way task #465 ran on 14 November 2026: its plan read 28/28
+/// between two slices, because it adds a slice's step when the slice before is merged, while
+/// its spec said `in-progress` and named twelve findings still to fix): a task whose spec does
+/// not say `done` has work left, however complete its plan reads and whatever its pull request
+/// says, tested or merged. The task chained after it waits, and the task is the person's turn,
+/// as with open steps; when the spec says `done` it is Done and the chained task starts.
+#[tokio::test]
+async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let unfinished = valid_spec("t1").replace("- [ ] Implement", "- [x] Implement");
+    let (wt, head) = delivered_with_a_successor(&f, &unfinished).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "tested, and its spec says in-progress"
+    );
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(merged.body["stage"], "merged_integration");
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "merged, and its spec says in-progress"
+    );
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], true, "{}", shown.body);
+    let sandbox = f
+        .req(Method::GET, "/api/sandboxes/s1", None, &f.bob)
+        .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 1,
+        "stopped with work left: the person's turn ({})",
+        sandbox.body
+    );
+
+    // The last of its work: the spec says done, and Yulius reads it at the turn's end.
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec: done")?;
+    let t1 = TaskId::parse("t1")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], false, "{}", shown.body);
+    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    Ok(())
+}
+
+/// SPEC-491 DON-005: a task closed with its pull request merged and every step finished, whose
+/// spec says its work is not finished, did not end Done: the task chained after it needs a
+/// person, as after a task closed with steps open. With a spec that says done it starts.
+#[tokio::test]
+async fn a_closed_task_whose_spec_says_in_progress_did_not_end_done() -> TestResult {
+    for (spec, starts) in [
+        (
+            valid_spec("t1").replace("- [ ] Implement", "- [x] Implement"),
+            false,
+        ),
+        (finished_spec("t1"), true),
+    ] {
+        let f = fixture(&DeliveryProfile::standard()).await?;
+        let (_wt, head) = delivered_with_a_successor(&f, &spec).await?;
+        f.h.github.set_checks(&head, ChecksState::Success);
+        let merged = f
+            .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+            .await?;
+        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        let t1 = TaskId::parse("t1")?;
+        f.h.store
+            .transition_task(&t1, None, TaskStatus::Closed, None, Timestamp(7))
+            .await?;
+        f.h.app.advance_chains(&t1).await;
+        let next = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
+        if starts {
+            assert_eq!(next.body["status"], "queued", "{}", next.body);
+        } else {
+            assert_eq!(next.body["status"], "chained", "{}", next.body);
+            assert_eq!(
+                next.body["after"]["blocked"],
+                "#1 was closed before it was done. Start this task now or cancel it.",
+                "{}",
+                next.body
+            );
+        }
+    }
     Ok(())
 }
 
