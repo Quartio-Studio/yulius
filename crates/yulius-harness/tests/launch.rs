@@ -741,7 +741,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             "--mcp-config",
             config,
             "--allowedTools",
-            "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read,mcp__yulius__secrets_list,mcp__yulius__secret_verify,mcp__yulius__sandboxes_list,mcp__yulius__sandbox_task_get,mcp__yulius__browser_tabs,mcp__yulius__browser_snapshot,mcp__yulius__browser_screenshot",
+            "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read,mcp__yulius__secrets_list,mcp__yulius__secret_verify,mcp__yulius__sandboxes_list,mcp__yulius__sandbox_task_get,mcp__yulius__browser_tabs,mcp__yulius__browser_snapshot,mcp__yulius__browser_screenshot,mcp__yulius__task_delivery,mcp__yulius__ci_runs,mcp__yulius__ci_run,mcp__yulius__cd_status,mcp__yulius__variables_list",
             "--model",
             "claude-fable-5-2",
             "--effort",

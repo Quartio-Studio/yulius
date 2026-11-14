@@ -169,7 +169,15 @@ watching, steering and unblocking.
   person: the request shows above its session with the target, the whole prompt and its start
   options, and nothing reaches that sandbox until the person presses Create task there; Decline,
   no answer in 4 minutes or interrupting the Superagent creates nothing, and no API token can
-  approve (SPEC-335). After an update
+  approve (SPEC-335). What its person does on the project's pages it does for them when they
+  ask, with their rights and audited as theirs through the Superagent: it continues a task that
+  stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
+  (its pull request, checks, what comes next and what is refused now and why), reads the
+  CI runs and a run's failing output, runs a run again or cancels it, reads the deployments and
+  deploys a dev-stage environment. It no longer hands such a job back as steps to click or
+  uses a finished task as hands; an ability it lacks it names
+  (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
+  After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
