@@ -15,9 +15,10 @@ by hand: `git worktree add -b`), and all task work happens there. Never switch a
 another branch. Implement and verify, merge `origin/dev` before the review or for a conflict,
 then get an independent review in a fresh session of the exact head and call `delivery_merge`
 with that `reviewed_head`: Yulius pushes, opens the pull request into dev and squashes it on
-green Yulius CI through its merge queue. Never merge by hand (`gh pr merge` is refused). Delete
-only the merged task branch after safely removing its worktree, preserving unpublished commits
-and tracked/untracked/ignored user data. Keep permanent dev/main worktrees.
+green Yulius CI through its merge queue. Never merge by hand (`gh pr merge` is refused). Yulius
+removes a closed task's worktree; a branch made by hand is deleted only after safely removing
+its worktree, preserving unpublished commits and tracked/untracked/ignored user data. Keep
+permanent dev/main worktrees.
 
 Merge only after the PR answers every review finding (own code or pre-existing,
 `docs/engineering/workflow.md`, Review output). Each finding in code or tests the

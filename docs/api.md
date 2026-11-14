@@ -752,8 +752,8 @@ exclusive = true            # optional: one run of it (each matrix value apart) 
                             #   sandbox; a later run's job waits for its turn, outside its limit,
                             #   holding no slot (ADR-0279)
 # or, for one job: [commands] gate = "…"   (not both)
-# [commands] test, lint, build = "…": for agents to read (the briefing names them); Yulius
-#                            only reads whether test and lint are set
+# [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
+#                            lint are set (the briefing says so when one is missing)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
 CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at most 32 variables,

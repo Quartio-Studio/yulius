@@ -2,7 +2,8 @@
 
 Use explicit domain, application and I/O boundaries. Add crates only when a real
 feature needs a separate boundary; these classifications are not a product roadmap.
-The workspace's crates and their layers are listed in [the architecture](../architecture.md#layers-and-crates).
+The workspace's crates and their layers are listed in
+[the architecture](../architecture.md#layers-and-crates).
 
 | Layer | Responsibility | Allowed internal dependencies |
 | --- | --- | --- |

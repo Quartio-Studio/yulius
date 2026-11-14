@@ -16,20 +16,24 @@ merges it. Its steps:
    or for a conflict (never rebase), and run the tests again.
 3. An **independent review in a fresh session** reads the exact head (a read-only reviewer given
    the diff range and the spec, skill `om-code-review`); every finding is answered
-   ([workflow](workflow.md#review-output)). A commit after the approval needs a look at it too.
+   ([workflow](workflow.md#review-output)). A commit after the approval needs a look at it too;
+   a clean merge of `dev` after it (no conflict resolved) keeps the approval.
 4. Call `delivery_merge` with that `reviewed_head`. Yulius pushes the branch, opens the pull
    request into `dev` and merges it (squash) on green Yulius CI at the exact head, through its
    merge queue, which tests a pull request that is behind on top of the current `dev`. To wait,
    start `yulius wait` in the background and end the turn; Yulius tells the session how it ended.
    Merging by hand (`gh pr merge`) is refused: it skips the queue and the merge's own checks.
-5. After the merge, Yulius deletes the remote branch; remove what the task left (review
-   worktrees, scratch files) with `repo_hygiene` and `repo_cleanup`.
+5. After the merge, Yulius deletes the remote branch and, once the task is closed, its worktree.
+   Remove what the task itself made (review worktrees with `git worktree remove`, scratch
+   files); `repo_hygiene` lists, and `repo_cleanup` removes, stale branches and the worktrees
+   of merged, archived or deleted tasks.
 6. Yulius CI runs every new `dev` commit; a task's work ends at `dev`. Deploying dev is a task's
    only when it asks (`cd_deploy`).
 7. **Promotion is a person's** ([ADR-0110](../decisions/0110-only-a-person-deploys-production.md)):
-   an administrator promotes on the CD page, typing the project's slug. Yulius opens the
-   promotion pull request from `dev` into `main` and merges it with a **merge commit** once the
-   exact `dev` head has a successful `yulius/ci` status (the `yulius-main` ruleset requires it).
+   an administrator promotes on the CD page, typing the project's slug. Yulius then opens the
+   promotion pull request from `dev` into `main` and merges it with a **merge commit** when the
+   exact `dev` head has a successful `yulius/ci` status (the `yulius-main` ruleset requires it);
+   otherwise the deploy is refused with why, and the person deploys again later.
    An agent never promotes; a task that needs production asks a person with `needs_you`.
 
 If several tested features accumulate on `dev`, a promotion includes all of them. Never
@@ -109,12 +113,13 @@ Intermediate commit wording is a convention, not an additional blocking check.
 
 ## Keep history tidy with squash, not stash
 
-Squashing turns a feature's working commits into **one meaningful commit on `dev`**,
-using the PR title and body (Yulius squashes when it merges). Do not require authors to rewrite every working commit.
-Never squash or rebase the long-lived `dev` branch into `main`: a merge commit
-preserves common ancestry across repeated promotions, while retaining the already
-squashed feature commits. `main` has those feature commits plus promotion commits.
-Do not merge `main` back into `dev` just to copy promotion-only merge commits.
+Squashing turns a feature's working commits into **one meaningful commit on `dev`**, using the PR
+title and body (Yulius squashes when it merges). Do not require authors to rewrite every working
+commit. Never squash or rebase the long-lived `dev` branch into `main`: a merge commit preserves
+common ancestry across repeated promotions, while retaining the already squashed feature commits.
+`main` has those feature commits plus promotion commits. Do not merge `main` back into `dev` just to
+copy promotion-only merge commits.
+
 
 No `git stash` in a task's worktree: the stash stack is shared by every worktree of the
 clone, so another session may pop your entry. Set work aside in a temporary commit instead.
@@ -146,10 +151,12 @@ production, unrelated deployments, account changes, paid work or messages.
 
 ## Cleanup, concurrency and recovery
 
-After verifying the PR is merged and its recorded head matches the local branch
-exactly, stop branch-owned processes. Inspect tracked, untracked and ignored files
-in that worktree; preserve user data and unpublished work. From the permanent dev
+In Yulius a task's worktree is Yulius's (it removes it once the task is closed); the steps below are
+for a branch and worktree made by hand. After verifying the PR is merged and its recorded head
+matches the local branch exactly, stop branch-owned processes. Inspect tracked, untracked and
+ignored files in that worktree; preserve user data and unpublished work. From the permanent dev
 worktree, remove the task worktree **before** deleting the local branch:
+
 
 ```sh
 git fetch origin --prune
@@ -178,7 +185,8 @@ branches or use forced ref updates to refresh a checked-out branch.
   branch can no longer be pushed), and never rewrite `dev` or `main`.
 - Failed post-merge `dev` checks block promotion. Fix on a new branch from `dev` and
   use the same PR/test sequence. Failed `main` checks stop further delivery; diagnose,
-  then fix/revert through `dev` and promote. Do not bypass the process with a direct
+  then fix/revert through `dev`; a person promotes the fix. Do not bypass the process with a
+  direct
   hotfix to `main`. Any emergency exception requires an explicit recorded user decision.
 - The independent review in a fresh session approves the exact head before `delivery_merge`;
   GitHub requires no approvals, code-owner approval or last-push approval. Resolve actionable

@@ -8,8 +8,7 @@ description: Write or refine Yulius specifications with traceable requirements, 
 Read `AGENTS.md`, `docs/engineering/specifications.md` and the relevant existing spec from the
 repository root. Start from `.ai/templates/spec.md`, the form `spec_check` validates (every
 section stays; one that does not apply says why). The product brief is SPEC-001 in `.ai/specs`:
-distinguish
-reference observations, user requirements and proposed defaults.
+distinguish reference observations, user requirements and proposed defaults.
 
 1. Inspect the affected behavior/code and scope authorized by the user. Record
    the concrete outcome and current failure or missing capability.
@@ -20,8 +19,8 @@ reference observations, user requirements and proposed defaults.
    for affected runtime boundaries.
 4. Identify blocking decisions separately from reversible implementation choices.
    Continue independent design work; don't turn a proposal into product approval.
-5. Review the spec against the actual brief, then run
-   `python3 scripts/check_repository.py` for structure/link integrity. This check
+5. Review the spec against the actual brief, then run `spec_check` (its form) and
+   `python3 scripts/check_repository.py` (links). This check
    cannot prove the design is sufficient: explain acceptance evidence still needed.
 
 Keep reference research and speculative product notes outside the repository.

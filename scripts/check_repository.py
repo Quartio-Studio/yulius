@@ -668,23 +668,35 @@ def check_ui():
 # Instructions an agent follows in this repository (AGENTS.md routes to them). Yulius refuses a
 # hand merge and only a person promotes (ADR-0110, SPEC-483 DOC-002); waiting is `yulius wait`.
 INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "README.md", ".github/pull_request_template.md"]
-INSTRUCTION_GLOBS = ["docs/engineering/*.md", ".apm/skills/*/SKILL.md", "catalog/skills/*/*/SKILL.md", "catalog/workflows/*.md"]
+INSTRUCTION_GLOBS = [
+    "docs/engineering/*.md", ".apm/skills/*/SKILL.md", "catalog/skills/**/*.md",
+    "catalog/workflows/*.md", "catalog/automations/*.md", ".ai/templates/*.md",
+]
+# The only way an instruction names a hand merge: as refused.
+REFUSED_HAND_MERGE = re.compile(r"`gh pr merge[^`]*`\)? (is|are) refused")
+NEGATED = re.compile(r"\b(not|never|no)\s+$", re.I)
 DELIVERY_RULES = [
-    (re.compile(r"gh pr merge"), "gh pr merge", "merging by hand is refused: name it only as refused, or deliver with `delivery_merge`"),
-    (re.compile(r"\b(squash-merges|self-merges?|author-merges?)\b", re.I), None, "Yulius merges through `delivery_merge`; nobody merges their own pull request by hand"),
-    (re.compile(r"\bpromote (only )?(when|unless|if) (the )?(task|request|asked)", re.I), "promote", "promotion is a person's (ADR-0110), never an agent's when asked"),
-    (re.compile(r"\bPoll live run", re.I), "Poll live run", "to wait, start `yulius wait` in the background; never poll"),
+    (re.compile(r"gh pr merge"), "merging by hand is refused: name it only as refused, or deliver with `delivery_merge`"),
+    (re.compile(r"\b(self-merges?|author-merges?)\b|squash-merge (your|their|its) own|\bmerge by (its|the|their) author|Author self-review", re.I),
+     "Yulius merges through `delivery_merge` after an independent review; nobody merges their own pull request"),
+    (re.compile(r"\bpromot\w*\b[^.]{0,120}?\bwhen (a|the) (task|user|request) asks|\bpromote (only )?(when|if|unless) (asked|the (task|user|request) asks)", re.I),
+     "promotion is a person's (ADR-0110), never an agent's when asked"),
+    (re.compile(r"\b(through|via) `?dev`? and promote\b", re.I), "promotion is a person's (ADR-0110)"),
+    (re.compile(r"\bPoll live run|gh pr checks [^\n]*--watch", re.I), "to wait, start `yulius wait` in the background; never poll"),
 ]
 
 
 def delivery_instruction_errors(text, label):
     errors = []
     for number, line in enumerate(text.splitlines(), 1):
-        for pattern, word, why in DELIVERY_RULES:
-            match = pattern.search(line)
-            if not match or (word == "gh pr merge" and "refused" in line):
-                continue
-            errors.append(f"{label}:{number}: '{match.group(0)}': {why}")
+        for pattern, why in DELIVERY_RULES:
+            for match in pattern.finditer(line):
+                if match.group(0) == "gh pr merge" and REFUSED_HAND_MERGE.search(line[match.start() - 1:]):
+                    continue
+                if NEGATED.search(line[:match.start()]):
+                    continue
+                errors.append(f"{label}:{number}: '{match.group(0)}': {why}")
+                break
     return errors
 
 
@@ -693,8 +705,10 @@ def instruction_errors():
     paths = [ROOT / name for name in INSTRUCTION_FILES]
     for pattern in INSTRUCTION_GLOBS:
         paths.extend(sorted(ROOT.glob(pattern)))
+    seen = set()
     for path in paths:
-        if path.is_file():
+        if path.is_file() and path not in seen:
+            seen.add(path)
             errors.extend(delivery_instruction_errors(path.read_text(), path.relative_to(ROOT)))
     return errors
 
@@ -727,7 +741,7 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, UI design tokens, one product test binary")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, delivery instructions, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":

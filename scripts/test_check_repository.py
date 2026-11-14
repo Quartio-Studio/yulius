@@ -87,20 +87,34 @@ class RepositoryContracts(unittest.TestCase):
 
     def test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote(self):
         # SPEC-483 DOC-002: Yulius refuses a hand merge and only a person promotes (ADR-0110).
+        # The bad lines include the wording AGENTS.md and the PR template had before slice 27.
         bad = {
             "gh pr merge 12 --squash --match-head-commit abc": "gh pr merge",
-            "The author self-reviews and squash-merges after checks pass.": "squash-merges",
-            "promote only when the task asks for a release": "promote",
+            "If delivery_merge is refused, run `gh pr merge 12 --squash`.": "gh pr merge",
+            "Then the agent self-merges after checks pass.": "self-merges",
+            "squash-merge your own PR once green": "squash-merge your own",
+            "Author self-review + passing checks → squash PR to dev": "Author self-review",
+            "- Change PR: typed branch → dev, squash merge by its author after checks pass.": "merge by its author",
+            "promote only when the task asks for a release": "promote only when the task asks",
+            "Promote when the user asks.": "Promote when the user asks",
+            "Promotion (merge-commit PR dev → main, then verify post-merge main) happens only when a task asks for a release": "a task asks",
+            "then fix/revert through `dev` and promote.": "and promote",
             "Poll live run IDs until the checks pass.": "Poll live run",
+            "gh pr checks <number> --required --watch": "gh pr checks",
         }
         for line, word in bad.items():
             errors = delivery_instruction_errors(line, "AGENTS.md")
             self.assertEqual(len(errors), 1, line)
-            self.assertIn(word, errors[0])
+            self.assertIn(word, errors[0], line)
         fine = [
             "Merging by hand (`gh pr merge`) is refused: it skips the queue.",
+            "Never merge by hand (`gh pr merge` is refused).",
             "Promotion (dev -> main) is a person's, on the CD page.",
+            "Do not promote when the task asks.",
             "To wait, start `yulius wait` in the background; never poll.",
+            "Yulius squash-merges the pull request on green.",
+            "Features and fixes are **squash-merged** into the integration branch.",
+            "when your task needs one, ask a person (in Yulius: `needs_you`) and finish the rest.",
         ]
         for line in fine:
             self.assertEqual(delivery_instruction_errors(line, "AGENTS.md"), [], line)

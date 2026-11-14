@@ -572,7 +572,7 @@ Encoding runs only while someone watches.
 | `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
 | `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
 | `--chromium` / `YULIUS_CHROMIUM` | found on `PATH` or in the usual install locations | The Chromium or Google Chrome executable. |
-| `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX` | off | Starts Chromium with `--no-sandbox`: only on a host where Chromium's own sandbox cannot run (a container without user namespaces); the sandbox browser is then contained only by Yulius's sandbox. |
+| `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX` | off | Starts Chromium with `--no-sandbox`: only on a host where Chromium's own sandbox cannot run (a container without user namespaces). The sandbox browsers run on the host as the service user, outside every project's sandbox, so without Chromium's sandbox a compromised page renderer has the service user's rights (the data directory, the vault key). |
 
 Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; SPEC-002 ADR-15): the encoder takes
 about one core per watched browser at 1280×800 and 60 fps (three quarters of one on a static page),

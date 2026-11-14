@@ -313,7 +313,8 @@ See [development instructions](docs/engineering/development.md) for commands and
 - [AGENTS.md](AGENTS.md): coding-agent entry point.
 - [Product](docs/product.md), [architecture](docs/architecture.md), [operations](docs/operations.md)
   and [decisions](docs/decisions/README.md).
-- [Git delivery](docs/engineering/git.md): feature → dev through `delivery_merge`, cleanup; a person promotes to main.
+- [Git delivery](docs/engineering/git.md): feature → dev through `delivery_merge`, cleanup; a
+  person promotes to main.
 - [Engineering workflow](docs/engineering/workflow.md): specify, implement, verify and review.
 - [Rust rules](docs/engineering/rust.md) and [dependency boundaries](docs/engineering/architecture.md).
 - [Repository skills](.apm/skills) (APM sources; [standard](docs/engineering/primitives.md)): specification, Rust implementation, runners, verification and review.
