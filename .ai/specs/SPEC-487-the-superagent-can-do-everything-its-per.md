@@ -648,3 +648,34 @@ the function the web UI's route calls, with the person's rights checked at the c
   the refusals are run here); a request that changes between its read and its dismissal
   (the store's conditional write has its own test,
   `needs_you::tests::a_request_ends_by_its_action_only_while_it_is_the_open_one`).
+
+### Slice 5 (2026-11-14)
+
+- **Slice 4 is merged:** pull request #1280 into `dev` at `7fd991af7`, by its merge train
+  (squash `a431b2f77`), after the first CI run failed in `tests/cd.e2e.ts` "a needs_you decision
+  reads Decide" (a file the change does not touch; the known flake of open issue #1175, which
+  has this occurrence now) and its rerun passed. The nit of its approving review (a tail's
+  `limit` counted entries that show nothing) is this slice's first commit, with its test.
+- **Tests and code:** the merge-train test (`a_person_merges_their_tasks_pull_request_when_its_checks_pass`,
+  on real repositories with the production Git adapter and the armed-merge pass) and the
+  Superagent test (`the_superagent_reads_the_merge_queue_and_orders_ci`) were written before
+  the code, which they call by name, so they could not build without it. That each fails
+  without the behaviour it names is shown by ten one-line mutants (the merge field, the slot
+  read, the queue's filter, the owner check, a merge on red, an arm kept in its place,
+  another project's run, a running run, the project's earliest place, the audit's run),
+  each failed by a named test (`target/evidence/mutants-slice5.py`, `mutants-slice5.log`:
+  `survived=0`); two survived at first: one was an equivalent clause, now gone from the
+  query, the other showed the test did not pin the run's new place, now it does.
+- **The shared code keeps its other callers:** every test of `yulius`, `yulius-app`,
+  `yulius-harness` and `yulius-store` passes; the harness's list of pre-allowed tools now
+  names `merge_queue`.
+- **Gate:** `scripts/dev ci` passed on `445f5af23` (4377 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice5.log`); the commit after it changes this
+  specification only.
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** a merge on green through `task_merge` (the page's `merge_task_pr`, tested by
+  its own suite; the merge here goes through the arm and the pass, which merges under the
+  owner's authority); a merge train's members in `merge_queue` (`train_summary` reads the
+  train file the train tests write; no train formed in these two tests); the dispatcher
+  starting the run put first (it starts each project's queued runs oldest first, the order
+  tested here).
