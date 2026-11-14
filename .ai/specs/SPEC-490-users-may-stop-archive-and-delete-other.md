@@ -399,7 +399,17 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   `feat/475-deliver-task-473-s-second-slice-consent`, because task #473's own `delivery_merge`
   is refused after its first pull request merged (issue #1299). That branch is `dev` at
   `3523948f3` fast-forwarded to the approved head `df00249f3` (the same tree), plus this
-  spec's `yulius-task` line and this bullet.
+  spec's `yulius-task` line and this bullet, and two merges of `dev`, which moved meanwhile
+  (#1298 at `3730d963a`, #1300 at `2047ac50b`; both clean, no conflict, and the lines this
+  change adds and removes against `dev` are the same as at `df00249f3`). Run on that branch:
+  `scripts/dev ci` exit 0 three times, 4413 tests passed at `35dd70050` (before `dev` moved),
+  4419 at `9d8580753` (with #1298) and 4422 at `6c440dbcf` (with #1300), 17 skipped each;
+  `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` exit 0 twice, 84 files passed, 1 skipped,
+  1043 tests passed at `35dd70050` and 1045 at `9d8580753`, 1 skipped each (not run again at
+  `6c440dbcf`: #1300 changed nothing under `crates/yulius-server/web` or `e2e`); `yulius
+  security-scan` printed "Security scan disabled" (unrun, not passed). #1298's requests to
+  other sandboxes run the same-sandbox tools as the person, so this change's rule decides
+  them too; it added no migration.
 
 **Not tested here:** the desktop notification of a request (the browser's `Notification` is
 the same path the notification centre's other entries use, and its e2e covers only the bell
