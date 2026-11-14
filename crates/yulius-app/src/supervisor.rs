@@ -73,6 +73,9 @@ enum EndIntent {
     /// Account/provider switch; the sender is told when the old run has exited, or why the switch
     /// was overtaken.
     Switch(oneshot::Sender<SwitchEnd>),
+    /// A switch gave the run up when it did not end in time, and terminates its host (SPEC-483
+    /// SWT-002): whoever records the run's end, the task rests as after that timeout.
+    SwitchTimeout,
 }
 
 /// How the wait of a switch for its old run ended (SPEC-250 STW-006).
@@ -86,6 +89,8 @@ enum SwitchEnd {
     Closed,
     /// The old run was lost.
     Lost,
+    /// The old run did not end in time and the switch ended it (SPEC-483 SWT-002).
+    TimedOut,
 }
 
 /// Puts `next` in a task's end intent slot. A switch whose intent it replaces is told `why` it was
@@ -2915,14 +2920,28 @@ impl App {
         attempt: &AttemptRecord,
         reason: StopReason,
     ) {
-        let Err(err) = self
+        match self
             .deps
             .session_host
             .terminate(Path::new(&attempt.run_dir))
-        else {
-            self.mark_lost(task_id, &attempt.id, reason).await;
-            return;
-        };
+        {
+            Ok(()) => self.mark_lost(task_id, &attempt.id, reason).await,
+            Err(err) => {
+                self.run_stays_live(task_id, attempt, &err, "Stop the task again to retry.")
+                    .await;
+            }
+        }
+    }
+
+    /// A run whose host could not be terminated stays live: logged, said in the task's terminal,
+    /// and a running task is flagged for a person with `action` (SPEC-065 END-001).
+    async fn run_stays_live(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        err: &AppError,
+        action: &str,
+    ) {
         tracing::warn!(task = %task_id, error = %err, "the run's host could not be terminated; the run stays live");
         let runtime = self.runtime(task_id);
         if let Ok(mut failed) = runtime.end_failed.lock() {
@@ -2932,7 +2951,6 @@ impl App {
             "Yulius could not end this session ({err}). It still counts as running, so the task \
              cannot be deleted."
         );
-        let action = "Stop the task again to retry.";
         runtime.hub.notice(format!("{problem} {action}"));
         self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
             .await;
@@ -2974,9 +2992,15 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        let mut reason = reason;
         if let Some(rt) = &runtime
             && let Ok(mut intent) = rt.intent.lock()
         {
+            // The loss of a run a switch gave up is that switch's, whoever saw it first: the
+            // run's reader sees its host go too (SPEC-483 SWT-002).
+            if matches!(*intent, Some(EndIntent::SwitchTimeout)) {
+                reason = StopReason::SwitchTimeout;
+            }
             // No exit will consume it: the next run must not inherit it.
             replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
@@ -3047,6 +3071,7 @@ impl App {
         let runtime = self.runtime(task_id);
         let _finalizing = Finalizing::start(&runtime.finalizing);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
+        crate::race::reached(crate::race::Point::RunEndTaken, Path::new(task_id.as_str()));
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
@@ -3086,6 +3111,7 @@ impl App {
                 (Some(EndIntent::Cancel), _) => "cancelled".into(),
                 (Some(EndIntent::Close), _) => "closed".into(),
                 (Some(EndIntent::Switch(_)), _) => "switched".into(),
+                (Some(EndIntent::SwitchTimeout), _) => "switch_timeout".into(),
                 (None, _) if exit.is_clean() => "exited".into(),
                 (None, _) => match cause {
                     Some(cause) => format!(
@@ -3131,6 +3157,17 @@ impl App {
                 let _ = done.send(SwitchEnd::Ended);
                 return; // the switch controller launches the next run and drains the queue
             }
+            Some(EndIntent::SwitchTimeout) => {
+                // The run ended while the switch that gave it up was ending it: the task rests
+                // as it does when that switch records the loss itself, from `Switching` or, after
+                // a refused kill, from `Running` (SPEC-483 SWT-002).
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(TaskEvent::Lost(StopReason::SwitchTimeout))
+                        .ok()
+                })
+                .await;
+            }
             Some(EndIntent::Close) => {
                 // The task was finished: whatever the exit code of the ended session, it is
                 // closed, like a session the user left.
@@ -3166,9 +3203,21 @@ impl App {
                 .await;
             }
             None => {
+                // A run that ends by itself while a switch that has not claimed its end yet
+                // holds the task `Switching` ends the task as from `Running`: the switch finds
+                // it resting and gives way (SPEC-483 SWT-002).
                 let event = exit_event(&exit, session_end.as_deref());
-                self.settle_ended(task_id, now, |task| task.status.apply(event).ok())
-                    .await;
+                self.settle_ended(task_id, now, |task| {
+                    task.status
+                        .apply(event)
+                        .or_else(|_| {
+                            task.status
+                                .apply(TaskEvent::SwitchCompleted)
+                                .and_then(|running| running.apply(event))
+                        })
+                        .ok()
+                })
+                .await;
             }
         }
         // A paused run that ended (the user left the session, or it was stopped) is no longer
@@ -3866,10 +3915,30 @@ impl App {
                     .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
                     .await;
             }
-            let budget = Duration::from_millis(
-                u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS / 2).unwrap_or(60_000),
-            );
-            match tokio::time::timeout(budget, rx).await {
+            let budget = Duration::from_millis(self.config.switch_end_ms);
+            let mut rx = rx;
+            let mut word = tokio::time::timeout(budget, &mut rx).await;
+            if word.is_err() {
+                crate::race::reached(
+                    crate::race::Point::SwitchWaitOver,
+                    Path::new(task_id.as_str()),
+                );
+                // The switch gives the run up, in the same step in which it sees that the
+                // run's end is still its own. A slot that no longer holds its sender was taken
+                // by the run's end, which is being recorded right now, or by a stop or a close:
+                // their word comes, and is waited for once more.
+                let gave_up = runtime.intent.lock().is_ok_and(|mut intent| {
+                    let ours = matches!(*intent, Some(EndIntent::Switch(_)));
+                    if ours {
+                        *intent = Some(EndIntent::SwitchTimeout);
+                    }
+                    ours
+                });
+                if !gave_up {
+                    word = tokio::time::timeout(budget, &mut rx).await;
+                }
+            }
+            match word {
                 Ok(Ok(SwitchEnd::Ended)) => {}
                 // The switch's intent was replaced: a stop or close took over the old run's end,
                 // or its loss dropped it. No new run starts (SPEC-250 STW-006).
@@ -3880,17 +3949,8 @@ impl App {
                 }
                 Ok(Err(_)) => return self.switch_overtaken(task_id, &decision_id, None).await,
                 Err(_) => {
-                    let _ = self
-                        .deps
-                        .session_host
-                        .terminate(Path::new(&attempt.run_dir));
-                    let update = AttemptUpdate {
-                        ended_at: Some(self.now()),
-                        exit_reason: Some("switch_timeout".into()),
-                        ..AttemptUpdate::default()
-                    };
-                    let _ = store
-                        .transition_attempt(&attempt.id, AttemptState::Lost, &update)
+                    return self
+                        .switch_timed_out(task_id, &decision_id, &attempt, for_claude_code)
                         .await;
                 }
             }
@@ -4002,6 +4062,94 @@ impl App {
         }
     }
 
+    /// Ends a switch whose old run did not end in time (SPEC-483 SWT-002). Its host is
+    /// terminated and no new run starts: the task rests as `stopped_switch_timeout`, whether
+    /// the switch, the run's reader or the run's own exit records the end first (the task's end
+    /// intent says whose it is). A host that cannot be terminated leaves the run the task's
+    /// live run (SPEC-065 END-001): no session starts beside it, the task runs on, says so to a
+    /// person, and the next turn's end does not try the switch again at once.
+    ///
+    /// # Errors
+    /// Always `Conflict`, saying how the switch ended; a store error when recording it.
+    async fn switch_timed_out(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        decision_id: &str,
+        attempt: &AttemptRecord,
+        for_claude_code: bool,
+    ) -> AppResult<()> {
+        let runtime = self.runtime(task_id);
+        crate::race::reached(
+            crate::race::Point::SwitchEndsRun,
+            Path::new(task_id.as_str()),
+        );
+        let Err(err) = self
+            .deps
+            .session_host
+            .terminate(Path::new(&attempt.run_dir))
+        else {
+            self.mark_lost(task_id, &attempt.id, StopReason::SwitchTimeout)
+                .await;
+            return self
+                .switch_overtaken(task_id, decision_id, Some(SwitchEnd::TimedOut))
+                .await;
+        };
+        let store = &self.deps.store;
+        // The task runs, in the session it had: a stop of it tries the end again. Made while
+        // the run's end is still the switch's, so a run that ends by itself at this moment
+        // rests the task from either status; only then is its end nobody's.
+        store
+            .transition_task(
+                task_id,
+                Some(TaskStatus::Switching),
+                TaskStatus::Running,
+                None,
+                self.now(),
+            )
+            .await?;
+        let given_up = runtime.intent.lock().is_ok_and(|mut intent| {
+            let still = matches!(*intent, Some(EndIntent::SwitchTimeout));
+            if still {
+                *intent = None;
+            }
+            still
+        });
+        // Someone took the slot: the run's end is being recorded (or a stop owns it). The
+        // record is waited for, so that a run which ended is not asked about too early.
+        if !given_up {
+            let mut finalizing = runtime.finalizing.subscribe();
+            let bound = Duration::from_millis(self.config.switch_end_ms);
+            let _ = tokio::time::timeout(bound, finalizing.wait_for(|count| *count == 0)).await;
+        }
+        // The run ended by itself while its host was asked to go: nothing is left to say.
+        if !matches!(store.attempt(&attempt.id).await, Ok(Some(run)) if !run.state.is_terminal()) {
+            return self
+                .switch_overtaken(task_id, decision_id, Some(SwitchEnd::TimedOut))
+                .await;
+        }
+        store.set_switch_outcome(decision_id, "failed").await?;
+        // A restart for a newer Claude Code is no switch a person reads about (SPEC-461
+        // CCM-013): the session that could not be ended is.
+        if for_claude_code {
+            runtime
+                .claude_move_refused_ms
+                .store(self.now().0, Ordering::SeqCst);
+        } else {
+            runtime
+                .switch_refused_ms
+                .store(self.now().0, Ordering::SeqCst);
+            runtime
+                .hub
+                .notice("↻ The session was not switched: it could not be ended.");
+        }
+        self.run_stays_live(task_id, attempt, &err, "Stop the task to try again.")
+            .await;
+        self.publish_task(task_id).await;
+        Err(AppError::Conflict(
+            "the session could not be ended, so it was not switched".into(),
+        ))
+    }
+
     /// Ends a switch that a stop, a close or the old run's loss overtook (SPEC-250 STW-006): no
     /// new run starts, a task left stopping with no run rests, the decision is recorded
     /// `cancelled` and viewers are told why.
@@ -4018,9 +4166,15 @@ impl App {
             crate::race::Point::SwitchOvertaken,
             Path::new(task_id.as_str()),
         );
+        // A switch that ended its own old run failed; one that was overtaken is cancelled.
+        let outcome = if told == Some(SwitchEnd::TimedOut) {
+            "failed"
+        } else {
+            "cancelled"
+        };
         self.deps
             .store
-            .set_switch_outcome(decision_id, "cancelled")
+            .set_switch_outcome(decision_id, outcome)
             .await?;
         // A stop that came once the old run had ended found no run to end: the task is stopping
         // with no run, and rests now, as a stop of it would rest it (one that a concurrent stop
@@ -4053,6 +4207,7 @@ impl App {
             .unwrap_or(None);
         // What overtook it says so; without word, the status and the intent tell.
         let why = match (told, status, intent) {
+            (Some(SwitchEnd::TimedOut), _, _) => "the session did not end in time",
             (Some(SwitchEnd::Closed), _, _)
             | (None, Some(TaskStatus::Closed), _)
             | (None, _, Some(true)) => "the task was closed",
@@ -4372,6 +4527,23 @@ impl App {
                 // It ended while Yulius was down: no watcher of this process read it, so its
                 // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
+                    // A task the dead server left switching lost that switch with it, and the
+                    // run found ended is most likely the one the switch had asked to end: the
+                    // task is lost to the restart, as the sweep below rests one with no run,
+                    // before the run's end is recorded (which ends a switching task as a
+                    // session that left by itself, SPEC-483 SWT-002).
+                    if let Ok(Some(task)) = store.task(&attempt.task_id).await
+                        && task.status == TaskStatus::Switching
+                    {
+                        let next = task
+                            .status
+                            .after_loss(task.activity, StopReason::ServerLost)
+                            .unwrap_or(TaskStatus::Stopped(StopReason::ServerLost));
+                        let _ = store
+                            .transition_task(&task.id, Some(task.status), next, None, self.now())
+                            .await;
+                        lost.push((task.id, task.status));
+                    }
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }

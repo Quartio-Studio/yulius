@@ -24,6 +24,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and `task_update` waits for every task of the project with work still coming (not the ended,
   the prepared, or those the list shows Done or Answered), written as the rule that names
   them; a rule names at most 64 tasks (16 before; the editor builds 16).
+- A switch to another subscription ends no work it cannot answer for (SPEC-483 slice 17,
+  task #465). At a turn's end a look at the session's background work that gave no answer
+  (a loaded host) read as "none", and the session was ended with the build or review it
+  had left running; it reads as running now, as it does everywhere else, and the session
+  moves at a later turn's end. And a switch whose old session did not end in time no
+  longer starts a second session beside it: a session that had to be killed rests the task
+  as stopped ("restarting the session took too long"), whoever sees its end
+  first, and one that cannot be killed keeps the task running in the session it had,
+  flagged for a person.
 - A failure inside Yulius no longer reads as an outage to `yulius wait` (SPEC-483 slice 16,
   task #465). The listener the agents' own clients call (hooks, `yulius wait`, the Git
   credential helper) had its own table of HTTP statuses: every error but five kinds was a

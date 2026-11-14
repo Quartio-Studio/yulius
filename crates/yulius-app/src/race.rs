@@ -58,6 +58,15 @@ pub enum Point {
     /// A switch (SPEC-250) knows it was overtaken; it has not said why yet. The path is the task
     /// id.
     SwitchOvertaken,
+    /// A run's end reached its recorder (SPEC-483): the task's end intent was taken; nothing is
+    /// recorded yet. The path is the task id.
+    RunEndTaken,
+    /// A switch's wait for its old run ran out (SPEC-483); it has not looked whose the run's
+    /// end is yet. The path is the task id.
+    SwitchWaitOver,
+    /// A switch gave its old run up (SPEC-483): the task's end intent says so; the run's host
+    /// is not terminated yet. The path is the task id.
+    SwitchEndsRun,
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,

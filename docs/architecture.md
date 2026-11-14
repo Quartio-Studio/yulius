@@ -3051,7 +3051,10 @@ merge"), even with a complete plan and a tested pull request; only an achieved g
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
-([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), and for a
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
+the look at the session's processes gives no answer (`background_work_now` is `None`: not known
+counts as running for everyone who asks before a session ends, so a host whose look never
+answers moves no session at a turn's end; a move at a usage limit does not ask), and for a
 prompt that waits in Claude Code's queue, which would go with the process: `hook_stop` asks
 `prompt_waits_for_turns_end` once the turn's lines were read and answers the Stop as on a
 subscription that stays; a turn held for capacity is released in place instead of moved

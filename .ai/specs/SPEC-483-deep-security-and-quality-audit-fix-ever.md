@@ -50,8 +50,9 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16;
-  13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
+  13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
+      of the Plan;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -370,6 +371,26 @@ no code path reaches; documents, texts shown to agents and people, and code that
   error) kept an agent's wait going to its deadline, 90 minutes by default, and then told
   it "When it restarts, Yulius wakes this task" although Yulius never stopped.
 
+### Slice 17: what a switch may end
+
+- **QA5 (medium).** "Would a restart of this session lose background work" was asked in
+  four places and answered in two ways when the look at the processes gave no answer (it
+  timed out under load, or the process table could not be read). Disk hygiene, the restart
+  on a newer Claude Code and the queue's rule take "not known" as work running. The turn's
+  end that moves a session to another subscription took it as none
+  (`shells_running_now`: `== Some(true)`) and ended the session, with the build, gate or
+  review the agent had left running.
+- **QA7 (medium).** A switch waits for the session it asked to end, half of the switch's
+  two minutes. When that time passed it called `terminate`, threw the answer away, wrote
+  the run down as lost itself and started the new session. A host that could not be
+  terminated left two agents in one worktree on one conversation. A host that could be
+  left the switch's own intent in the task's slot (the next run's end would have been taken
+  for a switch: "switched", and the task left running with no run), and raced the run's
+  reader: whichever recorded the loss first decided whether a new session started.
+  Everywhere else a run whose host had to be killed goes through one path
+  (`terminate_then_mark_lost`, SPEC-065 END-001), and a switch whose old run is lost starts
+  none (SPEC-250 STW-006).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -671,6 +692,34 @@ no code path reaches; documents, texts shown to agents and people, and code that
   is answered differently on purpose, by its own route: a guest link that ended is 410
   (SPEC-410). The routes that answer without a body log a failure inside Yulius as the
   others do (`error::bare_status`).
+- **SWT-001** A turn's end that would move the session to another subscription takes a look
+  at the background work that gives no answer as work running: the session stays, the Stop
+  is answered as on a subscription that stays, and a later turn's end moves it. No caller
+  of the two looks (`background_work_now`, `background_or_wait_now`) reads "not known" as
+  "none". The session that stays for it is logged; a host whose look never answers moves
+  no session at a turn's end (a move at a usage limit does not ask).
+- **SWT-002** A switch whose old run does not end within `switch_end_ms` (half of the
+  switch's two minutes) gives the run up and terminates its host. The switch starts no
+  new run, is recorded `failed`, and the task rests as `stopped_switch_timeout` (SPEC-002's
+  state machine), whoever records the run's end first: the switch, the run's reader that
+  sees the host go, or the run's own exit. The task's end intent says the run was given up
+  (`EndIntent::SwitchTimeout`), set in the step in which the switch sees that the run's end
+  is still its own. A run whose end is already being recorded when the wait runs out is
+  waited for once more and the switch goes on. A host that cannot be terminated leaves
+  the run the task's live run (END-001): no session starts beside it, the task is
+  `running` again, the switch is recorded `failed`, the task says in its terminal and to a
+  person that the session could not be ended, and the next turn's end does not try the
+  switch again within the cooldown; a run that ended by itself meanwhile rests the task
+  instead, as `stopped_switch_timeout` from either status, and an end that is being
+  recorded then is waited for before the run is asked about. No intent of the switch stays
+  in the task's slot. A run that ends by itself before the switch has claimed its end
+  (the task already reads `switching`) ends the task as it does without a switch, and the
+  switch gives way. A stop that lands after the switch gave the run up rests the task
+  too; whether it then reads `stopped_switch_timeout`, `stopped_lost` or
+  `stopped_cancelled` follows who recorded the run's end. At a server start a task found
+  `switching` with a run that ended while Yulius was down lost its switch with the
+  server: it rests as `stopped_server_lost` and is among the tasks a move brings back, as
+  one found with no run is.
 
 ## Plan
 
@@ -692,7 +741,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
-- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it
+- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
+- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end
 
 ## Acceptance criteria
 
@@ -1068,13 +1118,46 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-92** `status_for` gives each kind of application error the status of STS-001.
 - **AC-93** No line of a file under `crates/yulius-server/src/routes` is a `match` arm from
   an `AppError` kind to a `StatusCode` (the two tables that had such arms are gone).
-- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
-  says the run ended, not that the branch moved. With the armed pull request merged by a
-  person, a commit past the armed head and the task closed: the pass says "merged".
 - **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
   the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
   500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
   failure of its own).
+- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
+  says the run ended, not that the branch moved. With the armed pull request merged by a
+  person, a commit past the armed head and the task closed: the pass says "merged".
+- **AC-96** A goal task on a subscription at its threshold, a second one with room, and a
+  look at the background work that gives no answer: at the turn's end the task has one run
+  and is done. Once the look answers, the next turn's end moves the session to the second
+  subscription.
+- **AC-97** A switch of a task whose session does not hear the request to end and whose
+  host cannot be terminated ends with "the session could not be ended, so it was not
+  switched": the task has its one run, live; it is `running` and reads Needs your action
+  with "Yulius could not end this session" and "Stop the task to try again."; the switch
+  is recorded `failed`, its terminal
+  says "The session was not switched: it could not be ended.", and switches cool down. A
+  session that leaves by itself afterwards ends as `exited` and closes the task (no intent
+  of the switch was left for it).
+- **AC-98** A switch of a task whose session does not hear the request to end and whose
+  host can be terminated ends with "the session did not end in time during the switch": the task
+  has its one run, lost, and is `stopped_switch_timeout`; the switch is recorded `failed`.
+- **AC-99** The same outcome when the run's reader records the loss before the switch
+  does (the host is killed after the switch gave the run up, before it terminates it), and
+  when the run exits by itself at that moment (its end is recorded `switch_timeout`), also
+  when the host then cannot be terminated: nothing says a session could not be ended.
+- **AC-100** A run whose end is being recorded when the switch's wait runs out (held
+  after its recorder took the switch's intent) is switched: the old run ended `switched`,
+  the new run is live, the task runs.
+- **AC-101** A session that leaves by itself after its task became `switching`, before
+  the switch claims the run's end: the task is `closed` with its one run `exited`, the
+  switch ends with "the task was closed during the switch", and nothing says a session
+  did not end in time.
+- **AC-102** A run whose agent died and whose end is being recorded (its recorder holds
+  the given-up intent) when the kill is refused and the task is put back to `running`:
+  the switch waits for the record; the task is `stopped_switch_timeout`, its run ended
+  `switch_timeout`, and nothing says a session could not be ended.
+- **AC-103** A start that finds a `switching` task whose run ended while Yulius was down
+  rests it as `stopped_server_lost` (a running one whose session left is `closed`, as
+  before); with the mark of a host move the task is queued again.
 
 ## Test plan
 
@@ -1252,6 +1335,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `yulius` `restart::a_server_failing_every_request_ends_the_wait_after_a_few_tries` and
   the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94);
   `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-95, slice 15's rule).
+- Slice 17: `yulius` `task_done::a_switch_waits_while_the_background_work_cannot_be_told`
+  (AC-96), `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` (AC-97),
+  `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run` (AC-98),
+  `task_done::a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first`,
+  `task_done::a_run_that_exits_as_its_switch_gives_it_up_rests_the_task` and
+  `task_done::a_run_that_exits_before_a_refused_kill_rests_the_task` (AC-99),
+  `task_done::a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched` (AC-100),
+  `task_done::a_run_that_ends_before_its_switch_claims_it_closes_the_task` (AC-101),
+  `task_done::a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task`
+  (AC-102), on the real session host behind a test host that can drop requests to end,
+  refuse to terminate and leave the look unanswered; the orders are made with pause
+  points (`SwitchDecided`, and three new ones: `RunEndTaken`, `SwitchWaitOver`,
+  `SwitchEndsRun`);
+  `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` (AC-103), on a
+  host that finds every run ended.
 
 ## Decisions
 
@@ -1315,6 +1413,47 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
+  where they were not). After a switch's wait the run that had to be killed ends the
+  switch, and no new session starts. The other way was weighed: go on with the switch once
+  the host is proven gone, which keeps an autonomous task working. It was what the code
+  tried, and three recorders see that run's end (the switch, the run's reader, the run's
+  own exit): going on needs all three to agree that the next run starts, resting needs
+  only that each of them rests the task. A session that ignores its end for a minute after
+  the host's own escalation is broken, and the state machine already had the status for
+  it. The first version of this slice cleared the switch's intent before the kill and so
+  left two orders in which the task stayed `switching` with no run (the review, finding
+  1): the intent slot now says "given up" instead of nothing, each recorder reads it, and
+  a run whose end was already taken is waited for instead of killed. The second round
+  found the order before all of that: a run that ends by itself between the task's change
+  to `switching` and the switch's claim of its end met a status with no way out (before
+  this slice the switch recovered it by starting the next run a minute later). Such an end
+  now ends the task as from `running`, which is what "the task follows its session" says,
+  and the switch finds a resting task. The orders are tested with pause points, as the
+  stop's and the close's are (SPEC-250). The wait is a setting (`switch_end_ms`) only so
+  that tests need not wait a minute. The status's text in the web UI says "Restarting the
+  session took too long": a restart on a newer Claude Code ends there too.
+  The third round found where that new way out reached too far: a start that finds a
+  `switching` task with an ended run records that end through the same recorder, and the
+  task closed as if its session had left. The start rests such a task itself first, as it
+  rests one with no run. The review went to a fourth look at that one change, against the
+  rule of three rounds: the finding was a regression of this slice with its fix named by
+  the reviewer, and a split would have delivered the regression or held back the rest.
+  Left as it is, by the review's own word harmless: when a run ends in the window before
+  the switch claims it and the switch reads the status before that end has settled, the
+  switch says "did not end in time" for a task that closed, and leaves its given-up mark
+  in the slot until the task's next launch clears it.
+  A finished (`Done`) task whose idle session is moved and has to be given up rests as
+  stopped, not closed: RBT-001 closes only a running task, and its domain test says why
+  for this very case ("a switch or a stop in flight was cut"); the review asked for
+  `Closed`, which would change that rule for every loss during a switch, not only this
+  one. (A task's activity is cleared when it becomes `switching`, so the question does
+  not even arise in the store: a mutation that asked RBT-001's rule at the exit of a
+  given-up run changed no outcome.)
+  The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
+  task's intent before it knows it is the first to record), is not changed: no path
+  records a run's end while its reader still serves it and then starts another run.
+  The test starter takes its two waits as a pair, not a struct: it has two callers.
 - Slice 16 (no decision record): the loopback listener takes the public table as it is,
   422 for an invalid request included; nothing in the repository reads its 400 (the hook
   client takes any 5xx for "try again while held" and any other error for none, the
@@ -1338,7 +1477,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
   is asked before the run's end is said: a person's merge does not clear the armed slot.
-  The agent's own   message says what to do; the pull request is not touched.
+  The agent's own message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1514,14 +1653,14 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 16 |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 13 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 17 |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 13 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 17 |
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
 | E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
 | QC8 | store | `tasks.closed_at` is never cleared | low | slice 13 |
@@ -2553,7 +2692,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   `ended.is_none() &&` in `merge_armed_task`: an ended run is not asked where its branch
   is). `delivery::an_armed_merge_ends_with_its_tasks_run` now commits past the armed head
   before the task is closed and again before the pull request is merged by hand, and
-  expects "run ended (closed)" and "merged", never "dropped". One finding from before,
+  expects "run ended (closed)", and "merged" without "dropped". One finding from before,
   minor: "an Internal error is answered without a log line" on the routes of the agents'
   own clients, where its 500 now ends a `yulius wait`; `bare_status` logs it as the public
   API does and is what `routes/internal.rs`, `routes/mcp.rs` and `routes/secrets.rs` call.
@@ -2566,3 +2705,98 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   gives".
 - **Gate after it.** `scripts/dev ci` at `c65fb7087`: exit 0;
   `4280 tests run: 4280 passed, 17 skipped` (`target/audit/slice16/gate2.log`).
+- **Review, round 2** (the same session, head `93088ebf3`): approve; every finding of round
+  1 answered, three nits of wording in this spec (a line's spaces, the order of AC-94 and
+  AC-95, and what the test expects of "dropped"), answered in the commit after the merge.
+- **Delivery.** Pull request #1265 merged into `dev` at `93088ebf3`, whose own Yulius CI
+  run passed.
+
+### Slice 17 (2026-11-13)
+
+- **Tests failing before the fix** (`target/audit/slice17/before.log`): the three new
+  tests failed on the code as it was: the session was moved with the look unanswered
+  ("running (runs: Killed Some("switched"), Live None)"), and both switches whose old
+  session did not end answered `Ok(())` with a second run started.
+- **Tests failing without their fix** (`target/audit/slice17/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): a look without an answer read as no background work; a
+  host that cannot be terminated taken for ended; the switch's intent left in the task's
+  slot (the session that left by itself never closed its task); the task left switching;
+  no cooldown; the run that had to be killed followed by a new one.
+- **The suites:** `2714 tests run: 2714 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice17/suite1.log`), before the last additions to one test; the gate ran
+  after them.
+- **Gate.** `scripts/dev ci` at `092ff5309`: exit 0; `4283 tests run: 4283 passed, 17 skipped`
+  (`target/audit/slice17/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real session that ignores its end for a minute (the test host drops
+  the request and the wait is 300 ms); a probe that times out by itself (the test host
+  answers "not known" at once); the restart on a newer Claude Code meeting a session that
+  cannot be ended (it shares `switch_timed_out`; its cooldown differs and it says nothing
+  of a switch); the host reporting the exit while it is killed, with the real host (the
+  test makes the session leave at that moment instead); the end of a run recorded twice
+  (Decisions).
+- **Review, round 1** (a fresh session, read-only, head `44da4c6e2`): request changes. One
+  major finding in this slice's code: "The outcome of a timed-out switch still depends on
+  who records the run's end first, and two orders leave the task `switching` with no run"
+  (the run's own exit taken at the deadline; the host reporting the exit while it is
+  killed; and a run that exits before a refused kill, left `running` with no run). The
+  slot now says the run was given up, every recorder reads it, a run whose end was taken
+  is waited for, and four tests make the orders with pause points (AC-99, AC-100). Two
+  minor: SPEC-002 names `stopped(switch_timeout)` for this and the slice rested the task
+  as `stopped_lost` (it is `stopped_switch_timeout` now, and SPEC-002's row names the run
+  that cannot be ended); a `Done` task moved while idle rests stopped, not closed (not
+  changed: Decisions say why, with RBT-001's own test). Nits answered: no notice of a
+  switch for a restart on a newer Claude Code, and the flag's action is "Stop the task to
+  try again."; a session kept for a look without an answer is logged, and the architecture
+  says what a host whose look never answers means; SWT-001 names both looks; the pair of
+  waits stays a pair (Decisions).
+- **Tests failing without their fix, after the review** (`mutations2.log`, 11 cases, each
+  failed its test): the six above as they are now, and: the reader's loss keeping its own
+  reason; the slot emptied when the switch gives the run up; the exit of a given-up run
+  not resting the task; a run that ended before a refused kill called one that could not
+  be ended; a run whose end is being recorded not waited for.
+- **The suites after it:** `3222 tests run: 3222 passed, 17 skipped` for the domain, the
+  app and the binary (`target/audit/slice17/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `ea43f41d6`: exit 0;
+  `4287 tests run: 4287 passed, 17 skipped` (`target/audit/slice17/gate2.log`).
+- **Review, round 2** (the same session, head `188a85514`): request changes. One major
+  finding: "A run that ends by itself after the switch has made the task Switching, but
+  before the switch puts its sender in the slot, still leaves the task switching with no
+  run." Such an end now ends the task as from `running` and the switch gives way
+  (AC-101). One minor: after a refused kill the run was asked about before an end that
+  was being recorded was written down, which left "a stale Needs-your-action flag and
+  notice"; the switch waits for that record now (AC-102). Its round-1 finding on a `Done`
+  task it withdrew ("the answer holds"). Nits answered: the status's text says
+  "Restarting the session took too long" (a restart on a newer Claude Code ends there
+  too); SWT-002 says that a stop after the give-up decides nothing about the label; the
+  words are "the session did not end in time"; the one test that assumes a time says so.
+- **Tests failing before those fixes** (`target/audit/slice17/before3.log`): both new
+  tests failed, one with "the session could not be ended, so it was not switched" for a
+  run that had ended, one with "it did not end in time" for a session that had left.
+- **Tests failing without their fix, after round 2** (`mutations3.log`, 13 cases, each
+  failed its test): the eleven above, a run that ends by itself under a switch that has
+  not claimed it left with no way out, and a refused kill not waiting for an end being
+  recorded. A fourteenth, asking RBT-001's rule at the exit of a given-up run, changed no
+  outcome (a task's activity is cleared when it becomes `switching`) and is not counted.
+- **The suites after it:** `3224 tests run: 3224 passed, 17 skipped`
+  (`target/audit/slice17/suite3.log`).
+- **Gate after it.** `scripts/dev ci` at `80e18ff9f`: exit 0;
+  `4289 tests run: 4289 passed, 17 skipped` (`target/audit/slice17/gate3.log`). The web
+  UI's one changed line is the text of a status; the e2e suite was not run.
+- **Review, round 3** (the same session, head `cc9a2d507`): request changes. Both
+  findings of round 2 fixed; one minor finding in this slice's code: at a server start a
+  task left `switching` whose run exited while Yulius was down "rests Closed for a clean
+  exit, or stopped_killed", where the start's sweep had rested it as lost to the restart
+  and listed it for a host move. The start rests it first now (AC-103;
+  `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` failed before:
+  "left: Closed, right: Stopped(ServerLost)"). Nits: the stale mark after one order on the
+  kill's path (left, Decisions); the status's short label and the run's "move timed out"
+  beside the new text (left: they name the same thing); the e2e suite not run locally for
+  one changed text (Yulius CI runs it on the pull request's head).
+- **Tests failing without their fix, after round 3** (`mutations4.log`, 15 cases, each
+  failed its test): the thirteen above, a start recording the end of a switching task's
+  run as a session that left, and that task missing from the tasks a move brings back.
+- **Gate after it.** `scripts/dev ci` at `b41c5d11f`: exit 0;
+  `4290 tests run: 4290 passed, 17 skipped` (`target/audit/slice17/gate4.log`).
