@@ -2904,3 +2904,5 @@ slices follow.
   answer, the remote `tools/list` the same set for each scope and `task_create`'s schema the
   same byte for byte. All answered: the doc is back on its const, the tests follow the `use`
   lines, AC-153 and the test's doc say a person's token.
+- **Gate after it.** `scripts/dev ci` at `96612dc2b`: exit 0; `4408 tests run: 4408 passed (1
+  slow), 17 skipped` (`gate2.log`).
