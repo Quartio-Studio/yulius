@@ -59,11 +59,11 @@ pub struct CiJob {
     /// slot and its budget; outside its time limit (SPEC-435). Absent before it started.
     #[serde(default)]
     pub waited_ms: Option<i64>,
-    /// Output (only in [`CiRunDetail`]): the last 512 KiB of its terminal output, escape
+    /// Output (only in a run's detail, `GET /api/sandboxes/{sid}/ci/runs/{id}`): the last 512 KiB of its terminal output, escape
     /// sequences removed, plus Yulius notes; partial while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    /// Its failing tests' output (only in [`CiRunDetail`]): each failing test's block (status
+    /// Its failing tests' output (only in a run's detail): each failing test's block (status
     /// line, stdout and stderr) found anywhere in its output, at most 8 KiB each and 32 KiB in
     /// all (SPEC-145).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,7 +89,7 @@ pub struct CiRun {
     pub state: String,
     /// Where its configuration came from (`profile`, `yulius_toml` or `pull_request`).
     pub source: String,
-    /// Its jobs (outputs only in [`CiRunDetail`]).
+    /// Its jobs (outputs only in a run's detail).
     pub jobs: Vec<CiJob>,
     /// Why it errored or was cancelled.
     #[serde(default)]
@@ -111,9 +111,6 @@ pub struct CiRun {
     /// short reason it could not be published.
     pub status: String,
 }
-
-/// One run with its jobs' output (`GET /api/sandboxes/{sid}/ci/runs/{id}`).
-pub type CiRunDetail = CiRun;
 
 /// `GET /api/sandboxes/{sid}/ci`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

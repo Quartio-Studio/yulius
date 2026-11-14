@@ -1858,7 +1858,7 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`,
-`{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
+`{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
