@@ -1330,7 +1330,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   you", the task reads Your turn, and no compaction was typed.
 - **AC-119** A message for the task that comes while `/compact` is in the prompt box and
   its Enter not sent is refused with "is being typed", nothing of it reaches the session,
-  and the session is compacted.
+  and the session is compacted. The same while a resumed session's `/goal` is in the box:
+  the message is refused and the goal is set.
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1552,8 +1553,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-117); each restart is a second server on the same data that reattaches the first
   one's run.
 - Slice 21: `yulius` `context_full::a_full_session_with_a_persons_draft_is_left_to_them`
-  (AC-118) and `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter`
-  (AC-119, with a pause point between the line and its Enter, `LineTyped`).
+  (AC-118), `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter` and
+  `first_message::nothing_is_typed_between_the_goal_and_its_enter` (AC-119, with a pause
+  point between the line and its Enter, `LineTyped`).
 
 ## Decisions
 
