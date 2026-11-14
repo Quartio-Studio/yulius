@@ -252,3 +252,18 @@ test('a request that waited before the page loaded is heard', async ({ app, brow
   await screen.getByRole('button', /^Notifications/).click();
   await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${asked}`))).toHaveCount(1);
 });
+
+// Review round 3: a sandbox whose first task list fails is scanned once its list loads.
+test('a waiting request is heard once a failed task list loads', async ({ app, browser, screen }) => {
+  type Failing = { __yuliusMock: { failPath: string | null } };
+  await app.open(mock('/s/studio/t/13', '&ambient=0&controlask=1&fail=/api/sandboxes/sb_studio/tasks'));
+  await firstShown(browser.locator('.load-error:has-text("Couldn’t load tasks")'));
+  // The list loads again (its Try again); the page may redraw meanwhile, so the button is pressed
+  // where it is at that moment.
+  await browser.evaluate(() => {
+    (window as unknown as Failing).__yuliusMock.failPath = null;
+    (document.querySelector('.load-error button') as HTMLButtonElement | null)?.click();
+  });
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();
+});

@@ -1074,7 +1074,8 @@ impl App {
     /// [`Self::start_onboarding`], with the hand-over of the person's agent (`actor`'s) added to
     /// the onboarding task's request after the default branch is prepared and before the task
     /// starts (SPEC-256 LOB-005). With a `starter` (a person's Start onboarding), a task created
-    /// now is theirs, and one that exists is started only by its owner (SPEC-490 OWN-004);
+    /// now is theirs, one that exists and never ran passes to them, and one that has run is
+    /// started only by its owner (SPEC-490 OWN-004);
     /// without one (Yulius starting it for the sandbox's creator) it is the creator's.
     ///
     /// # Errors
@@ -1121,8 +1122,9 @@ impl App {
             return Ok(false);
         };
         // Starting onboarding starts its task, with the hand-over added to its request: that is
-        // control of the task (SPEC-490 OWN-004). One Yulius created by itself that has never run
-        // is nobody's yet, so the starter takes it, as a hand-over; one that has run is its
+        // control of the task (SPEC-490 OWN-004). One that has never run is nobody's yet (another
+        // start may have made it a moment ago), so the starter takes it, as a hand-over; one
+        // that has run is its
         // owner's, and anyone else asks for control on its page.
         let task = match starter {
             Some(ctx) => self.claim_onboarding_task(ctx, task).await?,
@@ -1499,8 +1501,8 @@ impl App {
 
 impl App {
     /// The onboarding `task` for `ctx`'s person who starts onboarding (SPEC-490 OWN-004): theirs
-    /// already, or passed to them when it has never run (Yulius created it by itself, so nobody
-    /// gave it anything yet); one that has run stays its owner's.
+    /// already, or passed to them when it has never run (it has acted for nobody yet, however it
+    /// was made); one that has run stays its owner's.
     ///
     /// # Errors
     /// `Forbidden` naming the owner of a task that has run; the hand-over's `Conflict`s.

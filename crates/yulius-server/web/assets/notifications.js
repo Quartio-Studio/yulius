@@ -202,9 +202,11 @@ export function createNotificationCenter(ctx) {
   // changes come with their own task event.
   const loaded = new Set();
   watch('tasks', (sandboxId) => {
-    if (loaded.has(sandboxId)) return;
+    // A failed load has no list yet: the sandbox is scanned once one arrives (review round 3).
+    const list = ctx.store.tasksOf(sandboxId);
+    if (!list || loaded.has(sandboxId)) return;
     loaded.add(sandboxId);
-    (ctx.store.tasksOf(sandboxId) || []).forEach((task) => heardRequest(task, false));
+    list.forEach((task) => heardRequest(task, false));
   });
 
   // The person who handed a task to the viewer took it back (SPEC-490 OWN-010): the server tells

@@ -240,7 +240,7 @@ are their creator's (reported as issue #1289, see Decisions).
 ## Test plan
 
 - Unit (`crates/yulius-domain/src/task_access.rs`): AC-4.
-- Store (`crates/yulius-store/tests/store.rs`): migration 59; `pass_control` records the giver,
+- Store (`crates/yulius-store/tests/store.rs`): migration file 0059 (schema version 60); `pass_control` records the giver,
   `take_control` clears it, `take_back_control` refuses stale expectations.
 - Integration (`crates/yulius/tests/task_ownership.rs`): AC-1 to AC-3, AC-5, AC-6, AC-9, AC-10
   through `App` and the HTTP router with two GitHub users and the Superagent's tools; the
@@ -378,6 +378,16 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   personal-MCP launch says "ask again once it runs" (the hand-over's existing refusal), and the
   extra query per task in lists for `control_from` (one indexed read, as for the request).
 
+- Review round 3 (a fresh session), at `debcaeb45`: APPROVE. One minor finding, fixed test-first
+  (a sandbox whose first task list failed was never scanned for waiting requests; e2e "a waiting
+  request is heard once a failed task list loads"), and wording nits fixed (code comments on the
+  onboarding rule, this Test plan's schema number; the Plan item keeps its name "schema 59",
+  which is its step's title). Answered, not changed: a waiting request in a sandbox not opened in
+  this page load reaches the bell when it is opened (its sidebar row is marked); a take-back
+  while the former owner has no page open is not replayed, as no notification is; the event is
+  sent to the person whatever their access now, naming a task they owned; a take-back drops a
+  third person's waiting request without `task.control_dropped`, as an absent owner's pass
+  does.
 - After round 2's fixes, at `f65ae5520`: `scripts/dev ci` exit 0, 4414 tests passed, 17
   skipped; `npx e2e run` 84 files passed, 1 skipped, 1042 tests passed, 1 skipped.
 
