@@ -2715,8 +2715,28 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   the product in a string (`BRAND.name` instead). `scripts/dev ci` at `87f1f76be`: exit 0;
   `4373 tests run: 4373 passed (1 slow), 17 skipped` (`target/audit/slice26/gate.log`; four
   more than slice 25 came with `dev`). e2e `git.e2e.ts`, `cd.e2e.ts` and `workflows.e2e.ts`:
-  33 passed (`target/audit/slice26/e2e.log`, before the brand fix), `git.e2e.ts` again after
-  it: 6 passed.
+  33 passed (`target/audit/slice26/e2e.log`, before the brand fix; the run of `git.e2e.ts`
+  after it, 6 passed, kept no log: the run after the review below has one).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `589eaf0ac`): request changes. Blocking, in own
+  code: the skill offered `Fixes #N` as a way to close an issue, but "GitHub honours closing
+  keywords only for a pull request into the repository's default branch": on a `dev` before
+  `main` project the issue stays open and the open-issues automation may start a second task
+  on it. Non-blocking: the `product.md` exception garbled its sentence and said production
+  where only promotion is automatic; the new texts told an agent of an `auto_promote` project
+  to ask a person for a promotion Yulius does itself. Nits: the delivery line's comment still
+  said agents release; "deploy" was dropped with "release" from the UI copy; an environment
+  run gets the stage branch's files without Git, not a checkout; the guard's reason left out
+  the merge's own checks; wraps, the spec's criteria order, a run with no log; the mock still
+  answered a store failure with 503 `unavailable`. All answered in `8bfd4f812`: the skill says
+  `Fixes #N` works only on the default branch and to close the issue by hand otherwise;
+  `product.md` says Yulius promotes (not deploys production) where the profile says so, after
+  the integration environments; the texts say promotion is "not yours" (a person's, or
+  automatic where the profile says so); the UI copy says agents merge and deploy the
+  integration environments; the rest as reported.
+- **Gate after it.** `scripts/dev ci` at `8bfd4f812`: exit 0; `4373 tests run: 4373 passed (1
+  slow), 17 skipped` (`target/audit/slice26/gate2.log`); the mutation cases, their old texts
+  updated, all failed their tests again (`mutations-r1.log`); e2e `git.e2e.ts` and `cd.e2e.ts`:
+  32 passed (`e2e-r1.log`).
 - **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
   behaviour).
