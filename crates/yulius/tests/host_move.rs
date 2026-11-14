@@ -110,6 +110,21 @@ async fn a_mark_that_cannot_be_read_still_brings_the_tasks_back() -> TestResult 
     Ok(())
 }
 
+/// SPEC-483 MOV-002: a mark that is not even text (a damaged file) is still a mark: the lost
+/// tasks come back and the mark goes, rather than being met again at every start.
+#[tokio::test]
+async fn a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes() -> TestResult {
+    let h = moved_instance().await?;
+    let data = h.app.config.data_dir.clone();
+    std::fs::write(data.join(MOVE_PENDING), [0xff, 0xfe, b'{'])?;
+    drop(h.app.recover().await);
+    assert_eq!(status(&h, "t-bob").await?, TaskStatus::Queued);
+    assert!(!data.join(MOVE_PENDING).exists(), "the mark stays");
+    let report: MoveReport = serde_json::from_str(&std::fs::read_to_string(data.join(MOVED))?)?;
+    assert_eq!((report.queued, report.from), (2, None));
+    Ok(())
+}
+
 /// A process host that finds every run ended, cleanly, while Yulius was down.
 struct EndedHost;
 
