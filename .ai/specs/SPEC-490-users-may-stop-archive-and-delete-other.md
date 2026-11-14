@@ -378,6 +378,9 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   personal-MCP launch says "ask again once it runs" (the hand-over's existing refusal), and the
   extra query per task in lists for `control_from` (one indexed read, as for the request).
 
+- After round 2's fixes, at `f65ae5520`: `scripts/dev ci` exit 0, 4414 tests passed, 17
+  skipped; `npx e2e run` 84 files passed, 1 skipped, 1042 tests passed, 1 skipped.
+
 **Not tested here:** the desktop notification of a request (the browser's `Notification` is
 the same path the notification centre's other entries use, and its e2e covers only the bell
 and the toast); real GitHub permissions (the tests use the fake GitHub and cached
