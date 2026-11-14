@@ -5171,7 +5171,8 @@ async fn delivered_with_a_successor(f: &Fixture, spec: &str) -> BoxResult<(PathB
 }
 
 /// What the task chained after `t1` is once `t1`'s turn has ended (its agent idle) and the
-/// chains were looked at.
+/// chains were looked at. A released task is started in the background, so it may already be
+/// past `queued`: the tests ask whether it is still `chained`.
 async fn successor_after_the_turn(f: &Fixture) -> BoxResult<String> {
     let t1 = TaskId::parse("t1")?;
     f.h.store
@@ -5202,7 +5203,7 @@ async fn a_pull_request_nothing_reported_on_is_not_done_where_checks_are_require
         "nothing reported at its head"
     );
     f.h.github.set_checks(&head, ChecksState::Success);
-    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
     Ok(())
 }
 
@@ -5214,7 +5215,7 @@ async fn a_pull_request_without_checks_is_done_where_none_are_required() -> Test
     profile.require_checks = false;
     let f = fixture(&profile).await?;
     delivered_with_a_successor(&f, &finished_spec("t1")).await?;
-    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
     Ok(())
 }
 
@@ -5243,7 +5244,7 @@ async fn a_green_pull_request_github_cannot_merge_is_not_done_where_the_clone_ca
         "it cannot merge"
     );
     set_mergeable(true);
-    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
     Ok(())
 }
 
@@ -5330,7 +5331,7 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
             .is_some_and(|text| !text.contains("the spec says")),
         "{checked}"
     );
-    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
     Ok(())
 }
 
@@ -5360,7 +5361,8 @@ async fn a_closed_task_whose_spec_says_in_progress_did_not_end_done() -> TestRes
         f.h.app.advance_chains(&t1).await;
         let next = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
         if starts {
-            assert_eq!(next.body["status"], "queued", "{}", next.body);
+            // Released: the queue may already be starting it in the background.
+            assert_ne!(next.body["status"], "chained", "{}", next.body);
         } else {
             assert_eq!(next.body["status"], "chained", "{}", next.body);
             assert_eq!(
@@ -5397,7 +5399,48 @@ async fn a_task_whose_spec_was_deleted_is_decided_by_its_steps() -> TestResult {
     let pushed = git(&wt, &["rev-parse", "HEAD"])?;
     f.h.github.set_checks(&pushed, ChecksState::Success);
     f.h.app.auto_open_pr(&t1).await;
-    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-004 (review of SPEC-491, round 2): the live sync runs every few seconds, and
+/// every task is given a spec path at its start whether or not it ever writes one. With no
+/// status kept there is nothing a moved or deleted spec could leave stale, so the sync does not
+/// look through the specs folder for one: a spec written under another name is found by the
+/// next delivery call, as before, not by the sync.
+#[tokio::test]
+async fn the_sync_looks_for_a_moved_spec_only_while_a_status_is_kept() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    let t1 = TaskId::parse("t1")?;
+    let allocated = "docs/specs/2026-10-07-allocated.md";
+    f.h.store
+        .update_task(
+            &t1,
+            &yulius_app::ports::store::TaskFieldUpdate {
+                spec_path: Some(allocated.into()),
+                ..yulius_app::ports::store::TaskFieldUpdate::default()
+            },
+            Timestamp(3),
+        )
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec under another name")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert!(!f.h.app.sync_steps_from_spec(&task).await?);
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert_eq!(task.spec_path.as_deref(), Some(allocated), "not looked for");
+    assert_eq!(f.h.store.spec_status(&t1).await?, None);
+    // Once a status is kept, a spec missing at its path is looked for and followed.
+    f.h.store.set_spec_status(&t1, Some("draft")).await?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert_eq!(task.spec_path.as_deref(), Some(SPEC_PATH));
+    assert_eq!(
+        f.h.store.spec_status(&t1).await?.as_deref(),
+        Some("in-progress")
+    );
     Ok(())
 }
 

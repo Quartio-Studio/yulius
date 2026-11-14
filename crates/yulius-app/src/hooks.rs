@@ -1339,10 +1339,15 @@ impl App {
         let _steps = runtime.steps_lock.lock().await;
         let root = PathBuf::from(worktree);
         // A spec moved or deleted since it was registered: found again where it is now, or, with
-        // none left, its kept status goes (review of SPEC-491, m2).
+        // none left, its kept status goes (review of SPEC-491, m2). Only while a status is kept:
+        // every task is given a path at its start, and a task that never wrote its spec has
+        // nothing stale to clear, so it is not made to read the specs folder at every sync
+        // (review round 2).
         let rel = if root.join(spec_path).is_file() {
             spec_path.clone()
-        } else if root.is_dir() {
+        } else if root.is_dir()
+            && matches!(self.deps.store.spec_status(&task.id).await, Ok(Some(_)))
+        {
             match self.task_spec_path(task, &root).await {
                 Ok(found) => found,
                 Err(_) => {
