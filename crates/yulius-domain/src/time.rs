@@ -144,7 +144,7 @@ mod tests {
             "2026-10-07X09:12:00Z",
             "2026-10-07T09:12:00Zjunk",
             "2026-1-7T9:12:00Z",
-            // Long enough for every position, one field unpadded.
+            // Long enough for every position, one field unpadded: a separator out of its place.
             "2026-1-07T09:12:00.0Z",
             "2026-10-07T9:12:00.00Z",
             // Every separator is where it belongs.
