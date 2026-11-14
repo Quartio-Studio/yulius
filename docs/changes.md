@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- One reader of RFC 3339 time (SPEC-483 slice 31, task #465). GitHub's, the transcripts', the
+  imports' and the app's readers took different inputs (GitHub's took 31 February); every crate
+  now reads timestamps one way, and converts dates with the domain's calendar.
 - Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
   30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
   bulk stop start its next waiting task in the tests before stopping it.
