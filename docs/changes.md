@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- One dispatch of the Superagent's tools (SPEC-483 slice 33, task #465). The Yulius MCP and the
+  remote MCP each kept the same 18 project tools and the protocol handshake; a tool added to one
+  only would have been listed and answered "unknown tool". The device sign-in's polling code is
+  no longer printed in debug output.
 - The CLI's sign-in has one contract (SPEC-483 slice 32, task #465). The server and `yulius
   login` each defined the device sign-in's answers, the server's state a free word the CLI might
   not read; both now use one definition, and a state the CLI does not know reads as expired.
