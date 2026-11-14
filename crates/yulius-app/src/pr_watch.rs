@@ -1056,7 +1056,12 @@ impl App {
 
     /// Whether `head` conflicts with the integration branch as Yulius's clone last fetched it,
     /// with the repository's merge drivers (PRN-004); cached per head and integration commit.
-    async fn conflicts(&self, task: &TaskRecord, sandbox: &SandboxRecord, head: &str) -> bool {
+    pub(crate) async fn conflicts(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        head: &str,
+    ) -> bool {
         // In the task's worktree, as delivery's own check: the merge drivers of the clone's old
         // checkout could be stale (review minor 11).
         let Some(repo) = task.worktree_path.as_deref().map(std::path::PathBuf::from) else {
@@ -1067,14 +1072,14 @@ impl App {
             return false;
         };
         let pair = format!("{head}:{base}");
-        let Some(runtime) = self.existing_runtime(&task.id) else {
-            return false;
-        };
-        if let Some((checked, conflicts)) = runtime
-            .pr_conflict
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        // Kept with the task's run; a task this server has no run of is asked each time.
+        let runtime = self.existing_runtime(&task.id);
+        if let Some(runtime) = &runtime
+            && let Some((checked, conflicts)) = runtime
+                .pr_conflict
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
             && checked == pair
         {
             return conflicts;
@@ -1086,10 +1091,12 @@ impl App {
             ),
             _ => false,
         };
-        *runtime
-            .pr_conflict
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
+        if let Some(runtime) = runtime {
+            *runtime
+                .pr_conflict
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
+        }
         conflicts
     }
 }

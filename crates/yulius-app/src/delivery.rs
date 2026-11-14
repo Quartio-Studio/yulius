@@ -680,6 +680,18 @@ fn pull_view(pull: &GhPull, checks: &str) -> PullView {
         base: pull.base.clone(),
         head: pull.head.clone(),
         checks: checks.to_owned(),
+        conflicts: pull.mergeable == Some(false),
+    }
+}
+
+/// The checks word of an open pull request as "tested" reads it (SPEC-491 DON-002): where the
+/// delivery profile requires checks, a pull request whose checks have not reported is `pending`,
+/// not "none required" (#68). The Git overview and `task_is_done` both ask here.
+pub(crate) fn tested_checks_word(profile: &DeliveryProfile, word: &'static str) -> &'static str {
+    if profile.require_checks && word == "none" {
+        "pending"
+    } else {
+        word
     }
 }
 
@@ -1982,20 +1994,14 @@ impl App {
         let checks_access = self
             .dlv_checks_access(&sandbox, &checks_unreadable, Some(&ctx.user))
             .await;
-        // With required checks, a pull request whose checks have not reported yet is pending,
-        // not "none": it is not tested until they pass (#68).
         let checks_of = |number: u64| {
             let state = checks_by_pr
                 .iter()
                 .find(|(n, _)| *n == number)
                 .map_or("unknown", |(_, state)| *state);
-            if profile.require_checks && state == "none" {
-                "pending"
-            } else {
-                state
-            }
+            tested_checks_word(&profile, state)
         };
-        let pulls: Vec<PullView> = open_pulls
+        let mut pulls: Vec<PullView> = open_pulls
             .iter()
             .map(|p| pull_view(p, checks_of(p.number)))
             .collect();
@@ -2025,6 +2031,17 @@ impl App {
                     .map(|p| pull_view(p, checks_of(p.number))),
                 worktree: worktree_state(&task),
             };
+            // GitHub's list says nothing about mergeability: Yulius's own clone does (DON-001).
+            if let Some(pull) = open_pulls.iter().find(|p| p.head == branch)
+                && self.pull_conflicts(&task, &sandbox, pull).await
+            {
+                if let Some(pr) = view.pr.as_mut() {
+                    pr.conflicts = true;
+                }
+                if let Some(listed) = pulls.iter_mut().find(|p| p.number == pull.number) {
+                    listed.conflicts = true;
+                }
+            }
             if cloned
                 && self
                     .deps
@@ -2108,12 +2125,13 @@ impl App {
                     base: profile.integration_branch.clone(),
                     head: branch.clone(),
                     checks: "none".into(),
+                    conflicts: false,
                 });
             }
             if let Some(signal) = view
                 .pr
                 .as_ref()
-                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks))
+                .and_then(|pr| PullSignal::from_wire(&pr.state, &pr.checks, pr.conflicts))
             {
                 observed.insert(task.id.clone(), signal);
             }
@@ -3297,8 +3315,9 @@ impl App {
     /// Whether a task is Done (#35, the sidebar's rule; SPEC-001 TSK-012, TSK-014): its turn
     /// ended (the agent is idle, or the session was closed), no background shell of the agent is
     /// known to run, and either Claude Code recorded its goal as achieved (activity `done`) or
-    /// its plan is complete and its pull request is merged, or open with checks green or none
-    /// required, and Yulius has no news of that pull request left for its agent
+    /// its plan is complete and its pull request is merged, or open and tested (mergeable into
+    /// its base, with checks green or none required: [`PullSignal::from_wire`], SPEC-491
+    /// DON-001), and Yulius has no news of that pull request left for its agent
     /// ([`App::pr_news_due`]). Anything unknown (no pull request, GitHub unreachable) is not Done.
     pub(crate) async fn task_is_done(&self, task: &TaskRecord) -> bool {
         use yulius_domain::task::{Activity, TaskStatus};
@@ -3354,12 +3373,38 @@ impl App {
                 // Merged on GitHub before the record says so: its news is as due as then.
                 PrState::Merged => !self.pr_news_due_of(task, Some(&record), true).await,
                 PrState::Open => {
-                    matches!(observed.checks, ChecksState::Success | ChecksState::None)
+                    let Some(pull) = observed.pr.as_ref() else {
+                        return false;
+                    };
+                    let word = if observed.checks_errored {
+                        "error"
+                    } else {
+                        observed.checks.as_str()
+                    };
+                    // Tested, by the reading the sidebar and the counts have (DON-001).
+                    PullSignal::from_wire(
+                        "open",
+                        tested_checks_word(&profile, word),
+                        self.pull_conflicts(task, &sandbox, pull).await,
+                    ) == Some(PullSignal::Tested)
                 }
                 PrState::Absent | PrState::Closed => false,
             },
             Err(_) => false,
         }
+    }
+
+    /// Whether an open pull request of `task` conflicts with its base (SPEC-491 DON-001):
+    /// GitHub says it is not mergeable (a single pull request's answer; its lists say nothing),
+    /// or Yulius's own merge of its head with the integration branch, as last fetched, conflicts
+    /// (what the pull request watch tells the agent, PRN-004).
+    pub(crate) async fn pull_conflicts(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pull: &GhPull,
+    ) -> bool {
+        pull.mergeable == Some(false) || self.conflicts(task, sandbox, &pull.head_sha).await
     }
 
     /// Whether a task's pull request is recorded as merged.

@@ -5122,6 +5122,123 @@ async fn merged_task_with(
     Ok((f, wt, merged_head))
 }
 
+/// A spec whose task says its work is finished: every Plan item ticked, Evidence, `status: done`.
+fn finished_spec(task: &str) -> String {
+    valid_spec(task)
+        .replace("status: in-progress", "status: done")
+        .replace("- [ ] Implement", "- [x] Implement")
+        + "\n## Evidence\n- `cargo test`: passed.\n"
+}
+
+/// `t1` with `spec` committed, its pull request #1 open and every step finished, and `t2`
+/// chained after it: the worktree of `t1` and its head.
+async fn delivered_with_a_successor(f: &Fixture, spec: &str) -> BoxResult<(PathBuf, String)> {
+    use yulius_app::ports::store_ext::IntakeStore;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", FEATURE, "Add feature")?;
+    commit_file(&wt, SPEC_PATH, spec, "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    set_steps(f, "t1", &["done", "done"]).await?;
+    f.add_task("t2", "Docs of the API", "feat/2-docs", "dev")
+        .await?;
+    let t2 = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(&t2, None, TaskStatus::Chained, None, Timestamp(5))
+        .await?;
+    f.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: t2,
+            after_task_id: Some(TaskId::parse("t1")?),
+            after_number: 1,
+            blocked_reason: None,
+            created_at: Timestamp(5),
+            rule: None,
+        })
+        .await?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    Ok((wt, head))
+}
+
+/// What the task chained after `t1` is once `t1`'s turn has ended (its agent idle) and the
+/// chains were looked at.
+async fn successor_after_the_turn(f: &Fixture) -> BoxResult<String> {
+    let t1 = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &t1,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            Timestamp(6),
+        )
+        .await?;
+    f.h.app.advance_chains(&t1).await;
+    let task = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
+    Ok(task.body["status"].as_str().unwrap_or_default().to_owned())
+}
+
+/// SPEC-491 DON-002: "no check reported" is "none required" only where the project requires
+/// none. With a profile that requires checks, a pull request nothing reported on is not tested
+/// (as the Git overview reads it since #68), so its task is not Done and the task chained after
+/// it waits; once its checks pass it starts.
+#[tokio::test]
+async fn a_pull_request_nothing_reported_on_is_not_done_where_checks_are_required() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "nothing reported at its head"
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    Ok(())
+}
+
+/// SPEC-491 DON-002: a project whose profile requires no checks has "none required": a pull
+/// request without any is tested, as before.
+#[tokio::test]
+async fn a_pull_request_without_checks_is_done_where_none_are_required() -> TestResult {
+    let mut profile = DeliveryProfile::standard();
+    profile.require_checks = false;
+    let f = fixture(&profile).await?;
+    delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    Ok(())
+}
+
+/// SPEC-491 DON-001 (14 November 2026: #474 was started "after #465" while #465's pull request
+/// #1287, green at its head, conflicted with `dev`): a pull request GitHub cannot merge is not
+/// tested, whatever its checks say. Its task is not Done, the task chained after it waits, and
+/// `#1 done` in a start rule is false; it starts once the pull request can merge again.
+#[tokio::test]
+async fn a_green_pull_request_that_conflicts_is_not_done() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let set_mergeable = |mergeable: bool| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.mergeable = Some(mergeable);
+        }
+    };
+    set_mergeable(false);
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "it cannot merge"
+    );
+    set_mergeable(true);
+    assert_eq!(successor_after_the_turn(&f).await?, "queued");
+    Ok(())
+}
+
 /// Pull requests Yulius opened so far.
 fn pulls_opened(f: &Fixture) -> usize {
     f.h.github

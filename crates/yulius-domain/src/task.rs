@@ -371,10 +371,13 @@ impl Activity {
 /// What a task's pull request says (SPEC-001 GIT-001), as the Git overview last read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PullSignal {
-    /// Open with checks green, or with none required: tested.
+    /// Open, mergeable into its base, with checks green or none required: tested.
     Tested,
     /// Open while its checks run or cannot be read.
     InReview,
+    /// Open with checks green or none required, and in conflict with its base: it cannot merge
+    /// as it is, so it is not tested (SPEC-491 DON-001).
+    Conflicting,
     /// Open with failing checks.
     Failing,
     /// Open while Yulius CI could not run its checks (disk, a timeout, the host): not the code
@@ -385,12 +388,16 @@ pub enum PullSignal {
 }
 
 impl PullSignal {
-    /// From a pull request's `state` and `checks` wire names (`PullView`); `None` for a closed
-    /// pull request, which says nothing about the task.
+    /// From a pull request's `state` and `checks` wire names (`PullView`) and whether it
+    /// conflicts with its base; `None` for a closed pull request, which says nothing about the
+    /// task. The one reading of "tested" (SPEC-491 DON-001): the sidebar's counts, the Git
+    /// overview and `task_is_done` (chains, start rules) all ask it. `checks` is `none` only
+    /// where the project requires none (DON-002: the caller says `pending` otherwise).
     #[must_use]
-    pub fn from_wire(state: &str, checks: &str) -> Option<Self> {
+    pub fn from_wire(state: &str, checks: &str, conflicts: bool) -> Option<Self> {
         match (state, checks) {
             ("merged", _) => Some(Self::Merged),
+            ("open", "success" | "none") if conflicts => Some(Self::Conflicting),
             ("open", "success" | "none") => Some(Self::Tested),
             ("open", "failure") => Some(Self::Failing),
             ("open", "error") => Some(Self::Errored),
@@ -487,8 +494,8 @@ impl AttentionFacts {
     /// runs or it waits in `yulius wait` it goes on by itself, and the task is Working), a CI run
     /// that could not run keeps it Working (In review); with the plan complete, background shells
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
-    /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
-    /// merged pull request makes it Done. Otherwise the task's own state: a permission prompt needs
+    /// armed merge), checks still running or a conflict with its base (In review) keep it
+    /// Working, and otherwise a tested or merged pull request makes it Done. Otherwise the task's own state: a permission prompt needs
     /// you, and so does "Your turn", an idle agent with steps open or an unfinished goal (unless
     /// the agent's background shells still run or it waits in `yulius wait`: it goes on by itself);
     /// an idle agent with neither answered and is Done ("Answered", SPEC-429), as is an achieved
@@ -531,8 +538,11 @@ impl AttentionFacts {
                     G::Working
                 } else if self.activity == Some(Activity::Done) {
                     G::Done
-                } else if self.yulius_wait || pull == PullSignal::InReview {
-                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003).
+                } else if self.yulius_wait
+                    || matches!(pull, PullSignal::InReview | PullSignal::Conflicting)
+                {
+                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003), or
+                    // is told of the conflict by the pull request watch (SPEC-491 DON-003).
                     G::Working
                 } else {
                     G::Done
@@ -1081,7 +1091,7 @@ mod tests {
         };
         assert!(with(A::Waiting, P::Failing, false).needs_you());
         assert!(with(A::Done, P::Failing, false).needs_you());
-        for pull in [P::Tested, P::InReview, P::Merged] {
+        for pull in [P::Tested, P::InReview, P::Conflicting, P::Merged] {
             assert!(!with(A::Waiting, pull, false).needs_you(), "{pull:?}");
             // Open plan steps keep it out of Done: the task's own state shows (#139).
             assert!(
@@ -1228,6 +1238,12 @@ mod tests {
             G::Done,
             "an achieved goal"
         );
+        // SPEC-491 DON-003: a pull request that conflicts with its base is not tested. Its
+        // agent is told by the watch, so it is In review; an achieved goal stays Done, and with
+        // steps open the task's own state shows.
+        assert_eq!(with(A::Waiting, P::Conflicting, false).group(), G::Working);
+        assert_eq!(with(A::Done, P::Conflicting, false).group(), G::Done);
+        assert_eq!(with(A::Waiting, P::Conflicting, true).group(), G::NeedsYou);
         assert_eq!(with(A::Waiting, P::Tested, true).group(), G::NeedsYou);
         let shells = AttentionFacts {
             background_shells: true,
@@ -1315,35 +1331,33 @@ mod tests {
 
     #[test]
     fn pull_signals_from_wire_names() {
-        assert_eq!(
-            PullSignal::from_wire("merged", "none"),
-            Some(PullSignal::Merged)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "success"),
-            Some(PullSignal::Tested)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "none"),
-            Some(PullSignal::Tested)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "failure"),
-            Some(PullSignal::Failing)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "pending"),
-            Some(PullSignal::InReview)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "unknown"),
-            Some(PullSignal::InReview)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "error"),
-            Some(PullSignal::Errored)
-        );
-        assert_eq!(PullSignal::from_wire("closed", "none"), None);
+        use PullSignal as P;
+        let cases = [
+            ("merged", "none", false, Some(P::Merged)),
+            ("open", "success", false, Some(P::Tested)),
+            ("open", "none", false, Some(P::Tested)),
+            ("open", "failure", false, Some(P::Failing)),
+            ("open", "pending", false, Some(P::InReview)),
+            ("open", "unknown", false, Some(P::InReview)),
+            ("open", "error", false, Some(P::Errored)),
+            ("closed", "none", false, None),
+            // SPEC-491 DON-001: a pull request that conflicts with its base is not tested,
+            // whatever its checks say; what its checks say otherwise stays what it reads.
+            ("open", "success", true, Some(P::Conflicting)),
+            ("open", "none", true, Some(P::Conflicting)),
+            ("open", "failure", true, Some(P::Failing)),
+            ("open", "error", true, Some(P::Errored)),
+            ("open", "pending", true, Some(P::InReview)),
+            ("merged", "none", true, Some(P::Merged)),
+            ("closed", "success", true, None),
+        ];
+        for (state, checks, conflicts, signal) in cases {
+            assert_eq!(
+                P::from_wire(state, checks, conflicts),
+                signal,
+                "{state} {checks} conflicts={conflicts}"
+            );
+        }
     }
 
     #[test]

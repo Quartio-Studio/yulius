@@ -1955,6 +1955,89 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
     Ok(())
 }
 
+/// SPEC-491 DON-001, DON-003 (14 November 2026: #474 was started "after #465" at 18:20:13, while
+/// #465's pull request #1287 had passed at its head and, since `dev` moved at 18:16:56,
+/// conflicted with it): a pull request whose head conflicts with the integration branch, as
+/// Yulius's own clone has it, is not tested, whatever its run said. Its task is not Done, the
+/// task chained after it waits, and the Git overview and the counts say so; once its agent
+/// merged the integration branch in and the new head passed, the chained task starts.
+#[tokio::test]
+async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("shared.txt", "mine\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` moves in the same file, and Yulius's clone learns of it.
+    f.advance_dev("shared.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its pull request cannot merge"
+    );
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(
+        (&pr["checks"], &pr["conflicts"]),
+        (&json!("success"), &json!(true)),
+        "{}",
+        overview.body
+    );
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["running"], 1,
+        "in review, not Done: {}",
+        sandbox.body
+    );
+
+    // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
+    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
+    git(&worktree, &["add", "-A"])?;
+    git(&worktree, &["commit", "-q", "--no-edit"])?;
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("t1")?;
+    app.sync_steps_from_spec(&task).await?;
+    app.auto_open_pr(&first).await;
+    let merged_head = git(&worktree, &["rev-parse", "HEAD"])?;
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "feat/1-train"])?,
+        merged_head,
+        "pushed: {}",
+        f.wait(1, &worktree).await?
+    );
+    f.record_passed(&app, 1, &merged_head).await?;
+    app.advance_chains(&first).await;
+    assert_ne!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "it merges cleanly and is tested: it starts"
+    );
+    Ok(())
+}
+
 /// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
 /// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
 /// waits for it, Home counts it as working, and archiving it is refused (it would have ended the
