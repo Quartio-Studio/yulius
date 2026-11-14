@@ -1068,10 +1068,11 @@ went; two of the auditors' items had gained a user since and stay.
   accepts; the spec workflow, AGENTS.md and the `yulius-spec` skill say features and fixes get
   one in that form.
 - **DOC-002** No instruction an agent follows in the repository (AGENTS.md, CLAUDE.md,
-  README.md, the pull request template, `docs/engineering/`, the repository and catalog
-  skills, the catalog workflows) tells it to run `gh pr merge` (other than as refused), to
-  self- or author-merge, to promote when asked, or to poll; `scripts/check_repository.py`
-  refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
+  README.md, the pull request template, `docs/engineering/`, the repository skills, every
+  catalog skill file, the catalog workflows and automations, the templates) tells it to run
+  `gh pr merge` (other than "`gh pr merge` is refused"), to self- or author-merge, to promote
+  when asked or "and promote", or to poll (`gh pr checks --watch`); negated text ("never",
+  "not") is not refused. `scripts/check_repository.py` refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
   merge queue, `yulius wait`, promotion by a person on the CD page.
 - **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
   definition of done (short and full, and the request file) and the merge news pass
@@ -2048,8 +2049,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 27 (no decision record: the product decided; its own repository follows). The
   instructions keep the `git worktree` commands for work by hand and drop the `gh` merge and
   promotion commands: a person promotes on the CD page, and the hand merge an agent would copy
-  is refused. The check is a list of phrases, not a parser: it catches the wording that was
-  there and its obvious variants; a new way to say the same needs a review, as before. The
+  is refused. The check is a list of phrases, not a parser: its test holds the wording
+  AGENTS.md and the pull request template had before this slice and its variants; a new way
+  to say the same needs a review, as before. The
   `apm` lock keeps the version its last writer used: only the four content hashes changed
   (apm-cli 0.35.1 would also have renamed a target).
 - Slice 26 (no decision record: ADR-0110 and SPEC-441 decided; the texts follow). The Docs
@@ -2839,4 +2841,22 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   skipped` (`target/audit/slice27/gate.log`); e2e `git.e2e.ts` and `cd.e2e.ts`: 32 passed
   (`e2e.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `8b8665fff`): request changes. Two major, own
+  text: the `--chromium-no-sandbox` row said the browser "is then contained only by Yulius's
+  sandbox", while the sandbox browsers run on the host as the service user, outside every
+  project's sandbox; `git.md` said `repo_hygiene` and `repo_cleanup` remove review worktrees
+  and scratch files, which they never do. Minor: "fix/revert through `dev` and promote" was
+  left, and the cleanup steps told an agent to remove its task worktree by hand (Yulius's);
+  the check missed the very wording of the old AGENTS.md and pull request template ("Author
+  self-review + passing checks → squash PR to dev", "squash merge by its author", "happens
+  only when a task asks for a release"), refused "Yulius squash-merges …" and "Do not
+  promote …", let any line with "refused" through, and skipped catalog automations, skill
+  references and templates; `apm.lock.yaml`'s legacy map kept the old hashes; SPEC-001
+  GIT-001 and AC-UI-18. Nits: a clean dev merge keeps the approval, the CD deploy is refused
+  until the checks pass, `[commands]` and the briefing, wraps, the check's row and summary,
+  `spec_check` in the skill, chores in AGENTS.md. All answered in `19a660b6e`.
+- **Gate after it.** `scripts/dev ci` at `19a660b6e`: exit 0; `4374 tests run: 4374 passed (1
+  slow), 17 skipped` (`target/audit/slice27/gate2.log`); the mutation cases, the check's
+  updated (`mutations-r1.log`, 9 cases; "any line that says refused" was first written so
+  that it could not fail and is rerun as the old behaviour), all failed their tests.
 - **Not tested.** An agent following the rewritten instructions (the check reads the wording).
