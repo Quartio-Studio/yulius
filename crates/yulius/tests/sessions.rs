@@ -941,6 +941,53 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         body.contains("[line 4] assistant") && body.len() <= 1100,
         "{body}"
     );
+    // A long session: the bound leaves entries out at the front, never the last ones. (The
+    // headers make the text longer than the entries' own words, which is what the read
+    // counts: without the cut at the front the text would end before the session does.)
+    let long = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "long",
+        "A long session",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let lines: String = (0..40)
+        .map(|i| {
+            line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": format!("entry {i:02} of the long session, with words to fill its line")}
+            ]}}))
+        })
+        .collect();
+    let long_copy = data.join("copies/long.jsonl");
+    write(&long_copy, &lines)?;
+    task_session(&h.store, &long, "sess-long", &long_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": long.number, "tail": true, "max_chars": 1000, "limit": 200}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("entry 39 of the long session"), "{body}");
+    assert!(
+        !body.contains("(cut)") && body.len() <= 1000,
+        "{}: {body}",
+        body.len()
+    );
+    let first = end["from"].as_u64().ok_or("from")?;
+    assert!(
+        first > 20 && body.starts_with(&format!("[line {first}] assistant")),
+        "{body}"
+    );
+    assert_eq!(
+        (&end["earlier"], &end["next_from"]),
+        (&json!(true), &json!(40)),
+        "{end}"
+    );
     // The end, or a place: not both.
     let (both, err) = mcp_tool(
         &internal,
