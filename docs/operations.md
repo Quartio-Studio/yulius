@@ -950,7 +950,12 @@ silent. It types none of them while a person's draft may sit in the session's pr
   for the tasks chained after it until its person sent a prompt.
 - **What ends it.** Send what you typed in the task's terminal, or clear it and send any
   prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
-  it never sends or clears a person's text.
+  by itself it never sends or clears a person's text. The task's owner can also tell their
+  Superagent (or their own agent) to send a message past it: `task_message` with
+  `with_draft: true` types the message behind that text and both go to the agent as one
+  prompt, once the last key is more than a minute old (SPEC-487). That ends the hold too,
+  also for a draft from before a restart. Nobody else's message goes past it, and not while a
+  prompt Yulius held for a decision is back in the box.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
   box, and a restarted server reads it when it reattaches the run. A draft it knows from

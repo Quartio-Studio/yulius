@@ -59,6 +59,9 @@ after a bound the person is told.
   (its run's start, or the last prompt submitted from the box; SPEC-468 CCF-010), however long
   ago. Only a person's keystrokes count, every one of them; what Yulius typed itself does not.
   The call is refused with `Conflict`, before anything is written to the session.
+  (Amended by SPEC-487 TCT-006: the task's owner may have their own message sent past their
+  possible draft with `task_message {with_draft: true}`, once their last key is more than a
+  minute old; both are then submitted as one prompt.)
 - DRF-002 (the minute stays). A person who typed in the last minute and has no draft (they just
   sent a prompt) still keeps a message out for that minute, as before.
 - DRF-003 (every typist). The rule holds for everything that goes through `type_into_session`:
@@ -90,7 +93,9 @@ after a bound the person is told.
   anyone, or a new run ends the hold (CCF-010's knowledge): the watches' next pass types.
   The flag of DRF-006 ends with it, also when that prompt starts no turn (`/compact`, which
   leaves the task's activity alone): only that flag, and only while the task still reads it.
-  Yulius never clears or sends a person's text.
+  Yulius never clears or sends a person's text by itself. (SPEC-487 TCT-006: the task's owner
+  may have a message of their own sent past it; that submit ends the hold as a prompt from
+  the box does, also for a draft known from its mark alone.)
 - DRF-008 (documents). SPEC-230 TMS-004, ADR-0178, `docs/operations.md`, `docs/architecture.md`,
   `docs/product.md` and the `task_message` tool description say when a message waits for a
   person's draft.

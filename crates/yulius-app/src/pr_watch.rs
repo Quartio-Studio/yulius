@@ -392,9 +392,10 @@ pub(crate) struct TypedNews {
     pub in_queue: bool,
 }
 
-/// Since when a session is idle, for the bound of queued news (ms): its last clean Stop or
-/// interrupt (`ended_ms`, `TaskRuntime::last_stop_ms`: a Stop that Yulius's gate blocked is
-/// none, the turn goes on), while the task reads idle and no turn began after it. Otherwise 0,
+/// Since when a session is idle, for the bound of queued news (ms): its last clean Stop, its
+/// interrupt, or the record that closed a turn whose Stop was never answered (`ended_ms`,
+/// `TaskRuntime::last_stop_ms`: a Stop that Yulius's gate blocked is none, the turn goes on),
+/// while the task reads idle and no turn began after it. Otherwise 0,
 /// not known: while the task works; after a turn whose prompt came after that Stop and that
 /// ended without one (an error, also after a blocked Stop), whose end is later than `ended_ms`
 /// says (reviews of SPEC-487 slice 1, D-1, and slice 2, F13); and for a run without hooks.

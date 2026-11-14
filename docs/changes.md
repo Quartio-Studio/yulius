@@ -16,6 +16,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   session, as the flag says beforehand. And from a line Yulius types
   to its Enter nothing else is typed into the session, whatever the line is (a message,
   `/compact`, a goal); a goal keeps that until Claude Code took it.
+- The Superagent changes tasks that exist (SPEC-487 slice 3, task #469). "Pause all tasks"
+  had become 19 messages and "kill all tasks" 24 calls; a wrong request in a queued task
+  was fixed by deleting the task, which once destroyed four screenshots. New tools, also
+  for the person's own agent through the remote MCP: `task_edit` (a title; the whole request
+  of a task that has not started, keeping its attached files and answering the text it
+  replaced), `tasks_reorder` (the person's queued tasks swap the places they hold),
+  `task_close` (an idle running task is closed out) and `tasks_bulk` (stop, pause, resume
+  or one message to several tasks or all of the person's, each task's outcome in the
+  answer). `task_message` takes `with_draft`: the task's owner sends past text they left
+  unsent in its prompt box, which until now blocked every message until they went to the
+  terminal. Each is a person's function with their rights at the call; a task's agent gets
+  none of them.
+
 - A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
   20, task #465). A session started with its owner's personal MCP servers is still known
   as that after a restart, so a hand-over restarts it and the previous owner's credential

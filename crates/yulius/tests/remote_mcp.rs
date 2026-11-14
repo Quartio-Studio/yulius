@@ -620,6 +620,160 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     Ok(())
 }
 
+/// SPEC-487 TCT-001, TCT-003, TCT-005: the person's own agent renames a task, orders the
+/// queue and acts on several tasks with the same tools their Superagent has, and a read token
+/// is served none of them.
+#[tokio::test]
+async fn a_persons_agent_edits_orders_and_stops_tasks_remotely() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::task::TaskStatus;
+    use yulius_domain::time::Timestamp;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    let made = make_token(&w, &browser, "reader", "read").await?;
+    let read = bearer(text(&made["token"]));
+    w.grant("alice", "acme/shop", "admin");
+    let first = support::seed_task(&w.h, "t-q1", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let second =
+        support::seed_task(&w.h, "t-q2", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let base = w.h.app.now().0;
+    for (i, task) in [&first, &second].into_iter().enumerate() {
+        let at = Timestamp(base + i64::try_from(i)? * 1000);
+        w.h.store
+            .transition_task(
+                &task.id,
+                Some(TaskStatus::Queued),
+                TaskStatus::Queued,
+                None,
+                at,
+            )
+            .await?;
+    }
+    let tools = served(&w, &read).await?;
+    for tool in ["task_edit", "task_close", "tasks_reorder", "tasks_bulk"] {
+        assert!(
+            !tools.iter().any(|name| name == tool),
+            "a read token gets `{tool}`"
+        );
+    }
+    let (error, said, edited) = remote(
+        &w,
+        &alice,
+        "task_edit",
+        json!({"project": "acme/shop", "number": first.number, "title": "Checkout fix"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(edited["task"]["title"], "Checkout fix", "{edited}");
+    let (error, said, ordered) = remote(
+        &w,
+        &alice,
+        "tasks_reorder",
+        json!({"project": "acme/shop", "numbers": [second.number, first.number]}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(
+        ordered["queue"][0]["number"],
+        json!(second.number),
+        "{ordered}"
+    );
+    assert_eq!(ordered["queue"][1]["title"], "Checkout fix", "{ordered}");
+    let (error, said, stopped) = remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({"project": "acme/shop", "do": "stop", "all": true}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(
+        stopped["done"].as_array().map(Vec::len),
+        Some(2),
+        "{stopped}"
+    );
+    for task in [&first, &second] {
+        let status = w.h.store.task(&task.id).await?.ok_or("task")?.status;
+        assert!(
+            status.is_resting() || status == TaskStatus::Stopping,
+            "#{} is {status:?}",
+            task.number
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-487 TCT-005 (review round 1, F7): a bulk call a person's agent made goes on to its
+/// last task and its audit entry when the client goes away meanwhile (a client timeout during
+/// a long call), as the Superagent's does. The request is dropped as soon as the first task
+/// has the message; every task still gets it, and `remote.tool` records the call.
+#[tokio::test]
+async fn a_bulk_call_whose_client_went_away_still_reaches_every_task() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::task::TaskStatus;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let mut tasks = Vec::new();
+    for i in 0..12 {
+        let id = format!("t-{i}");
+        tasks.push(
+            support::seed_task(&w.h, &id, "s1", "u-alice", TaskStatus::Prepared, None).await?,
+        );
+    }
+    let told = |task: yulius_domain::ids::TaskId| {
+        let w = &w;
+        async move {
+            w.h.store
+                .task(&task)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|task| task.prompt.contains("Freeze"))
+        }
+    };
+    let mut request = Box::pin(remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({"project": "acme/shop", "do": "message", "all": true, "text": "Freeze"}),
+    ));
+    loop {
+        // Each poll lets the call go on a step; the store is read between polls.
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let (error, said, _) = answer?;
+            assert!(!error, "{said}");
+            break;
+        }
+        if told(tasks[0].id.clone()).await {
+            drop(request);
+            break;
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let mut all = true;
+        for task in &tasks {
+            all &= told(task.id.clone()).await;
+        }
+        let audited = audits(&w, "s1")
+            .await?
+            .iter()
+            .any(|(action, _, detail)| action == "remote.tool" && detail.contains("tasks_bulk"));
+        if all && audited {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped call stopped: every task told = {all}, audited = {audited}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
 /// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]

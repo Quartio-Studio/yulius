@@ -245,6 +245,10 @@ the Secrets page's Variables tab, or `yulius vars`.
 | "Run #13 after #12" | `task_update` (a task that has not started) | `yulius remote call task_update '{"number": 13, "after_task": 12}'` |
 | "Get back #13's deleted screenshots" | `attachments_trash` (`restore`, `into`) | `yulius remote call attachments_trash '{"restore": 13, "into": 14}'` |
 | "Pause #12" / "resume it" / "start #13 now" | `task_pause`, `task_unpause`, `task_start_now` | `yulius remote call task_pause '{"number": 12}'` |
+| "Rename #12" / "change what #13 will do" (not started) | `task_edit` | `yulius remote call task_edit '{"number": 13, "prompt": "…"}'` |
+| "Run #14 before #12" (both queued) | `tasks_reorder` | `yulius remote call tasks_reorder '{"numbers": [14, 12]}'` |
+| "Pause all my tasks" / "stop everything" / "tell all tasks …" | `tasks_bulk` | `yulius remote call tasks_bulk '{"do": "pause", "all": true}'` |
+| "Close out #12, it is merged" | `task_close` | `yulius remote call task_close '{"number": 12}'` |
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |
 | "Every night, update the docs" | `automation_create`, `automations_list`, … | `yulius remote call automation_create '{…}'` |
