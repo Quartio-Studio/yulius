@@ -371,6 +371,14 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
             .await
             .err();
     assert!(matches!(refused, Some(AppError::NotFound)), "{refused:?}");
+    let refused =
+        w.h.app
+            .tool_sandbox_request_withdraw(&bobs, &json!({"request": id}))
+            .await
+            .err();
+    assert!(matches!(refused, Some(AppError::NotFound)), "{refused:?}");
+    let theirs = w.h.app.tool_sandbox_requests(&bobs).await?;
+    assert_eq!(theirs["waiting"], json!([]), "{theirs}");
     let approved = answer(&w, &w.alice, "s1", &id, true).await?;
     assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
     let task =
@@ -382,6 +390,36 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
             .ok_or("task")?;
     assert_eq!(task.prompt, "Rewrite it. Keep the logo.");
 
+    // A stop is resolved against the task as it was asked: it is withdrawn and asked again.
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Keep", "prepared": true}),
+    )
+    .await?;
+    let stop = ask_to(
+        &w,
+        CrossAction::Stop,
+        json!({"sandbox": "website", "number": number}),
+    )?
+    .await??;
+    let stop = stop["request"].as_str().ok_or("request")?.to_owned();
+    let refused =
+        w.h.app
+            .tool_sandbox_request_amend(&caller, &json!({"request": stop, "text": "x"}))
+            .await
+            .err();
+    assert!(
+        refused
+            .as_ref()
+            .is_some_and(|err| err.public_message().contains("withdraw")),
+        "{refused:?}"
+    );
+    w.h.app
+        .tool_sandbox_request_withdraw(&caller, &json!({"request": stop}))
+        .await?;
+
     // Withdrawn: gone from the panel, nothing created, the outcome kept nowhere but the audit.
     let second = ask(&w, json!({"sandbox": "website", "prompt": "Another"}))?.await??;
     let other = second["request"].as_str().ok_or("request")?.to_owned();
@@ -389,7 +427,11 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
         .tool_sandbox_request_withdraw(&caller, &json!({"request": other}))
         .await?;
     waiting(&w, 0).await?;
-    assert_eq!(task_count(&w, "s2").await?, 1);
+    assert_eq!(
+        task_count(&w, "s2").await?,
+        2,
+        "the amended one and the one kept"
+    );
     let gone = answer(&w, &w.alice, "s1", &other, true).await?;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
     assert!(
