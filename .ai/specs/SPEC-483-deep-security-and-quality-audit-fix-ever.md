@@ -740,8 +740,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   works, only such a one is asked for its usage or its e-mail address by the background
   rounds, and a usage reading that arrives for any other stores its figures and leaves
   its status and its reason. Every other status ends with a sign-in that succeeds, and
-  with nothing else. The administration page offers a reading for the same subscriptions
-  and a sign-in for the others.
+  with nothing else. The web UI has the same rule once (`works` and `needsSignIn` in
+  `usage.js`): the administration page offers and makes a reading for the subscriptions
+  that work and offers a sign-in for the others, and the pool's panel and the "run on"
+  menu call the others "needs a new sign-in".
 
 ## Plan
 
@@ -1187,6 +1189,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-105** A subscription with a credential that reads `error`, and one that reads
   `relogin`: a background usage round stores nothing for it; a reading an administrator
   asks for answers 200 with the status unchanged, stores the usage and keeps the reason.
+- **AC-106** With one subscription that works and has no address yet, one in `error` and
+  one in `relogin`, a background round stores the first one's address and asks Claude
+  nothing about the two others.
+- **AC-107** On the Subscriptions page with every subscription but one in `error`,
+  "Refresh all" says "Usage read again for 1 subscription." and one request was made.
 
 ## Test plan
 
@@ -1381,8 +1388,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   host that finds every run ended.
 - Slice 18: `yulius` `accounts::a_failed_sign_in_leaves_a_refused_subscription_needing_one`
   (AC-104, through the sign-in's own terminal with a scripted host) and
-  `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105); the
-  existing `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
+  `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105);
+  `account_email::the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in`
+  (AC-106); e2e `subscriptions.e2e.ts` "a subscription in error is asked for no usage
+  reading" (AC-107); the existing
+  `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
   keeps the two other cases of SGN-001.
 
 ## Decisions
