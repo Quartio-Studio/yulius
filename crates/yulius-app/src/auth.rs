@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeGuest, MeUser};
+use yulius_contracts::api::auth::{
+    DevicePoll, DeviceStart, DeviceStatus, InstanceInfo, Me, MeGuest, MeUser,
+};
 use yulius_domain::ids::UserId;
 use yulius_domain::permission::TokenScope;
 use yulius_domain::time::Timestamp;
@@ -759,7 +761,7 @@ impl App {
             verification_url: format!("{}/device?code={user_code}", self.config.public_url),
             user_code,
             interval_s: 3,
-            expires_in_s: u32::try_from(DEVICE_TTL_MS / 1000).unwrap_or(600),
+            expires_in_s: u64::try_from(DEVICE_TTL_MS / 1000).unwrap_or(600),
         })
     }
 
@@ -827,40 +829,32 @@ impl App {
     /// # Errors
     /// Store or crypto failures.
     pub async fn device_poll(&self, device_code: &str) -> AppResult<DevicePoll> {
+        let expired = DevicePoll {
+            status: DeviceStatus::Expired,
+            token: None,
+        };
         let hash = self.deps.crypto.sha256_hex(device_code.as_bytes());
         let Some(grant) = self.deps.store.device_grant_by_device(&hash).await? else {
-            return Ok(DevicePoll {
-                status: "expired".into(),
-                token: None,
-            });
+            return Ok(expired);
         };
         if grant.status == "pending" && grant.expires_at <= self.now() {
-            return Ok(DevicePoll {
-                status: "expired".into(),
-                token: None,
-            });
+            return Ok(expired);
         }
-        match (grant.status.as_str(), grant.token) {
-            ("approved", Some(sealed)) => {
+        let status = device_status(&grant.status);
+        match (status, grant.token) {
+            (DeviceStatus::Approved, Some(sealed)) => {
                 if !self.deps.store.consume_device_grant(&hash).await? {
-                    return Ok(DevicePoll {
-                        status: "expired".into(),
-                        token: None,
-                    });
+                    return Ok(expired);
                 }
                 let token = String::from_utf8(self.deps.crypto.open(&sealed)?)
                     .map_err(AppError::internal)?;
                 Ok(DevicePoll {
-                    status: "approved".into(),
+                    status,
                     token: Some(token),
                 })
             }
-            ("consumed", _) => Ok(DevicePoll {
-                status: "expired".into(),
-                token: None,
-            }),
             (status, _) => Ok(DevicePoll {
-                status: status.to_owned(),
+                status,
                 token: None,
             }),
         }
@@ -964,9 +958,39 @@ pub fn rfc3339(ts: Timestamp) -> String {
     )
 }
 
+/// A stored device grant's state as the CLI reads it: `consumed` (its token was taken) and any
+/// state the CLI does not know are expired.
+fn device_status(stored: &str) -> DeviceStatus {
+    match stored {
+        "pending" => DeviceStatus::Pending,
+        "approved" => DeviceStatus::Approved,
+        "denied" => DeviceStatus::Denied,
+        _ => DeviceStatus::Expired,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 32 (QB3): a stored grant's state is said in the CLI's own terms; a state
+    /// the CLI does not know reads as expired, so `yulius login` stops instead of failing to
+    /// read the answer.
+    #[test]
+    fn a_device_grant_is_said_as_the_cli_reads_it() {
+        use yulius_contracts::import::DeviceStatus;
+        assert_eq!(device_status("pending"), DeviceStatus::Pending);
+        assert_eq!(device_status("approved"), DeviceStatus::Approved);
+        assert_eq!(device_status("denied"), DeviceStatus::Denied);
+        assert_eq!(device_status("consumed"), DeviceStatus::Expired);
+        assert_eq!(device_status("revoked"), DeviceStatus::Expired);
+        let answer = serde_json::to_string(&yulius_contracts::api::auth::DevicePoll {
+            status: device_status("denied"),
+            token: None,
+        })
+        .unwrap_or_default();
+        assert_eq!(answer, r#"{"status":"denied","token":null}"#);
+    }
 
     #[test]
     fn rfc3339_formats_known_instants() {
