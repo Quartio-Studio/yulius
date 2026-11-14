@@ -98,6 +98,7 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("ci_cancel", Reach::Project, Action::Work),
     ("cd_status", Reach::Project, Action::View),
     ("cd_deploy", Reach::Project, Action::Work),
+    ("cd_rollback", Reach::Project, Action::Work),
     ("project_files", Reach::Project, Action::View),
     ("project_file_read", Reach::Project, Action::View),
     ("project_change", Reach::Project, Action::Work),

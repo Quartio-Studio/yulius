@@ -963,7 +963,7 @@ async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult
     let _ = tokio::time::timeout(
         Duration::ZERO,
         w.h.app
-            .superagent_request_answer(&ctx, "s1", &id, true, None),
+            .superagent_request_answer(&ctx, "s1", &id, true, None, None),
     )
     .await;
     let outcome = tokio::time::timeout(WAIT, call_).await???;
@@ -1698,5 +1698,45 @@ async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() ->
         assert_eq!(rows[0]["outcome"], "failed");
         assert_eq!(rows[0]["action"], "message");
     }
+    Ok(())
+}
+
+/// SPEC-487 REL-005: the Superagent asks to start its project's onboarding; the person's click
+/// on its panel runs the project page's Start onboarding as them (no slug: it releases nothing).
+#[tokio::test]
+async fn onboarding_starts_on_the_persons_click() -> TestResult {
+    let w = world(300).await?;
+    w.h.store
+        .execute_for_tests("UPDATE sandboxes SET onboarding_state = 'pending' WHERE id = 's1'")
+        .await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let asked =
+        w.h.app
+            .tool_sandbox_task_request(&caller, CrossAction::Onboard, &json!({}))
+            .await?;
+    assert_eq!(asked["outcome"], "waiting", "{asked}");
+    let listed = waiting(&w, 1).await?;
+    assert_eq!(listed[0]["action"], "onboard", "{listed:?}");
+    let id = listed[0]["id"].as_str().ok_or("id")?.to_owned();
+    // It ran Start onboarding as alice: this harness has no Git, so the start's own answer is
+    // that refusal, passed on and kept (a start that runs is the onboarding tests').
+    let approved = answer(&w, &w.alice, "s1", &id, true).await?;
+    assert_eq!(
+        approved.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        approved.body
+    );
+    assert!(
+        approved.body.to_string().contains("git is not available"),
+        "{:?}",
+        approved.body
+    );
+    let mine = w.h.app.tool_sandbox_requests(&caller).await?;
+    assert_eq!(
+        mine["answered"][0]["outcome"]["outcome"], "failed",
+        "{mine}"
+    );
+    assert_eq!(mine["answered"][0]["action"], "onboard", "{mine}");
     Ok(())
 }

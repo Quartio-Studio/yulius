@@ -139,6 +139,15 @@ pub enum CrossAction {
     /// `person_ask`: a decision the Superagent leaves for its person, in its own sandbox
     /// (SPEC-487 XRQ-005); approved is yes, declined is no, and nothing runs.
     Ask,
+    /// `cd_deploy` of a production-stage environment (SPEC-487 REL-001): approved with the
+    /// project's slug typed, it runs the CD page's deploy as the person.
+    Deploy,
+    /// `cd_rollback` of a production-stage environment, as the CD page's rollback.
+    Rollback,
+    /// `promote`: the CD page's promotion to the production branch.
+    Promote,
+    /// `onboarding_start`: the project page's Start onboarding (REL-005), approved by a click.
+    Onboard,
 }
 
 impl CrossAction {
@@ -149,7 +158,24 @@ impl CrossAction {
             Self::Message => "message",
             Self::Stop => "stop",
             Self::Ask => "ask",
+            Self::Deploy => "deploy",
+            Self::Rollback => "rollback",
+            Self::Promote => "promote",
+            Self::Onboard => "onboard",
         }
+    }
+
+    /// Asked of the Superagent's own sandbox, on its own panel (not another sandbox's).
+    pub(crate) fn own_sandbox(self) -> bool {
+        matches!(
+            self,
+            Self::Ask | Self::Deploy | Self::Rollback | Self::Promote | Self::Onboard
+        )
+    }
+
+    /// A production release: approved only with the project's slug typed (REL-001).
+    pub(crate) fn typed(self) -> bool {
+        matches!(self, Self::Deploy | Self::Rollback | Self::Promote)
     }
 
     fn parse(name: &str) -> Option<Self> {
@@ -159,18 +185,26 @@ impl CrossAction {
             "message" => Self::Message,
             "stop" => Self::Stop,
             "ask" => Self::Ask,
+            "deploy" => Self::Deploy,
+            "rollback" => Self::Rollback,
+            "promote" => Self::Promote,
+            "onboard" => Self::Onboard,
             _ => return None,
         })
     }
 
     /// The tool that does it in the caller's own sandbox.
-    fn own_tool(self) -> &'static str {
+    pub(crate) fn own_tool(self) -> &'static str {
         match self {
             Self::Create => "task_create",
             Self::Update => "task_update",
             Self::Message => "task_message",
             Self::Stop => "task_stop",
             Self::Ask => "person_ask",
+            Self::Deploy => "cd_deploy",
+            Self::Rollback => "cd_rollback",
+            Self::Promote => "promote",
+            Self::Onboard => "onboarding_start",
         }
     }
 
@@ -182,6 +216,10 @@ impl CrossAction {
             Self::Message => "nothing was sent",
             Self::Stop => "the task was not stopped",
             Self::Ask => "the person said no",
+            Self::Deploy => "nothing was deployed",
+            Self::Rollback => "nothing was rolled back",
+            Self::Promote => "nothing was promoted",
+            Self::Onboard => "onboarding did not start",
         }
     }
 
@@ -190,7 +228,10 @@ impl CrossAction {
         match self {
             Self::Create => &OPTIONS,
             Self::Update => &UPDATE_OPTIONS,
-            Self::Message | Self::Stop | Self::Ask => &[],
+            Self::Deploy => &["environment", "expect"],
+            Self::Rollback => &["environment", "release", "part"],
+            Self::Promote => &[],
+            Self::Message | Self::Stop | Self::Ask | Self::Onboard => &[],
         }
     }
 }
@@ -646,9 +687,13 @@ impl App {
                 }
                 String::new()
             }
+            CrossAction::Deploy
+            | CrossAction::Rollback
+            | CrossAction::Promote
+            | CrossAction::Onboard => String::new(),
         };
         check_visible(args)?;
-        let (user, target) = if action == CrossAction::Ask {
+        let (user, target) = if action.own_sandbox() {
             // A decision of the Superagent's own: on its own panel, about its own sandbox.
             let user = self.manage_authority(caller).await?;
             let own = self
@@ -657,6 +702,10 @@ impl App {
                 .sandbox(&caller.sandbox)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            // A release is checked as the CD page checks it, before anyone is asked (REL-002).
+            if action != CrossAction::Ask {
+                self.checked_release(&user, &own, action, args).await?;
+            }
             (user, own)
         } else {
             self.cross_target(caller, &reference, action.own_tool())
@@ -664,7 +713,7 @@ impl App {
         };
         let mut task_args = without_sandbox(args);
         let mut starts_now = false;
-        let task = if matches!(action, CrossAction::Create | CrossAction::Ask) {
+        let task = if action == CrossAction::Create || action.own_sandbox() {
             None
         } else {
             let there = pinned(caller, &target);
@@ -779,6 +828,7 @@ impl App {
                     let text = match w.action {
                         CrossAction::Message => w.args.get("text"),
                         CrossAction::Ask => w.args.get("question"),
+                        CrossAction::Onboard => w.args.get("notes"),
                         _ => w.args.get("prompt"),
                     };
                     let view = json!({
@@ -830,6 +880,7 @@ impl App {
         id: &str,
         approve: bool,
         revision: Option<u32>,
+        confirm: Option<&str>,
     ) -> AppResult<Value> {
         if !ctx.is_browser() {
             return Err(AppError::Forbidden(
@@ -848,6 +899,17 @@ impl App {
                                 .into(),
                         ));
                     }
+                    // A production release takes the project's slug typed, as the CD page
+                    // does; a mistyped one leaves the request waiting (REL-001).
+                    if approve
+                        && w.action.typed()
+                        && confirm.map(str::trim) != Some(w.target.slug.as_str())
+                    {
+                        return Err(AppError::Invalid(format!(
+                            "type the project's slug `{}` to confirm",
+                            w.target.slug
+                        )));
+                    }
                     waiting.remove(id)
                 }
                 _ => None,
@@ -860,12 +922,18 @@ impl App {
         // Taken, it is answered to the end even if this request is cancelled (the person's page
         // went away): the waiting call gets the outcome either way.
         let app = Arc::clone(self);
-        tokio::spawn(async move { app.answer_taken(request, approve).await })
+        let person = ctx.clone();
+        tokio::spawn(async move { app.answer_taken(request, approve, person).await })
             .await
             .map_err(AppError::internal)?
     }
 
-    async fn answer_taken(self: Arc<Self>, request: Waiting, approve: bool) -> AppResult<Value> {
+    async fn answer_taken(
+        self: Arc<Self>,
+        request: Waiting,
+        approve: bool,
+        person: AuthContext,
+    ) -> AppResult<Value> {
         self.announce_cross_requests(&request.user, &request.source);
         let caller = ProjectCaller {
             sandbox: request.target.id.clone(),
@@ -880,7 +948,12 @@ impl App {
             ..caller.clone()
         };
         let (outcome, answer) = if approve {
-            let done = self.run_approved(&caller, &request).await;
+            let done = if request.action.own_sandbox() && request.action != CrossAction::Ask {
+                self.run_release(&person, &request.target, request.action, &request.args)
+                    .await
+            } else {
+                self.run_approved(&caller, &request).await
+            };
             let audited = if done.is_ok() { "approved" } else { "failed" };
             (audited, done)
         } else if request.action == CrossAction::Ask {
@@ -1010,6 +1083,14 @@ impl App {
                     "answer": "yes",
                     "note": "The person answered yes.",
                 }));
+            }
+            CrossAction::Deploy
+            | CrossAction::Rollback
+            | CrossAction::Promote
+            | CrossAction::Onboard => {
+                return Err(AppError::internal(
+                    "a release runs as the person who answered",
+                ));
             }
         };
         let mut outcome = json!({
@@ -1374,7 +1455,12 @@ impl App {
                     )));
                 }
             }
-            CrossAction::Update | CrossAction::Stop => {
+            CrossAction::Update
+            | CrossAction::Stop
+            | CrossAction::Deploy
+            | CrossAction::Rollback
+            | CrossAction::Promote
+            | CrossAction::Onboard => {
                 return Err(AppError::Invalid(
                     "a change of a task's start or a stop is not amended: withdraw it \
                      (sandbox_request_withdraw) and ask again"

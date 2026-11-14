@@ -1041,3 +1041,220 @@ async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     Ok(())
 }
+
+/// Bob's (an administrator's) or alice's (a writer's) Superagent in `app`.
+fn superagent(user: &str, login: &str) -> BoxResult<yulius_app::coordination::ProjectCaller> {
+    Ok(yulius_app::coordination::ProjectCaller {
+        sandbox: yulius_domain::ids::SandboxId::parse("s1")?,
+        user: yulius_domain::ids::UserId::parse(user)?,
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: format!("cockpit:{login}"),
+        detail: json!({"via": "cockpit", "shell": format!("sh-{login}")}),
+    })
+}
+
+impl Fixture {
+    /// The Superagent `caller` asks for `action` with `args`; its call waits for the person.
+    fn ask_release(
+        &self,
+        caller: &yulius_app::coordination::ProjectCaller,
+        action: yulius_app::cross_sandbox::CrossAction,
+        args: Value,
+    ) -> tokio::task::JoinHandle<yulius_app::error::AppResult<Value>> {
+        let (app, caller) = (self.h.app.clone(), caller.clone());
+        tokio::spawn(async move { app.tool_sandbox_task_request(&caller, action, &args).await })
+    }
+
+    /// `who`'s waiting requests on their Superagent's panel, once there are `count`.
+    async fn panel(&self, who: &Creds, count: usize) -> BoxResult<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let listed = call(
+                &self.h.router,
+                Method::GET,
+                "/api/sandboxes/s1/superagent/requests",
+                None,
+                who,
+            )
+            .await?;
+            let items = listed.body.as_array().cloned().unwrap_or_default();
+            if items.len() == count {
+                return Ok(items);
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("{count} requests never waited: {}", listed.body).into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Bob answers request `id` as from his browser: `confirm` is the slug he typed.
+    async fn answer(
+        &self,
+        id: &Value,
+        confirm: Option<&str>,
+    ) -> BoxResult<yulius_app::error::AppResult<Value>> {
+        use yulius_app::ports::store::UserStore as _;
+        let bob = yulius_domain::ids::UserId::parse("u-bob")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: self.h.store.user(&bob).await?.ok_or("bob")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let id = id.as_str().ok_or("id")?;
+        Ok(self
+            .h
+            .app
+            .superagent_request_answer(&ctx, "s1", id, true, None, confirm)
+            .await)
+    }
+}
+
+/// SPEC-487 REL-001 to REL-004 (wall 4, the person's decision of 2026-11-13): the Superagent's
+/// production deploy, rollback and promotion wait on its panel; the person approves each by
+/// typing the project's slug, and the CD page's own functions then run as that person. A slug
+/// mistyped refuses the click and keeps the request; what the person may not do is refused
+/// before anyone is asked.
+#[tokio::test]
+async fn the_superagent_releases_production_once_its_person_types_the_slug() -> TestResult {
+    use yulius_app::cross_sandbox::CrossAction;
+    use yulius_app::error::AppError;
+    use yulius_app::ports::store::AuditStore as _;
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    f.drill(1).await?;
+    let bobs = superagent("u-bob", "bob")?;
+    let alices = superagent("u-alice", "alice")?;
+
+    // Which environments wait for the person: production-stage ones (REL-003).
+    assert!(f.h.app.superagent_production(&bobs, "prod").await?);
+    assert!(f.h.app.superagent_production(&bobs, "production").await?);
+    assert!(!f.h.app.superagent_production(&bobs, "dev").await?);
+
+    // Refused before anyone is asked (REL-002).
+    let refusals = [
+        (
+            &alices,
+            CrossAction::Deploy,
+            json!({"environment": "prod"}),
+            "administrator",
+        ),
+        (
+            &bobs,
+            CrossAction::Deploy,
+            json!({"environment": "dev"}),
+            "cd_deploy",
+        ),
+        (
+            &bobs,
+            CrossAction::Deploy,
+            json!({"environment": "nope"}),
+            "nope",
+        ),
+        (
+            &bobs,
+            CrossAction::Rollback,
+            json!({"environment": "dev"}),
+            "cd_rollback",
+        ),
+        (&alices, CrossAction::Promote, json!({}), "administrator"),
+        (
+            &bobs,
+            CrossAction::Deploy,
+            json!({"environment": "prod", "x": 1}),
+            "unknown",
+        ),
+        (&bobs, CrossAction::Onboard, json!({}), "nothing to start"),
+    ];
+    for (caller, action, args, why) in refusals {
+        let refused = f.ask_release(caller, action, args.clone()).await?.err();
+        let said = refused.as_ref().map(AppError::public_message);
+        assert!(
+            said.as_deref().is_some_and(|s| s.contains(why)),
+            "{args}: {said:?}"
+        );
+    }
+    f.panel(&f.bob, 0).await?;
+
+    // A production deploy: the card names it; a slug mistyped keeps it waiting.
+    let deploying = f.ask_release(&bobs, CrossAction::Deploy, json!({"environment": "prod"}));
+    let card = f.panel(&f.bob, 1).await?.remove(0);
+    assert_eq!(card["action"], "deploy", "{card}");
+    assert_eq!(card["options"]["environment"], "prod", "{card}");
+    assert_eq!(card["sandbox"]["slug"], "app", "{card}");
+    f.panel(&f.alice, 0).await?;
+    let main = f.head("main")?;
+    for typed in [None, Some("apps")] {
+        let refused = f.answer(&card["id"], typed).await?.err();
+        let said = refused.as_ref().map(AppError::public_message);
+        let expected = "type the project's slug `app`";
+        assert!(
+            said.as_deref().is_some_and(|s| s.contains(expected)),
+            "{typed:?}: {said:?}"
+        );
+    }
+    f.panel(&f.bob, 1).await?;
+    assert_eq!(f.head("main")?, main, "nothing was released");
+    let approved = f.answer(&card["id"], Some(" app ")).await??;
+    assert_eq!(approved["outcome"], "approved", "{approved}");
+    let outcome = tokio::time::timeout(Duration::from_secs(10), deploying).await???;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    let run = f.production_run(1).await?;
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    assert_eq!(f.mark("prod")?, "v2");
+
+    // A second release, then a production rollback through the panel (REL-001).
+    push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    f.drill(2).await?;
+    f.deployed(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(f.mark("prod")?, "v3");
+    let main = f.head("main")?;
+    let rolling = f.ask_release(&bobs, CrossAction::Rollback, json!({"environment": "prod"}));
+    let card = f.panel(&f.bob, 1).await?.remove(0);
+    assert_eq!(card["action"], "rollback", "{card}");
+    f.answer(&card["id"], Some("app")).await??;
+    let outcome = tokio::time::timeout(Duration::from_secs(10), rolling).await???;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    let run = f
+        .ended(outcome["run"]["run_id"].as_str().ok_or("run")?)
+        .await?;
+    assert_eq!(run["kind"], "rollback", "{run}");
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    assert_eq!(f.mark("prod")?, "v2");
+    assert_eq!(f.head("main")?, main, "a rollback never promotes");
+
+    // A promotion runs the CD page's: here nothing is left to promote, which is its answer.
+    let promoting = f.ask_release(&bobs, CrossAction::Promote, json!({}));
+    let card = f.panel(&f.bob, 1).await?.remove(0);
+    assert_eq!(card["action"], "promote", "{card}");
+    let answered = f.answer(&card["id"], Some("app")).await?;
+    let called = tokio::time::timeout(Duration::from_secs(10), promoting).await??;
+    for refusal in [answered, called] {
+        let said = refusal.as_ref().err().map(AppError::public_message);
+        assert!(
+            said.as_deref()
+                .is_some_and(|s| s.contains("nothing to promote")),
+            "the promotion's own refusal: {said:?}"
+        );
+    }
+
+    // Each answer is audited with the Superagent's action, never a typed slug.
+    let rows =
+        f.h.store
+            .audit_details("s1", "superagent.cross_task", 20)
+            .await?;
+    for action in ["deploy", "rollback", "promote"] {
+        let named = format!("\"action\":\"{action}\"");
+        assert!(
+            rows.iter().any(|row| row.contains(&named)),
+            "{action}: {rows:?}"
+        );
+    }
+    Ok(())
+}
