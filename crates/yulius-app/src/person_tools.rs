@@ -25,6 +25,7 @@ use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::task_edit::{BulkAction, EditTask};
 
 /// Every person's project tool and the action it needs on the project.
 pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
@@ -33,6 +34,10 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_pause", Action::Work),
     ("task_unpause", Action::Work),
     ("task_start_now", Action::Work),
+    ("task_edit", Action::Work),
+    ("task_close", Action::Work),
+    ("tasks_reorder", Action::Work),
+    ("tasks_bulk", Action::Work),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -113,11 +118,28 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
     };
     let mut about = serde_json::Map::new();
     match name {
-        "task_restart" | "task_pause" | "task_unpause" | "task_start_now" => {
+        "task_restart" | "task_pause" | "task_unpause" | "task_start_now" | "task_edit"
+        | "task_close" => {
             if let Some(number) = args.get("number").and_then(Value::as_u64) {
                 about.insert("task".into(), json!(number));
             } else if let Some(task) = id("task_id") {
                 about.insert("task".into(), json!(task));
+            }
+        }
+        // The tasks a call names (a bounded list of numbers, or all), and what it does to them.
+        "tasks_reorder" | "tasks_bulk" => {
+            if let Ok(numbers) = crate::task_edit::numbers_arg(args.get("numbers"), "numbers") {
+                about.insert("tasks".into(), json!(numbers));
+            } else if name == "tasks_bulk" && args.get("all") == Some(&Value::Bool(true)) {
+                about.insert("tasks".into(), json!("all"));
+            }
+            if let Some(action) = args
+                .get("do")
+                .and_then(Value::as_str)
+                .and_then(BulkAction::parse)
+                .filter(|_| name == "tasks_bulk")
+            {
+                about.insert("do".into(), json!(action.as_str()));
             }
         }
         "ci_rerun" | "ci_cancel" => {
@@ -213,8 +235,42 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         tool(
             "task_start_now",
             "Start now a task that waits (prepared, scheduled, after another task or on a start rule), as Start now in the web UI, whatever it waited for.",
+            task_ref.clone(),
+            &[],
+        ),
+        tool(
+            "task_edit",
+            "Rename a task, replace the request of one that has not started, or both. title: the task's name in Yulius, 1 to 120 characters on one line (its branch and pull request keep theirs). prompt: the whole new request of a task that has not started yet (queued, chained, prepared or waiting, and never ran); it replaces the old one, so write it complete (task_get shows the first 4000 characters of the old one; previous_prompt in the answer is all of it). Files attached to the old request stay attached: those the new text does not mention follow it. Use it instead of deleting a task and creating it again. A task that has started keeps its request: tell it what changed with task_message. The task's owner only.",
+            {
+                let mut properties = task_ref.clone();
+                properties["title"] = json!({"type": "string", "description": "The new title"});
+                properties["prompt"] = json!({"type": "string", "description": "The whole new request (a task that has not started)"});
+                properties
+            },
+            &[],
+        ),
+        tool(
+            "task_close",
+            "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan or pull request say. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. A task that is working is not closed: wait for its turn's end or interrupt it with task_stop. The task's owner only.",
             task_ref,
             &[],
+        ),
+        tool(
+            "tasks_reorder",
+            "Put the person's queued tasks in the order they ask for (\"run #14 before #12\"): numbers lists them in the order they should start. They take the places they hold among themselves and every other task keeps its place, so nobody else's task moves. Only tasks that are queued (waiting for a free session) have a place; how a chained or prepared task starts is changed with task_update. Refused, and nothing changes, when one of them is not queued or is another person's. Answers the project's queue in order.",
+            json!({"numbers": {"type": "array", "items": {"type": "integer"}, "description": "2 to 100 numbers of queued tasks, first to start first"}}),
+            &["numbers"],
+        ),
+        tool(
+            "tasks_bulk",
+            "One action on several tasks in one call: do is stop (as task_stop: a waiting task is cancelled, a running one interrupted), pause (as task_pause: frozen where it is, nothing lost), unpause, or message (as task_message, the same text to each). Name the tasks with numbers, or pass all: true for every task of the person's own that the action applies to: stop, all that have not ended; pause, all that run; unpause, all a person paused; message, all that run or have not started. Use it for \"pause all tasks\", \"stop everything\", \"tell all tasks ...\": never one call per task, and never a message asking tasks to wait when pause is meant. Each task gets what the single tool does; the answer lists done and refused (with the reason for each), and with all how many tasks of other people were left alone (others_left_alone). At most 100 tasks a call.",
+            json!({
+                "do": {"type": "string", "enum": ["stop", "pause", "unpause", "message"]},
+                "numbers": {"type": "array", "items": {"type": "integer"}, "description": "1 to 100 task numbers"},
+                "all": {"type": "boolean", "description": "true: every task of the person's own that the action applies to (instead of numbers)"},
+                "text": {"type": "string", "description": "The message, for do: message (at most 64 KiB)"}
+            }),
+            &["do"],
         ),
         tool(
             "ci_runs",
@@ -307,6 +363,79 @@ impl App {
                     _ => self.start_chained_now(ctx, id).await?,
                 };
                 Ok(json!({"task": record(&summary)?}))
+            }
+            "task_edit" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let text = |key: &str| match args.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(text)) => Ok(Some(text.clone())),
+                    Some(_) => Err(AppError::Invalid(format!("`{key}` must be text"))),
+                };
+                let edit = EditTask {
+                    title: text("title")?,
+                    prompt: text("prompt")?,
+                };
+                let edited = self.edit_task(ctx, task.id.as_str(), &edit).await?;
+                let mut brief = self.task_brief(&edited.task).await?;
+                brief["prompt"] = json!(edited.task.prompt.chars().take(4000).collect::<String>());
+                let mut answer = json!({"task": brief});
+                if let Some(previous) = edited.previous_prompt {
+                    answer["previous_prompt"] = json!(previous);
+                }
+                Ok(answer)
+            }
+            "task_close" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let summary = self.close_task_for_person(ctx, task.id.as_str()).await?;
+                Ok(json!({
+                    "task": record(&summary)?,
+                    "note": "Its session is ending; the task is closed once it is gone. task_restart continues it.",
+                }))
+            }
+            "tasks_reorder" => {
+                let numbers = crate::task_edit::numbers_arg(args.get("numbers"), "numbers")?;
+                let queue = self.reorder_queue(ctx, &sandbox.id, &numbers).await?;
+                let mut listed = Vec::with_capacity(queue.len());
+                for task in &queue {
+                    listed.push(json!({
+                        "number": task.number,
+                        "title": task.title,
+                        "owner": self.login_of(&task.owner).await,
+                    }));
+                }
+                Ok(json!({"queue": listed}))
+            }
+            "tasks_bulk" => {
+                let action = args
+                    .get("do")
+                    .and_then(Value::as_str)
+                    .and_then(BulkAction::parse)
+                    .ok_or_else(|| {
+                        AppError::Invalid("`do` is stop, pause, unpause or message".into())
+                    })?;
+                let all = match args.get("all") {
+                    None | Some(Value::Null) => false,
+                    Some(Value::Bool(all)) => *all,
+                    Some(_) => return Err(AppError::Invalid("`all` must be true or false".into())),
+                };
+                let numbers = match args.get("numbers") {
+                    None | Some(Value::Null) => None,
+                    some => Some(crate::task_edit::numbers_arg(some, "numbers")?),
+                };
+                if all == numbers.is_some() {
+                    return Err(AppError::Invalid(
+                        "name the tasks with `numbers` or `all`: true, one of the two".into(),
+                    ));
+                }
+                let text = match action {
+                    BulkAction::Message => Some(
+                        str_arg(args, "text")
+                            .map_err(|_| AppError::Invalid("a message needs its `text`".into()))?,
+                    ),
+                    _ => None,
+                };
+                self.bulk_tasks(ctx, project, action, numbers.as_deref(), text)
+                    .await
             }
             "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
             "ci_run" => record(

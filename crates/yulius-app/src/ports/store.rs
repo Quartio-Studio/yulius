@@ -455,6 +455,23 @@ pub trait TaskStore: Send + Sync {
         max_bytes: usize,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Replaces the prompt of a task that has never started (SPEC-487 TCT-002), under the rule
+    /// of [`Self::append_unstarted_prompt`] and only while the prompt is still `expected`: one
+    /// statement, so a start either follows it (and reads the new prompt) or makes it fail, and
+    /// a message queued into the request meanwhile is never overwritten. Returns whether it
+    /// replaced.
+    async fn replace_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        expected: &str,
+        prompt: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Gives the queued tasks `order` the queue places they hold among themselves, in that
+    /// order (SPEC-487 TCT-003): the earliest place to the first. One transaction; nothing
+    /// changes and false is returned unless every one of them is `queued`. A task's stored
+    /// start (`queued_start`) keeps naming its place.
+    async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool>;
     /// Appends `addition` to the prompt of a task created resting that never ran (SPEC-256
     /// LOB-005: the onboarding task before Start onboarding): it is `closed` with no attempt and no
     /// provider session, the prompt does not hold `addition` already, and it stays within

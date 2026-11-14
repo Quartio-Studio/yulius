@@ -97,6 +97,10 @@ pub(crate) enum Sender {
     /// A person, through their Superagent or their own agent: the refusal is their answer
     /// (DRF-004).
     Person,
+    /// The task's owner, who said to send past what they left in the prompt box (SPEC-487
+    /// TCT-006): the message is typed behind their possible draft and both are submitted as
+    /// one prompt. A person typing right now is still not typed over.
+    OwnerPastDraft,
     /// Yulius itself (a pull request's news, the wake after an outage, the MCP watch): the
     /// message waits in its watch, and the session's person is told once their last keystroke
     /// is ten minutes old (DRF-005, DRF-006).
@@ -110,7 +114,7 @@ impl Sender {
     /// Whether the session's person is told that the message waits for their possible draft.
     fn tells_person(self, held: BoxHeld) -> bool {
         match self {
-            Self::Person => false,
+            Self::Person | Self::OwnerPastDraft => false,
             Self::Yulius => held.tells_person(),
             Self::YuliusLastTry => matches!(held, BoxHeld::Draft { .. }),
         }
@@ -187,9 +191,33 @@ impl App {
                 MAX_MESSAGE_BYTES / 1024
             )));
         }
+        // The owner alone decides that a message goes out together with what they left in
+        // their task's prompt box (SPEC-487 TCT-006).
+        let with_draft = match args.get("with_draft") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(with_draft)) => *with_draft,
+            Some(_) => {
+                return Err(AppError::Invalid(
+                    "`with_draft` must be true or false".into(),
+                ));
+            }
+        };
+        if with_draft && caller.user != task.owner {
+            return Err(AppError::Forbidden(format!(
+                "task #{} is @{}'s: only its owner sends a message past what they left in its \
+                 prompt box",
+                task.number,
+                self.login_of(&task.owner).await
+            )));
+        }
         let delivered = if task.status == TaskStatus::Running {
             let login = self.login_of(&caller.user).await;
-            self.type_task_message(&task, &login, caller.channel, &text)
+            let from = if with_draft {
+                Sender::OwnerPastDraft
+            } else {
+                Sender::Person
+            };
+            self.type_task_message(&task, &login, caller.channel, &text, from)
                 .await?;
             "sent"
         } else if !self.task_started(&task).await? {
@@ -204,10 +232,14 @@ impl App {
                 not_now_advice(task.status)
             )));
         };
-        let named = json!({
+        let past_draft = with_draft && delivered == "sent";
+        let mut named = json!({
             "task": format!("#{} {}", task.number, task.title),
             "delivered": delivered,
         });
+        if past_draft {
+            named["with_draft"] = json!(true);
+        }
         // The message went out: a failed audit write is logged, not reported as a failed call
         // (which would invite sending it twice).
         if let Err(err) = self
@@ -226,6 +258,10 @@ impl App {
         }
         tracing::info!(task = %task.id, actor = %caller.actor, delivered, "task messaged by a tool");
         let note = match delivered {
+            "sent" if past_draft => {
+                "Typed into the task's session behind whatever its person had left in the \
+                 prompt box: both were submitted as one prompt, and the box is empty again."
+            }
             "sent" => "Typed into the task's session: its agent reads it as soon as it can.",
             _ => "Added to the task's request: its agent reads it when the task starts.",
         };
@@ -249,9 +285,10 @@ impl App {
         login: &str,
         channel: Channel,
         text: &str,
+        from: Sender,
     ) -> AppResult<()> {
         let paste = message_paste(login, channel, text);
-        self.type_into_session(task, &paste, Typed::Prompt, Sender::Person)
+        self.type_into_session(task, &paste, Typed::Prompt, from)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
         // asked them is answered.
@@ -325,6 +362,18 @@ impl App {
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
         match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
+            // Its owner sends past their own text, once they are no longer typing it: it
+            // goes out with the message.
+            Some(BoxHeld::Draft { typed_ms_ago })
+                if from == Sender::OwnerPastDraft
+                    && typed_ms_ago > yulius_domain::intake::TYPED_WINDOW_MS => {}
+            Some(BoxHeld::Draft { .. }) if from == Sender::OwnerPastDraft => {
+                return Err(AppError::Conflict(format!(
+                    "a person typed into task #{}'s terminal in the last minute: try again in \
+                     a minute, or tell the person",
+                    task.number
+                )));
+            }
             Some(held @ BoxHeld::Draft { .. }) => {
                 if from.tells_person(held) {
                     self.tell_of_held_message(task, typed).await;
@@ -333,7 +382,8 @@ impl App {
                     "a person typed into task #{}'s terminal and sent no prompt since, so \
                      their text may still be in its prompt box and nothing is typed behind it: \
                      tell the person to send it, or to clear it and send any prompt, then try \
-                     again",
+                     again (when the task's owner says to send past it: task_message with \
+                     with_draft)",
                     task.number
                 )));
             }

@@ -522,7 +522,8 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         let why = format!(
             "a person typed into task #{}'s terminal and sent no prompt since, so their text may \
              still be in its prompt box and nothing is typed behind it: tell the person to send \
-             it, or to clear it and send any prompt, then try again",
+             it, or to clear it and send any prompt, then try again (when the task's owner says \
+             to send past it: task_message with with_draft)",
             app.deps.store.task(&id).await?.ok_or("task")?.number
         );
         assert!(
@@ -566,6 +567,158 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// SPEC-487 TCT-006 (wall 2: "no clearing of a queue blocked by unsent terminal text"): the
+/// task's owner tells their Superagent to send past what they left in the prompt box. With
+/// `with_draft` the message is typed behind it and both are submitted as one prompt, which
+/// empties the box, so Yulius's own messages go on. Without it the message is refused as
+/// before; another person's Superagent cannot send past the owner's text; and a person who is
+/// typing right now is not typed over.
+#[test]
+fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 11 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        // They are at the keyboard: nothing is typed over them, with_draft or not.
+        let past = json!({"task_id": id.as_str(), "text": "Go on", "with_draft": true});
+        let typing = app.tool_task_message(&caller, &past).await.err();
+        assert!(
+            matches!(&typing, Some(AppError::Conflict(why)) if why.contains("in the last minute")),
+            "{typing:?}"
+        );
+        clock.0.store(-9 * MINUTE, Ordering::SeqCst);
+        // Without it: refused, and told how to send past it.
+        let plain = json!({"task_id": id.as_str(), "text": "Go on"});
+        let refused = app.tool_task_message(&caller, &plain).await.err();
+        assert!(
+            matches!(&refused, Some(AppError::Conflict(why)) if why.contains("with_draft")),
+            "{refused:?}"
+        );
+        // The owner alone decides about their text: while the task is someone else's, the
+        // same Superagent cannot send past it.
+        let bob = yulius_app::model::UserRecord {
+            id: UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            github_id: None,
+            display_name: "Bob".into(),
+            avatar_url: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            password_hash: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            disabled_at: None,
+        };
+        let store = &app.deps.store;
+        yulius_app::ports::store::UserStore::insert_user(&**store, &bob).await?;
+        assert!(
+            store
+                .take_control(&id, &caller.user, &bob.id, app.now())
+                .await?
+        );
+        let theirs = app.tool_task_message(&caller, &past).await.err();
+        assert!(
+            matches!(&theirs, Some(AppError::Forbidden(why))
+                if why.contains("@bob") && why.contains("only its owner")),
+            "{theirs:?}"
+        );
+        assert!(
+            store
+                .take_control(&id, &bob.id, &caller.user, app.now())
+                .await?
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!screen(&app, &id).contains("ECHO: half a thought"));
+        assert!(audited(&data, &id)?.is_empty());
+        // `with_draft` must be true or false.
+        let odd = json!({"task_id": id.as_str(), "text": "Go on", "with_draft": "yes"});
+        assert!(matches!(
+            app.tool_task_message(&caller, &odd).await,
+            Err(AppError::Invalid(_))
+        ));
+
+        // The owner's: typed behind their text, one prompt.
+        let answer = app.tool_task_message(&caller, &past).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        assert!(
+            answer["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("prompt box")),
+            "{answer}"
+        );
+        wait_for(
+            "the draft and the message",
+            Duration::from_secs(30),
+            || async { screen(&app, &id).contains("ECHO: half a thoughtMessage from admin") },
+        )
+        .await?;
+        assert_eq!(audited(&data, &id)?.len(), 1);
+        assert!(audited(&data, &id)?[0].1.contains("with_draft"));
+        // The box is empty again: the next plain message is typed, a minute later.
+        clock.0.store(-7 * MINUTE, Ordering::SeqCst);
+        let again = app
+            .tool_task_message(
+                &caller,
+                &json!({"task_id": id.as_str(), "text": "And then"}),
+            )
+            .await?;
+        assert_eq!(again["delivered"], "sent", "{again}");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-487 TCT-004 (wall 2: "set it to done / close out a merged task"): the owner closes a
+/// running task whose agent is idle; its session ends gracefully and the task is `closed`, as
+/// Yulius closes a finished task. Audited under the person's name.
+#[test]
+fn the_owner_closes_out_an_idle_task() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            matches!(activity(&app, &id).await, Some(idle) if idle != Activity::Working)
+        })
+        .await?;
+        let summary = app.close_task_for_person(&ctx, id.as_str()).await?;
+        assert_eq!(summary.id, id.as_str());
+        wait_for("the task to close", Duration::from_secs(30), || async {
+            matches!(
+                app.deps.store.task(&id).await,
+                Ok(Some(task)) if task.status == TaskStatus::Closed
+            )
+        })
+        .await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let closed: i64 = db.query_row(
+            "SELECT count(*) FROM audit_log WHERE action = 'task.closed_by_person' AND target = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(closed, 1);
+        // It has ended: a second close says so.
+        let again = app.close_task_for_person(&ctx, id.as_str()).await.err();
+        assert!(
+            matches!(&again, Some(AppError::Conflict(why)) if why.contains("has ended")),
+            "{again:?}"
+        );
+        Ok(())
+    })
 }
 
 /// SPEC-480 AC2, AC4 (DRF-003, DRF-005, DRF-006, DRF-007): a message of Yulius's own (here the

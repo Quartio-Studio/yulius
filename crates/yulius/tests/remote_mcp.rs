@@ -620,6 +620,90 @@ async fn a_repository_is_imported_and_onboarded_remotely() -> TestResult {
     Ok(())
 }
 
+/// SPEC-487 TCT-001, TCT-003, TCT-005: the person's own agent renames a task, orders the
+/// queue and acts on several tasks with the same tools their Superagent has, and a read token
+/// is served none of them.
+#[tokio::test]
+async fn a_persons_agent_edits_orders_and_stops_tasks_remotely() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::task::TaskStatus;
+    use yulius_domain::time::Timestamp;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    let made = make_token(&w, &browser, "reader", "read").await?;
+    let read = bearer(text(&made["token"]));
+    w.grant("alice", "acme/shop", "admin");
+    let first = support::seed_task(&w.h, "t-q1", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let second =
+        support::seed_task(&w.h, "t-q2", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let base = w.h.app.now().0;
+    for (i, task) in [&first, &second].into_iter().enumerate() {
+        let at = Timestamp(base + i64::try_from(i)? * 1000);
+        w.h.store
+            .transition_task(
+                &task.id,
+                Some(TaskStatus::Queued),
+                TaskStatus::Queued,
+                None,
+                at,
+            )
+            .await?;
+    }
+    let tools = served(&w, &read).await?;
+    for tool in ["task_edit", "task_close", "tasks_reorder", "tasks_bulk"] {
+        assert!(
+            !tools.iter().any(|name| name == tool),
+            "a read token gets `{tool}`"
+        );
+    }
+    let (error, said, edited) = remote(
+        &w,
+        &alice,
+        "task_edit",
+        json!({"project": "acme/shop", "number": first.number, "title": "Checkout fix"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(edited["task"]["title"], "Checkout fix", "{edited}");
+    let (error, said, ordered) = remote(
+        &w,
+        &alice,
+        "tasks_reorder",
+        json!({"project": "acme/shop", "numbers": [second.number, first.number]}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(
+        ordered["queue"][0]["number"],
+        json!(second.number),
+        "{ordered}"
+    );
+    assert_eq!(ordered["queue"][1]["title"], "Checkout fix", "{ordered}");
+    let (error, said, stopped) = remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({"project": "acme/shop", "do": "stop", "all": true}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(
+        stopped["done"].as_array().map(Vec::len),
+        Some(2),
+        "{stopped}"
+    );
+    for task in [&first, &second] {
+        let status = w.h.store.task(&task.id).await?.ok_or("task")?.status;
+        assert!(
+            status.is_resting() || status == TaskStatus::Stopping,
+            "#{} is {status:?}",
+            task.number
+        );
+    }
+    Ok(())
+}
+
 /// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]

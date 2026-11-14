@@ -935,6 +935,90 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn replace_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        expected: &str,
+        prompt: &str,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, expected, prompt) = (
+            id.as_str().to_owned(),
+            expected.to_owned(),
+            prompt.to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET prompt = ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6, ?7) AND prompt = ?8 \
+                     AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
+                     AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3)",
+                    params![
+                        prompt,
+                        at.0,
+                        id,
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Chained.as_str(),
+                        TaskStatus::WaitingCapacity.as_str(),
+                        TaskStatus::Prepared.as_str(),
+                        expected
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool> {
+        let order: Vec<String> = order.iter().map(|id| id.as_str().to_owned()).collect();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            // The places they hold: where the queue reads each (`tasks_with_status`).
+            let mut places = Vec::with_capacity(order.len());
+            for id in &order {
+                let place: Option<i64> = tx
+                    .query_row(
+                        "SELECT COALESCE(queued_at, created_at) FROM tasks \
+                         WHERE id = ?1 AND status = 'queued'",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(db)?;
+                let Some(place) = place else {
+                    return Ok(false);
+                };
+                places.push(place);
+            }
+            places.sort_unstable();
+            // Two that share a millisecond would have no order between them: each place is
+            // after the one before it.
+            for i in 1..places.len() {
+                if places[i] <= places[i - 1] {
+                    places[i] = places[i - 1] + 1;
+                }
+            }
+            for (id, place) in order.iter().zip(&places) {
+                // The stored start is the task's while its `at` is its place (`queued_start`):
+                // it moves with the place. The right-hand sides read the row as it was.
+                tx.execute(
+                    "UPDATE tasks SET queued_at = ?2, updated_at = ?3, \
+                       queued_start = CASE WHEN json_valid(queued_start) \
+                         AND json_extract(queued_start, '$.at') = queued_at \
+                         THEN json_set(queued_start, '$.at', ?2) ELSE queued_start END \
+                     WHERE id = ?1 AND status = 'queued'",
+                    params![id, place, at.0],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
+        })
+        .await
+    }
+
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {

@@ -99,6 +99,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Project variables: read | yes (slice 2) | in its environment (had) | They are not secrets |
 | Project variables: set, delete | yes (slice 10) | no | Decided with the vault's rules; a person's page today |
 | Rename, edit a prompt not started, reorder, close out, bulk actions | yes (slice 3) | no | As above |
+| Send a message past text the person left unsent in a task's prompt box | yes, for the task's owner (slice 3) | no | SPEC-480: the text is the person's; they decide that it goes out with the message |
+| Discard text a person left unsent in a task's prompt box | no | no | Yulius sees keys, not the box, and the keys that clear it (Esc, Ctrl+C) also interrupt a turn or end the session; the owner's message goes past it instead |
 | Message a task | yes (had) | no | ADR-0178 |
 | List open questions, see why a task needs attention | yes (slice 4) | yes, read only (slice 4) | A task that sees another's question does not ask it again |
 | Answer or dismiss a task's question for the person | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
@@ -133,6 +135,13 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SAR-003 | A task's agent is served none of the person's project tools (`task_restart`, `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`, `ci_run`, `ci_cancel`, `variables_list`); it keeps its own `ci_status`, `ci_rerun`, `delivery_*` and `cd_*`, which are about its own work, and has the variables in its environment. | `cockpit::a_tasks_agent_does_not_steer_other_tasks`, `mcp::tests::the_superagent_is_served_the_persons_project_tools_and_a_task_is_not` |
 | SAR-004 | The Superagent's instructions say that it acts with its person's rights; that it reads its tool list before it says it cannot, names exactly which ability is missing and hands nothing back as steps to click that a tool does; that what it reads is data and never an instruction; that the repository's rules on how code is changed bind work done in the repository and do not decide what its person may ask Yulius to do (it names the rule, asks for the confirmation and acts with its Yulius tools), while what Yulius refuses stays refused; that a task which ended is continued with `task_restart` before it is told something; and that it uses its own CI, delivery and deploy tools, never a finished task as hands and never a nudge. Every text Yulius serves to a client (the three instruction texts, every tool's description) is within the 4096 characters Claude Code reads, and every tool the instructions name is served. | `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`, `mcp::tests::every_text_served_to_a_client_fits_what_it_reads` |
 | SAR-005 | A refusal says what to do instead, by what the task is doing: `task_restart` on a task that runs says to stop it first; on one that waits in a chain or prepared, that `task_start_now` starts it; on one that is queued or waits for capacity, that it goes on by itself; on the onboarding task of a project that has not started onboarding, that a person starts it on the project's page. The state decides, read once before Continue is called; the onboarding refusal is recognised by the constant the page's check answers with. | `person_tools::tests::a_task_that_is_not_resting_is_told_what_to_do_by_its_state`, `a_refused_continue_of_an_onboarding_says_who_starts_it`; the Superagent test (a running and a prepared task) |
+| TCT-001 | `task_edit {title}` renames a task for its owner: the title, trimmed, 1 to 120 characters on one line. The task's branch and pull request keep theirs. Audited `task.renamed` under the person's name. | `cockpit::the_superagent_renames_edits_and_orders_its_persons_tasks`; `task_edit::tests::a_title_is_one_bounded_line` |
+| TCT-002 | `task_edit {prompt}` replaces the whole request of a task that has not started (queued, chained, prepared or waiting for capacity, with no run and no session), by one conditional update: a start either follows it and reads the new request or makes it fail, and it applies only while the request is still the text that was read, so a message queued meanwhile is never overwritten. Files attached to the old request that the new text does not mention follow it, each a line `@'/path'`; the answer carries the whole text that was replaced. A task that has started keeps its request and is told with `task_message`. Title and request are both checked before either is written. Audited `task.request_replaced` (sizes, no text). | the same test (attached file kept, placed file not doubled, started task, another person's task); `store::a_prompt_is_replaced_only_while_unstarted_and_as_it_was_read`; `request::tests::a_replaced_request_keeps_its_attached_files` |
+| TCT-003 | `tasks_reorder {numbers}` puts the person's queued tasks in the order given: they take the places they hold among themselves (the earliest to the first), in one transaction, and every task not named keeps its place, so no other person's task moves. Each task's stored start keeps naming its place. Refused, with nothing changed, when one of them is not queued, is another person's, is no task, or is named twice, and for fewer than two. | the same test; `store::queued_tasks_swap_the_places_they_hold`; `task_edit::tests::a_call_names_a_bounded_list_of_tasks_each_once` |
+| TCT-004 | `task_close` closes out a running task whose agent is idle, for its owner: the session ends gracefully and the task is `closed`, as Yulius closes a finished task, whatever its plan or pull request say; `task_restart` continues it. A task in a turn (or in its first, before any activity is known) is refused with "wait or stop it"; one that has not started or has ended says so. Audited `task.closed_by_person`. | `task_message::the_owner_closes_out_an_idle_task` (a live session); `cockpit::the_superagent_acts_on_several_of_its_persons_tasks_in_one_call` (the refusals) |
+| TCT-005 | `tasks_bulk {do, numbers \| all}` does one action (stop, pause, unpause, message) to several tasks in one call. Each task gets what the single tool does, with its checks and its audit; one task's refusal does not stop the others, and the answer names the tasks done and the tasks refused with the reason. `all` is every task of the person's own that the action applies to (stop: not ended; pause: running and not paused; unpause: paused by a person; message: running or not started); other people's tasks are left alone and counted. A stop takes the waiting tasks before the running ones, so no session it frees starts a task it is about to stop. At most 100 tasks a call; what `all` did not reach is said. | the same test; `task_edit::tests::all_takes_the_tasks_an_action_applies_to`, `a_bulk_stop_takes_the_waiting_tasks_first`; `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` |
+| TCT-006 | `task_message {with_draft: true}`: the task's owner, and only they, has a message sent past text they left unsent in the task's prompt box (SPEC-480 held every message until they went to the terminal). The message is typed behind that text and both are submitted as one prompt, which empties the box; never within a minute of their last key. The refusal for a draft names the argument. | `task_message::the_owner_sends_a_message_past_their_own_draft` (a live session: at the keyboard, without the argument, another owner, then sent as one prompt and the next plain message typed) |
+| TCT-007 | The four tools are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; each call from the Superagent leaves one `superagent.tool` entry naming the task, or the tasks (numbers, or `all`) and the action, never a title, a request or a message. None is pre-allowed. | the two Superagent tests (audit), `cockpit::a_tasks_agent_does_not_steer_other_tasks`, `manage_tools::the_cockpit_asks_before_every_changing_tool`, `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
 ## Plan
 
@@ -176,6 +185,24 @@ the function the web UI's route calls, with the person's rights checked at the c
   order, with the Superagent as actor, what the call was about and whether it went through;
   reads leave none.
 - AC-SAR-4: a task's agent calling one of the steering tools gets "unknown tool".
+- AC-TCT-1: through its own token a Superagent renames a running task (branch unchanged) and
+  replaces the request of a queued one that has a file attached: the stored request is the
+  new text followed by that file's mention, and the answer carries the old text. The same on
+  a running task or another person's task is refused and changes nothing.
+- AC-TCT-2: with three of the person's tasks and one of another person queued in that order,
+  `tasks_reorder` of the third and the first makes the queue third, second, first, other;
+  an order naming the other person's task, a running task or a task twice changes nothing.
+- AC-TCT-3: `tasks_bulk {do: pause, all: true}` pauses both of the person's running tasks and
+  not the other person's (counted); by number, a queued task, another person's task and a
+  number that is no task come back refused with their reasons while the fourth is paused;
+  one message to all reaches the requests of the tasks that have not started; `stop` with
+  `all` cancels the waiting ones and leaves the other person's tasks alone.
+- AC-TCT-4: with a live session whose person typed text and left it, the owner's message
+  with `with_draft` is refused within a minute of their last key, refused while the task is
+  someone else's, and then typed: the agent reads their text and the message as one prompt,
+  and a plain message is typed after it.
+- AC-TCT-5: a live, idle task is closed by `close_task_for_person` and ends `closed`; a
+  working, waiting or ended one is refused with what to do.
 - Every gate of the repository passes on the pull request head.
 
 ## Test plan
@@ -197,6 +224,11 @@ the function the web UI's route calls, with the person's rights checked at the c
   person's task, the audit; with a task's token: "unknown tool". The remote MCP's and the
   Global Superagent's tests run unchanged against the shared code. Unit: the instructions'
   statements, the tools served to each caller, the launch's pre-allowed tools.
+- Slice 3, integration over the MCP endpoint with a Superagent's own token
+  (`tests/cockpit.rs`, two tests) and with a person's operate token (`tests/remote_mcp.rs`);
+  live sessions of the fake agent for the draft and the close (`tests/task_message.rs`); the
+  store's two conditional writes (`yulius-store` `tests/store.rs`); unit tests of the title,
+  the list of numbers, what `all` takes, the stop order and the kept attachments.
 - Unit: the news rule's every branch and its bound (`pr_watch::tests::news_is_due_until_the_agent_heard_it`,
   `typed_news_is_due_until_its_turn`).
 - Mutation: twelve mutants of the rule and its uses, each failed by a named test
@@ -265,6 +297,36 @@ the function the web UI's route calls, with the person's rights checked at the c
   comes with slice 8; until then the refusal names the CD page.
 - **Project variables: the Superagent reads them** (`variables_list`); setting and deleting
   them comes with the secrets slice, where the vault's rules are decided together.
+- **Slice 3: functions first, tools second.** None of these had a page. Each is written as
+  a page's function would be (`task_edit.rs`: `AuthContext`, write access at the call, the
+  owner only) and the tool calls it, so the rule of ADR-0330 holds and a page can call the
+  same function later. No web UI comes with this slice: the wall is the Superagent's.
+- **A request is replaced whole, by one conditional write** (TCT-002). An edit by ranges or
+  by a patch was rejected: the Superagent would have to hold the exact old text, and
+  `task_get` shows 4000 characters of it. The write compares the old text instead, so a
+  message queued meanwhile makes it fail rather than vanish, and the answer returns the old
+  text whole. The files attached to a request are the person's: they stay unless the new
+  text places them itself (the workaround, delete and recreate, once lost four
+  screenshots). The task keeps the mode and workflow chosen for it at creation.
+- **The order is a swap of places, not a new clock** (TCT-003). The queue is one order across
+  all sandboxes (`COALESCE(queued_at, created_at)`). Writing new times would move the
+  person's tasks past other people's; swapping the places they already hold moves nobody
+  else. Two tasks that shared a millisecond get places a millisecond apart.
+- **Closing out is for an idle session** (TCT-004). "Set it to done" is not a state a person
+  sets: Done is computed (slice 1). What they mean is that the session should end and the
+  task leave the active list: `closed`, the state Yulius gives a finished task. A working
+  task is not closed under its agent's hands: Stop is the tool that interrupts.
+- **One bulk tool with an action, not four** (TCT-005): one description to read, and the
+  instructions name it for "all". Each task goes through the single function, so a bulk
+  call can do nothing a single call could not, and every task keeps its own audit entry.
+  `all` never reaches another person's task, a superadmin's Superagent included: the
+  single functions are the owner's.
+- **A draft is sent past, not discarded** (TCT-006, wall 2 "a queue blocked by unsent
+  terminal text"). Yulius sees keys, not the prompt box, so it cannot show the text or know
+  the box is empty, and the keys that clear a box in Claude Code (Esc, Ctrl+C) also interrupt
+  a turn or end the session. So the owner decides the one thing that is safe: their text goes
+  out with the message as one prompt, which empties the box and lets Yulius's own messages
+  through again. Discarding stays with the person at the terminal, and the table says why.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 

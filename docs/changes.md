@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent changes tasks that exist (SPEC-487 slice 3, task #469). "Pause all tasks"
+  had become 19 messages and "kill all tasks" 24 calls; a wrong request in a queued task
+  was fixed by deleting the task, which once destroyed four screenshots. New tools, also
+  for the person's own agent through the remote MCP: `task_edit` (a title; the whole request
+  of a task that has not started, keeping its attached files and answering the text it
+  replaced), `tasks_reorder` (the person's queued tasks swap the places they hold),
+  `task_close` (an idle running task is closed out) and `tasks_bulk` (stop, pause, resume
+  or one message to several tasks or all of the person's, each task's outcome in the
+  answer). `task_message` takes `with_draft`: the task's owner sends past text they left
+  unsent in its prompt box, which until now blocked every message until they went to the
+  terminal. Each is a person's function with their rights at the call; a task's agent gets
+  none of them.
+
 - The Superagent does what its person does on the project's pages (SPEC-487 slice 2, task
   #469, ADR-0330). It was served 39 tools and none for a task's Continue, Pause or Start now,
   for CI, a task's delivery or a deploy, so it handed those back as steps to click, used
