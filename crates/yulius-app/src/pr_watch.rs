@@ -382,13 +382,24 @@ fn outcome_key(head: &str, text: &str) -> String {
     format!("{}:{}", short(head), fingerprint(text))
 }
 
+/// News the watch typed into a session whose turn has not begun (SPEC-487 CHN-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TypedNews {
+    /// When it was typed (ms).
+    pub typed_ms: i64,
+    /// Claude Code's queue handed something on, or was about to, at the typing or since: the
+    /// news was typed while a turn ran or was coming, and waits in that queue for its own.
+    pub in_queue: bool,
+}
+
 /// What [`App::pr_news_due`] reads about one running task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NewsFacts {
     /// A merge is armed or being decided.
     pub armed: bool,
-    /// A person paused it: nothing is typed into it until they resume it, which may be never.
-    /// (An update's hold and a pause for capacity end by themselves: news stays due.)
+    /// A person paused it: its process is frozen, so what is typed into it waits with it
+    /// until they resume it, which may be never. (An update's hold and a pause for capacity
+    /// end by themselves: news stays due.)
     pub paused: bool,
     /// When the watch typed news whose turn has not begun (ms, 0 = none).
     pub typed_ms: i64,
@@ -398,6 +409,9 @@ pub(crate) struct NewsFacts {
     /// Claude Code's queue holds something a turn's end hands on, or handed it on to a turn
     /// not seen yet (SPEC-471, SPEC-479).
     pub prompt_waits: bool,
+    /// Since when the session is idle as far as Yulius knows (ms): its last turn's end, or 0
+    /// while a turn runs.
+    pub idle_since_ms: i64,
     /// Now (ms).
     pub now_ms: i64,
     /// Its pull request and whether it is merged, when it has one.
@@ -409,19 +423,22 @@ pub(crate) struct NewsFacts {
 }
 
 impl NewsFacts {
-    /// News was typed and its turn has not begun. Once it was read in Claude Code's queue
-    /// (typed while a turn ran), as long as the queue says a prompt waits for its turn,
-    /// however long the running turn takes. Otherwise for [`NEWS_TURN_WAIT_MS`] from the
-    /// typing: news typed into an idle session, whose mark is taken away when the task starts
-    /// to work, and queued news whose queue record was not read yet.
+    /// News was typed and its turn has not begun. News in Claude Code's queue (typed while a
+    /// turn ran) waits as long as the queue says a prompt waits for its turn, however long
+    /// the running turn takes and whichever entry gets its turn first; once the session is
+    /// idle, for [`NEWS_TURN_WAIT_MS`] from then (a hand-over whose turn never shows must not
+    /// hold a chain for ever). Other news (typed into an idle session, or queued and not read
+    /// in the queue yet) waits [`NEWS_TURN_WAIT_MS`] from the typing; its mark is taken away
+    /// when the task starts to work.
     fn typed_pending(&self) -> bool {
         if self.typed_ms == 0 {
             return false;
         }
+        let since = |from_ms: i64| self.now_ms.saturating_sub(from_ms) < NEWS_TURN_WAIT_MS;
         if self.in_queue {
-            return self.prompt_waits;
+            return self.prompt_waits && (self.idle_since_ms == 0 || since(self.idle_since_ms));
         }
-        self.now_ms.saturating_sub(self.typed_ms) < NEWS_TURN_WAIT_MS
+        since(self.typed_ms)
     }
 }
 
@@ -513,7 +530,10 @@ impl App {
             // task's next event (SPEC-487 CHN-002).
             let stale = self.pr_news_typed(&task.id);
             if stale.typed_ms > 0 && !stale.typed_pending() {
-                runtime.pr_news_typed_ms.store(0, Ordering::SeqCst);
+                *runtime
+                    .pr_news
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 self.publish_task(&task.id).await;
                 // What waited for this task's news waits no longer: its turn's own end may
                 // have looked while the news was still due.
@@ -555,17 +575,24 @@ impl App {
                     let paste = format!("\x1b[200~{text}\x1b[201~");
                     // From here the task goes on by itself until the turn this starts has
                     // begun (SPEC-487 CHN-002). Stamped before it is typed, as its prompt hook
-                    // may be served before the typing returns; taken back when nothing was typed.
+                    // may be served before the typing returns; when nothing was typed, what
+                    // was there before is put back whole. When Claude Code's queue is handing
+                    // something on, a turn runs or is coming, and the news waits behind it.
+                    let stamp = TypedNews {
+                        typed_ms: self.now().0,
+                        in_queue: runtime.queue().hands_on(),
+                    };
                     let before = runtime
-                        .pr_news_typed_ms
-                        .swap(self.now().0, Ordering::SeqCst);
-                    // Typed while a turn runs, it waits in Claude Code's queue for that turn's
-                    // end (its prompt hook comes at the Enter and starts no turn).
-                    runtime.pr_news_in_queue.store(false, Ordering::SeqCst);
-                    runtime.pr_news_queued.store(
-                        task.activity == Some(yulius_domain::task::Activity::Working),
-                        Ordering::SeqCst,
-                    );
+                        .pr_news
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .replace(stamp);
+                    let put_back = || {
+                        *runtime
+                            .pr_news
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = before;
+                    };
                     match self
                         .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
                         .await
@@ -579,12 +606,12 @@ impl App {
                         // the prompt box (SPEC-480): the next pass tries again. The pull request
                         // it saw open is kept, so its merge is still told.
                         Err(AppError::Conflict(why)) => {
-                            runtime.pr_news_typed_ms.store(before, Ordering::SeqCst);
+                            put_back();
                             tracing::debug!(task = %task.id, why, "a pull request notice waits");
                             untold(told, &next)
                         }
                         Err(err) => {
-                            runtime.pr_news_typed_ms.store(before, Ordering::SeqCst);
+                            put_back();
                             tracing::warn!(task = %task.id, error = %err, "could not tell the task about its pull request");
                             untold(told, &next)
                         }
@@ -652,36 +679,46 @@ impl App {
         let Some(runtime) = self.existing_runtime(task) else {
             return NewsFacts::default();
         };
-        let typed_ms = runtime.pr_news_typed_ms.load(Ordering::SeqCst);
-        let in_queue = typed_ms > 0
-            && runtime.pr_news_queued.load(Ordering::SeqCst)
-            && runtime.pr_news_in_queue.load(Ordering::SeqCst);
+        let Some(news) = *runtime
+            .pr_news
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        else {
+            return NewsFacts::default();
+        };
+        // A turn runs while one began after the last end Yulius knows of.
+        let (began, ended) = (
+            runtime.turn_began_ms.load(Ordering::SeqCst),
+            runtime.turn_end_ms.load(Ordering::SeqCst),
+        );
         NewsFacts {
-            typed_ms,
-            in_queue,
+            typed_ms: news.typed_ms,
+            in_queue: news.in_queue,
             // Asked only for news that is known to be queued.
-            prompt_waits: in_queue && runtime.queue_may_hand_on(),
+            prompt_waits: news.in_queue && runtime.queue_may_hand_on(),
+            idle_since_ms: if began > ended { 0 } else { ended },
             now_ms: self.now().0,
             ..NewsFacts::default()
         }
     }
 
     /// A turn of `task`'s session that began at `began_ms` (unknown: `None`) made the task
-    /// Working. When it began after the watch typed, it is the turn of that news, whose mark
-    /// goes (SPEC-487 CHN-002). A turn that began before is another one: the transcript's
-    /// watcher may read its prompt late, and a prompt hook sent before the typing may be
-    /// answered after it.
+    /// Working. When it began after the watch typed into an idle session, it is the turn of
+    /// that news, whose mark goes (SPEC-487 CHN-002). A turn that began before is another
+    /// one: the transcript's watcher may read its prompt late, and a prompt hook sent before
+    /// the typing may be answered after it. News in Claude Code's queue is not this turn's to
+    /// end either: another entry may get its turn first (SPEC-479), so the queue decides
+    /// ([`NewsFacts::typed_pending`]) and the watch's pass takes the spent mark away.
     pub(crate) fn pr_news_turn_began(&self, task: &TaskId, began_ms: Option<i64>) {
         if let Some(runtime) = self.existing_runtime(task) {
-            let typed_ms = runtime.pr_news_typed_ms.load(Ordering::SeqCst);
-            if typed_ms > 0 && began_ms.is_none_or(|began| began >= typed_ms) {
-                // Only the mark that was read: a later typing sets a later one.
-                let _ = runtime.pr_news_typed_ms.compare_exchange(
-                    typed_ms,
-                    0,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
+            let mut news = runtime
+                .pr_news
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if news.is_some_and(|news| {
+                !news.in_queue && began_ms.is_none_or(|began| began >= news.typed_ms)
+            }) {
+                *news = None;
             }
         }
     }
@@ -1502,6 +1539,13 @@ mod tests {
         };
         assert!(news_due(&queued(true), &told));
         assert!(!news_due(&queued(false), &told), "handed on and seen");
+        // Once the session is idle, a hand-over whose turn never shows waits two minutes.
+        let idle_since = |idle_since_ms| NewsFacts {
+            idle_since_ms,
+            ..queued(true)
+        };
+        assert!(news_due(&idle_since(38 * minute + 1), &told));
+        assert!(!news_due(&idle_since(38 * minute), &told));
         // What Claude Code's queue holds says nothing about news not read in it: news typed
         // into an idle session, or queued news whose record was not read yet (time decides).
         let unread = |now_ms| NewsFacts {

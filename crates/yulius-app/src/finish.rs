@@ -859,7 +859,7 @@ impl App {
         let notice_ms = self.standing_notice_ms(&task).await;
         let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
         match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
-            Some(next) => self.resume_working(&task, next).await,
+            Some(next) => self.resume_working(&task, next, at).await,
             // Working already: the next lines need no look at the store.
             None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
             None => {}
@@ -892,7 +892,12 @@ impl App {
     }
 
     /// The session goes on although the task read idle or flagged: it is `next` (Working).
-    async fn resume_working(self: &Arc<Self>, task: &crate::model::TaskRecord, next: Activity) {
+    async fn resume_working(
+        self: &Arc<Self>,
+        task: &crate::model::TaskRecord,
+        next: Activity,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
         tracing::info!(task = %task.id, was = ?task.activity, "the agent works on: the task is working");
         let runtime = self.runtime(&task.id);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -903,8 +908,9 @@ impl App {
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
         }
-        // It went on by itself from idle: what the pull request watch typed is being answered.
-        self.pr_news_turn_began(&task.id, None);
+        // It went on by itself from idle, by a line written at `at`: when that is after the
+        // pull request watch typed, its news is being answered (SPEC-487 CHN-002).
+        self.pr_news_turn_began(&task.id, at.map(|at| at.0));
         self.keep_working_stretch(&task.id, stretch).await;
     }
 
@@ -954,7 +960,7 @@ impl App {
         {
             // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
             // turn (STA-004).
-            self.resume_working(&task, next).await;
+            self.resume_working(&task, next, at).await;
         }
         let achieved = outcome == GoalOutcome::Met;
         runtime.goal_submitted.store(true, Ordering::SeqCst);
