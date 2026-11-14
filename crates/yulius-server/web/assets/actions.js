@@ -7,7 +7,7 @@
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar, prChip, checksOf } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
-import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
+import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime, shortSha } from './format.js';
 import { limitInEffect, limitsNow, modelWindow, needsSignIn, placingModel, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
@@ -790,7 +790,7 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
       const run = await ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs/${enc(runId)}`);
       setChildren(stateEl, run.state || 'unknown');
       stateEl.className = `badge badge-${RUN_TONE[run.state] || 'warn'}`;
-      setChildren(meta, [run.kind === 'manual' ? 'Marked verified' : 'Deploy', run.commit ? `of ${String(run.commit).slice(0, 7)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
+      setChildren(meta, [run.kind === 'manual' ? 'Marked verified' : 'Deploy', run.commit ? `of ${shortSha(run.commit)}` : null, run.requested_by ? `by ${run.requested_by}` : null, run.started_at ? `started ${relLong(run.started_at)}` : null].filter(Boolean).join(' · '));
       const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
       output.textContent = run.output || (run.kind === 'manual' ? 'Manual confirmation (no command output).' : '');
       if (atBottom) output.scrollTop = output.scrollHeight;

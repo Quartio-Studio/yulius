@@ -1014,7 +1014,7 @@ export function statusMark(info, size = 14) {
 }
 
 /** Why "checks unknown" (#111): unreadable checks never count as passed. */
-export const UNKNOWN_CHECKS = `${BRAND.name} can’t read this pull request’s checks, so they don’t count as passed: merges that require checks wait.`;
+const UNKNOWN_CHECKS = `${BRAND.name} can’t read this pull request’s checks, so they don’t count as passed: merges that require checks wait.`;
 
 /** What a pull request's checks say: the one table of every chip and line (SPEC-483 slice 28). */
 const CHECKS = {

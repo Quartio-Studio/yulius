@@ -10,7 +10,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf, prChip, prChecks } from '../dom.js';
-import { relShort, dateTime, plural } from '../format.js';
+import { relShort, dateTime, plural, shortSha } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href, currentLocation } from '../router.js';
 import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer } from '../actions.js';
@@ -33,6 +33,17 @@ function environments(profile) {
 
 const ago = (iso) => { const rel = relShort(iso); return rel === 'now' ? 'just now' : `${rel} ago`; };
 const listNames = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+
+/**
+ * What a card in the review column says: ready to merge, what an open pull request's checks
+ * say (none says nothing: "In review"), or "In review".
+ */
+export function reviewLine(pr, next) {
+  if (next.includes('merge')) return 'Ready to merge';
+  const checks = prChecks(pr);
+  if (!checks || pr.checks === 'none') return 'In review';
+  return checks.text[0].toUpperCase() + checks.text.slice(1);
+}
 
 /** "How this project ships", in one or two plain sentences generated from the profile. */
 export function profileSentence(profile) {
@@ -356,7 +367,7 @@ export function mountGitPage(ctx, sandbox) {
     if (item.column === 'built') {
       line = item.info ? [statusMark(item.info, 12), ` ${item.info.label}`] : 'Being built';
     } else if (item.column === 'review') {
-      line = next.includes('merge') ? 'Ready to merge' : pr && prChecks(pr) ? prChecks(pr).text[0].toUpperCase() + prChecks(pr).text.slice(1) : 'In review';
+      line = reviewLine(pr, next);
     } else if (item.column === 'waiting') {
       const env = next.find((a) => a.startsWith('run_env:') || a.startsWith('confirm_env:'));
       line = env ? `${env.slice(env.indexOf(':') + 1)}: ${env.startsWith('run_env:') ? 'waiting to be deployed' : 'waiting to be verified'}` : next.includes('promote') ? 'Ready to release' : d.stage === 'env_done' ? `Verified on ${d.environment}` : 'Merged';
@@ -402,7 +413,7 @@ export function mountGitPage(ctx, sandbox) {
             e.run.kind === 'manual' ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRunViewer(ctx, sb(), e.run.run_id, e.run.environment) }, 'Output')]
           : [h('span', { class: 'muted' }, icon('branch', { size: 14 })),
             h('span', { class: 'dl-event-text' }, e.commit.subject, h('span', { class: 'muted' }, ` · ${e.commit.author}`)),
-            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, String(e.commit.sha).slice(0, 7)) : h('code', { class: 'xs' }, String(e.commit.sha).slice(0, 7))])))
+            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, shortSha(e.commit.sha)) : h('code', { class: 'xs' }, shortSha(e.commit.sha))])))
         : h('p', { class: 'dl-empty' }, 'No deploys or commits yet.'),
       events.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllActivity = true; render(); } }, `Show ${events.length - shown.length} more`) : null);
   }

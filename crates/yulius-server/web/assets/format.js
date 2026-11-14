@@ -138,20 +138,21 @@ export function bytes(n) {
 }
 
 /**
- * A size as the server words a limit (`uploads.rs` `human_size`): `512 KB`, `3.4 MB`, `1 GB`,
- * binary units with the short names. [`bytes`] words a measurement (`3.0 GiB`); the two stay
- * apart because the server and the e2e tests share each wording (SPEC-483 slice 28).
+ * A size as the server words a limit (`uploads.rs` `human_size`, the same steps): `512 KB`,
+ * `3.4 MB`, `1 GB`, binary units with the short names, a whole unit or one decimal cut (not
+ * rounded). [`bytes`] words a measurement (`3.0 GiB`); the two stay apart because the server
+ * and the e2e tests share each wording (SPEC-483 slice 28).
  */
 export function limitSize(n) {
-  if (n >= 1024 * 1024 * 1024) {
-    const gb = n / (1024 * 1024 * 1024);
-    return `${gb >= 10 || Number.isInteger(gb) ? Math.round(gb) : gb.toFixed(1)} GB`;
-  }
-  if (n >= 1024 * 1024) {
-    const mb = n / (1024 * 1024);
-    return `${mb >= 10 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;
-  }
-  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  const KIB = 1024;
+  const MIB = 1024 * KIB;
+  const GIB = 1024 * MIB;
+  const unit = (size, name) => (n % size === 0
+    ? `${n / size} ${name}`
+    : `${Math.floor(n / size)}.${Math.floor(((n % size) * 10) / size)} ${name}`);
+  if (n >= GIB) return unit(GIB, 'GB');
+  if (n >= MIB) return unit(MIB, 'MB');
+  if (n >= KIB) return `${Math.floor(n / KIB)} KB`;
   return `${n} bytes`;
 }
 
