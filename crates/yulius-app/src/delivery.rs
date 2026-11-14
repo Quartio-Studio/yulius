@@ -1337,7 +1337,7 @@ impl App {
     }
 
     /// Token for GitHub reads: the caller's user token, else the installation token.
-    async fn dlv_read_token(
+    pub(crate) async fn dlv_read_token(
         &self,
         sandbox: &SandboxRecord,
         user: Option<&UserRecord>,

@@ -259,17 +259,26 @@ impl CiStore for SqliteStore {
     async fn ci_run_to_front(&self, id: &str) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            // The order the dispatcher reads: place, then insertion.
+            // The order the dispatcher reads: place, then insertion. A millisecond before the
+            // earliest queued run of the sandbox, but never before another run of the same
+            // commit: which run of a commit is the latest is read by place (`ci_runs_for_sha`).
             let n = c
                 .execute(
-                    "UPDATE ci_runs SET queued_at = ( \
-                       SELECT MIN(r.queued_at) - 1 FROM ci_runs r \
-                       WHERE r.sandbox_id = ci_runs.sandbox_id AND r.state = 'queued') \
+                    "UPDATE ci_runs SET queued_at = MAX( \
+                       (SELECT MIN(r.queued_at) - 1 FROM ci_runs r \
+                        WHERE r.sandbox_id = ci_runs.sandbox_id AND r.state = 'queued'), \
+                       COALESCE((SELECT MAX(r.queued_at) + 1 FROM ci_runs r \
+                        WHERE r.sandbox_id = ci_runs.sandbox_id AND r.sha = ci_runs.sha \
+                        AND r.id != ci_runs.id), -9223372036854775807)) \
                      WHERE id = ?1 AND state = 'queued' AND EXISTS ( \
                        SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ci_runs.sandbox_id \
                        AND r.state = 'queued' \
                        AND (r.queued_at < ci_runs.queued_at \
-                         OR (r.queued_at = ci_runs.queued_at AND r.rowid < ci_runs.rowid)))",
+                         OR (r.queued_at = ci_runs.queued_at AND r.rowid < ci_runs.rowid))) \
+                     AND NOT EXISTS ( \
+                       SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ci_runs.sandbox_id \
+                       AND r.sha = ci_runs.sha AND r.id != ci_runs.id \
+                       AND r.queued_at + 1 >= ci_runs.queued_at)",
                     [id],
                 )
                 .map_err(db)?;

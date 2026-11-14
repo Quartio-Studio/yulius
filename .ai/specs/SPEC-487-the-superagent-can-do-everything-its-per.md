@@ -152,9 +152,9 @@ the function the web UI's route calls, with the person's rights checked at the c
 | QST-005 | Two more of the person's project tools (SAR-001, SAR-002; never a task's agent's): `task_question_dismiss` ends the request of a task that has not ended (its agent's, or one Yulius opened for it; an ended task waits for nobody and shows none) for the task's owner without a word to the agent, only while it still asks what was read, and answers what was asked (audited `task.needs_you.dismissed`); with nothing asked it is refused, naming the flag's reason when the task is flagged. `task_held_prompt {action}` decides the task's held prompt with the function its card calls: send, dismiss, parallel or after; skipping steps and reverting the task stay on the page. The `superagent.tool` entry names the task and the decision, never the request's or the prompt's words. | the same Superagent test (another person's request, a second dismissal, a flag, the four actions and the two refused, the hold's state, the audit); `person_tools::tests::a_calls_subject_is_its_task_run_or_environment` |
 | MRG-001 | `task_delivery` adds `merge`: whether a merge of the task is armed, the head that is to merge and since when, whether Yulius decides it now, why it has not merged yet (its merge train's sentence, or what its last check found: a branch behind its base, an agent still working, checks still running) and how the last armed merge ended. | `merge_train::a_person_merges_their_tasks_pull_request_when_its_checks_pass` (before, while armed, after the merge); `cockpit::the_superagent_reads_the_merge_queue_and_orders_ci` (through the tool) |
 | MRG-002 | `merge_queue` lists the project's armed merges in the order a merge train takes them (when they were armed), each with its task, owner, pull request, head and why it has not merged, and the merge train under test (its run, its members in merge order, whether it passed and is merging, those left out for conflicts). Read with view access. | the same two tests |
-| MRG-003 | `task_merge` merges a task's pull request for its owner as the page's Merge does when the checks at its head passed and the branch is up to date; otherwise it arms the merge of the branch's head for them, which Yulius merges once those checks pass (bringing the branch up to date first when it can), keeps in its place when asked again and drops at a new commit. Refused, with the reason, when the checks failed, without an open pull request, for a pull request into another branch, and for another person's task. Audited under the person's name. | the merge-train test (armed, kept in place, merged by the pass, a failed head refused, the audit); the Superagent test (another person's task, no pull request) |
-| MRG-004 | `ci_prioritize` puts a queued CI run before its project's other queued runs, and the project's next free lane starts it; other projects' queues are not touched (each project has its own lanes). Refused for a run that is not queued, is first already or belongs to another project. Audited. | the Superagent test (three runs of the project, one of another, a running run, an unknown one, the audit) |
-| MRG-005 | The three are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; `merge_queue` is pre-allowed, the two that change something are not. | the Superagent test ("unknown tool" for a task's agent); `manage_tools::the_cockpit_asks_before_every_changing_tool`; `yulius-harness` `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `person_tools::tests` |
+| MRG-003 | `task_merge` merges a task's pull request for its owner as the page's Merge does when the checks at its head passed and the branch is up to date; otherwise it arms the merge of the branch's head for them, which Yulius merges once those checks pass (bringing the branch up to date first when it can), keeps in its place when asked again and drops at a new commit. The arm remembers that the owner made it: the merge it makes is audited under their name (`delivery.person.merge`, "armed by its owner, no independent review asked for"), never as an agent's reviewed merge, and the task's delivery says who armed it. Refused, with the reason, when the checks failed, without an open pull request, for a pull request into another branch, for another person's task, for a task whose run ended (an armed merge lives with the run: it merges at once once its checks passed), for a head the pull request does not have yet (not pushed), and for what the branch policy refuses. A playground's task goes to its Merge, which squashes on green. | the merge-train test (armed, kept in place, merged by the pass, a failed head refused, the audit); the Superagent test (another person's task, no pull request) |
+| MRG-004 | `ci_prioritize` puts a queued CI run before its project's other queued runs, and the project's next free lane starts it; other projects' queues are not touched (each project has its own lanes). It never goes before another run of its own commit, since the latest run of a commit is read by place. Refused for a run that is not queued, is first already (or as far forward as it goes) or belongs to another project. Audited. | the Superagent test (three runs of the project, one of another, a running run, an unknown one, the audit) |
+| MRG-005 | The three are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; `merge_queue` is pre-allowed, the two that change something are not. The Global Superagent is not served `task_merge` (as `change_merge`, ADR-0271: text read in one sandbox must not merge code in another). | the Superagent test ("unknown tool" for a task's agent); `manage_tools::the_cockpit_asks_before_every_changing_tool`; `yulius-harness` `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `person_tools::tests` |
 
 ## Plan
 
@@ -414,6 +414,12 @@ the function the web UI's route calls, with the person's rights checked at the c
   `delivery_merge` uses, so the queue, the trains, a restart and a dropped arm behave the
   same. No independent review is asked for: that is an agent's discipline before it delivers
   its own work; the person decides about what is theirs, as the page lets them.
+- **A person's arm says it is theirs** (review of slice 5, F2). The armed slot carries who
+  armed it, saved with it across a restart, so the merge the pass makes is the person's in the
+  audit and the outcome names them. The pass's sentences stay as they are: they are typed to
+  the task's agent, whose next step they name; the person's Superagent reads them with
+  `armed_by` beside them. A person arming a newer head than an agent's armed one replaces it
+  (their decision, at their head); asking for the same head keeps the agent's arm and place.
 - **Why a pull request is not merging is the armed slot's own words** (MRG-001): the train's
   sentence or the last decision's note, which `yulius wait` already shows the agent. No new
   reasoning about checks or GitHub: one source for the agent, the page and the Superagent.
@@ -679,3 +685,19 @@ the function the web UI's route calls, with the person's rights checked at the c
   train file the train tests write; no train formed in these two tests); the dispatcher
   starting the run put first (it starts each project's queued runs oldest first, the order
   tested here).
+- **Independent review, round 1** (a fresh session; two reviewers before it were cut off by
+  their usage limits before writing a finding, so this one ran on a third model): request
+  changes, four medium findings, all answered with tests that fail on that head
+  (`target/evidence/s5-r1-red.log`) and pass now (`s5-r1-green.log`):
+  - F1: a task whose run had ended was told its merge was armed, and the next pass dropped it.
+    Such a task is refused with what to do (merge at once once its checks pass, or continue it).
+  - F2: a merge the owner armed was audited as an agent's, "reviewed independently". The arm
+    now carries who made it (saved across a restart), the merge is `delivery.person.merge`
+    under their name, and `merge.last.armed_by` names them.
+  - F3: the Global Superagent was served `task_merge`; it is withheld, as `change_merge` is.
+  - F4: a run put first could go before an earlier run of its own commit, and the latest run of
+    a commit is read by place; it now stops right after it.
+  - F5, F6: a playground's task goes to its Merge; a head the pull request does not have yet is
+    refused (read from GitHub, not a local ref, which Yulius's push does not move); the branch
+    policy is checked before arming; the merge on green and its cleared arm are tested.
+  - F7: one being decided is first in the queue; a task without a runtime is skipped.

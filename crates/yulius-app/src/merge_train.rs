@@ -930,14 +930,10 @@ impl App {
                     .map(|m| m.pr)
                     .filter(|n| *n != member.pr)
                     .collect();
+                let (actor, action, how) = armed.merge_audit(task.number);
                 let detail = format!(
-                    "merged at head {head} reviewed independently ({}); armed while the checks \
-                     ran; in merge train {} tested at {} (run {})",
-                    if armed.summary.is_empty() {
-                        "no summary"
-                    } else {
-                        armed.summary.as_str()
-                    },
+                    "merged at head {head} {how}; armed while the checks ran; in merge train {} \
+                     tested at {} (run {})",
                     listed(&numbers(&train.members)),
                     train.commit,
                     train.run
@@ -947,8 +943,8 @@ impl App {
                     .store
                     .audit(
                         self.now(),
-                        &format!("task:{}", task.number),
-                        "delivery.agent.merge",
+                        &actor,
+                        action,
                         Some(&format!("{}#{}", sandbox.slug, task.number)),
                         Some(&detail),
                     )

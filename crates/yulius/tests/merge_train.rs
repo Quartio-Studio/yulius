@@ -2135,6 +2135,30 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
     );
     let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
     assert_eq!(queue["armed"], json!([]), "{queue}");
+    // The merge is the person's, not a reviewed agent's: under their name, and said so
+    // (review of slice 5, F2).
+    let merged: Vec<(String, String, String)> =
+        yulius_app::ports::store_ext::AutomationStore::automation_audit(&f.h.store, "app#1", 100)
+            .await?
+            .into_iter()
+            .map(|entry| (entry.action, entry.actor, entry.detail.unwrap_or_default()))
+            .collect();
+    assert!(
+        merged
+            .iter()
+            .any(|(action, actor, detail)| action == "delivery.person.merge"
+                && actor == "alice"
+                && detail.contains("armed by its owner")
+                && !detail.contains("reviewed independently")),
+        "{merged:?}"
+    );
+    assert!(
+        !merged
+            .iter()
+            .any(|(action, _, _)| action == "delivery.agent.merge"),
+        "{merged:?}"
+    );
+    assert_eq!(state["last"]["armed_by"], "alice", "{state}");
 
     // A head whose checks failed is not armed: the reason is said.
     let second = f.task(2, &[("b.txt", "y\n")]).await?;
@@ -2151,6 +2175,60 @@ async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> Test
     assert_eq!(
         app.merge_state_for_person(&ctx, "t2").await?["armed"],
         false
+    );
+
+    // A task whose run ended keeps no armed merge: it is not armed for nothing (F1).
+    let third = f.task(3, &[("c.txt", "z\n")]).await?;
+    let third_head = git(&third, &["rev-parse", "HEAD"])?;
+    TaskStore::transition_task(
+        &f.h.store,
+        &TaskId::parse("t3")?,
+        None,
+        TaskStatus::Closed,
+        None,
+        app.now(),
+    )
+    .await?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 3).await?, "t3")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why))
+            if why.contains("has ended") && why.contains("its checks pass")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t3").await?["armed"],
+        false
+    );
+    // Once its checks passed it merges at once, as the page's Merge does, and nothing is left
+    // armed (F6).
+    f.record_passed(&app, 3, &third_head).await?;
+    let merged = app.merge_for_person(&owner_ctx(&f, 3).await?, "t3").await?;
+    assert_eq!(
+        (&merged["merged"], &merged["armed"]),
+        (&json!(true), &json!(false)),
+        "{merged}"
+    );
+    assert!(f.merged(&app, 3).await?);
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t3").await?["armed"],
+        false
+    );
+
+    // A commit not pushed yet is not armed: what would merge is the branch on GitHub (F5).
+    let fourth = f.task(4, &[("d.txt", "w\n")]).await?;
+    std::fs::write(fourth.join("later.txt"), "later\n")?;
+    git(&fourth, &["add", "-A"])?;
+    git(&fourth, &["commit", "-q", "-m", "not pushed"])?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 4).await?, "t4")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why)) if why.contains("not pushed")),
+        "{refused:?}"
     );
     Ok(())
 }

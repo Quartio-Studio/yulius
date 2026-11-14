@@ -32,7 +32,6 @@ impl App {
     /// `last`, how the last armed merge ended (`head`, `text`).
     pub(crate) fn merge_state(&self, task: &TaskRecord) -> Value {
         let (merge, deciding) = self.armed_merge_view(&task.id);
-        let (_, outcome) = self.armed_view(&task.id);
         let armed = merge.is_some() || deciding;
         let mut state = json!({"armed": armed});
         if let Some(merge) = merge {
@@ -45,8 +44,13 @@ impl App {
         if let Some(note) = self.merge_queue_note(task) {
             state["where"] = json!(note);
         }
-        if let Some((head, text)) = outcome {
-            state["last"] = json!({"head": head, "text": text});
+        if let Some(outcome) = self.merge_outcome(&task.id) {
+            let mut last = json!({"head": outcome.head, "text": outcome.text});
+            // Who armed it, when it was the task's owner: the text is the one its agent reads.
+            if let Some(by) = outcome.by {
+                last["armed_by"] = json!(by);
+            }
+            state["last"] = last;
         }
         state
     }
@@ -75,6 +79,10 @@ impl App {
         let tasks = self.deps.store.tasks(sandbox, false).await?;
         let mut armed = Vec::new();
         for task in &tasks {
+            // A task without a runtime has no armed merge (a restored one has its runtime).
+            if self.existing_runtime(&task.id).is_none() {
+                continue;
+            }
             let state = self.merge_state(task);
             if state["armed"] != true {
                 continue;
@@ -98,7 +106,14 @@ impl App {
             }
             armed.push(entry);
         }
-        armed.sort_by_key(|entry| entry["armed_at"].as_i64().unwrap_or(i64::MAX));
+        // One being decided now is first: its decision is under way.
+        armed.sort_by_key(|entry| {
+            if entry["deciding"] == true {
+                i64::MIN
+            } else {
+                entry["armed_at"].as_i64().unwrap_or(i64::MAX)
+            }
+        });
         let train = self.train_summary(sandbox).map(|mut train| {
             // Members and those left out by task number, as every tool names tasks.
             for key in ["members", "left_out"] {
@@ -133,6 +148,22 @@ impl App {
         id: &str,
     ) -> AppResult<Value> {
         let task = self.load_task(ctx, id, Action::Work).await?;
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        // A playground has no pull request (SPEC-099): its Merge squashes on green, and refuses
+        // otherwise with what is missing.
+        if sandbox.is_playground() {
+            let view = self.merge_task_pr(ctx, id).await?;
+            return Ok(json!({
+                "merged": true,
+                "armed": false,
+                "delivery": crate::person_tools::record(&view)?,
+            }));
+        }
         let record = self.deps.store.delivery(&task.id).await?;
         match record
             .as_ref()
@@ -171,12 +202,6 @@ impl App {
                 AppError::Conflict(format!("task #{}'s branch has no commit", task.number))
             })?;
         let before = self.task_delivery(ctx, id).await?;
-        let sandbox = self
-            .deps
-            .store
-            .sandbox(&task.sandbox_id)
-            .await?
-            .ok_or(AppError::NotFound)?;
         let profile = crate::delivery::delivery_profile(&sandbox);
         if let Some(pull) = before.pr.as_ref()
             && pull.base != profile.integration_branch
@@ -212,10 +237,9 @@ impl App {
         }
         let login = self.login_of(&ctx.user.id).await;
         if merge_now {
+            // The page's merge, which audits it under the person's name.
             let view = self.merge_task_pr(ctx, id).await?;
             self.clear_armed(&task);
-            self.audit_merge(&login, "delivery.person.merge", &task, &head)
-                .await;
             return Ok(json!({
                 "merged": true,
                 "armed": false,
@@ -223,8 +247,53 @@ impl App {
                 "delivery": crate::person_tools::record(&view)?,
             }));
         }
-        let summary = format!("armed by @{login}, the task's owner");
-        if !self.arm_merge(&task, &head, &head, &summary) {
+        // An armed merge lives with the task's run: one that ended keeps none (the pass would
+        // drop it at once).
+        if !task.status.keeps_an_armed_merge() {
+            return Err(AppError::Conflict(format!(
+                "task #{} has ended ({}), and an armed merge lives with a task's run: ask again \
+                 once its checks pass, and it merges at once (ci_runs shows them), or continue \
+                 the task (task_restart) to arm it",
+                task.number,
+                task.status.as_str()
+            )));
+        }
+        // What merges is the pull request's head on GitHub: a commit not pushed yet would never
+        // pass there.
+        let number = record
+            .as_ref()
+            .and_then(|record| record.pr_number)
+            .unwrap_or_default();
+        let token = self
+            .dlv_read_token(&sandbox, Some(&ctx.user))
+            .await
+            .map_err(AppError::Conflict)?;
+        let pushed = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+            .await?
+            .head_sha;
+        if pushed != head {
+            return Err(AppError::Conflict(format!(
+                "task #{}'s branch has commits not pushed yet: the pull request does not have \
+                 its head {}. Yulius pushes them when its agent's turn ends; ask again then",
+                task.number,
+                head.get(..9).unwrap_or(&head)
+            )));
+        }
+        // A merge the branch policy refuses is never armed (SPEC-069 BPL-004), as for an agent.
+        if let Some(pull) = before.pr.as_ref() {
+            let facts = yulius_domain::branch_policy::PullFacts {
+                title: &pull.title,
+                head: &pull.head,
+                base: &pull.base,
+                from_fork: false,
+            };
+            self.dlv_check_policy(&sandbox, &profile, pull.number, &facts)
+                .await?;
+        }
+        if !self.arm_merge_for_person(&task, &head, &login) {
             return Ok(json!({
                 "merged": false,
                 "armed": true,
@@ -291,9 +360,10 @@ impl App {
         if !store.ci_run_to_front(run_id).await? {
             let still = store.ci_run(run_id).await?;
             return Err(AppError::Conflict(match still {
-                Some(run) if run.state == RunState::Queued => {
-                    format!("run {run_id} is first in this project's queue already")
-                }
+                Some(run) if run.state == RunState::Queued => format!(
+                    "run {run_id} is first in this project's queue already, or as far forward as \
+                     it goes: it never goes before an earlier run of its own commit"
+                ),
                 _ => format!("run {run_id} left the queue meanwhile"),
             }));
         }

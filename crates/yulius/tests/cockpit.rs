@@ -6306,11 +6306,12 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
 
     // CI order: three runs wait in this project, one in another; the third goes first here.
     let base = f.h.app.now().0;
+    // Each run tests a commit of its own, named after it.
     let run = |id: &str, sandbox: &str, at: i64, state: RunState| CiRunRecord {
         id: id.into(),
         sandbox_id: yulius_domain::ids::SandboxId::parse(sandbox).unwrap_or_else(|_| sid()),
         reference: CiRef::PullRequest(7),
-        sha: "a".repeat(40),
+        sha: format!("{id:0>40}"),
         source: GateSource::ProjectConfig,
         state,
         reason: None,
@@ -6364,6 +6365,39 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         f.h.store.ci_run("run-x").await?.ok_or("run")?.queued_at,
         Timestamp(base - 100)
     );
+    // A run never goes before an earlier run of its own commit: which run of a commit is the
+    // latest is read by place (review of slice 5, F4).
+    let mut same = run("run-old", "s1", base + 30, RunState::Failed);
+    same.sha = "b".repeat(40);
+    f.h.store.insert_ci_run(&same, &[]).await?;
+    let mut rerun = run("run-new", "s1", base + 40, RunState::Queued);
+    rerun.sha = "b".repeat(40);
+    f.h.store.insert_ci_run(&rerun, &[]).await?;
+    let (moved, is_error) =
+        cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-new"})).await?;
+    assert!(!is_error, "{moved}");
+    let place = f.h.store.ci_run("run-new").await?.ok_or("run")?.queued_at;
+    assert_eq!(
+        place,
+        Timestamp(base + 31),
+        "after its commit's earlier run: {moved}"
+    );
+    let latest = f.h.store.ci_runs_for_sha(&sid(), &"b".repeat(40)).await?;
+    assert_eq!(latest.first().map(|run| run.id.as_str()), Some("run-new"));
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-new"})).await?;
+    assert!(
+        is_error && said(&refused).contains("earlier run of its own commit"),
+        "{refused}"
+    );
+    f.h.store
+        .transition_ci_run(
+            "run-new",
+            &[RunState::Queued],
+            RunState::Cancelled,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
     for (run_id, why) in [
         ("run-c", "first"),
         ("run-run", "not queued"),
