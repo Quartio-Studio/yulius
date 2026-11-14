@@ -4514,6 +4514,23 @@ impl App {
                 // It ended while Yulius was down: no watcher of this process read it, so its
                 // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
+                    // A task the dead server left switching lost that switch with it, and the
+                    // run found ended is most likely the one the switch had asked to end: the
+                    // task is lost to the restart, as the sweep below rests one with no run,
+                    // before the run's end is recorded (which ends a switching task as a
+                    // session that left by itself, SPEC-483 SWT-002).
+                    if let Ok(Some(task)) = store.task(&attempt.task_id).await
+                        && task.status == TaskStatus::Switching
+                    {
+                        let next = task
+                            .status
+                            .after_loss(task.activity, StopReason::ServerLost)
+                            .unwrap_or(TaskStatus::Stopped(StopReason::ServerLost));
+                        let _ = store
+                            .transition_task(&task.id, Some(task.status), next, None, self.now())
+                            .await;
+                        lost.push((task.id, task.status));
+                    }
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }

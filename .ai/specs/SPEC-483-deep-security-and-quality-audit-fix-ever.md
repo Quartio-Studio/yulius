@@ -716,7 +716,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (the task already reads `switching`) ends the task as it does without a switch, and the
   switch gives way. A stop that lands after the switch gave the run up rests the task
   too; whether it then reads `stopped_switch_timeout`, `stopped_lost` or
-  `stopped_cancelled` follows who recorded the run's end.
+  `stopped_cancelled` follows who recorded the run's end. At a server start a task found
+  `switching` with a run that ended while Yulius was down lost its switch with the
+  server: it rests as `stopped_server_lost` and is among the tasks a move brings back, as
+  one found with no run is.
 
 ## Plan
 
@@ -1152,6 +1155,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the given-up intent) when the kill is refused and the task is put back to `running`:
   the switch waits for the record; the task is `stopped_switch_timeout`, its run ended
   `switch_timeout`, and nothing says a session could not be ended.
+- **AC-103** A start that finds a `switching` task whose run ended while Yulius was down
+  rests it as `stopped_server_lost` (a running one whose session left is `closed`, as
+  before); with the mark of a host move the task is queued again.
 
 ## Test plan
 
@@ -1341,7 +1347,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-102), on the real session host behind a test host that can drop requests to end,
   refuse to terminate and leave the look unanswered; the orders are made with pause
   points (`SwitchDecided`, and three new ones: `RunEndTaken`, `SwitchWaitOver`,
-  `SwitchEndsRun`).
+  `SwitchEndsRun`);
+  `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` (AC-103), on a
+  host that finds every run ended.
 
 ## Decisions
 
@@ -1425,6 +1433,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   stop's and the close's are (SPEC-250). The wait is a setting (`switch_end_ms`) only so
   that tests need not wait a minute. The status's text in the web UI says "Restarting the
   session took too long": a restart on a newer Claude Code ends there too.
+  The third round found where that new way out reached too far: a start that finds a
+  `switching` task with an ended run records that end through the same recorder, and the
+  task closed as if its session had left. The start rests such a task itself first, as it
+  rests one with no run. The review went to a fourth look at that one change, against the
+  rule of three rounds: the finding was a regression of this slice with its fix named by
+  the reviewer, and a split would have delivered the regression or held back the rest.
+  Left as it is, by the review's own word harmless: when a run ends in the window before
+  the switch claims it and the switch reads the status before that end has settled, the
+  switch says "did not end in time" for a task that closed, and leaves its given-up mark
+  in the slot until the task's next launch clears it.
   A finished (`Done`) task whose idle session is moved and has to be given up rests as
   stopped, not closed: RBT-001 closes only a running task, and its domain test says why
   for this very case ("a switch or a stop in flight was cut"); the review asked for
