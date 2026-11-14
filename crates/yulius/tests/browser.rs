@@ -1945,6 +1945,25 @@ async fn the_display_stops_with_the_browser() -> TestResult {
     .await
 }
 
+/// An `Authorization` header of another scheme is refused, never taken as absent: the request
+/// does not fall back to the session cookie it also carries (SPEC-483 slice 29, review).
+#[tokio::test]
+async fn another_authorization_scheme_beside_a_session_cookie_is_refused() -> TestResult {
+    let h = support::harness()?;
+    let creds = support::setup_superadmin_creds(&h).await?;
+    let (status, _, _) = get_raw(&h.router, "/api/me", &creds, &[]).await?;
+    assert_eq!(status, 200);
+    let (status, _, _) = get_raw(
+        &h.router,
+        "/api/me",
+        &creds,
+        &[("authorization", "Basic eDp5")],
+    )
+    .await?;
+    assert_eq!(status, 401);
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_welcome_page_names_the_sandbox_and_links_its_listening_ports() -> TestResult {
     use yulius_app::ports::store::SandboxStore as _;
