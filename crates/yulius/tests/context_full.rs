@@ -613,20 +613,22 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
     Ok(())
 }
 
-/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key (here
-/// the text in it is sent by an Enter nobody typed at the terminal, as "Send anyway" or a held
-/// prompt that goes on does). The hold is over: when Yulius types its command the task does
-/// not read the hold's flag any more.
+/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key and
+/// without a turn: a prompt hook for a command reaches Yulius (sent here by the test with the
+/// run's own token, as a Claude Code that runs the hook for commands sends it). The hold is
+/// over: when Yulius types its command, the task does not read the hold's flag any more.
 #[test]
 fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, _) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
-        let (id, ctx, attach) = refused_soon(&app, &data).await?;
-        app.terminal_input(&ctx, &attach, b"and then", false)
-            .await?;
+        let (app, port) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
+        let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
+        // A key that left nothing in the box: what the command's submit then empties is
+        // only what Yulius knows of it.
+        let person = task(&app, &id).await?.created_by;
+        app.record_typing(&id, &person);
         wait_for("the flag", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::NeedsAttention)
         })
@@ -646,7 +648,34 @@ fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
                 },
             );
         }
-        app.send_input(&id, b"\r").await?;
+        // The run's token, as its agent's hooks have it.
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let pid = run.child_pid.ok_or("no agent pid")?;
+        let environ = std::fs::read(format!("/proc/{pid}/environ"))?;
+        let token = environ
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| std::str::from_utf8(entry).ok())
+            .find_map(|entry| entry.strip_prefix("YULIUS_TASK_TOKEN="))
+            .ok_or("the run has no task token")?
+            .to_owned();
+        let body = serde_json::json!({"hook_event_name": "UserPromptSubmit",
+            "session_id": "s", "prompt": "/compact"})
+        .to_string();
+        let request = format!(
+            "POST /hooks/claude/UserPromptSubmit HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+             X-Yulius-Hook-Sent-Ms: {}\r\nConnection: close\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            app.now().0,
+            body.len()
+        );
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut client, request.as_bytes()).await?;
+        let mut answer = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut client, &mut answer).await?;
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(!app.has_draft(&id), "the command's submit emptied the box");
         wait_for("the compaction", Duration::from_secs(60), || {
             let app = app.clone();
             let id = id.clone();
