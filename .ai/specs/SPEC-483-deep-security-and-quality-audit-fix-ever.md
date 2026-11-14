@@ -518,7 +518,8 @@ Each item was searched again by name over `crates/`, `e2e/`, `tools/` and `scrip
 went; two of the auditors' items had gained a user since and stay.
 
 - **QC5 (task state machine).** `TaskEvent::StartFailed` and `SwitchAborted` were never fired
-  (the supervisor writes a run's statuses itself), `FailReason::StartTimeout` and
+  (the supervisor writes a failed start and an aborted switch as their outcome directly, and
+  takes every other change from `apply`), `FailReason::StartTimeout` and
   `START_TIMEOUT_MS` never written or enforced (the ptyhost's own spawn timeout ends a start
   as `failed_spawn_error`), and the module doc promised timeouts "enforced by the
   supervisor". `StopReason::SwitchTimeout`, also reported, is written since slice 17.
@@ -529,9 +530,10 @@ went; two of the auditors' items had gained a user since and stay.
   `stopReason` and `suppressOutput`.
 - **QC2 (domain).** `agent_cli::KEEP`, `Nudge::is_pace`, `spec_slug` (production calls
   `slug_or`), the usage helpers without a model family (`max_used_percent`, `window_reset`,
-  `known_total`, the wrappers `current_used_percent` and `available_at`).
-  `TokenUsage::is_unknown`, also reported, is read by the harness. `scope::pattern_matches`
-  stays: the tests of `patterns_overlap` check it against it path by path.
+  `known_total`, the wrappers `current_used_percent` and `available_at`) and
+  `TokenUsage::is_unknown` (tests only; they compare with `TokenUsage::UNKNOWN`).
+  `scope::pattern_matches` stays: the tests of `patterns_overlap` check it against it path by
+  path.
 - **QC7.** "Rotate now" without an account (`Trigger::Manual { account: None }`) was never
   asked; its branch and `Refusal::NoCandidate` were reached by tests only.
 - **QA9.** The message inbox readers (`inbox`, `mark_delivered`, `mark_read`,
@@ -1005,8 +1007,9 @@ went; two of the auditors' items had gained a user since and stay.
   secret; a stored configuration that still names one parses as before.
 - **DED-001** Removing the items of slice 25 changes no behaviour a person or an agent sees:
   the gate and the whole e2e suite pass with them gone, the API and its event stream keep
-  every field they sent, and a stored row of an old shape (a workflow seeded before the
-  catalog) stays an ordinary row.
+  every field they sent; a workflow row seeded before the catalog that an instance still holds
+  is hidden by its default (`wf-feature`) or listed as a custom workflow (`wf-quick-task`), as
+  `docs/operations.md` says.
 - **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
   the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
   waiting, until the file is opened again.
@@ -1924,10 +1927,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 25 (no decision record): a dead item goes rather than being wired in where the
-  auditors offered both. The task events could have been fired from the supervisor so that
-  `apply` would be the one table of every change; that moves no behaviour and the supervisor's
-  compare-and-set writes are what the slices 17 to 21 tests pin, so the table stays the
-  table of a waiting task's start changes, and the module says so. A seam only tests used
+  auditors offered both. The two events could have been fired from the supervisor so that
+  `apply` would be the one table of every change; that moves no behaviour, and the two writes
+  of an outcome (a failed start, an aborted switch) are what the slices 17 to 21 tests pin, so
+  they stay direct and the module says which changes go through the table. A seam only tests used
   goes when a production method sets the same state (`set_account_error` →
   `set_account_state`); one that is the only way to make the state the export reads stays
   (`insert_message`).
@@ -2536,8 +2539,8 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 
 - **Tests failing before the fix**: the proxied document came back without the app's
   `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
-  `Accept-Encoding` for a document; a refused rejoin was asked again every second (more than the
-  two joins expected in 2.5 s; the count itself is not in the log). After the review: a 409 edit whose rejoin was refused left the
+  `Accept-Encoding` for a document; a refused rejoin was asked again every
+  second (more than the two joins expected in 2.5 s; the count is not in the log). After the review: a 409 edit whose rejoin was refused left the
   tab busy, unsaved, with "abcd" and a close that waited.
 - **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
   `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the

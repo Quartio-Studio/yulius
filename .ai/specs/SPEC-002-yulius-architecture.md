@@ -2228,12 +2228,11 @@ Defaults are never stored: `App::workflows_for` lists them first, then the store
 sandbox workflows, and lookups by id (`visible_workflow`, `task_workflow`) answer them from the
 catalog, so a release replaces their content. The API marks them `builtin: true` with
 `when_to_use`; `PUT`/`DELETE` on one answer 409 ("duplicate it to customise"), and a duplicate is
-an ordinary custom workflow. A stored row whose id a default answers to is never listed. At
-startup `App::retire_legacy_workflows` handles the two instance rows seeded before the catalog
-(`wf-feature` "Feature", `wf-quick-task` "Quick task"): one still equal to its seed is deleted
-(references to `wf-feature` stay and reach the default; those to `wf-quick-task` are cleared as by
-a delete); an edited `wf-feature` is kept as a new custom instance workflow "Feature (custom)"; an
-edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`workflow.retired`).
+an ordinary custom workflow. A stored row whose id a default answers to is never listed. The
+two instance rows seeded before the catalog (`wf-feature` "Feature", `wf-quick-task` "Quick
+task") were retired at startup by the releases from 2026-10-11 until SPEC-483 slice 25 removed
+that step: a `wf-feature` row an instance still holds is hidden by the default (references to it
+reach the default), a `wf-quick-task` row is listed as a custom instance workflow.
 
 ## 8. Security and trust model
 

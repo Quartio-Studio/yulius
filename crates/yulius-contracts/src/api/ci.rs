@@ -59,8 +59,9 @@ pub struct CiJob {
     /// slot and its budget; outside its time limit (SPEC-435). Absent before it started.
     #[serde(default)]
     pub waited_ms: Option<i64>,
-    /// Output (only in a run's detail, `GET /api/sandboxes/{sid}/ci/runs/{id}`): the last 512 KiB of its terminal output, escape
-    /// sequences removed, plus Yulius notes; partial while it runs.
+    /// Output (only in a run's detail, `GET /api/sandboxes/{sid}/ci/runs/{id}`): the last
+    /// 512 KiB of its terminal output, escape sequences removed, plus Yulius notes; partial while
+    /// it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     /// Its failing tests' output (only in a run's detail): each failing test's block (status

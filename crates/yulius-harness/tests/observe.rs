@@ -265,7 +265,7 @@ fn claude_limit_with_epoch_reset() {
             message: "Claude AI usage limit reached".into()
         })
     );
-    assert!(acc.usage().is_unknown());
+    assert_eq!(acc.usage(), yulius_domain::usage::TokenUsage::UNKNOWN);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn claude_absent_usage_stays_unknown() {
     let per_line = observe_all(CLAUDE_ABSENT_USAGE, claude::observe_line);
     assert!(matches!(
         per_line[3].first(),
-        Some(Observed::AssistantMessage { usage, .. }) if usage.is_unknown()
+        Some(Observed::AssistantMessage { usage, .. }) if *usage == yulius_domain::usage::TokenUsage::UNKNOWN
     ));
 }
 

@@ -536,12 +536,6 @@ impl TokenUsage {
         cache_write: None,
     };
 
-    /// `true` when no field is known.
-    #[must_use]
-    pub fn is_unknown(&self) -> bool {
-        *self == Self::UNKNOWN
-    }
-
     /// Field-wise sum. A field is known only when it is known on both sides and the sum does
     /// not overflow; otherwise it becomes unknown (never silently saturated or zeroed).
     #[must_use]
@@ -1377,7 +1371,7 @@ mod tests {
         assert_eq!(sum.cache_read, Some(200));
         assert_eq!(sum.cache_write, None);
         assert_eq!(known.checked_add(TokenUsage::UNKNOWN), TokenUsage::UNKNOWN);
-        assert!(TokenUsage::default().is_unknown());
+        assert_eq!(TokenUsage::default(), TokenUsage::UNKNOWN);
     }
 
     #[test]

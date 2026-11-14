@@ -1090,7 +1090,7 @@ async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
 }
 
 #[tokio::test]
-async fn messages_inbox_read_tracking_and_steps_history() -> R {
+async fn task_messages_and_steps_history() -> R {
     let store = SqliteStore::open_in_memory()?;
     let (sid, uid) = seed(&store).await?;
     let a = store.insert_task(&task("t1", &sid, &uid)?).await?;

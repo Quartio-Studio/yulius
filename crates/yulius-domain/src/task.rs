@@ -1,8 +1,9 @@
 //! Task and attempt state machines (SPEC-002 §6.1, §6.2).
 //!
-//! Every nonterminal state has an owner and an exit trigger. [`TaskStatus::apply`] is the table
-//! of a waiting task's start changes; the supervisor writes the statuses of a run's life (start,
-//! end, switch, loss) itself, through the store's compare-and-set transition.
+//! Every nonterminal state has an owner and an exit trigger. [`TaskStatus::apply`] is the table of
+//! the changes events cause, from which the supervisor, the capacity controller and a waiting
+//! task's start changes take the next status; a start that fails and a switch that ends without
+//! its new run are written as their outcome directly (`failed_*`, `stopped_*`).
 
 /// Why a task's live run ended without a normal close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

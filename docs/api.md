@@ -875,8 +875,10 @@ containment, production in the sandbox's production holder, with its own network
 engine, on the host's read-only system), for at most the CI job
 timeout (plus up to as long again waiting for a held agent state), with the project's variables
 (production: only those its table names), `YULIUS_SANDBOX`, `YULIUS_STATE_<NAME>` for each named
-agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`), `YULIUS_CD_SHA`,
-`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
+agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name),
+`YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`),
+`YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a
+name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
 allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every

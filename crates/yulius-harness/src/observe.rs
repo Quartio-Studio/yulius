@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn empty_accumulator_reports_unknown() {
         let acc = UsageAccumulator::new();
-        assert!(acc.usage().is_unknown());
+        assert_eq!(acc.usage(), yulius_domain::usage::TokenUsage::UNKNOWN);
         assert_eq!(acc.last_limit(), None);
     }
 
@@ -655,7 +655,7 @@ mod tests {
             record(230, 230, 0),
         ]);
         assert_eq!(active_seconds(&acc), Some(230));
-        assert_eq!(acc.active().open_since.map(Timestamp), None);
+        assert_eq!(acc.active().open_since, None);
         assert_eq!(acc.turns(), 3);
     }
 
@@ -681,11 +681,11 @@ mod tests {
         let mut acc = UsageAccumulator::new();
         acc.observe_all(&[prompt(0, false), work(40)]);
         assert_eq!(active_seconds(&acc), Some(40));
-        assert_eq!(acc.active().open_since.map(Timestamp), Some(Timestamp(0)));
+        assert_eq!(acc.active().open_since, Some(0));
         acc.observe(&Observed::TurnInterrupted {
             at: Some(Timestamp(45 * S)),
         });
-        assert_eq!(acc.active().open_since.map(Timestamp), None);
+        assert_eq!(acc.active().open_since, None);
         acc.observe_all(&[prompt(100, false), work(110)]);
         acc.observe(&Observed::LimitReached {
             resets_at: None,
@@ -765,6 +765,6 @@ mod tests {
         assert_eq!((acc.usage().input, acc.usage().output), (Some(13), Some(7)));
         assert_eq!(acc.model(), Some("claude-test"));
         assert_eq!(acc.last_limit(), None);
-        assert_eq!(acc.active().open_since.map(Timestamp), Some(Timestamp(0)));
+        assert_eq!(acc.active().open_since, Some(0));
     }
 }

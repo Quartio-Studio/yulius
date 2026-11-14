@@ -17,7 +17,7 @@
 //!    are content addressed by `sha256`, so a file the server already stored for this repository
 //!    (from an earlier import) is not listed, and a partially received file reports its received
 //!    length so the client resumes there (IMP-001, IMP-006).
-//! 2. `PUT /api/import/{job}/files/{name}?offset=N` (`job` and `name` percent-encoded as single path segments) with the raw chunk
+//! 2. `PUT /api/import/{job}/files/{name}?offset=N` (`job` percent-encoded) with the raw chunk
 //!    bytes as the body (at most [`MAX_CHUNK_BYTES`]) and the lowercase hex SHA-256 of the body in
 //!    the [`CHUNK_SHA256_HEADER`] header → [`FileProgress`]. `name` is sent as one percent-encoded
 //!    path segment (a `/` inside a name is `%2F`). Chunks are idempotent by
