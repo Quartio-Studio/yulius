@@ -2540,8 +2540,9 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Tests failing before the fix**: the proxied document came back without the app's
   `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
   `Accept-Encoding` for a document; a refused rejoin was asked again every
-  second (more than the two joins expected in 2.5 s; the count is not in the log). After the review: a 409 edit whose rejoin was refused left the
-  tab busy, unsaved, with "abcd" and a close that waited.
+  second (more than the two joins expected in 2.5 s; the count is not in the log). After the
+  review: a 409 edit whose rejoin was refused left the tab busy, unsaved, with "abcd" and a
+  close that waited.
 - **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
   `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
   app's `X-Frame-Options` removed again; no `frame-ancestors` of Yulius's own; the app's

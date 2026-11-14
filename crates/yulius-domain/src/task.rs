@@ -3,7 +3,8 @@
 //! Every nonterminal state has an owner and an exit trigger. [`TaskStatus::apply`] is the table of
 //! the changes events cause, from which the supervisor, the capacity controller and a waiting
 //! task's start changes take the next status; a start that fails and a switch that ends without
-//! its new run are written as their outcome directly (`failed_*`, `stopped_*`).
+//! its new run are written as their outcome directly (`failed_*`, `stopped_switch_failed`), and a
+//! run lost while its switch was ending it goes through the table (`Lost(SwitchTimeout)`).
 
 /// Why a task's live run ended without a normal close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
