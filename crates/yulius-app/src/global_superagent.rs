@@ -90,6 +90,9 @@ pub const WITHHELD_TOOLS: &[&str] = &[
     // Nor a task's merge for its owner (SPEC-487 MRG-005): the same reason, and no independent
     // review covers what it merges.
     "task_merge",
+    // Nor updating or restarting the instance (SPEC-487 INS-004): text read in one sandbox
+    // must not pause everyone's work.
+    "instance_update",
 ];
 
 /// The tools only the Global Superagent is served with `project`, not a person's own agent: the
@@ -477,6 +480,13 @@ mod tests {
             !global_tool_descriptors()
                 .iter()
                 .any(|t| t.name == "task_merge")
+        );
+        // Nor updating or restarting the instance (SPEC-487 INS-004): text it reads in one
+        // sandbox must not restart everyone's work.
+        assert!(
+            !global_tool_descriptors()
+                .iter()
+                .any(|t| t.name == "instance_update")
         );
     }
 }

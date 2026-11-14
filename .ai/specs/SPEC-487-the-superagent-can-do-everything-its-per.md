@@ -117,7 +117,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | A task's subscription: see, move; model and effort | yes (slice 6) | sees them in the task list (slice 6) | Tasks are subscription-agnostic (SPEC-001 ROT-007); a person moves their task |
 | The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
 | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
-| Instance: Update now, Restart | yes, a superadmin's (slice 7) | no | The buttons' rights and refusals |
+| Instance: Update now, Restart, Cancel, Check | yes, a superadmin's (slice 7; not the Global Superagent) | no | The buttons' rights and refusals |
+| Instance: logs, `yulius doctor` | no: no page shows them; `instance` shows health (load, memory, disk, sessions) | no | The logs and the doctor are the host's (`journalctl`, the CLI), outside what Yulius serves |
 | Another sandbox: list and read tasks | yes (slice 8) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
 | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting in slice 8) | no | ADR-0227 |
 | A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
@@ -161,6 +162,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SUB-003 | `task_switch` moves a task for its owner to the subscription named by its label (any case) or id, or to the pool's best other one: the page's Switch. A name that is no subscription is refused with the names there are; one shared by two subscriptions is refused with how to name one. | the same test (an unknown name, a shared name, another person's task) |
 | SUB-004 | `task_model` sets a task's model, effort or both for its owner (`default` goes back to the default); stored with the task, taken at its session's next start, and said so (not started: when it starts; running: at its next start, `task_switch` restarts it now; ended: when continued). A value of a shape a launch does not take is refused. Audited. | the same test; `task_setup::tests::a_model_and_an_effort_are_what_a_launch_takes` |
 | SUB-005 | The three are the person's project tools (SAR-001, SAR-002), to no task's agent; `subscriptions` is pre-allowed. | the same test; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
+| INS-001 | `instance` shows the Status panel and Settings' update section as the caller may see them: the build Yulius runs, an update offered or under way, the host's CPU load, memory and disk, the sessions and their bound, the sandboxes and subscriptions. | `cockpit::the_superagent_reads_the_instance_and_a_superadmins_updates_it` |
+| INS-002 | `instance_update` runs, for a superadmin, the update buttons' functions: check now, install the offered update (or a given commit), restart with the build it runs, cancel an update under way. The ask is the confirmation the buttons ask for (the person's decision of 2026-11-13); the functions' refusals pass as they are. | the same test (the superadmin's four, against a server without an update helper) |
+| INS-003 | Anyone else is refused with whose it is ("only a superadmin …"); an action that is none is refused. | the same test |
+| INS-004 | Both are the person's project tools (SAR-001, SAR-002), to no task's agent; `instance` is pre-allowed; the Global Superagent is not served `instance_update` (text read in one sandbox must not pause everyone's work). | the same test; `global_superagent::tests::it_is_not_served_change_merge`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
 
 ## Plan
 
@@ -173,7 +178,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
 - [x] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
 - [x] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
-- [ ] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
+- [x] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [ ] Slice 8: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, production behind one confirmation, another sandbox's task list)
 - [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
 - [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
@@ -450,6 +455,15 @@ the function the web UI's route calls, with the person's rights checked at the c
   unlike `task_merge` and `change_merge`.
 - **Excluding a subscription from the pool is not a person's ability** because the pool has
   no such setting; the table says so rather than adding one here.
+- **Slice 7: the ask is the confirmation, for a superadmin only** (INS-002). The person
+  decided on 2026-11-13 that Update now and Restart run directly for a superadmin's
+  Superagent; the buttons' functions keep every refusal (a move or an update under way, no
+  helper). The Global Superagent is not served `instance_update`: it reads every sandbox, and
+  a restart pauses everyone's work.
+- **Logs and the doctor stay the host's.** No page shows them and the doctor runs in the CLI,
+  outside the server; `instance` shows the health a page shows. Sessions coming back after a
+  restart is the restart's own (tasks are frozen and resume, SPEC-432); the Superagent's own
+  session is slice 9's.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 
@@ -760,3 +774,15 @@ the function the web UI's route calls, with the person's rights checked at the c
   here its refusals and the name's resolution are); a model taken at a real launch (the launch
   takes the task's model, tested by the launch's suites); `subscriptions` with usage readings
   (the panel's `capacity_view`, tested by its suites).
+
+### Slice 7 (2026-11-14)
+
+- **Slice 6 is merged:** pull request #1288 into `dev` at `6fef988dc`. The notes of its
+  approving review are this slice's first commit: a model change is audited as asked (a reset
+  as `default`), a task without a live run costs no subscription read, the text line of a
+  task's subscription is tested, and the Decisions say why task agents see labels and why the
+  Global Superagent keeps `task_switch` and `task_model`.
+- **Tests and code:** `the_superagent_reads_the_instance_and_a_superadmins_updates_it` was
+  written before the code and first run after it. The superadmin's four actions are run
+  through the function directly (the test server has no superadmin's Superagent); their
+  refusals are the functions' own on a server without an update helper.

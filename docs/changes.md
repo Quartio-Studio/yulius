@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent reads and updates Yulius itself (SPEC-487 slice 7, task #469). Asked whether
+  Yulius was up to date or loaded, or to update or restart it, it sent the person to
+  Settings. Now `instance` shows the build, an update offered or under way, the host's load,
+  memory and disk and the sessions, and for a superadmin `instance_update` checks, installs,
+  restarts or cancels with the buttons' functions and refusals. The Global Superagent is not
+  served `instance_update`.
+
 - The Superagent tells and changes what a task runs on (SPEC-487 slice 6, task #469). It
   could not say which subscription a task was on, move it, or change its model. Now
   `subscriptions` shows the pool as the Subscriptions panel does, `tasks_list` and `task_get`

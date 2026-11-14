@@ -83,6 +83,8 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("subscriptions", Reach::Project, Action::View),
     ("task_switch", Reach::Project, Action::Work),
     ("task_model", Reach::Project, Action::Work),
+    ("instance", Reach::Project, Action::View),
+    ("instance_update", Reach::Project, Action::Work),
     ("merge_queue", Reach::Project, Action::View),
     ("ci_prioritize", Reach::Project, Action::Work),
     ("task_archive", Reach::Project, Action::Work),

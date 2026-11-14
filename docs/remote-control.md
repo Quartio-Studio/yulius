@@ -254,6 +254,7 @@ the Secrets page's Variables tab, or `yulius vars`.
 | "Tell #12 the answer is yes" / "that request is settled" / "send the held prompt of #12" | `task_message`, `task_question_dismiss`, `task_held_prompt` | `yulius remote call task_question_dismiss '{"number": 12}'` |
 | "Merge #12" / "why isn't #12 merging?" / "what's in the merge queue?" | `task_merge`, `task_delivery` (`merge`), `merge_queue` | `yulius remote call task_merge '{"number": 12}'` |
 | "Which subscription is #12 on?" / "move it to Team Max" / "use Sonnet for #12" | `task_get`, `subscriptions`, `task_switch`, `task_model` | `yulius remote call task_switch '{"number": 12, "subscription": "Team Max"}'` |
+| "Is Yulius up to date?" / "update it" / "restart it" (a superadmin) | `instance`, `instance_update` | `yulius remote call instance_update '{"do": "check"}'` |
 | "Run #12's checks first" | `ci_prioritize` | `yulius remote call ci_prioritize '{"run_id": "…"}'` |
 | "Close out #12, it is merged" | `task_close` | `yulius remote call task_close '{"number": 12}'` |
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |

@@ -1659,6 +1659,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "instance",
+            "instance_update",
             "merge_queue",
             "sandbox_task_create",
             "sandbox_task_get",
@@ -6666,6 +6668,101 @@ async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResu
         ),
     ] {
         let result = support::mcp_tool(&f.h, "tok-run", tool, args).await?;
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            result["isError"] == true && text.contains("unknown tool"),
+            "{tool}: {result}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-487 INS-001 to INS-003 (wall 1): the Superagent reads the instance as Settings shows
+/// it (its build, the host's load, memory and disk, the sessions, an update offered or under
+/// way); a superadmin's Superagent checks for an update, updates, restarts and cancels with the
+/// buttons' own refusals, at once (the person's decision of 2026-11-13); anyone else is told
+/// it is a superadmin's.
+#[tokio::test]
+async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+
+    let (instance, is_error) = cockpit_tool(&f, &token, "instance", json!({})).await?;
+    assert!(!is_error, "{instance}");
+    assert!(instance["status"]["vm"].is_object(), "{instance}");
+    assert!(instance["status"]["sessions"].is_object(), "{instance}");
+    assert!(instance["update"]["current"].is_object(), "{instance}");
+
+    // Alice is no superadmin: every change is refused with whose it is.
+    for action in ["check", "update", "restart", "cancel"] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "instance_update", json!({"do": action})).await?;
+        assert!(
+            is_error && said(&refused).contains("only a superadmin"),
+            "{action}: {refused}"
+        );
+    }
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "instance_update", json!({"do": "reboot"})).await?;
+    assert!(is_error && said(&refused).contains("`do`"), "{refused}");
+
+    // A superadmin's: the buttons' functions, confirmed by asking; their refusals as they are
+    // (no update helper on this test server, nothing offered, nothing to cancel).
+    let mut root =
+        f.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    root.is_superadmin = true;
+    let ctx = yulius_app::auth::AuthContext {
+        user: root,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let checked =
+        f.h.app
+            .instance_update_for_person(&ctx, "check", None)
+            .await?;
+    assert!(checked["current"].is_object(), "{checked}");
+    for (action, why) in [
+        ("update", "no update is offered"),
+        ("restart", "not available on this server"),
+        ("cancel", "cancel"),
+    ] {
+        let refused =
+            f.h.app
+                .instance_update_for_person(&ctx, action, None)
+                .await
+                .err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|err| err.public_message().to_lowercase().contains(why)),
+            "{action}: {refused:?}"
+        );
+    }
+    // A task's agent is served neither.
+    support::seed_task(
+        &f.h,
+        "t-x",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-x", "tok-x").await?;
+    for tool in ["instance", "instance_update"] {
+        let result = support::mcp_tool(&f.h, "tok-x", tool, json!({"do": "check"})).await?;
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
         assert!(
             result["isError"] == true && text.contains("unknown tool"),
