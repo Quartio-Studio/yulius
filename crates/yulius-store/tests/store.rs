@@ -160,7 +160,7 @@ async fn task_numbers_and_status_cas() -> R {
         .transition_task(
             &a.id,
             Some(TaskStatus::Starting),
-            TaskStatus::Failed(yulius_domain::task::FailReason::StartTimeout),
+            TaskStatus::Failed(yulius_domain::task::FailReason::SpawnError),
             None,
             Timestamp(31),
         )
@@ -1090,7 +1090,7 @@ async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
 }
 
 #[tokio::test]
-async fn messages_inbox_read_tracking_and_steps_history() -> R {
+async fn task_messages_and_steps_history() -> R {
     let store = SqliteStore::open_in_memory()?;
     let (sid, uid) = seed(&store).await?;
     let a = store.insert_task(&task("t1", &sid, &uid)?).await?;
@@ -1109,16 +1109,11 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
     store
         .insert_message(&msg, std::slice::from_ref(&b.id))
         .await?;
-    assert_eq!(store.unread_count(&b.id).await?, 1);
-    assert_eq!(store.unread_count(&a.id).await?, 0);
-    assert_eq!(store.mark_delivered(&b.id, Timestamp(61)).await?, 1);
     assert_eq!(
-        store.inbox(&b.id, true, 10).await?.len(),
-        1,
-        "delivered is not read"
+        store.task_messages(&b.id, 10).await?,
+        std::slice::from_ref(&msg),
+        "the recipient's export has it"
     );
-    assert_eq!(store.mark_read(&b.id, Timestamp(62)).await?, 1);
-    assert!(store.inbox(&b.id, true, 10).await?.is_empty());
     assert_eq!(
         store.task_messages(&a.id, 10).await?.len(),
         1,

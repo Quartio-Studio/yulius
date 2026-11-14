@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    InboxEntry, MessageRecord, RecordReservation, ScopeClaimRecord, StepRecord, StepTiming,
+    MessageRecord, RecordReservation, ScopeClaimRecord, StepRecord, StepTiming,
 };
 use yulius_app::ports::store::CoordinationStore;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
@@ -53,14 +53,6 @@ fn message_from_row(row: &Row<'_>) -> rusqlite::Result<MessageRecord> {
         subject: row.get("subject")?,
         body: row.get("body")?,
         created_at: Timestamp(row.get("created_at")?),
-    })
-}
-
-fn inbox_from_row(row: &Row<'_>) -> rusqlite::Result<InboxEntry> {
-    Ok(InboxEntry {
-        message: message_from_row(row)?,
-        delivered: row.get::<_, Option<i64>>("delivered_at")?.is_some(),
-        read: row.get::<_, Option<i64>>("read_at")?.is_some(),
     })
 }
 
@@ -244,80 +236,17 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
-    async fn inbox(
-        &self,
-        task: &TaskId,
-        unread_only: bool,
-        limit: u32,
-    ) -> AppResult<Vec<InboxEntry>> {
-        let t = task.as_str().to_owned();
-        self.call(move |c| {
-            let filter = if unread_only { "AND r.read_at IS NULL" } else { "" };
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {MSG_COLS}, r.delivered_at, r.read_at FROM message_receipts r JOIN messages m ON m.id = r.message_id \
-                     WHERE r.task_id = ?1 {filter} ORDER BY m.created_at DESC LIMIT ?2"
-                ))
-                .map_err(db)?;
-            let rows = stmt.query_map(params![t, i64::from(limit)], inbox_from_row).map_err(db)?;
-            let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
-            out.reverse();
-            Ok(out)
-        })
-        .await
-    }
-
-    async fn mark_delivered(&self, task: &TaskId, at: Timestamp) -> AppResult<u32> {
-        let t = task.as_str().to_owned();
-        self.call(move |c| {
-            let n = c
-                .execute("UPDATE message_receipts SET delivered_at = ?1 WHERE task_id = ?2 AND delivered_at IS NULL", params![at.0, t])
-                .map_err(db)?;
-            Ok(u32::try_from(n).unwrap_or(u32::MAX))
-        })
-        .await
-    }
-
-    async fn mark_read(&self, task: &TaskId, at: Timestamp) -> AppResult<u32> {
-        let t = task.as_str().to_owned();
-        self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE message_receipts SET read_at = ?1, delivered_at = COALESCE(delivered_at, ?1) WHERE task_id = ?2 AND read_at IS NULL",
-                    params![at.0, t],
-                )
-                .map_err(db)?;
-            Ok(u32::try_from(n).unwrap_or(u32::MAX))
-        })
-        .await
-    }
-
-    async fn unread_count(&self, task: &TaskId) -> AppResult<u32> {
-        let t = task.as_str().to_owned();
-        self.call(move |c| {
-            let n: i64 = c
-                .query_row(
-                    "SELECT COUNT(*) FROM message_receipts WHERE task_id = ?1 AND read_at IS NULL",
-                    [t],
-                    |r| r.get(0),
-                )
-                .map_err(db)?;
-            Ok(to_u32(n))
-        })
-        .await
-    }
-
-    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<InboxEntry>> {
+    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {MSG_COLS}, r.delivered_at, r.read_at FROM messages m \
+                    "SELECT {MSG_COLS} FROM messages m \
                      LEFT JOIN message_receipts r ON r.message_id = m.id AND r.task_id = ?1 \
                      WHERE r.task_id IS NOT NULL OR m.from_task = ?1 ORDER BY m.created_at DESC LIMIT ?2"
                 ))
                 .map_err(db)?;
-            let rows = stmt.query_map(params![t, i64::from(limit)], inbox_from_row).map_err(db)?;
+            let rows = stmt.query_map(params![t, i64::from(limit)], message_from_row).map_err(db)?;
             let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
             out.reverse();
             Ok(out)

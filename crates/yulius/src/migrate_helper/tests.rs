@@ -365,7 +365,7 @@ fn a_plan_runs_the_command_once_and_reports_how_it_ended() -> TestResult {
     let said = env.said()?;
     assert_eq!(said.id, "0123abcd-plan");
     assert_eq!(said.action, MoveAction::Plan);
-    assert!(request.same_values(&said.values));
+    assert_eq!(said.values, request.values());
     assert_eq!(said.state, MoveHelperState::Ended);
     assert_eq!(said.exit_code, Some(0));
     assert_eq!(said.error, None);

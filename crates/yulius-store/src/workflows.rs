@@ -94,42 +94,6 @@ impl WorkflowStore for SqliteStore {
         .await
     }
 
-    async fn retire_workflow(
-        &self,
-        id: &str,
-        copy: Option<&WorkflowRecord>,
-        keep_references: bool,
-    ) -> AppResult<bool> {
-        let id = id.to_owned();
-        let copy = copy.cloned();
-        self.call(move |c| {
-            let tx = c.transaction().map_err(db)?;
-            let exists: i64 = tx
-                .query_row("SELECT COUNT(*) FROM workflows WHERE id = ?1", [&id], |r| {
-                    r.get(0)
-                })
-                .map_err(db)?;
-            if exists == 0 {
-                return Ok(false);
-            }
-            if let Some(copy) = &copy {
-                insert(&tx, copy)?;
-            }
-            if !keep_references {
-                tx.execute(
-                    "UPDATE automations SET workflow_id = NULL WHERE workflow_id = ?1",
-                    [&id],
-                )
-                .map_err(db)?;
-            }
-            tx.execute("DELETE FROM workflows WHERE id = ?1", [&id])
-                .map_err(db)?;
-            tx.commit().map_err(db)?;
-            Ok(true)
-        })
-        .await
-    }
-
     async fn insert_workflow(
         &self,
         workflow: &WorkflowRecord,

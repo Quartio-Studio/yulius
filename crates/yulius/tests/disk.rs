@@ -165,10 +165,10 @@ impl World {
         Ok(self
             .h
             .store
-            .inbox(&TaskId::parse(task)?, false, 50)
+            .task_messages(&TaskId::parse(task)?, 50)
             .await?
             .into_iter()
-            .map(|e| e.message.body)
+            .map(|m| m.body)
             .collect())
     }
 }

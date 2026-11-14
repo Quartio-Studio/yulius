@@ -459,7 +459,7 @@ turn records. A restart or a resume reads the run's own lines again, so they nev
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
 `stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
-`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
+`failed_spawn_error`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
@@ -875,8 +875,10 @@ containment, production in the sandbox's production holder, with its own network
 engine, on the host's read-only system), for at most the CI job
 timeout (plus up to as long again waiting for a held agent state), with the project's variables
 (production: only those its table names), `YULIUS_SANDBOX`, `YULIUS_STATE_<NAME>` for each named
-agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
-`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
+agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name),
+`YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`),
+`YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a
+name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
 allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
@@ -1860,7 +1862,7 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`,
-`{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
+`{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was

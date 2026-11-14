@@ -57,7 +57,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
       (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
       (merged, #1279);
   14. documents and shipped texts against the code (P1-P14, QB9);
-  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24;
+  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
+      #1281), the rest slice 25;
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
@@ -510,6 +511,46 @@ no code path reaches; documents, texts shown to agents and people, and code that
   built from a status and a tone, so they stay).
 - **W8 (low, review of slice 23).** A live document whose rejoin is refused for lack of access
   tried again every second for as long as the file stayed open.
+
+### Slice 25: Rust code nothing reaches
+
+Each item was searched again by name over `crates/`, `e2e/`, `tools/` and `scripts/` before it
+went; two of the auditors' items had gained a user since and stay.
+
+- **QC5 (task state machine).** `TaskEvent::StartFailed` and `SwitchAborted` were never fired
+  (the supervisor writes a failed start and an aborted switch as their outcome directly, and
+  takes every other change from `apply`), `FailReason::StartTimeout` and
+  `START_TIMEOUT_MS` never written or enforced (the ptyhost's own spawn timeout ends a start
+  as `failed_spawn_error`), and the module doc promised timeouts "enforced by the
+  supervisor". `StopReason::SwitchTimeout`, also reported, is written since slice 17.
+- **QC2 (contracts).** `UiEvent::SandboxUpdated` (never published) and its web handler,
+  `IdResponse`, `SESSION_KINDS`, `CiRunDetail`, five import path constants and two path
+  helpers, `DeviceApproveRequest`, `MoveRequest::same_values`, the hook reason `RESUME`, the
+  hook input's `permission_mode` and the hook output's `systemMessage`, `continue`,
+  `stopReason` and `suppressOutput`.
+- **QC2 (domain).** `agent_cli::KEEP`, `Nudge::is_pace`, `spec_slug` (production calls
+  `slug_or`), the usage helpers without a model family (`max_used_percent`, `window_reset`,
+  `known_total`, the wrappers `current_used_percent` and `available_at`) and
+  `TokenUsage::is_unknown` (tests only; they compare with `TokenUsage::UNKNOWN`).
+  `scope::pattern_matches` stays: the tests of `patterns_overlap` check it against it path by
+  path.
+- **QC7.** "Rotate now" without an account (`Trigger::Manual { account: None }`) was never
+  asked; its branch and `Refusal::NoCandidate` were reached by tests only.
+- **QA9.** The message inbox readers (`inbox`, `mark_delivered`, `mark_read`,
+  `unread_count`; nothing writes messages since SPEC-028), `set_account_error` (tests only),
+  `UsageSnapshot::turn_open_since` (written, never read) and `end_turn`'s unused time.
+  `insert_message` stays as the only way tests seed the old rows a project's export carries.
+- **QB4.** `retire_legacy_workflows` ran at every start for the two workflows seeded before
+  the catalog (2026-10-07..10); every instance started since 2026-10-11 has retired them.
+  The shutdown's CPU un-split, reported with it, also resets the sandboxes' CPU weights for
+  whatever runs next (SPEC-362 CSW-004): it stays, with a true comment.
+- **QB6.** `parse_port_range`, the `axum` feature `macros` and the `tower-http` features
+  `trace` and `limit`, the routers' unused `App` argument, `SkillSource::is_bundled` and
+  `same_repository`. `YULIUS_CD_KIND`, passed to every CD run and read by nothing in this
+  repository, is documented instead: a project's deploy script may read it.
+- Kept, as the audit's notes allowed: the write-only columns `step_events.from_status` and
+  `vault_enabled.enabled_by`/`enabled_at` (who and when, for a person reading the database;
+  dropping a column needs a migration for no behaviour).
 
 ## Requirements
 
@@ -964,6 +1005,11 @@ no code path reaches; documents, texts shown to agents and people, and code that
   pages carry no script and the same framing rule.
 - **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
   secret; a stored configuration that still names one parses as before.
+- **DED-001** Removing the items of slice 25 changes no behaviour a person or an agent sees:
+  the gate and the whole e2e suite pass with them gone, the API and its event stream keep
+  every field they sent; a workflow row seeded before the catalog that an instance still holds
+  is hidden by its default (`wf-feature`) or listed as a custom workflow (`wf-quick-task`), as
+  `docs/operations.md` says.
 - **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
   the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
   waiting, until the file is opened again.
@@ -996,7 +1042,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
-- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles
+- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
+- [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features
 
 ## Acceptance criteria
 
@@ -1539,14 +1586,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `X-Frame-Options: DENY` and its CSP (with `frame-ancestors 'none'`, the WebSocket source
   mapped) are kept beside `frame-ancestors 'self'`; `/__yulius/bridge.js` answers 404; a
   gzip document keeps `Content-Encoding: gzip` and its length, and the app saw the
-  browser's `Accept-Encoding: gzip, br`.
+  browser's `Accept-Encoding: gzip, br`. The proxy's refusal page (the landing's) has the
+  CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'` and no
+  script.
+- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
+  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
+  end in; a manual move names its account.
 - **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
   document is read-only and not busy, the text is the document's, and after 2.5 s it asked
   for no second rejoin. The same when the edit itself meets an ended document (409), its
   catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
-  one edit, two joins, and a close ends within a second. The proxy's refusal page (the
-  landing's) has the CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors
-  'self'` and no script.
+  one edit, two joins, and a close ends within a second.
 
 ## Test plan
 
@@ -1803,11 +1853,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 24: `yulius`
   `preview::responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin` (AC-135,
   a compressed document added to the fixture app; the test was named for the frames it no
-  longer allows), the handshake test's landing page (AC-136, the proxy's own pages) and the
+  longer allows), the handshake test's landing page (AC-135, the proxy's own pages) and the
   preview proxy's unit test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended`
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 25: no new test (DED-001: nothing behaves differently). The tests that only exercised
+  a deleted item went with it or now exercise what production calls
+  (`current_used_percent_for`, `available_at_for`, `slug_or`, `set_account_state`,
+  `task_messages`, value equality of a move's values); the gate and the whole e2e suite
+  (AC-137).
 
 ## Decisions
 
@@ -1871,6 +1926,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 25 (no decision record): a dead item goes rather than being wired in where the
+  auditors offered both. The two events could have been fired from the supervisor so that
+  `apply` would be the one table of every change; that moves no behaviour, and the two writes
+  of an outcome (a failed start, an aborted switch) are what the slices 17 to 21 tests pin, so
+  they stay direct and the module says which changes go through the table. A seam only tests used
+  goes when a production method sets the same state (`set_account_error` →
+  `set_account_state`); one that is the only way to make the state the export reads stays
+  (`insert_message`).
 - Slice 24 (no decision record: ADR-15 decided that nothing frames a preview; this slice
   removes what that left). A preview keeps `frame-ancestors 'self'` of Yulius's own rather
   than only the app's policy: a dev server rarely sets one, and a page that holds a person's
@@ -2267,11 +2330,11 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
 | P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 24 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 24 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 24 |
-| W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | slice 24 |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 15 |
+| W7 | web UI | Dead exports and CSS rules | low | fixed (slice 24) |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | fixed (slice 24) |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | fixed (slice 24) |
+| W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 25 |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
 | QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
 | QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
@@ -2476,8 +2539,8 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 
 - **Tests failing before the fix**: the proxied document came back without the app's
   `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
-  `Accept-Encoding` for a document; a refused rejoin was asked again every second (three joins
-  in 2.5 s instead of two). After the review: a 409 edit whose rejoin was refused left the
+  `Accept-Encoding` for a document; a refused rejoin was asked again every
+  second (more than the two joins expected in 2.5 s; the count is not in the log). After the review: a 409 edit whose rejoin was refused left the
   tab busy, unsaved, with "abcd" and a close that waited.
 - **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
   `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
@@ -2497,7 +2560,8 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   test; SPEC-002 (ADR-14's framing and bridge paragraphs) and SPEC-001 AC-BRW-7 still
   described the old proxy. Nits: `docs/operations.md` justified same-site preview origins by
   "the panel's frames" and the web README suggested `frame-src` for previews (pre-existing);
-  two lines over the wrap; the preview test's name. All answered in `92c51654d`: the
+  a line of `docs/api.md` over the wrap and a short line left in the group rule's doc; the
+  preview test's name. All answered in `92c51654d`: the
   forbidden rejoin calls `refused()` (the `gone` case), the landing's page is asserted, the
   two specs, operations and the README say what the proxy does now, the lines are rewrapped
   and the test renamed.
@@ -2508,3 +2572,47 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Not tested.** A real browser on a real preview (the proxy is tested over HTTP with a
   fixture app; framing and compression are header and body checks); a real GitHub manifest
   answer (the fake answers the field, as GitHub does, and it parses).
+- **Review, round 2** (the same session, head `3eddcf9eb`): approve; four nits, answered in
+  slice 25: two sentences of this Evidence (a join count no log records, and "two lines over
+  the wrap"), the proxy page's criterion in AC-136 instead of AC-135, and SPEC-002's "Cookies
+  in iframes" still arguing from the frames (pre-existing).
+- **Delivery.** Pull request #1281 merged into `dev` at `3864dc11b`, the approved head
+  `3eddcf9eb` squashed, whose own Yulius CI run passed.
+
+### Slice 25 (2026-11-14)
+
+- **No new test** (DED-001). In code and tests (`crates/`, `e2e/`, `Cargo.*`): 44 files, 840
+  lines out and 159 in, against `3864dc11b` (slice 24 merged).
+- **Gate.** The first run failed at `cargo fmt --check` (a blank line the removed imports
+  left) and the second at `cargo doc` (two links to removed import paths and a public doc
+  linking the now-private `slug_or`); both fixed. `scripts/dev ci` at `b8ce13c3b`: exit 0;
+  `4369 tests run: 4369 passed (1 slow), 17 skipped` (`target/audit/slice25/gate.log`; two
+  fewer than slice 24: the deleted tests of the workflow shim, and the tests that only
+  exercised a deleted item were folded into others); clippy, cargo-shear, cargo-deny and the
+  repository check passed.
+- **The whole e2e suite** at `b8ce13c3b`: one failure,
+  `navigation.e2e.ts` "a sandbox tab follows the pointer…": the test renamed a sandbox by
+  pushing a `sandbox.updated` event, which the server never sends and whose handler this slice
+  removed. The test now pushes `resync`, as the server does, and waits for the page to read
+  the sandboxes again; the drag-time check (SMO-004) holds on that real path: 83 files
+  passed, 1 skipped; 1025 tests passed (`target/audit/slice25/e2e-all.log`); then, at
+  `fbc08fa12` (the test's fix), `navigation.e2e.ts` and `home.e2e.ts`: 15 passed (`e2e-r.log`).
+- **Review, round 1** (a fresh session, head `f2874b71d`): request changes. One major in own
+  code: a second e2e test, "a sandbox tab dragged past either end of the row stops at its
+  border", still renamed a sandbox with the removed `sandbox.updated`, so it passed only when an
+  unrelated reload of the sandboxes came after the rename. Minor: the new module doc of
+  `task.rs` said the supervisor writes a run's statuses itself, while it takes every change but
+  two from `apply` (the Decisions said the same); "`TokenUsage::is_unknown` … is read by the
+  harness" (tests only); SPEC-002 and SPEC-001 AUT-006 and AC-AUT-5 still described the
+  removed retirement, and `docs/operations.md` and DED-001 said a leftover "Feature" row could be
+  deleted in Settings, while the default answering to its id hides it. Nits: an e2e comment,
+  four lines over the wrap, a store test's name, the observe tests' comparison. All answered in
+  `cf89b680d`: the test pushes `resync`; the module doc and the Decisions say which changes go
+  through the table; `is_unknown` is gone; the specs and operations say what an instance keeps
+  (a hidden `wf-feature`, a listed `wf-quick-task`).
+- **Gate after it.** `scripts/dev ci` at `cf89b680d`: exit 0; `4369 tests run: 4369 passed (1
+  slow), 17 skipped` (`target/audit/slice25/gate2.log`). The whole e2e suite at the same head:
+  84 files passed, 1 skipped; 1026 tests passed (`target/audit/slice25/e2e-all2.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** An instance last started before 2026-10-11 (what it keeps of its two old
+  workflows is read from the catalog's rule, as `docs/operations.md` says).

@@ -18,7 +18,6 @@ const STOP_LABELS = {
 
 const FAIL_LABELS = {
   failed_spawn_error: 'Failed to start',
-  failed_start_timeout: 'Failed (start timeout)',
   failed_precondition: 'Failed (precondition)',
   failed_no_account: 'Failed (no Claude account)',
 };
@@ -35,7 +34,6 @@ const ENDED_MESSAGES = {
   // Idle sessions end too (a reboot ends every one): it does not say the agent was working.
   stopped_server_lost: { tone: 'warn', text: `${BRAND.name} restarted, which ended this session. ${SAFE}` },
   failed_spawn_error: { tone: 'error', text: 'Claude Code couldn’t start — usually a subscription must sign in again, or no slot is free.', accounts: true, retry: true },
-  failed_start_timeout: { tone: 'error', text: 'Claude Code took too long to start — usually a subscription must sign in again, or the machine is busy.', accounts: true, retry: true },
   failed_precondition: { tone: 'error', text: 'The task couldn’t start because the sandbox is not ready yet.', retry: true },
   failed_no_account: { tone: 'error', text: 'The task couldn’t start because no Claude account was usable. An instance administrator connects one, or signs one in again, in Subscriptions; then try again.', accounts: true, retry: true },
 };

@@ -1104,7 +1104,7 @@ impl App {
             && task.activity != Some(next)
         {
             if task.activity == Some(Activity::Working) {
-                self.runtime(task_id).end_turn(self.now());
+                self.runtime(task_id).end_turn();
             }
             let _ = self
                 .deps
@@ -1168,7 +1168,7 @@ impl App {
         if runtime.goal_retry_armed.load(Ordering::SeqCst) {
             runtime.verdict_stop_ms.clear();
             runtime.resumed_turn.store(false, Ordering::SeqCst);
-            runtime.end_turn(self.now());
+            runtime.end_turn();
             return;
         }
         // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
@@ -1199,7 +1199,7 @@ impl App {
         let working =
             task.status == TaskStatus::Running && task.activity == Some(Activity::Working);
         if working {
-            runtime.end_turn(self.now());
+            runtime.end_turn();
             let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
             if let Err(err) = self.set_task_activity(&task, next).await {
                 tracing::warn!(task = %task_id, error = %err, "could not settle the task");
@@ -1240,7 +1240,7 @@ impl App {
         // prompt of the turn read late does not reopen it.
         runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
-        runtime.end_turn(self.now());
+        runtime.end_turn();
         if let Err(err) = self.settle_clean_turn(&task).await {
             tracing::warn!(task = %task_id, error = %err, "could not settle the task");
         }

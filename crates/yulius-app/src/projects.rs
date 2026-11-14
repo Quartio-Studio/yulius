@@ -1103,8 +1103,7 @@ impl App {
                 .task_messages(&task.id, 1_000)
                 .await?
                 .into_iter()
-                .map(|e| {
-                    let m = e.message;
+                .map(|m| {
                     serde_json::json!({
                         "from_task": m.from_task.map(|t| t.as_str().to_owned()),
                         "from_user": m.from_user.map(|u| u.as_str().to_owned()),

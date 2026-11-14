@@ -5,19 +5,19 @@
 //! The `yulius onboard` CLI (alias `yulius import`) authenticates with `Authorization: Bearer
 //! yul_…` (obtained through the device approval flow, [`DeviceStart`]/[`DevicePoll`]) and then:
 //!
-//! 0. `POST` [`ONBOARD_PLAN_PATH`] with [`OnboardPlanRequest`] → [`OnboardPlan`]: the sandbox of
+//! 0. `POST /api/onboard/plan` with [`OnboardPlanRequest`] → [`OnboardPlan`]: the sandbox of
 //!    the repository (and its onboarding state, what is pending), whether the caller may create
 //!    it, and for every offered session fingerprint whether the server already holds it
 //!    (`unchanged`), holds an older version (`changed`) or not at all (`new`). The CLI then
 //!    offers only new and changed sessions (IMP-006). Sessions are redacted on the computer
 //!    before they are fingerprinted (IMP-008), so the fingerprint is the digest of what is sent.
-//! 1. `POST` [`CREATE_IMPORT_PATH`] with [`CreateImportRequest`] → [`CreateImportResponse`]. The
+//! 1. `POST /api/import` with [`CreateImportRequest`] → [`CreateImportResponse`]. The
 //!    server verifies the repository and the caller's permission (IMP-002), creates the job and
 //!    lists every manifest file it still needs together with the bytes it already holds. Files
 //!    are content addressed by `sha256`, so a file the server already stored for this repository
 //!    (from an earlier import) is not listed, and a partially received file reports its received
 //!    length so the client resumes there (IMP-001, IMP-006).
-//! 2. `PUT /api/import/{job}/files/{name}?offset=N` (see [`file_chunk_path`]) with the raw chunk
+//! 2. `PUT /api/import/{job}/files/{name}?offset=N` (`job` percent-encoded) with the raw chunk
 //!    bytes as the body (at most [`MAX_CHUNK_BYTES`]) and the lowercase hex SHA-256 of the body in
 //!    the [`CHUNK_SHA256_HEADER`] header → [`FileProgress`]. `name` is sent as one percent-encoded
 //!    path segment (a `/` inside a name is `%2F`). Chunks are idempotent by
@@ -25,7 +25,7 @@
 //!    acknowledged with the current progress; an offset beyond the received length is a
 //!    `409 conflict`. A chunk whose digest does not match is `422 invalid`. When the received
 //!    length reaches the manifest size, the server verifies the whole file's `sha256`.
-//! 3. `POST /api/import/{job}/complete` (see [`complete_path`]) → [`ImportResult`] once every
+//! 3. `POST /api/import/{job}/complete` → [`ImportResult`] once every
 //!    file is complete. Applying is idempotent: each session becomes (or replaces) a read-only
 //!    session document of the sandbox, attributed to the caller (SES-001); a session whose
 //!    transcript is unchanged is counted in [`ImportResult::sessions_unchanged`].
@@ -55,8 +55,6 @@ pub const MAX_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_SESSION_FILE_BYTES: u64 = 128 * 1024 * 1024;
 /// Upper bound on the sessions of one manifest or plan request.
 pub const MAX_SESSIONS_PER_IMPORT: usize = 2_000;
-/// Path of the onboarding plan endpoint (`POST` [`OnboardPlanRequest`]).
-pub const ONBOARD_PLAN_PATH: &str = "/api/onboard/plan";
 /// Upper bound on the byte length of a [`FileRef::name`].
 pub const MAX_FILE_NAME_BYTES: usize = 255;
 /// Upper bound on the byte length of a session identifier.
@@ -65,32 +63,10 @@ pub const MAX_SESSION_ID_BYTES: usize = 128;
 pub const MAX_TITLE_CHARS: usize = 80;
 /// Request header carrying the lowercase hex SHA-256 of a chunk body.
 pub const CHUNK_SHA256_HEADER: &str = "X-Chunk-Sha256";
-/// Path of the job creation endpoint (`POST`).
-pub const CREATE_IMPORT_PATH: &str = "/api/import";
-/// Path of the device login start endpoint (`POST`, no body).
-pub const DEVICE_START_PATH: &str = "/api/device/start";
-/// Path of the device login poll endpoint (`POST` [`DevicePollRequest`]).
-pub const DEVICE_POLL_PATH: &str = "/api/device/poll";
-/// Path of the device approval endpoint (`POST` [`DeviceApproveRequest`], web session).
-pub const DEVICE_APPROVE_PATH: &str = "/api/device/approve";
 /// Directory prefix of file entries inside the snapshot archive.
 pub const SNAPSHOT_FILES_PREFIX: &str = "files/";
 /// Name of the snapshot archive entry listing deleted paths (NUL-terminated).
 pub const SNAPSHOT_DELETED_ENTRY: &str = "DELETED";
-
-/// Path of the chunk endpoint before percent-encoding, for documentation and server routing:
-/// `/api/import/{job}/files/{name}`. Clients must percent-encode `job` and `name` as single path
-/// segments; the server's router decodes them.
-#[must_use]
-pub fn file_chunk_path(job: &str, name: &str) -> String {
-    format!("/api/import/{job}/files/{name}")
-}
-
-/// Path of the completion endpoint: `/api/import/{job}/complete`.
-#[must_use]
-pub fn complete_path(job: &str) -> String {
-    format!("/api/import/{job}/complete")
-}
 
 /// Everything one `yulius import` run offers the server (version [`IMPORT_MANIFEST_VERSION`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,15 +379,6 @@ impl fmt::Debug for DevicePoll {
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .finish()
     }
-}
-
-/// `POST /api/device/approve` body (web session with CSRF header).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceApproveRequest {
-    /// The code shown by the CLI.
-    pub user_code: String,
-    /// `true` approves, `false` denies.
-    pub approve: bool,
 }
 
 /// A manifest that violates this contract.
@@ -816,11 +783,6 @@ mod tests {
             r#"{"device_code":"d","user_code":"ABCD-EFGH","verification_url":"https://y/device","interval_s":5,"expires_in_s":600}"#,
         )?;
         assert_eq!(start.interval_s, 5);
-        assert_eq!(complete_path("j1"), "/api/import/j1/complete");
-        assert_eq!(
-            file_chunk_path("j1", "repo.bundle"),
-            "/api/import/j1/files/repo.bundle"
-        );
         Ok(())
     }
 }

@@ -60,8 +60,6 @@ pub mod session_end {
     pub const CLEAR: &str = "clear";
     /// `/logout`.
     pub const LOGOUT: &str = "logout";
-    /// Another session was resumed in the same process (`/resume`).
-    pub const RESUME: &str = "resume";
 }
 
 /// The JSON a CLI sends to a hook command. Every field is optional and unknown fields are
@@ -81,9 +79,6 @@ pub struct HookInput {
     /// Event name, for example `Stop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_event_name: Option<String>,
-    /// Permission mode of the session (Claude Code).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_mode: Option<String>,
     /// `SessionStart` source such as `startup`, `resume`, `clear` or `compact`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -189,18 +184,6 @@ pub struct HookOutput {
     /// Event-specific output (`hookSpecificOutput`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook_specific_output: Option<HookSpecificOutput>,
-    /// Message shown to the user (`systemMessage`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_message: Option<String>,
-    /// `false` stops the agent entirely (`continue`).
-    #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
-    pub continue_: Option<bool>,
-    /// Reason shown when `continue` is `false` (`stopReason`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<String>,
-    /// Hide the hook's stdout from the transcript view (`suppressOutput`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suppress_output: Option<bool>,
 }
 
 /// Decision value that blocks the action.
@@ -356,10 +339,6 @@ mod tests {
                 additional_context: Some("briefing".into()),
                 ..HookSpecificOutput::default()
             }),
-            system_message: Some("note".into()),
-            continue_: Some(true),
-            stop_reason: Some("why".into()),
-            suppress_output: Some(false),
         };
         let value = serde_json::to_value(&output)?;
         assert_eq!(
@@ -367,11 +346,7 @@ mod tests {
             json!({
                 "decision": "block",
                 "reason": "spec missing",
-                "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "briefing"},
-                "systemMessage": "note",
-                "continue": true,
-                "stopReason": "why",
-                "suppressOutput": false
+                "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "briefing"}
             })
         );
         assert_eq!(serde_json::from_value::<HookOutput>(value)?, output);

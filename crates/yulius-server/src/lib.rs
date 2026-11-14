@@ -25,7 +25,7 @@ pub type AppState = Arc<App>;
 /// Router for the public listener (UI and API).
 pub fn public_router(app: Arc<App>) -> Router {
     let cors = cors_layer(&app.config.allowed_origins);
-    let router = routes::public(app.clone())
+    let router = routes::public()
         .fallback(assets::serve)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(axum::middleware::map_response_with_state(
@@ -106,7 +106,7 @@ fn cors_layer(origins: &[String]) -> Option<tower_http::cors::CorsLayer> {
 
 /// Router for the loopback-only internal listener (MCP, hooks, git credentials).
 pub fn internal_router(app: Arc<App>) -> Router {
-    routes::internal(app.clone())
+    routes::internal()
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
 }
