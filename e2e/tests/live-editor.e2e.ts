@@ -472,7 +472,26 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     await wait(1500);
     const lost = { text: lostText, readOnly: lostDoc.readOnly, busy: lostDoc.busy, joins: lostJoins, gets: lostGets };
     lostDoc.destroy();
-    return { refused, after, closedFast, rejoined, csrf, lost };
+
+    // The catch-up says the document ended, and joining it again is refused: while the joins
+    // are refused the document stays read-only, and typing is not kept.
+    let endedText = 'abc';
+    let endedJoins = 0;
+    const endedApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { endedJoins += 1; if (endedJoins > 1) throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); return { session: 's4', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' });
+      },
+      get: async () => { throw Object.assign(new Error('ended'), { status: 409, code: 'conflict' }); },
+    };
+    const endedDoc = createLiveDoc({ api: endedApi, sid: 'sb', root: 'task:t1', path: 'e', client: 'page', user: 'u', canWrite: () => true, getText: () => endedText, onRemote() {}, onReset: (t: string) => { endedText = t; }, onState() {}, onSynced() {} });
+    await endedDoc.join();
+    endedText = 'abcd'; endedDoc.local([3, 'd']);
+    await until(() => endedJoins > 1);
+    endedText = 'abcY'; endedDoc.local([3, 'Y']);
+    const ended = { readOnly: endedDoc.readOnly, busy: endedDoc.busy, text: endedText };
+    endedDoc.destroy();
+    return { refused, after, closedFast, rejoined, csrf, lost, ended };
   });
   expect(result).toEqual({
     refused: { text: 'abc', readOnly: true, busy: false, saved: true, told: true },
@@ -481,6 +500,7 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     rejoined: { joins: 2, readOnly: false },
     csrf: { edits: 2, readOnly: false, text: 'abcd' },
     lost: { text: 'abc', readOnly: true, busy: false, joins: 1, gets: 1 },
+    ended: { readOnly: true, busy: false, text: 'abc' },
   });
 });
 
