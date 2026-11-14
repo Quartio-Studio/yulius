@@ -575,13 +575,13 @@ fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
     if ctx.acts_for_person() {
         Ok(())
     } else {
-        Err(AppError::Forbidden(
-            "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate \
-             token (Settings → Connect your local agent); a `yulius login` token cannot start it"
-                .into(),
-        ))
+        Err(AppError::Forbidden(STARTS_WITH_A_PERSON.into()))
     }
 }
+
+/// What a caller that is not a person is told when it would start onboarding. A caller that
+/// answers its own way (the Superagent's `task_restart`, SPEC-487) recognises the refusal by it.
+pub(crate) const STARTS_WITH_A_PERSON: &str = "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate token (Settings → Connect your local agent); a `yulius login` token cannot start it";
 
 impl App {
     /// Continuing the onboarding task of a `pending` sandbox starts onboarding, so it needs a

@@ -51,7 +51,7 @@ pub(crate) fn action(name: &str) -> Option<Action> {
 }
 
 /// A tool's input schema: an object of `properties`, `required` ones named, nothing else taken.
-pub(crate) fn schema(properties: Value, required: &[&str]) -> Value {
+fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
@@ -89,46 +89,80 @@ pub(crate) fn record<T: serde::Serialize>(value: &T) -> AppResult<Value> {
     serde_json::to_value(value).map_err(AppError::internal)
 }
 
-/// What a call was about, for its audit entry: the task, run or environment its arguments name
-/// (none of them a secret).
-pub(crate) fn subject(args: &Value) -> Value {
+/// The longest id of a task or a run that an audit entry names.
+const SUBJECT_ID_MAX: usize = 64;
+
+/// What a call of the person's tool `name` was about, for its audit entry: the task, the run
+/// or the environment that tool takes, and only when the argument has the shape of one (a task
+/// number or id, a run id, an environment name). The entry is written for refused calls too
+/// and before anything checked the arguments, so nothing else of them goes into it: an audit
+/// entry never holds text of the caller's choosing (as the remote MCP's never does, RMT-015).
+pub(crate) fn subject(name: &str, args: &Value) -> Value {
+    let id = |key: &str| {
+        args.get(key).and_then(Value::as_str).filter(|id| {
+            !id.is_empty()
+                && id.len() <= SUBJECT_ID_MAX
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+    };
     let mut about = serde_json::Map::new();
-    if let Some(task) = args
-        .get("number")
-        .filter(|number| number.is_u64())
-        .or_else(|| args.get("task_id").filter(|id| id.is_string()))
-    {
-        about.insert("task".into(), task.clone());
-    }
-    for (key, named) in [("run_id", "run"), ("environment", "environment")] {
-        if let Some(value) = args.get(key).filter(|value| value.is_string()) {
-            about.insert(named.into(), value.clone());
+    match name {
+        "task_restart" | "task_pause" | "task_unpause" | "task_start_now" => {
+            if let Some(number) = args.get("number").and_then(Value::as_u64) {
+                about.insert("task".into(), json!(number));
+            } else if let Some(task) = id("task_id") {
+                about.insert("task".into(), json!(task));
+            }
         }
+        "ci_rerun" | "ci_cancel" => {
+            if let Some(run) = id("run_id") {
+                about.insert("run".into(), json!(run));
+            }
+        }
+        "cd_deploy" => {
+            if let Some(environment) = args
+                .get("environment")
+                .and_then(Value::as_str)
+                .and_then(yulius_domain::cd::env_name)
+            {
+                about.insert("environment".into(), json!(environment));
+            }
+        }
+        _ => {}
     }
     Value::Object(about)
 }
 
-/// What `task_restart` answers when Continue refused task #`number`, which is `status`: the
-/// page's refusal with what to do instead, by what the task is doing. A task that runs is
-/// stopped first; one that waits to start is started with `task_start_now` (stopping it would
-/// cancel it); the onboarding of a project that has not started it is the person's to start
-/// (SPEC-051 OBD-002: their Superagent's context is neither their browser nor a token they
-/// made for an agent).
-fn restart_refusal(err: AppError, number: u32, status: TaskStatus) -> AppError {
-    match err {
-        AppError::Conflict(why) if why.starts_with("the task is") => {
-            AppError::Conflict(match status {
-                TaskStatus::Queued | TaskStatus::Chained | TaskStatus::Prepared => format!(
-                    "task #{number} has not started yet ({}): task_start_now starts it now",
-                    status.as_str()
-                ),
-                TaskStatus::WaitingCapacity => format!(
-                    "task #{number} waits for a subscription with capacity and goes on by itself"
-                ),
-                _ => format!("{why}: stop it first (task_stop), then restart it"),
-            })
+/// What `task_restart` answers for task #`number`, which is not resting but `status`, so that
+/// Continue would refuse it: what to do instead, by what the task is doing. A task that runs
+/// is stopped first; one that waits in a chain or prepared is started with `task_start_now`
+/// (stopping it would cancel it); one that waits for a free session or for capacity goes on
+/// by itself.
+fn not_resting(number: u32, status: TaskStatus) -> AppError {
+    let what = status.as_str();
+    AppError::Conflict(match status {
+        TaskStatus::Chained | TaskStatus::Prepared => {
+            format!("task #{number} waits to start ({what}): task_start_now starts it now")
         }
-        AppError::Forbidden(why) if why.starts_with("Start onboarding on the sandbox page") => {
+        TaskStatus::Queued => {
+            format!("task #{number} waits for a free session (queued) and starts by itself")
+        }
+        TaskStatus::WaitingCapacity => {
+            format!("task #{number} waits for a subscription with capacity and goes on by itself")
+        }
+        _ => format!("the task is {what}: stop it first (task_stop), then restart it"),
+    })
+}
+
+/// What `task_restart` answers when Continue refused the onboarding task of a project that has
+/// not started onboarding (SPEC-051 OBD-002: a person starts it, and their Superagent's
+/// context is neither their browser nor a token they made for an agent): that, without the
+/// page's words about tokens. Every other refusal is the page's own.
+fn restart_refusal(err: AppError, number: u32) -> AppError {
+    match err {
+        AppError::Forbidden(why) if why == crate::onboarding::STARTS_WITH_A_PERSON => {
             AppError::Forbidden(format!(
                 "task #{number} is this project's onboarding, which has not started: a person \
                  starts it with Start onboarding on the project's page. Tell them so; nothing \
@@ -156,7 +190,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "task_restart",
-            "Continue (restart) a task whose session ended: stopped, crashed, lost with the server, failed or closed, as Continue in the web UI. Its session continues where it was, and it takes messages again. A task that runs (also one the list shows Done or Answered, whose session is idle: it takes a message as it is) must be stopped first (task_stop); one that waits to start is started with task_start_now. The task's owner only.",
+            "Continue (restart) a task whose session ended: stopped, crashed, lost with the server, failed or closed, as Continue in the web UI. Its session continues where it was, and it takes messages again. A task that runs (also one the list shows Done or Answered, whose session is idle: it takes a message as it is) must be stopped first (task_stop); one that waits in a chain or prepared is started with task_start_now; one that is queued starts by itself. The task's owner only.",
             task_ref.clone(),
             &[],
         ),
@@ -247,10 +281,15 @@ impl App {
                 let task = self.agent_task_ref(project, args).await?;
                 let id = task.id.as_str();
                 let summary = match name {
+                    // Continue takes a resting task; what else the task is doing decides
+                    // what its person is told to do instead.
+                    "task_restart" if !task.status.is_resting() => {
+                        return Err(not_resting(task.number, task.status));
+                    }
                     "task_restart" => self
                         .continue_task(ctx, id, &ContinueTask { account_id: None })
                         .await
-                        .map_err(|err| restart_refusal(err, task.number, task.status))?,
+                        .map_err(|err| restart_refusal(err, task.number))?,
                     "task_pause" => self.pause_task_for_person(ctx, id).await?,
                     "task_unpause" => self.resume_task_for_person(ctx, id).await?,
                     _ => self.start_chained_now(ctx, id).await?,
@@ -310,20 +349,18 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{PERSON_TOOLS, descriptors, restart_refusal, subject};
+    use super::{PERSON_TOOLS, descriptors, not_resting, restart_refusal, subject};
     use crate::error::AppError;
     use serde_json::json;
-    use yulius_domain::task::{StopReason, TaskStatus};
+    use yulius_domain::task::TaskStatus;
 
-    /// SPEC-487 SAR-001 (review of slice 2, F9, F12): what `task_restart` says when Continue
-    /// refuses depends on what the task is doing. "Stop it first" for a task that waits to
-    /// start would cancel it.
+    /// SPEC-487 SAR-005 (review of slice 2, F9 and R2-3): what `task_restart` says for a task
+    /// that is not resting depends on what the task is doing. "Stop it first" for a task that
+    /// waits to start would cancel it, and `task_start_now` takes a chained or prepared task
+    /// only: a queued one starts by itself.
     #[test]
-    fn a_refused_continue_says_what_to_do_by_the_tasks_state() {
-        let refused = |status: TaskStatus| {
-            let conflict = AppError::Conflict(format!("the task is {}", status.as_str()));
-            restart_refusal(conflict, 7, status).public_message()
-        };
+    fn a_task_that_is_not_resting_is_told_what_to_do_by_its_state() {
+        let refused = |status: TaskStatus| not_resting(7, status).public_message();
         for live in [
             TaskStatus::Running,
             TaskStatus::Starting,
@@ -332,59 +369,103 @@ mod tests {
         ] {
             let said = refused(live);
             assert!(
-                said.contains("stop it first (task_stop), then restart it"),
+                said.starts_with("the task is ")
+                    && said.ends_with(": stop it first (task_stop), then restart it"),
                 "{said}"
             );
         }
-        for waiting in [
-            TaskStatus::Queued,
-            TaskStatus::Chained,
-            TaskStatus::Prepared,
-        ] {
+        for waiting in [TaskStatus::Chained, TaskStatus::Prepared] {
             let said = refused(waiting);
             assert!(
                 said.contains("task_start_now starts it now") && !said.contains("task_stop"),
                 "{said}"
             );
         }
-        let said = refused(TaskStatus::WaitingCapacity);
-        assert!(
-            said.contains("goes on by itself") && !said.contains("task_stop"),
-            "{said}"
-        );
-        // The onboarding of a project that has not started it: the person's, said without the
-        // words about tokens the page's refusal has for a command line.
-        let onboarding = AppError::Forbidden(
-            "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate token (Settings → Connect your local agent); a `yulius login` token cannot start it".into(),
-        );
-        let said = restart_refusal(onboarding, 1, TaskStatus::Stopped(StopReason::Cancelled))
-            .public_message();
+        for by_itself in [TaskStatus::Queued, TaskStatus::WaitingCapacity] {
+            let said = refused(by_itself);
+            assert!(
+                said.contains("by itself")
+                    && !said.contains("task_stop")
+                    && !said.contains("task_start_now"),
+                "{said}"
+            );
+        }
+    }
+
+    /// SPEC-487 SAR-005 (review of slice 2, F12 and R2-4): the onboarding of a project that
+    /// has not started it is a person's to start; the Superagent is told so without the words
+    /// about tokens that the page's refusal has for a command line. The refusal is recognised
+    /// by the one constant the page's check answers with.
+    #[test]
+    fn a_refused_continue_of_an_onboarding_says_who_starts_it() {
+        let onboarding = AppError::Forbidden(crate::onboarding::STARTS_WITH_A_PERSON.into());
+        let said = restart_refusal(onboarding, 1).public_message();
         assert!(
             said.contains("a person starts it with Start onboarding on the project's page")
                 && !said.contains("token"),
             "{said}"
         );
         // Every other refusal is the page's, as it is.
-        let other = restart_refusal(
-            AppError::Forbidden("Task #7 is @carol's".into()),
-            7,
-            TaskStatus::Stopped(StopReason::Cancelled),
-        );
+        let other = restart_refusal(AppError::Forbidden("Task #7 is @carol's".into()), 7);
         assert_eq!(other.public_message(), "Task #7 is @carol's");
     }
 
-    /// The audit entry of a call names what it was about, and nothing else of its arguments.
+    /// SPEC-487 SAR-002 (review of slice 2, R2-1): the audit entry of a call names the task,
+    /// run or environment its tool takes, when the argument has the shape of one, and nothing
+    /// else: never text of the caller's choosing.
     #[test]
     fn a_calls_subject_is_its_task_run_or_environment() {
-        assert_eq!(subject(&json!({"number": 12})), json!({"task": 12}));
-        assert_eq!(subject(&json!({"task_id": "t-1"})), json!({"task": "t-1"}));
-        assert_eq!(subject(&json!({"run_id": "r-9"})), json!({"run": "r-9"}));
         assert_eq!(
-            subject(&json!({"environment": "dev", "confirm": "x"})),
+            subject("task_pause", &json!({"number": 12})),
+            json!({"task": 12})
+        );
+        assert_eq!(
+            subject("task_restart", &json!({"task_id": "t-1"})),
+            json!({"task": "t-1"})
+        );
+        assert_eq!(
+            subject("ci_cancel", &json!({"run_id": "r-9"})),
+            json!({"run": "r-9"})
+        );
+        assert_eq!(
+            subject("cd_deploy", &json!({"environment": "dev", "confirm": "x"})),
             json!({"environment": "dev"})
         );
-        assert_eq!(subject(&json!({"number": "12"})), json!({}));
-        assert_eq!(subject(&json!(null)), json!({}));
+        // An argument that is not the tool's, or has not the shape of an id or a name, is
+        // left out, however long it is.
+        let long = "x".repeat(1 << 20);
+        for (tool, args) in [
+            (
+                "task_pause",
+                json!({"number": 1, "environment": long.clone()}),
+            ),
+            ("task_pause", json!({"number": 1, "run_id": "r-9"})),
+            (
+                "ci_cancel",
+                json!({"run_id": "r-9", "task_id": long.clone()}),
+            ),
+        ] {
+            let about = subject(tool, &args).to_string();
+            assert!(about.len() < 40, "{tool}: {} bytes", about.len());
+        }
+        for (tool, args) in [
+            ("task_pause", json!({"task_id": long.clone()})),
+            ("task_pause", json!({"task_id": "a b"})),
+            ("task_pause", json!({"number": "12"})),
+            ("ci_rerun", json!({"run_id": long.clone()})),
+            ("ci_rerun", json!({"run_id": "r\n9"})),
+            ("cd_deploy", json!({"environment": long})),
+            ("cd_deploy", json!({"environment": "Dev Prod"})),
+            ("cd_status", json!({"run_id": "r-9"})),
+            ("task_pause", json!(null)),
+        ] {
+            assert_eq!(
+                subject(tool, &args),
+                json!({}),
+                "{tool} {}",
+                args.to_string().len()
+            );
+        }
     }
 
     #[test]
