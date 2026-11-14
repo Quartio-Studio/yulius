@@ -1390,7 +1390,7 @@ impl App {
     ) -> AppResult<Option<Placed>> {
         let trigger = match requested {
             Some(id) => Trigger::Manual {
-                account: Some(id.clone()),
+                account: id.clone(),
             },
             None => Trigger::Start,
         };
@@ -1697,7 +1697,7 @@ impl App {
         };
         let input = self.rotation_input(task, None).await?;
         let asked = Trigger::Manual {
-            account: Some(chosen.clone()),
+            account: chosen.clone(),
         };
         if !matches!(rotation::decide(&input, asked).0, Decision::Stay) {
             return Ok(Some(chosen));
