@@ -1985,6 +1985,15 @@ async fn the_welcome_page_names_the_sandbox_and_links_its_listening_ports() -> T
     drop(listener);
     let (_, _, body) = get_raw(&h.internal, "/browser/welcome?sandbox=s9", &anonymous, &[]).await?;
     assert!(String::from_utf8(body)?.contains("No dev server is listening"));
+    // Its refresh draws the same list (one writer since SPEC-483 slice 29).
+    let (_, _, ports) = get_raw(
+        &h.internal,
+        "/browser/welcome/ports?sandbox=s9",
+        &anonymous,
+        &[],
+    )
+    .await?;
+    assert!(String::from_utf8(ports)?.starts_with("<p class=\"muted\">No dev server is listening"));
     let (status, _, _) = get_raw(
         &h.internal,
         "/browser/welcome?sandbox=nope",

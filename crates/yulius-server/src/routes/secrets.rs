@@ -23,7 +23,7 @@ use yulius_contracts::api::secrets::{
 use yulius_contracts::scrub::{FingerprintRequest, FingerprintSet, RedactionReport};
 
 use crate::AppState;
-use crate::auth::Auth;
+use crate::auth::{Auth, bearer};
 use crate::error::{ApiError, ApiResult};
 
 /// Public routes of the vault.
@@ -355,15 +355,6 @@ async fn agent_reveal(
     Ok(revealed(
         app.reveal_agent_secret(&ctx, &id, &request).await?,
     ))
-}
-
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
 }
 
 async fn fingerprints(

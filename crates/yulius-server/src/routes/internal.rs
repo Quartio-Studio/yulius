@@ -11,16 +11,8 @@ use yulius_app::hooks::HookReply;
 use yulius_contracts::hooks::{HookInput, SENT_AT_HEADER, StatusLineInput, events};
 
 use crate::AppState;
+use crate::auth::bearer;
 use crate::error::bare_status;
-
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-}
 
 /// Hook forwarding: the body is the CLI's hook JSON; the response body is printed by the hook
 /// client as the hook's stdout (empty = no decision). `202 Accepted` with `Retry-After` holds
@@ -177,6 +169,20 @@ fn escape(text: &str) -> String {
         .collect()
 }
 
+/// The welcome page's list of a sandbox's listening ports (`first`–`last` its range), or how to
+/// start a dev server when none listens: the page and its refresh draw the same.
+fn ports_html(first: u16, last: u16, open: &[u16]) -> String {
+    if open.is_empty() {
+        format!(
+            "<p class=\"muted\">No dev server is listening on ports {first}–{last} yet. Start one in a shell or ask an agent — for example <code>PORT={first} npm run dev</code>.</p>"
+        )
+    } else {
+        open.iter()
+            .map(|port| format!("<a class=\"port\" href=\"http://localhost:{port}/\"><b>localhost:{port}</b><span>open</span></a>"))
+            .collect()
+    }
+}
+
 /// `GET /browser/welcome?sandbox=<id>` (loopback): the page new browser tabs open (BRW-006).
 pub async fn browser_welcome(
     State(app): State<AppState>,
@@ -185,15 +191,7 @@ pub async fn browser_welcome(
     let Ok((slug, first, last, open)) = app.sandbox_listening_ports(&query.sandbox).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let ports: String = if open.is_empty() {
-        format!(
-            "<p class=\"muted\">No dev server is listening on ports {first}–{last} yet. Start one in a shell or ask an agent — for example <code>PORT={first} npm run dev</code>.</p>"
-        )
-    } else {
-        open.iter()
-            .map(|port| format!("<a class=\"port\" href=\"http://localhost:{port}/\"><b>localhost:{port}</b><span>open</span></a>"))
-            .collect()
-    };
+    let ports = ports_html(first, last, &open);
     let sandbox = escape(&slug);
     let sandbox_id = escape(&query.sandbox);
     let html = format!(
@@ -254,15 +252,7 @@ pub async fn browser_welcome_ports(
     let Ok((_, first, last, open)) = app.sandbox_listening_ports(&query.sandbox).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let body: String = if open.is_empty() {
-        format!(
-            "<p class=\"muted\">No dev server is listening on ports {first}–{last} yet. Start one in a shell or ask an agent — for example <code>PORT={first} npm run dev</code>.</p>"
-        )
-    } else {
-        open.iter()
-            .map(|port| format!("<a class=\"port\" href=\"http://localhost:{port}/\"><b>localhost:{port}</b><span>open</span></a>"))
-            .collect()
-    };
+    let body = ports_html(first, last, &open);
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
