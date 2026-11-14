@@ -3415,3 +3415,29 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   task's terminal into a fake agent that has none); what Claude Code does with `/compact`
   typed behind a real draft once the hold is over; the ten minutes themselves (the hold
   is 3 s in the test); a typing mark that stays set for more than 5 s.
+- **Review, round 2** (the same session, head `99aed011e`): request changes; the findings
+  of round 1 but the first were fixed, and the hold that answered the first brought new
+  ones. One major: after the hold the command goes out behind real text as a prompt and
+  is refused, so the flag's and the notice's promise of a compaction was untrue where it
+  mattered (the texts say what happens now, and that refusal fails the compaction at
+  once: AC-121). Three minor: "The hold's flag outlives the hold" on every way out but
+  two, and a restart of Yulius took a held compaction for one that gave up (the flag ends
+  with the hold, and the new server takes the hold up again: AC-125); the wake-up was
+  kept out behind a draft without a word, after the terminal had said that the task goes
+  on (the terminal says that the session was not told to carry on; the first line no
+  longer promises: AC-124); the test of the hold read its notice in a race and did not
+  assert one it waited for (both asserted through one helper; the time the tests assume
+  is named). A nit: the hold's end is logged once. Found on the way: the key the hold was
+  for kept the wake-up out after the compaction it had waited for, since nothing empties
+  the box for a command; Yulius's own Enter does now.
+- **Tests failing without their fix, after round 2** (`mutations3.log`, 19 cases, each
+  failed its test): the fourteen above as they are now, and: a key from before Yulius's
+  own Enter still counting as a draft; a command refused behind a draft waiting for the
+  compaction's time; the episode not told that the command went behind a draft; a hold
+  cut by a restart counted as given up; a wake-up kept out saying nothing.
+- **Gate after it.** `scripts/dev ci` at `13f445e3c`: exit 0;
+  `4346 tests run: 4346 passed (1 slow), 17 skipped` (`target/audit/slice21/gate3.log`).
+- **Not tested, after it.** A real Claude Code (what it does with a command typed behind
+  real text is taken from how it reads slash commands, at the start of the input only);
+  the hold's ten minutes; a run that ends, or a terminal that never goes quiet, during a
+  hold (the flag's end there is the same line as when its person types).
