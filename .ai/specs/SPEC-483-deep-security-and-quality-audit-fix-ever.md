@@ -3188,3 +3188,27 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   restart is a second server on the same data); a launch that cannot write the personal
   servers' mark; the two nits of slice 19 that have no order a test can make (a queueing
   that lost to a concurrent change; the pool's round reading a refused start as waiting).
+- **Review, round 1** (a fresh session, read-only, head `3cd136696`): request changes. One
+  major finding in this slice's code: the watch did not wait for the session's opening
+  turn, so "the flag is gone and the task reads Your turn with no goal" once that turn's
+  Stop ran. The mark says now whether the session opens with a turn, the restarted server
+  gives the run that turn back and the watch starts at its end (AC-115 asks that the flag
+  is not raised inside the turn). Four minor: the mark was written after the spawn (now
+  before it, like its siblings); the trust dialog's branch told the person the task would
+  start by itself (for a typed goal it tells them to type it); the refusal in the
+  hand-over test could not fail without the fix (the server is turned off before the
+  restart now, so only the run's record refuses); a hand-over cut by the restart left the
+  previous owner's servers in the new holder's run (the reattached run is restarted,
+  AC-117). Nits answered: a comment; an unreadable mark is logged.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 13 cases, each
+  failed its test): the nine above as they are now, and: a reattached run that holds
+  another person's servers left running; the opening turn not given back to a reattached
+  run; the watch not waiting for the opening turn; the mark not saying that the session
+  opens with a turn.
+- **The suites after it:** `2752 tests run: 2752 passed, 17 skipped`
+  (`target/audit/slice20/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `c37c16ea1`: exit 0;
+  `4322 tests run: 4322 passed, 17 skipped` (`target/audit/slice20/gate2.log`).
+- **Not tested, after it.** The trust dialog's branch of the watch for a typed goal (it
+  needs a session that shows the dialog across a restart); a session whose opening turn's
+  Stop was held for capacity at the restart (Decisions).
