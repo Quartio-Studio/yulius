@@ -3217,8 +3217,17 @@ after it
 [decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
-tested pull request with a complete plan, so a task without a goal that opens no pull request would
-never be Done. For that reason the
+tested pull request with no declared work left. Tested is one reading (`PullSignal::from_wire`,
+asked by `task_is_done`, the Git overview and the counts): the pull request is open, does not
+conflict with its base (GitHub's answer for one pull request, or Yulius's own merge check in its
+clone, `App::pull_conflicts`, which is also what the watch tells the agent by) and its checks
+passed, or none are required by the project. Declared work is the plan's open steps and the
+task's spec: Yulius keeps the spec's `status` with the task whenever it reads the spec
+(`tasks.spec_status`), and while it says `draft`, `approved` or `in-progress` the task is not
+Done, however complete its plan reads
+([SPEC-491](../.ai/specs/SPEC-491-a-task-whose-work-is-not-finished-never.md),
+[decision 0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+So a task without a goal that opens no pull request would never be Done. For that reason the
 tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
 preparation. Only the continuation of an imported session is a prompt task, because the person
 whose conversation it continues decides when it is finished

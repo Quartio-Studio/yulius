@@ -71,7 +71,7 @@ supertask's wait and the tools.
 | --- | --- |
 | DON-001 | An open pull request is **tested** only when it does not conflict with its base and its checks passed at its head, or none are required. It conflicts when GitHub says it is not mergeable, or when Yulius's own merge of its head with the integration branch, as last fetched, conflicts (the check of PRN-004). One domain function (`PullSignal::from_wire`) decides it for `task_is_done`, the Git overview and the counts. |
 | DON-002 | "None required" means the project requires none: no Yulius CI run is due at the head and the delivery profile does not require checks. With a profile that requires checks, a pull request without reported checks is pending (as the Git overview reads it since #68), in `task_is_done` too. |
-| DON-003 | A conflicting pull request of a finished turn reads "In review · PR #N · conflicts with `<base>`" (Working): its agent is told by the pull request watch (PRN-004) and goes on by itself. Failing or errored checks keep their own reading, whatever the conflict. An achieved goal stays Done (CHN-003). |
+| DON-003 | A conflicting pull request of a finished turn reads "In review · PR #N · conflicts with `<base>`" (Working): its agent is told by the pull request watch (PRN-004) and goes on by itself. The watch asks the head of the pull request's run, or the branch's own head where no run exists (a project without Yulius CI). Failing or errored checks keep their own reading, whatever the conflict. An achieved goal stays Done (CHN-003). |
 | DON-004 | A task's spec is its record of the work it declared. Yulius keeps the spec's `status` with the task whenever it reads the spec (`tasks.spec_status`). While it says `draft`, `approved` or `in-progress`, the task has work left even when every step is finished: it is not Done by its plan and pull request, merged or tested; idle, it reads "Your turn", as with open steps. `done` and `abandoned` say nothing is left. A task without a spec, or whose spec was never read, declares its work by its steps alone. |
 | DON-005 | Chains, start rules (`#N done`), a supertask's wait, the session limit, archive and delete ask the same rule: a chained task does not start in either case, and a closed task whose spec says its work is not finished is not Done (its chain needs a person, as with open steps). |
 | DON-006 | The API says both facts: `PullView.conflicts` and `TaskSummary.spec_unfinished`. The web UI's `taskInfo` and the server's `AttentionFacts::group` decide alike. |
@@ -85,7 +85,7 @@ supertask's wait and the tools.
 - [x] A task whose spec does not say done has work left, and a chained task waits (DON-004, DON-005)
 - [x] The API, the web UI and the counts say the same as the chains (DON-006)
 - [x] The agent is told what keeps its task from Done (DON-007)
-- [ ] ADR-0332, SPEC-001, SPEC-487, the architecture, the API reference and the changes log state one rule (DON-008)
+- [x] ADR-0332, SPEC-001, SPEC-487, the architecture, the API reference and the changes log state one rule (DON-008)
 - [ ] Every gate green and the independent review of the exact head approved
 
 ## Acceptance criteria
@@ -104,6 +104,8 @@ supertask's wait and the tools.
   · conflicts with dev" and "Your turn" for the two cases, and Done without them.
 - AC-5 (DON-007): `spec_check` and the answer of the step write that finishes the plan carry the
   sentence about the spec's status while it is not `done`, and not once it is.
+- AC-6 (DON-003): in a project where no run exists at the head, the watch types the conflict
+  into the session once; the test fails without the change ("the conflict was not typed").
 
 ## Test plan
 
@@ -113,6 +115,8 @@ supertask's wait and the tools.
   AC-3 with a chained task, each run first without the fix to see it fail; AC-2 in
   `crates/yulius/tests/delivery.rs` or beside them.
 - Store test: `spec_status` is kept and read back; the migration applies to a version 58 file.
+- Watch test (`pr_watch.rs`, the fake agent in a real terminal): a conflict is typed without a
+  run at the head.
 - Web unit tests (`status` tests) for `taskInfo`; the end-to-end suite, since the web UI changes.
 - The gate (`scripts/dev ci`), the security scan (reported as disabled if it is).
 
