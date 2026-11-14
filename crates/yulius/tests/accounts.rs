@@ -608,7 +608,6 @@ async fn a_failed_sign_in_leaves_a_refused_subscription_needing_one() -> TestRes
         chunks: vec!["no token here\r\n".into()],
         exit: Some(2),
         gated: true,
-        ..Script::default()
     });
     let r = call(
         &s.h.router,
