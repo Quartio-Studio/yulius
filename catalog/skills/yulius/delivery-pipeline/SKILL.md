@@ -14,8 +14,9 @@ ready issue → spec → slices (test first) → local gates → independent rev
 CD, separately: deploy dev and verify (when asked, or nightly), its rollback drilled · production: a person promotes and deploys
 ```
 
-Research, questions about the product, documentation and small chores skip the spec (and
-usually the review); they still follow the Git and gate rules when they change the repository.
+Research, questions about the product, documentation and small chores skip the spec; when they
+change the repository they still follow the Git and gate rules, and their merge still needs the
+independent review `delivery_merge` asks for.
 
 ## 0. Ready
 
