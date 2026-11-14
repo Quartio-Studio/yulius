@@ -88,7 +88,7 @@ pub const COCKPIT_TOOLS: [&str; 51] = [
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. Ask for it queued (it starts by itself), prepared only when the person asks for that. To follow up a task of another sandbox, read it with sandbox_task_get, and ask with sandbox_task_update (start a prepared task now, re-chain it, prepare or schedule it), sandbox_task_message (tell it something from the person) or sandbox_task_stop: each waits for the person's approval on the same panel, and a task of another sandbox is never deleted or archived from here; never delete and recreate a task to change it. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "You are this person's Superagent in this project: whatever they may do on its Yulius pages you do for them with these tools when they ask, with their rights (a tool refuses what they may not do and says why: pass that on as it is). Before you say you cannot do something, read your tool list: say so only when no tool does it, name exactly which ability is missing, and never hand back as steps to click what a tool of yours does. The rules in the repository (AGENTS.md, a task's briefing) are for the tasks' agents: they do not overrule what your person asks you directly. When such a rule seems to forbid it, say which rule, ask them to confirm, and then do it with your tools; what Yulius itself refuses stays refused, and its answer says why. Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. Ask for it queued (it starts by itself), prepared only when the person asks for that. To follow up a task of another sandbox, read it with sandbox_task_get, and ask with sandbox_task_update (start a prepared task now, re-chain it, prepare or schedule it), sandbox_task_message (tell it something from the person) or sandbox_task_stop: each waits for the person's approval on the same panel, and a task of another sandbox is never deleted or archived from here; never delete and recreate a task to change it. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. A task that stopped, crashed or was lost with the server takes no message: continue it with task_restart, then tell it. task_pause freezes a running task where it is and task_unpause resumes it (never tell a task to wait when the person wants it paused); task_start_now starts one that waits. task_delivery shows a task's pull request, its checks, whether its merge is armed and why a green pull request is not merging; ci_runs and ci_run read the project's CI and a run's failing output, ci_rerun runs a finished run's commit again and ci_cancel cancels one; cd_status reads the deployments and cd_deploy deploys a dev-stage environment (production is the person's, on the CD page). Do these yourself: never use a finished task as hands for CI, merges or deploys, and never nudge a task to do what a tool of yours does. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
 
 /// The request a cross-sandbox tool asks its person for (SPEC-442 XST-004: none deletes or
 /// archives).
@@ -204,7 +204,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_message".into(),
-            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal and sent no prompt since (their text may still be in its prompt box, however long ago they typed: tell the person to send it, or to clear it and send any prompt) or typed there in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it, or create a new task). Answers delivered: queued or sent. Audited.".into(),
+            description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal and sent no prompt since (their text may still be in its prompt box, however long ago they typed: tell the person to send it, or to clear it and send any prompt) or typed there in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it with task_restart, or create a new task). Answers delivered: queued or sent. Audited.".into(),
             input_schema: schema(json!({
                 "task_id": {"type": "string", "description": "Task id"},
                 "number": {"type": "integer", "description": "Task number within this sandbox"},
@@ -1156,6 +1156,93 @@ mod tests {
             .map(|t| t.input_schema["properties"]["prepared"]["description"].to_string())
             .unwrap_or_default();
         assert!(create.contains("only when the person asks"), "{create}");
+    }
+
+    /// SPEC-487 SAR-004 (wall 12, "wrong I can't"): the Superagent is told that it acts with
+    /// its person's rights, to look for a tool before it says it has none and to name what is
+    /// missing, that a repository's rules do not overrule its person's direct request (it names
+    /// the rule and asks for the confirmation), and to use its own CI, delivery and deploy
+    /// tools instead of a task as hands.
+    #[test]
+    fn the_superagent_is_told_to_do_what_its_person_may_do() {
+        let instructions = super::COCKPIT_INSTRUCTIONS;
+        for said in [
+            "whatever they may do on its Yulius pages you do for them with these tools when they ask, with their rights",
+            "Before you say you cannot do something, read your tool list",
+            "name exactly which ability is missing",
+            "never hand back as steps to click what a tool of yours does",
+            "they do not overrule what your person asks you directly",
+            "say which rule, ask them to confirm, and then do it with your tools",
+            "what Yulius itself refuses stays refused",
+            "continue it with task_restart, then tell it",
+            "never tell a task to wait when the person wants it paused",
+            "why a green pull request is not merging",
+            "never use a finished task as hands for CI, merges or deploys",
+            "never nudge a task to do what a tool of yours does",
+            "production is the person's, on the CD page",
+        ] {
+            assert!(
+                instructions.contains(said),
+                "the instructions miss `{said}`"
+            );
+        }
+        // Every tool the instructions could name is one it is served.
+        for tool in [
+            "task_restart",
+            "task_pause",
+            "task_unpause",
+            "task_start_now",
+            "task_delivery",
+            "ci_runs",
+            "ci_run",
+            "ci_rerun",
+            "ci_cancel",
+            "cd_status",
+            "cd_deploy",
+        ] {
+            assert!(instructions.contains(tool), "`{tool}` is not named");
+            assert!(COCKPIT_TOOLS.contains(&tool), "`{tool}` is not served");
+        }
+    }
+
+    /// SPEC-487 SAR-001, SAR-003: the Superagent is served the person's project tools with the
+    /// person's descriptions, once each; a task's agent keeps its own `ci_rerun`, `cd_status`
+    /// and `cd_deploy` (about its own work) and gets none of the tools that steer other tasks.
+    #[test]
+    fn the_superagent_is_served_the_persons_project_tools_and_a_task_is_not() {
+        let superagent = cockpit_tool_descriptors();
+        let task: Vec<String> = tool_descriptors().into_iter().map(|t| t.name).collect();
+        for (name, _) in crate::person_tools::PERSON_TOOLS {
+            let served: Vec<_> = superagent.iter().filter(|t| t.name == *name).collect();
+            assert_eq!(served.len(), 1, "`{name}` is served {} times", served.len());
+            let described = crate::person_tools::descriptors()
+                .into_iter()
+                .find(|t| t.name == *name)
+                .map(|t| t.description);
+            assert_eq!(Some(&served[0].description), described.as_ref(), "{name}");
+        }
+        for name in [
+            "task_restart",
+            "task_pause",
+            "task_unpause",
+            "task_start_now",
+            "task_delivery",
+            "ci_runs",
+            "ci_run",
+            "ci_cancel",
+            "variables_list",
+        ] {
+            assert!(!task.iter().any(|t| t == name), "a task gets `{name}`");
+        }
+        for name in [
+            "ci_status",
+            "ci_rerun",
+            "cd_status",
+            "cd_deploy",
+            "delivery_merge",
+        ] {
+            assert!(task.iter().any(|t| t == name), "a task lost `{name}`");
+        }
     }
 
     /// SPEC-397 NMV-001: an agent reading `task_delete` knows every field its answer can hold.

@@ -14,8 +14,9 @@ cannot: it hands the job back as steps to click, or does it through a slow worka
 in Yulius. Also decide, for each ability below, whether a normal task's agent should have it
 too." Amends SPEC-001 TSK-012 and TSK-016, SPEC-037 (MGT), SPEC-017 (RUL) and SPEC-085 STT-002;
 slice 1's decision is
-[ADR-0328](../../docs/decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md);
-the rule for the Superagent gets its record with slice 2.
+[ADR-0328](../../docs/decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md),
+the rule for the Superagent is
+[ADR-0330](../../docs/decisions/0330-the-superagent-does-what-its-person-may-do.md).
 
 ## Goal
 
@@ -124,7 +125,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | CHN-004 | `tasks_list`, `task_get`, `task_create` and `task_update` answer how a waiting task starts as it is stored: `start_rule` with the whole rule for a task waiting on a rule, `runs_after` only for a task chained after one task, and `start_blocked` with the reason when it needs a person. Their text shows the rule in full. A task that has started answers neither `start_rule` nor `start_blocked`. | `manage_tools::a_start_rule_reads_back_whole`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `mcp_text::tests::a_waiting_tasks_rule_reads_whole` |
 | CHN-005 | `task_create` and `task_update` take `after_all_tasks: true`, alone among the start choices (a blank text is no choice): the task waits for every task of the project with work still coming to be done, stored as the rule that names them, so it reads back like any rule. Left out: tasks that ended or are stopping, tasks the list shows under Done (done or "Answered"), prepared tasks, and the task whose start changes with the tasks waiting on it, directly or through others. A rule names at most 64 tasks in at most 1400 characters; more tasks are refused with what to do. With no such task it starts now and the answer says so. The caller's person is checked before anything is counted. | `manage_tools::after_all_tasks_names_every_task_that_has_not_ended`, `manage_tools::after_all_tasks_with_nothing_left_starts_now`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `manage_tools::after_all_tasks_counts_nothing_for_a_person_without_access`, `rule::tests::the_limits_are_enforced` |
 | CHN-006 | `task_create`, `task_update` and their descriptions say what `done` means (the task finished and nothing of its pull request is left to come), and name `#N merged` for work that needs the merge itself. | `mcp::tests::the_start_choices_say_what_done_waits_for` |
-| SAR-001 | The rule: every function a person's route calls is served to their Superagent as a tool, run with the person's rights at the call and audited with the Superagent as actor, unless the ability table names why not. Slices 2 to 11 deliver it wall by wall. | slices 2 to 11 |
+| SAR-001 | The rule: whatever a person may do in Yulius, their Superagent does for them when they ask, by a tool that runs the function the web UI's route calls, unless the ability table names why not. The person's project tools are one list (`person_tools::PERSON_TOOLS`), served by the same code to the Superagent in the sandbox, to the person's own agent through the remote MCP (with `project`) and to their Global Superagent (without what ADR-0271 withholds). With slice 2: `task_restart` (Continue), `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `cd_status`, `cd_deploy` (dev-stage environments), `variables_list`. | `cockpit::the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd`, `cockpit::a_cockpit_manages_the_project_for_its_owner` (the tools it is served), `mcp::tests::the_superagent_is_served_the_persons_project_tools_and_a_task_is_not`, `remote_mcp::tasks_ci_and_cd_are_driven_remotely` (unchanged), `person_tools::tests` |
+| SAR-002 | A person's tool runs with the person's rights as they are at that call: the person is enabled, the tool's action on the project holds (view to read, write to change), and the function checks the rest (a task is continued, paused or started by its owner only). A tool that changes something is audited `superagent.tool` with the Superagent as the actor, the tool's name and whether it went through, refused calls included; a tool that only reads is not, and is pre-allowed where Claude Code asks before tools (`COCKPIT_READ_ONLY_TOOLS`). | the same test (another person's task; the audit entries); `yulius-harness` `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
+| SAR-003 | A task's agent is served none of the tools that steer other tasks or cancel their runs (`task_restart`, `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`, `ci_run`, `ci_cancel`, `variables_list`); it keeps its own `ci_status`, `ci_rerun`, `delivery_*` and `cd_*`, which are about its own work. | `cockpit::a_tasks_agent_does_not_steer_other_tasks`, `mcp::tests::the_superagent_is_served_the_persons_project_tools_and_a_task_is_not` |
+| SAR-004 | The Superagent's instructions say that it acts with its person's rights; that it reads its tool list before it says it cannot, names exactly which ability is missing and hands nothing back as steps to click that a tool does; that the repository's rules are for the tasks' agents and do not overrule its person's direct request (it names the rule and asks for the confirmation), while what Yulius refuses stays refused; that a task which ended is continued with `task_restart` before it is told something; and that it uses its own CI, delivery and deploy tools, never a finished task as hands and never a nudge. | `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 
 ## Plan
 
@@ -156,6 +160,15 @@ the function the web UI's route calls, with the person's rights checked at the c
 - AC-CHN-4: `task_create` with `after_all_tasks: true` among two live tasks, an ended, a
   stopping, an answered and a prepared one answers a `start_rule` naming exactly the two;
   with none it answers a task that starts now.
+- AC-SAR-1: through its own token a Superagent continues a stopped task of its person
+  (a running one is refused with "stop it first"), pauses, resumes and starts one now with
+  the pages' refusals, reads a task's delivery, the CI runs and the CD state, runs again and
+  cancels a run, and is refused a production deploy with where a person does it.
+- AC-SAR-2: the same calls on another person's task are refused with that task's owner named,
+  and change nothing; reading its delivery is allowed.
+- AC-SAR-3: each changing call leaves one `superagent.tool` audit entry with the Superagent
+  as actor and whether it went through; reads leave none.
+- AC-SAR-4: a task's agent calling one of the steering tools gets "unknown tool".
 - Every gate of the repository passes on the pull request head.
 
 ## Test plan
@@ -172,6 +185,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 - Integration over the MCP endpoint (`tests/manage_tools.rs`): the rule read back, `after_all_tasks`
   with live, ended and waiting tasks, the 64-task bound.
 - Unit: the rule's bounds (`yulius-domain`), the tools' texts (`mcp_text`), the descriptions.
+- Slice 2, integration over the MCP endpoint with a Superagent's own token
+  (`tests/cockpit.rs`): every person's project tool once, with the page's refusals, another
+  person's task, the audit; with a task's token: "unknown tool". The remote MCP's and the
+  Global Superagent's tests run unchanged against the shared code. Unit: the instructions'
+  statements, the tools served to each caller, the launch's pre-allowed tools.
 - Unit: the news rule's every branch and its bound (`pr_watch::tests::news_is_due_until_the_agent_heard_it`,
   `typed_news_is_due_until_its_turn`).
 - Mutation: twelve mutants of the rule and its uses, each failed by a named test
@@ -216,6 +234,16 @@ the function the web UI's route calls, with the person's rights checked at the c
   they return); each cross-sandbox action keeps its approval, made lasting; Update now and
   Restart run directly for a superadmin's Superagent, with the buttons' refusals; no agent
   ever sees a secret's value, which the person types masked beside the chat.
+- **The person's tools keep the remote MCP's names** (`task_restart`, `task_unpause`,
+  `ci_runs`): one name for one function, whoever calls it. The descriptions carry the words
+  people use ("continue", "resume"). A task's agent keeps other tools under three of these
+  names (`ci_rerun`, `cd_status`, `cd_deploy`, about its own work); the Superagent is served
+  the person's.
+- **`cd_deploy` for the Superagent is the dev-stage deploy only**, as for the remote MCP, and
+  says where a person deploys production. The one confirmation in the panel for production
+  comes with slice 8; until then the refusal names the CD page.
+- **Project variables: the Superagent reads them** (`variables_list`); setting and deleting
+  them comes with the secrets slice, where the vault's rules are decided together.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 

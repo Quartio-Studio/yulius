@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent does what its person does on the project's pages (SPEC-487 slice 2, task
+  #469, ADR-0330). It was served 39 tools and none for a task's Continue, Pause or Start now,
+  for CI, a task's delivery or a deploy, so it handed those back as steps to click, used
+  finished tasks as hands and nudged tasks with messages. It now has `task_restart`
+  (Continue), `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`,
+  `ci_run`, `ci_rerun`, `ci_cancel`, `cd_status`, `cd_deploy` (dev-stage environments) and
+  `variables_list`: each is the function the page's button calls, with the person's rights
+  at the call (a task is changed by its owner only), and each change is audited
+  `superagent.tool`. They are one list (`person_tools`) with the remote MCP's tools of the
+  same names. A task's agent gets none of the steering ones. The Superagent's instructions
+  say the rule: it acts with its person's rights, reads its tool list before it says it
+  cannot, names what is missing, and does not let a repository rule overrule its person's
+  direct request without naming the rule and asking. An open Superagent restarts once idle
+  to get the tools.
+
 - A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
   slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
   `error`, the background round then read its usage and stored `ok`, and tasks were placed
