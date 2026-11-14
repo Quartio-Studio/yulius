@@ -2039,7 +2039,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   sandbox was left" (a link, through the router's guard) and "a new skill left for its own
   address still asks about a later change", `workflows.e2e.ts` "an editor left before it has
   loaded leaves without a question" and "an address typed over unsaved work keeps the history
-  countable", `pulls.e2e.ts`
+  countable", `automations.e2e.ts` "the start chip loads as "Start" when the editor is reached
+  from another page", `pulls.e2e.ts`
   "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
   `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
   the page)" (AC-146); `scripts/test_check_repository.py`
@@ -3019,3 +3020,15 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   slow), 17 skipped` (`gate3.log`); the whole e2e suite: 85 files, 1032 passed, 1 skipped
   (`e2e-full.log`); the new mutation cases (`mutations-ci.log`: a typed entry left unlabelled,
   a loading automation or MCP server counted as unsaved) failed their tests.
+- **Review, round 3** (the same session, head `d2c1a673f`): request changes. Both fixes right
+  and tested; one major in own code that rounds 1 and 2 missed: replacing the automation
+  editor's own guard dropped its mount-time `renderStart()`, so reached from a page whose tasks
+  were already read, the start chip was an empty, nameless button until the automation loaded,
+  not the shimmering "Start" (ADR-0073); the existing test passed only through a first-load
+  `tasks` event. Its whole-suite run failed once in `menus.e2e.ts` and passed alone three times
+  (#1217, a known load flake). Answered in `abdcb1bc0`, test first (`mutations-r3.log`). Past the
+  third round the finding is fixed rather than deferred (ADR-0141); the other four pages' removed
+  lines were compared again: only their guards went.
+- **Gate after it.** `scripts/dev ci` at `abdcb1bc0`: exit 0; `4374 tests run: 4374 passed (1
+  slow), 17 skipped` (`gate4.log`); the whole e2e suite: 85 files, 1033 passed, 1 skipped
+  (`e2e-full2.log`).
