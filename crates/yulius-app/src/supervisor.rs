@@ -1537,10 +1537,15 @@ impl App {
                     // Continue of a resting task); the pool's own choice for a paused task is
                     // made again at the launch, when it may be another.
                     let chosen = account.as_ref().filter(|_| task.status.is_resting());
-                    self.deps
+                    let queued = self
+                        .deps
                         .store
                         .queue_task(&task.id, task.status, &start.kept(chosen), self.now())
                         .await?;
+                    // It changed meanwhile (a stop takes no launch lock): nothing was done.
+                    if !queued {
+                        return Ok(false);
+                    }
                     // A paused task's start waits in the queue now, not for capacity.
                     self.end_pause(&task.id, "started").await;
                     self.publish_task(&task.id).await;
@@ -1559,15 +1564,14 @@ impl App {
                 },
                 _ => (start, account),
             };
-            // The start is made: a pause the task waited in is over. Only here, so that a
-            // start refused above (the queue is full) leaves the pause, and with it the pool's
-            // next round, as they were (SPEC-483 QST-002).
-            self.end_pause(&task.id, "started").await;
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
             drop(guard);
             if let Err(err) = &result {
+                // The launch failed: the task waits for nothing any more, whatever pause it
+                // was started from (one the launch would have ended with its subscription).
+                self.end_pause(task_id, "ended").await;
                 let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
                     && matches!(current.status, TaskStatus::Starting | TaskStatus::Queued)
@@ -1702,6 +1706,11 @@ impl App {
             self.pause_task(&task.id, kind, None, continuation).await?;
             return Ok(());
         };
+        // The run has its subscription: a pause the task waited in is over. Only here, so that
+        // a start the full queue refused, and one that finds no capacity after all (the branch
+        // above, where an open pause keeps its kind and its text), leave it as it was
+        // (SPEC-483 QST-002).
+        self.end_pause(&task.id, "started").await;
         let credential = self.open_credential(&account)?;
         crate::race::reached(
             crate::race::Point::AccountChosen,

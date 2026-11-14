@@ -11,7 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   to get a held prompt typed, or to continue on a subscription a person chose was queued
   and later started as a plain resume on the pool's choice: it sat at the limit's error,
   lost the prompt, or ran elsewhere. The queue keeps each task's start now, across a
-  restart too.
+  restart too. A chosen subscription that fills up while the task waits is given up, said
+  in the task's terminal, instead of failing the task. And a paused task whose start met a
+  full queue is no longer left waiting for good: its pause stays until the start is made
+  or queued.
 - A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
   slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
   `error`, the background round then read its usage and stored `ok`, and tasks were placed

@@ -52,7 +52,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19;
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
+      (merged, #1272);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -771,9 +772,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   when the task's turn comes (at its limit, needing a sign-in, removed) is given up: the
   pool places the task and its terminal says "The subscription chosen for this task
   cannot take it now, so Yulius chose one."
-- **QST-002** A paused task's pause ends when its start is made or waits in the queue,
-  not before: a start that is refused (the queue is full) leaves the pause open, with its
-  kind and continuation, and the pool's next round tries again.
+- **QST-002** A paused task's pause ends when its start is made (its run has a
+  subscription) or waits in the queue, not before: a start that is refused (the queue is
+  full) or finds no capacity after all leaves the pause open, with its kind and
+  continuation, and the pool's next round tries again.
 
 ## Plan
 
@@ -798,7 +800,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
-- [x] Slice 19: a start that has to wait in the queue keeps how it was to start
+- [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 
 ## Acceptance criteria
 
@@ -1805,7 +1807,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 19 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
@@ -3073,3 +3075,13 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Web UI after it.** `cd e2e && npx e2e run` at `426c3c789`: exit 0;
   `Test Files 84 passed | 1 skipped (85)`, `Tests 1023 passed | 1 skipped (1024)`
   (`target/audit/slice19/e2e-full.log`).
+- **Review, round 2** (the same session, head `326e89925`): approve. Four nits, answered
+  in the commit after the merge: the pause ends once the launch has a subscription, so a
+  launch that finds none keeps an open pause as it was (a prompt a hook carried into a
+  switch is not dropped); a queueing that lost to a concurrent change does nothing; a
+  start the full queue refused reads as waiting in the pool's round; the change log names
+  the two behaviours of the review's round. Moving the pause's end showed one more case,
+  which `supertask::a_held_capacity_resume_keeps_its_pause` caught: a launch that fails
+  before it has a subscription must end the pause too, and does (the task is `failed`).
+- **Delivery.** Pull request #1272 merged into `dev` at `326e89925`, whose own Yulius CI
+  run passed.
