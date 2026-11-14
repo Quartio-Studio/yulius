@@ -72,7 +72,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn at(rfc3339: &str) -> Timestamp {
-        crate::time::parse_rfc3339(rfc3339).unwrap_or(Timestamp(0))
+        yulius_domain::time::parse_rfc3339(rfc3339).unwrap_or(Timestamp(0))
     }
 
     fn fixture() -> PathBuf {

@@ -29,6 +29,7 @@ mod pulls;
 mod repos;
 mod secret;
 mod statuses;
+#[cfg(any(test, feature = "fake"))]
 mod time;
 mod types;
 mod validate;

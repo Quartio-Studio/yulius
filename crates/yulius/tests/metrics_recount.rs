@@ -16,9 +16,7 @@ const WORKTREE: &str = "/work/demo";
 const BROKEN: &str = "/work/broken";
 
 fn ms(rfc3339: &str) -> Result<i64, Box<dyn std::error::Error>> {
-    Ok(yulius_harness::time::parse_rfc3339(rfc3339)
-        .ok_or("time")?
-        .0)
+    Ok(yulius_domain::time::parse_rfc3339(rfc3339).ok_or("time")?.0)
 }
 
 fn fixture() -> PathBuf {

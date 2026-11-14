@@ -63,7 +63,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
-      #1290);
+      #1290); QC3 slice 31;
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -662,6 +662,16 @@ went; two of the auditors' items had gained a user since and stay.
   and 29). In production a task waits because no session is free, so the extra pass started
   nothing (a first comment on #1278 said otherwise and was corrected).
 
+### Slice 31: one reader of RFC 3339 time
+
+- **QC3 (low).** Four RFC 3339 readers (`yulius-github/src/time.rs`, `yulius-harness/src/time.rs`,
+  `yulius-import/src/time.rs`, `yulius-app/src/imports.rs`) took different inputs: GitHub's took
+  `2026-02-31` (as 3 March), unpadded fields and a second 60 as one more second, and dropped the
+  fraction; the app's refused a space between date and time and any offset's hours went
+  unchecked. Five more copies of the calendar conversion (GitHub, transcripts, imports,
+  analytics, the app's `civil_from_days` that the egress certificate authority borrowed) stood
+  beside the domain's `CivilDate`.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1176,6 +1186,11 @@ went; two of the auditors' items had gained a user since and stay.
 - **QUE-001** Cancelling a task that waits drains the queue only when it was a supertask (its
   hold on the project ends, SUP-005); any other waiting task frees no session and starts no
   pass, so a bulk stop of waiting tasks stops each of them.
+- **ONE-006** Every crate reads RFC 3339 time with `yulius_domain::time::parse_rfc3339` and the
+  same inputs: `YYYY-MM-DDTHH:MM:SS` (`T`, `t` or a space between), an optional fraction, then
+  `Z`, `z` or `±HH:MM`; every field padded, the day within its month, the offset within a day,
+  a fraction cut to milliseconds, a leap second read as `:59`; and converts days and dates with
+  `CivilDate`.
 
 ## Plan
 
@@ -1211,7 +1226,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is (merged, #1284)
 - [x] Slice 28: the web UI asks about unsaved work on every way out, and says checks, sizes and commits one way (merged, #1287)
 - [x] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out (merged, #1290)
-- [ ] Slice 30: a cancelled waiting task starts the queue only when it was a supertask
+- [x] Slice 30: a cancelled waiting task starts the queue only when it was a supertask (merged, #1295)
+- [ ] Slice 31: one reader of RFC 3339 time, the calendar from the domain
 
 ## Acceptance criteria
 
@@ -1827,6 +1843,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the other waiting for a second; a stopped waiting supertask still lets the tasks it held start
   (QUE-001).
 
+- **AC-151** `parse_rfc3339` reads `1970-01-01T00:00:00Z`, a fraction cut to milliseconds, an
+  offset, `t` and a space as separators and a leap second as `:59`, and refuses `2026-02-31`,
+  `2026-02-30`, month 13, hour 24, an offset `+24:00` or `+0200`, a missing zone, an empty
+  fraction, unpadded fields, a sign before the year and trailing text; `format_rfc3339` reads
+  back; the transcript, GitHub and import tests pass through it (ONE-006).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2087,6 +2109,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 31: `yulius-domain` `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
+  and `rfc3339_text_round_trips` (AC-151); the import crate's `time::tests`, GitHub's
+  `time::tests`, the transcripts' and analytics' tests through it.
 - Slice 30: `yulius` `supertask::stopping_a_waiting_task_that_is_no_supertask_starts_no_other`
   (the regression test), `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely`
   (with the probe) and `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held`
@@ -2188,6 +2213,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 31 (no decision record: a refactor). The reader kept is the strictest, the
+  transcripts': it refuses what no writer of these timestamps sends (GitHub, Claude Code and
+  Yulius write padded UTC with `Z`), so the inputs that change are malformed ones: GitHub's and
+  the app's readers now refuse an impossible day or an unpadded field, GitHub's keeps a fraction
+  as milliseconds and reads a leap second as `:59`, the app's takes a space as GitHub's and the
+  transcripts' did. It sits beside `Timestamp`, on `CivilDate`. The fake agent keeps its own
+  formatter: it stands in for an external program and depends on no Yulius crate.
 - Slice 30 (no decision record: SUP-005 decided it). The pass follows what frees a session or
   a hold, as the delete path already did, rather than the test seeding its tasks differently:
   the pass was not needed, and a test world with free sessions is a fair one. The regression
@@ -2646,10 +2678,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
 | QB2, QB3, QB7 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice | low | open (item 16 of the Context) |
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
-| QC3 | duplication | RFC 3339 parsing four times with different inputs | low | open (item 16 of the Context) |
+| QC3 | duplication | RFC 3339 parsing four times with different inputs | low | slice 31 |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
 | QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
-| Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | slice 30 |
+| Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
 
 ## Evidence
@@ -2715,3 +2747,21 @@ slices follow.
   `test-old-line.log`, `test-fixed.log`).
 - **Gate after it.** `scripts/dev ci` at `0767c877e`: exit 0; `4384 tests run: 4384 passed (1
   slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `047b6f76e`): approve; the new test fails 20 of 20
+  on the old line.
+- **Merged.** Pull request #1295 was squash-merged into `dev` (`dcc00aa24`) after its merge
+  train passed; #1278 closed.
+
+### Slice 31 (2026-11-14)
+
+- **Test failing before the change**: `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
+  did not compile (no reader in the domain). GitHub's test that a fraction was dropped
+  (`2024-02-29T12:00:00.123+02:00` read as `…:00.000`) went with its reader; the domain's test
+  pins the fraction kept.
+- **Tests failing without their fix** (`target/audit/slice31/mutate.py`, `mutations.log`, 10
+  cases, each failed its test): an impossible day taken, the fraction dropped, a leap second as
+  one more second, no space separator, offset hours unchecked, trailing text taken, the
+  formatter's or the egress certificate authority's or analytics' or the app's date wrong.
+- **Gate.** `scripts/dev ci` at `5306dd677`: exit 0; `4391 tests run: 4391 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.

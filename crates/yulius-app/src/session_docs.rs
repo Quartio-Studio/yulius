@@ -30,7 +30,7 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
-use crate::imports::{aux_relative, copy_immutable, move_tree, parse_rfc3339};
+use crate::imports::{aux_relative, copy_immutable, move_tree};
 use crate::lifecycle::NewTask;
 use crate::model::{ProviderSessionRecord, SandboxRecord, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::session_docs::{IndexAdvance, SessionDocRecord, SessionKind};
@@ -38,6 +38,7 @@ use crate::ports::store::TaskFieldUpdate;
 use crate::projects::blocking;
 use crate::supervisor::RunStart;
 use crate::transcripts::{self, MAX_PAGE_CHARS};
+use yulius_domain::time::parse_rfc3339;
 
 /// Most imported sessions one sandbox holds (SPEC-002 §9).
 pub const MAX_IMPORTED_SESSIONS: u64 = 10_000;
