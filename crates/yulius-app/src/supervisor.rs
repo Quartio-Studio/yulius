@@ -912,6 +912,13 @@ impl PendingGoal {
     }
 }
 
+/// Why a task has no goal when a person typed before Yulius could type it.
+const GOAL_LEFT_TO_DRAFT: &str = "Someone typed in the terminal before Yulius set the task's \
+                                  goal, so their draft was left alone";
+
+/// How long the restart of a reattached run waits for the replay of its transcript.
+const REPLAY_WAIT: Duration = Duration::from_secs(30);
+
 /// File in a run directory whose run was started with its owner's personal MCP servers: the
 /// owner's id (SPEC-332 MSC-009). A live run keeps its MCP configuration, and which person's
 /// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
@@ -2750,14 +2757,14 @@ impl App {
         // A person typed before the goal: `/goal` would be appended to their draft and sent
         // with it. The draft is theirs; the task waits for them instead (#252).
         if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
-            app.goal_not_taken(
-                task_id,
-                "Someone typed in the terminal before Yulius set the task's goal, so their \
-                 draft was left alone",
-            )
-            .await;
+            app.goal_not_taken(task_id, GOAL_LEFT_TO_DRAFT).await;
             return true;
         }
+        // One typist from the goal's line until Claude Code took it or the tries are over: a
+        // submit the TUI dropped leaves the line in the prompt box, where a message typed
+        // meanwhile would be sent with it by the next Enter, or erased by the retype (SPEC-483
+        // TYP-002).
+        let mut typing = None;
         for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
             // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
             if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
@@ -2770,18 +2777,36 @@ impl App {
                 }
                 input.extend_from_slice(command.as_bytes());
             }
+            if typing.is_none() {
+                crate::race::reached(crate::race::Point::LineReady, Path::new(task_id.as_str()));
+                typing = crate::task_message::Typing::wait(
+                    &runtime.typing_message,
+                    crate::task_message::TYPING_TURN_WAIT,
+                )
+                .await;
+            }
+            // Asked again with the mark held: the wait for it gives a person time to type.
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                // Before anything was typed, the task has no goal: said, as above.
+                if attempt == 0 {
+                    app.goal_not_taken(task_id, GOAL_LEFT_TO_DRAFT).await;
+                }
+                return true;
+            }
             if !input.is_empty()
                 && let Err(err) = app.send_input(task_id, &input).await
             {
                 tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
                 return false;
             }
+            crate::race::reached(crate::race::Point::LineTyped, Path::new(task_id.as_str()));
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
             if let Err(err) = app.send_input(task_id, b"\r").await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
+            crate::race::reached(crate::race::Point::LineEntered, Path::new(task_id.as_str()));
             let waited = tokio::time::Instant::now();
             while waited.elapsed() < *wait {
                 if runtime.goal_submitted.load(Ordering::SeqCst) {
@@ -4785,7 +4810,17 @@ impl App {
                 {
                     let app = Arc::clone(self);
                     let (task_id, account) = (task.id.clone(), attempt.account_id.clone());
-                    tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
+                    tokio::spawn(async move {
+                        // How the run is resumed (past a usage limit, with the workflows it
+                        // left) is read from its transcript: the restart waits for the replay.
+                        let asked = tokio::time::Instant::now();
+                        while app.runtime(&task_id).queue_unread.load(Ordering::SeqCst)
+                            && asked.elapsed() < REPLAY_WAIT
+                        {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        app.restart_for_new_owner(&task_id, account).await;
+                    });
                 }
                 held_again.insert(attempt.task_id.clone());
                 continue;

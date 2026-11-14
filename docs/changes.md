@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Yulius no longer types `/compact` at once behind a person's unsent text (SPEC-483 slice
+  21, task #465). A person who typed their next instruction while a turn ran, and whose
+  session then filled its context, had `/compact …` appended to that text and sent with
+  it. The compaction waits now: the task reads Needs your action and says what to do
+  (send what you typed, or clear it and send any prompt). After ten minutes Yulius types
+  its command all the same, so a task nobody watches goes on: an empty box is compacted,
+  and text still there is sent with the command and the task continues in a fresh
+  session, as the flag says beforehand. And from a line Yulius types
+  to its Enter nothing else is typed into the session, whatever the line is (a message,
+  `/compact`, a goal); a goal keeps that until Claude Code took it.
 - The Superagent changes tasks that exist (SPEC-487 slice 3, task #469). "Pause all tasks"
   had become 19 messages and "kill all tasks" 24 calls; a wrong request in a queued task
   was fixed by deleting the task, which once destroyed four screenshots. New tools, also
