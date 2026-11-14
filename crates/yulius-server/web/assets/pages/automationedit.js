@@ -364,6 +364,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     }
   }
 
+  renderStart();
   // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
   const leaveGuard = guardLeave({
     dirty: () => Boolean(dirty()),
