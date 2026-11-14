@@ -3354,3 +3354,37 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   keystroke; the fake agent has no box); the line that wakes a compacted session with a
   draft in the box (the same function and rule as `/compact`); a typing mark that stays
   set for more than 5 s (Yulius's line is then typed all the same).
+- **Review, round 1** (a fresh session, read-only, head `114041dfa`): request changes. Two
+  major findings in this slice's code. The gate counted any key since the last prompt
+  sent from the box, so "a person who once answered an AskUserQuestion dialog or pressed
+  Ctrl-O to read the transcript makes every later full context stop the task", with one
+  line in the terminal and no flag: the compaction is held now, flagged, and typed when
+  the hold ends (TYP-001 as it reads above; the paragraphs before this one describe the
+  first version). And "The only test of the new gate runs the fake agent without hooks",
+  where a prompt never empties the box: the tests type through the task's terminal with
+  an agent whose prompts reach the hooks, and the usual case (a person's own prompt is
+  refused) is shown to compact (AC-118, AC-120, AC-121). Two minor: nothing was asked
+  again after the wait for the typing mark (asked again with the mark held, AC-123); the
+  restart that waits for the transcript's replay had no test (AC-122). One from before:
+  between the goal's tries the mark was free while the line could sit in the box (the
+  goal keeps it until it is taken, AC-119). Nits: the documents say which rule each
+  typist asks and which typists hold the mark; the comments say what they cover.
+- **Tests failing before those fixes** (`target/audit/slice21/before2.log`): with the hooks
+  on, the person's own refused prompt was compacted already (the first version was right
+  there, and untested), and the two tests of the hold failed for want of a flag.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 14 cases, each
+  failed its test): a possible draft not holding the compaction; its person not told;
+  the flag staying when they type; the hold lasting for good; the flag of a hold that is
+  over staying; the wake-up typed behind a draft; a key before the typing mark not asked
+  for again, for `/compact` and for the goal; `/compact`, a message and the goal each
+  without the mark; the goal giving the mark up after its Enter; a goal kept out at its
+  first try saying nothing; the restart of a reattached run not waiting for the replay.
+- **The suites after it:** `2771 tests run: 2771 passed (1 slow), 17 skipped`
+  (`target/audit/slice21/suite2.log`), before the last three tests were added; the gate
+  ran after them.
+- **Gate after it.** `scripts/dev ci` at `3cc050727`: exit 0;
+  `4344 tests run: 4344 passed (1 slow), 17 skipped` (`target/audit/slice21/gate2.log`).
+- **Not tested, after it.** A real Claude Code prompt box (keys are typed through the
+  task's terminal into a fake agent that has none); what Claude Code does with `/compact`
+  typed behind a real draft once the hold is over; the ten minutes themselves (the hold
+  is 3 s in the test); a typing mark that stays set for more than 5 s.
