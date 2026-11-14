@@ -15,6 +15,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   waiting one in place (`sandbox_request_amend`) or withdraws it, lists another sandbox's tasks
   without asking (`sandbox_tasks_list`), and leaves a decision only the person makes on the same
   panel as a question answered Yes or No (`person_ask`).
+- One reader of RFC 3339 time (SPEC-483 slice 31, task #465). GitHub's, the transcripts', the
+  imports' and the app's readers took different inputs (GitHub's took 31 February); every crate
+  now reads timestamps one way, and converts dates with the domain's calendar.
 - A task whose work is not finished no longer reads Done (SPEC-491, task #474,
   [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
   Task #465 read Done, and the tasks chained after it started, while its pull request
