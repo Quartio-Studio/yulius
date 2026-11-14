@@ -34,7 +34,8 @@ use crate::finish::{SHELL_PROBE_MS, TranscriptFacts};
 use crate::hub::Hub;
 use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
-    ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
+    ProviderSessionRecord, QueuedStart, QueuedStartKind, SandboxRecord, Secret,
+    SwitchDecisionRecord, TaskMode, TaskRecord,
 };
 use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot, WatchFrom};
 use crate::ports::isolation::LimitCounters;
@@ -697,6 +698,37 @@ pub enum RunStart {
     /// the transcript steps back over the limit and the agent redoes the lost turn by itself,
     /// with nothing typed or sent.
     AfterLimit,
+}
+
+impl RunStart {
+    /// This start for `account`, as the queue keeps it for a task whose start has to wait
+    /// (SPEC-483 QST-001).
+    fn kept(&self, account: Option<&AccountId>) -> QueuedStart {
+        let (kind, prompt) = match self {
+            Self::Fresh { prompt } => (QueuedStartKind::Fresh, prompt.clone()),
+            Self::Resume { prompt } => (QueuedStartKind::Resume, prompt.clone()),
+            Self::AfterLimit => (QueuedStartKind::AfterLimit, None),
+        };
+        QueuedStart {
+            kind,
+            prompt,
+            account_id: account.cloned(),
+        }
+    }
+
+    /// The start and the subscription the queue kept.
+    fn of_kept(kept: QueuedStart) -> (Self, Option<AccountId>) {
+        let start = match kept.kind {
+            QueuedStartKind::Fresh => Self::Fresh {
+                prompt: kept.prompt,
+            },
+            QueuedStartKind::Resume => Self::Resume {
+                prompt: kept.prompt,
+            },
+            QueuedStartKind::AfterLimit => Self::AfterLimit,
+        };
+        (start, kept.account_id)
+    }
 }
 
 /// What an idle session is after a switch that types nothing into it (a person's move of an idle
@@ -1507,10 +1539,29 @@ impl App {
                         .store
                         .transition_task(&task.id, Some(task.status), next, None, self.now())
                         .await?;
+                    // How it was to start waits with it: the queue starts every task with a
+                    // plain start, which this one replaces (SPEC-483 QST-001). A subscription
+                    // is kept when a person chose it (their Continue of a resting task); the
+                    // pool's own choice for a paused task is made again at the launch, when it
+                    // may be another.
+                    let chosen = account.as_ref().filter(|_| task.status.is_resting());
+                    self.deps
+                        .store
+                        .set_queued_start(&task.id, &start.kept(chosen))
+                        .await?;
                     self.publish_task(&task.id).await;
                 }
                 return Ok(true);
             }
+            // A queued task starts as the start that had to wait was to be, whoever starts it
+            // now (SPEC-483 QST-001); one queued without a start takes the one given.
+            let (start, account) = match task.status {
+                TaskStatus::Queued => match self.deps.store.queued_start(&task.id).await? {
+                    Some(kept) => RunStart::of_kept(kept),
+                    None => (start, account),
+                },
+                _ => (start, account),
+            };
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
@@ -5600,6 +5651,36 @@ mod tests {
         .join();
         assert!(died.is_err());
         assert!(runtime.queue_may_hand_on());
+    }
+
+    /// SPEC-483 QST-001: a start the queue keeps comes back as it was, with its prompt and the
+    /// subscription a person chose.
+    #[test]
+    fn a_kept_start_comes_back_as_it_was() -> Result<(), Box<dyn std::error::Error>> {
+        use super::RunStart;
+        let chosen = yulius_domain::ids::AccountId::parse("a-chosen")?;
+        for (start, account) in [
+            (RunStart::AfterLimit, None),
+            (
+                RunStart::Resume {
+                    prompt: Some("the held prompt".into()),
+                },
+                Some(chosen.clone()),
+            ),
+            (RunStart::Resume { prompt: None }, None),
+            (
+                RunStart::Fresh {
+                    prompt: Some("a hand-over".into()),
+                },
+                None,
+            ),
+            (RunStart::Fresh { prompt: None }, Some(chosen)),
+        ] {
+            let (back, on) = RunStart::of_kept(start.kept(account.as_ref()));
+            assert_eq!(format!("{back:?}"), format!("{start:?}"));
+            assert_eq!(on, account);
+        }
+        Ok(())
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

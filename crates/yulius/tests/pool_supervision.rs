@@ -2281,6 +2281,209 @@ fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
     Ok(())
 }
 
+/// A pool with one session slot, so that a second task's start waits in the queue.
+fn build_one_slot(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served_tuned(
+        data,
+        fake,
+        usage,
+        agent,
+        Arc::new(FakeGitHub::default()),
+        "http://127.0.0.1:9",
+        |config| config.max_live_sessions = 1,
+    )
+}
+
+/// A task that takes the only session slot and keeps it until it is stopped.
+async fn slot_holder(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    let holder = new_task(app, sandbox, user, "Holds the slot").await?;
+    wait_for("the holder's run", Duration::from_secs(30), || {
+        let app = app.clone();
+        let holder = holder.clone();
+        async move { screen(&app, &holder).contains("FAKE-AGENT READY") }
+    })
+    .await?;
+    Ok(holder)
+}
+
+/// SPEC-483 QST-001: a `limit` pause without a process becomes resumable while every session
+/// slot is taken, so its start waits in the queue. When the slot frees, the queue starts it as
+/// that start was to be: past the limit (the transcript stepped back, the interrupted turn
+/// continued), not as a plain resume that sits at the limit's error. The subscription is the
+/// pool's choice at that moment, not the one it chose when the start began to wait.
+#[test]
+fn a_resume_past_a_limit_that_waits_in_the_queue_is_still_one() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_one_slot(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second", "c-third"]).await?;
+        for full in ["b-second", "c-third"] {
+            probe.set(full, usage(99.0, 4 * HOUR, 30.0, 100));
+            refresh(&app, &user, full).await?;
+        }
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        // No subscription has capacity: the session ends and the task waits without a process.
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        )
+        .await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+
+        // Capacity returns, and another task takes the only slot before the pool's next round.
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        let _ = app.resume_round().await;
+        wait_for("the start in the queue", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Queued)
+        })
+        .await?;
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+
+        // While it waits, the subscription the pool had chosen fills up and another frees.
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        probe.set("c-third", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        refresh(&app, &user, "c-third").await?;
+        stop(&app, &holder).await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("c-third"),
+            "the pool's choice when the slot freed"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 QST-001: a person continues a task on a subscription they chose while every session
+/// slot is taken. The start waits in the queue, also across a restart of Yulius, and runs on
+/// that subscription when the slot frees, not on the one the pool would choose ("Continue on…"
+/// never lands elsewhere unsaid, SPEC-447 MOV-002).
+#[test]
+fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = || FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (id, holder) = first.block_on(async {
+        let app = build_one_slot(&data, &fake, probe.clone(), agent())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        // The pool's own choice is `a-first`: its window ends first.
+        probe.set("a-first", usage(10.0, HOUR, 30.0, 100));
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Continued").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            first[0].account_id.as_ref().map(AccountId::as_str),
+            Some("a-first"),
+            "the pool's own choice"
+        );
+        stop(&app, &id).await?;
+
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
+        Ok::<_, Box<dyn std::error::Error>>((id, holder))
+    })?;
+    // Yulius restarts while the task waits: the holder's session lives on and keeps the slot.
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_one_slot(&data, &fake, probe.clone(), agent())?;
+        app.reconcile().await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
+        assert_eq!(task(&app, &holder).await?.status, TaskStatus::Running);
+        stop(&app, &holder).await?;
+        wait_for("the continued run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-072 LRS-001 (review): after a Yulius restart the reattached run's transcript is read again
 /// from its start. A usage limit that Claude Code's own continuation already overtook is history:
 /// it does not mark the subscription limited again, pause the task or switch it.

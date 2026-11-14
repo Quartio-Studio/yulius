@@ -151,6 +151,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0056_plan_first_steps.sql"),
+    // Schema version 57 (SPEC-483 QA1). The file is 0057, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0057_queued_start.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -819,7 +823,85 @@ mod tests {
             )
             .await?;
         assert_eq!(store.plan_first_steps(&task).await?, Some(3));
-        assert_eq!(schema_version(), 56);
+        Ok(())
+    }
+
+    /// SPEC-483 QST-001: a queued task keeps how it is to start. The start is read while the
+    /// task is queued since it was written, and by nobody after: not once the task left the
+    /// queue, nor when it is queued again later.
+    #[tokio::test]
+    async fn a_queued_task_keeps_its_start_while_it_waits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::model::{QueuedStart, QueuedStartKind};
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::{AccountId, TaskId};
+        use yulius_domain::task::{StopReason, TaskStatus};
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v56.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..56] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 56)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'waiting_capacity', NULL, 'ui', 'u1', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        assert_eq!(schema_version(), 57);
+        let task = TaskId::parse("t1")?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Resume,
+            prompt: Some("go on\nwith \"this\"".into()),
+            account_id: Some(AccountId::parse("a-chosen")?),
+        };
+        // Not queued: nothing is kept.
+        assert!(!store.set_queued_start(&task, &start).await?);
+        assert_eq!(store.queued_start(&task).await?, None);
+
+        let waiting = Some(TaskStatus::WaitingCapacity);
+        assert!(
+            store
+                .transition_task(&task, waiting, TaskStatus::Queued, None, Timestamp(600))
+                .await?
+        );
+        assert_eq!(store.queued_start(&task).await?, None, "queued without one");
+        assert!(store.set_queued_start(&task, &start).await?);
+        assert_eq!(store.queued_start(&task).await?, Some(start.clone()));
+        let plain = QueuedStart {
+            kind: QueuedStartKind::AfterLimit,
+            prompt: None,
+            account_id: None,
+        };
+        assert!(store.set_queued_start(&task, &plain).await?);
+        assert_eq!(store.queued_start(&task).await?, Some(plain));
+
+        // It left the queue (stopped) and is queued again later: the old start is not its start.
+        let stopped = TaskStatus::Stopped(StopReason::Cancelled);
+        let queued = Some(TaskStatus::Queued);
+        assert!(
+            store
+                .transition_task(&task, queued, stopped, None, Timestamp(700))
+                .await?
+        );
+        assert_eq!(store.queued_start(&task).await?, None);
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(stopped),
+                    TaskStatus::Queued,
+                    None,
+                    Timestamp(800)
+                )
+                .await?
+        );
+        assert_eq!(store.queued_start(&task).await?, None);
         Ok(())
     }
 

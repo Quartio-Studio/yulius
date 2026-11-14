@@ -636,6 +636,53 @@ impl PauseKind {
     }
 }
 
+/// How a task that waits in the queue is to start, kept with it (`tasks.queued_start`, SPEC-483
+/// QST-001): what the start that had to queue was to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedStart {
+    /// A new session, a resume, or a resume past the usage limit that cut the turn.
+    pub kind: QueuedStartKind,
+    /// The prompt of a new session or the continuation of a resumed one; none past a limit.
+    pub prompt: Option<String>,
+    /// The subscription a person chose for the start (Continue on…). The pool's own choice is
+    /// not kept: it is made again at the launch.
+    pub account_id: Option<AccountId>,
+}
+
+/// The kinds of [`QueuedStart`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedStartKind {
+    /// A new session.
+    Fresh,
+    /// A resume of the task's latest session.
+    Resume,
+    /// A resume past the usage limit that cut the turn (SPEC-034).
+    AfterLimit,
+}
+
+impl QueuedStartKind {
+    /// Stable name in the store.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Resume => "resume",
+            Self::AfterLimit => "after_limit",
+        }
+    }
+
+    /// Parses a stored name; `None` for one this build does not know.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "fresh" => Some(Self::Fresh),
+            "resume" => Some(Self::Resume),
+            "after_limit" => Some(Self::AfterLimit),
+            _ => None,
+        }
+    }
+}
+
 /// One pause of a task for lack of capacity (`capacity_pauses`). At most one per task is open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PauseRecord {

@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- A start that has to wait in the queue is no longer forgotten (SPEC-483 slice 19, task
+  #465). When every session slot was taken, a task that was to resume past a usage limit,
+  to get a held prompt typed, or to continue on a subscription a person chose was queued
+  and later started as a plain resume on the pool's choice: it sat at the limit's error,
+  lost the prompt, or ran elsewhere. The queue keeps each task's start now, across a
+  restart too.
 - A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
   slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
   `error`, the background round then read its usage and stored `ok`, and tasks were placed

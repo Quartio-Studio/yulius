@@ -6,8 +6,8 @@ use yulius_app::attention::AttentionRecord;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord, PersonPause,
-    ProviderSessionRecord, RecountOutcome, RunFacts, SwitchDecisionRecord, TaskMode, TaskOrigin,
-    TaskRecord, TaskTimes,
+    ProviderSessionRecord, QueuedStart, QueuedStartKind, RecountOutcome, RunFacts,
+    SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord, TaskTimes,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -464,6 +464,61 @@ impl TaskStore for SqliteStore {
             Ok(n == 1)
         })
         .await
+    }
+
+    async fn set_queued_start(&self, id: &TaskId, start: &QueuedStart) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let start = start.clone();
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
+                     'account', ?4, 'at', queued_at) WHERE id = ?1 AND status = 'queued'",
+                    params![
+                        id,
+                        start.kind.as_str(),
+                        start.prompt,
+                        start.account_id.as_ref().map(AccountId::as_str)
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn queued_start(&self, id: &TaskId) -> AppResult<Option<QueuedStart>> {
+        let id = id.as_str().to_owned();
+        let row: Option<(String, Option<String>, Option<String>)> = self
+            .call(move |c| {
+                c.query_row(
+                    // CASE orders the checks: a row that is not JSON gives no start, not an
+                    // error. The start is the task's while it is queued since it was written.
+                    "SELECT json_extract(queued_start, '$.kind'), \
+                       json_extract(queued_start, '$.prompt'), \
+                       json_extract(queued_start, '$.account') \
+                     FROM tasks WHERE id = ?1 AND status = 'queued' \
+                     AND CASE WHEN json_valid(queued_start) \
+                       THEN json_extract(queued_start, '$.at') END = queued_at \
+                     AND json_type(queued_start, '$.kind') = 'text'",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(db)
+            })
+            .await?;
+        // A kind or a subscription id of another shape (a newer Yulius wrote it) gives none.
+        Ok(row.and_then(|(kind, prompt, account)| {
+            Some(QueuedStart {
+                kind: QueuedStartKind::parse(&kind)?,
+                prompt,
+                account_id: match account {
+                    Some(account) => Some(AccountId::parse(&account).ok()?),
+                    None => None,
+                },
+            })
+        }))
     }
 
     async fn task_attention(&self, id: &TaskId) -> AppResult<Option<(AttentionRecord, Timestamp)>> {

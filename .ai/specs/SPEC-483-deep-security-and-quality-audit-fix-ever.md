@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271);
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -403,6 +403,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   again, each losing a turn to the refusal. The administration page had the rule a fifth
   and a sixth time, and asked an `error` subscription for its usage by itself.
 
+### Slice 19: the start that waits in the queue
+
+- **QA1 (medium).** "How the next run starts" (a new session or a resume, the prompt or
+  continuation it types, a resume past a usage limit, the subscription asked for) was only
+  the arguments of `start_run`. A start that met the session limit, a supertask's hold or
+  an update's hold made the task `queued` and dropped them; the queue then started every
+  task as a plain resume (or a plain new session) on the pool's choice. A task paused at a
+  usage limit that became resumable while every slot was taken came back as a plain
+  resume: the transcript not stepped back, the interrupted turn not continued, so a
+  prompt-mode task sat at the limit's error reading Working. A person's held prompt
+  carried by a pause was lost without a word. And "Continue on…" a chosen subscription
+  ran on the pool's choice, against SPEC-447 MOV-002 ("never lands elsewhere unsaid").
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -747,6 +760,13 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `usage.js`): the administration page offers and makes a reading for the subscriptions
   that work and offers a sign-in for the others, and the pool's panel and the "run on"
   menu call the others "needs a new sign-in".
+- **QST-001** A start that has to wait in the queue is kept with its task
+  (`tasks.queued_start`: the kind of start, its prompt, and the subscription when a person
+  chose it), and whoever starts the queued task later starts it as that start was to be;
+  a task queued without one starts as before. The kept start is the task's only while it
+  is queued since it was written: one that left the queue, or is queued again later, has
+  none. It survives a restart of Yulius. The pool's own choice of a subscription for a
+  paused task is not kept: the pool chooses again when the slot frees.
 
 ## Plan
 
@@ -771,6 +791,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
+- [x] Slice 19: a start that has to wait in the queue keeps how it was to start
 
 ## Acceptance criteria
 
@@ -1202,6 +1223,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   says "Sign-in failed" with "The sign-in ended without producing a token" and without
   Claude's refusal; the card then still shows the refusal and "Sign in again", and the
   subscription reads `relogin`.
+- **AC-109** With one session slot: a task paused at a usage limit without a process
+  becomes resumable while another task holds the slot; the pool's round queues it. While
+  it waits the subscription the pool had chosen fills up and another frees. When the slot
+  frees, the task's new run is a native resume without a prompt that continues the
+  interrupted turn, no transcript still holds the limit's record, and it runs on the
+  subscription that is free then.
+- **AC-110** With one session slot held and the pool preferring another subscription, a
+  stopped task continued on a chosen subscription is queued; Yulius restarts (the
+  holder's session lives on); when the slot frees, the task runs on the chosen one.
+- **AC-111** In the store: nothing is kept for a task that is not queued; a kept start is
+  read back as written (a prompt with a line break and quotes, a subscription id) and is
+  replaced by a later one; after the task left the queue, and when it is queued again,
+  there is none. A database of schema version 56 opens at 57.
 
 ## Test plan
 
@@ -1403,6 +1437,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and leaves the refusal on the card" (AC-108); the existing
   `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
   keeps the two other cases of SGN-001.
+- Slice 19: `yulius` `pool_supervision::a_resume_past_a_limit_that_waits_in_the_queue_is_still_one`
+  (AC-109) and `pool_supervision::a_continue_on_a_chosen_subscription_keeps_it_through_the_queue`
+  (AC-110), with the real session host and one slot; `yulius-store`
+  `tests::a_queued_task_keeps_its_start_while_it_waits` (AC-111); `yulius-app`
+  `supervisor::tests::a_kept_start_comes_back_as_it_was` (every kind, with and without a
+  prompt and a subscription).
 
 ## Decisions
 
@@ -1466,6 +1506,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 19 (no decision record: a column and the one function every start goes through).
+  The auditor proposed to leave a paused task paused when it cannot start, so that the
+  pause keeps the start. Not taken: a paused task would then wait beside the queue, not
+  in it, and lose its place to every task queued later; and Continue on a chosen
+  subscription has no pause to keep anything. The queue itself keeps the start instead,
+  in the task's row, read in `start_run_if` under the launch lock: whoever starts a queued
+  task (the queue's pass, with its plain start) gets the kept one, so no caller can forget
+  to ask. It is valid by the task's `queued_at`, as a flag's reason is by `state_at`
+  (ADR-0306), so no other statement has to clear it. A subscription is kept only when a
+  person chose it (the start of a resting task); the pool's choice for a paused task is a
+  fact of the moment it was made, and keeping it could send the task to a subscription
+  that filled up while it waited. The kept prompt is plain text in the database, as a
+  pause's continuation already is.
 - Slice 18 (no decision record: the comment at the usage write already stated the rule,
   "a reading never makes a subscription that needs a new sign-in usable again"; the code
   now has it once). `error` is kept as a status: it is what a first sign-in that failed
@@ -1720,7 +1773,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 19 |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
