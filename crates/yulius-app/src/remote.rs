@@ -17,10 +17,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
-use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::sandboxes::CreateSandbox;
 use yulius_contracts::api::secrets::{AgentSecretPatch, AgentSecretView, HostRequestAnswer};
-use yulius_contracts::api::tasks::ContinueTask;
 use yulius_contracts::api::variables::ProjectVariableInput;
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
@@ -228,11 +226,6 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 
 /// Descriptors of the tools only the remote MCP serves.
 fn own_descriptors() -> Vec<ToolDescriptor> {
-    let task_ref = json!({
-        "task_id": {"type": "string", "description": "Task id"},
-        "number": {"type": "integer", "description": "Task number within the project"}
-    });
-    let run = json!({"run_id": {"type": "string", "description": "A run id from ci_runs"}});
     let instance = vec![
         tool(
             "projects_list",
@@ -271,72 +264,6 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             "Skip onboarding, as Skip on the project page (admin): waiting tasks start at once. Only when the person asks.",
             json!({}),
             &[],
-        ),
-        tool(
-            "task_delivery",
-            "A task's delivery: its pull request, the checks at its head, review and merge state and what comes next.",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_restart",
-            "Restart a task that is not running (stopped, failed, done or waiting for the person), as Continue in the web UI: its session continues where it was. A running task must be stopped first (task_stop).",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_pause",
-            "Pause a running task, as Pause in the web UI (its process is suspended, nothing is lost).",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_unpause",
-            "Resume a paused task, as Resume in the web UI.",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_start_now",
-            "Start now a task that waits (prepared, scheduled, after another task or a start rule), as Start now in the web UI.",
-            task_ref,
-            &[],
-        ),
-        tool(
-            "ci_runs",
-            "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch or pull request, commit, state, jobs).",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "ci_run",
-            "One CI run: its jobs with state and time, and for each job that failed its failing output.",
-            run.clone(),
-            &["run_id"],
-        ),
-        tool(
-            "ci_rerun",
-            "Run the CI again for the commit of a finished run.",
-            run.clone(),
-            &["run_id"],
-        ),
-        tool(
-            "ci_cancel",
-            "Cancel a queued or running CI run.",
-            run,
-            &["run_id"],
-        ),
-        tool(
-            "cd_status",
-            "The project's CD (deployment): dev and production as yulius.toml defines them, what is deployed, the secrets they need and the recent runs; with run_id, one run with its output.",
-            json!({"run_id": {"type": "string", "description": "A run id, to read its output"}}),
-            &[],
-        ),
-        tool(
-            "cd_deploy",
-            "Deploy a dev-stage environment (dev, or another [cd.<name>] cd_status lists with stage dev): Yulius runs its deploy and verify commands from the integration branch head. Production and production-stage environments are deployed only by a person on the CD page.",
-            json!({"environment": {"type": "string", "description": "dev or another dev-stage environment's name"}}),
-            &["environment"],
         ),
         tool(
             "project_files",
@@ -404,12 +331,6 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             &["secret"],
         ),
         tool(
-            "variables_list",
-            "The project's variables (SPEC-275): its non-secret values (regions, environment names, account and project ids, base URLs, contact addresses) with their descriptions, in plain. Every task run of the project has them in its environment.",
-            json!({}),
-            &[],
-        ),
-        tool(
             "variables_set",
             "Create or change project variables, in plain: non-secret values only, never a key, token or password (those are agent secrets: `yulius secrets import`). A name that is an agent secret of the project is refused. An absent description keeps the stored one. Audited without values.",
             json!({
@@ -438,7 +359,12 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
     ];
     instance
         .into_iter()
-        .chain(project.into_iter().map(with_project))
+        .chain(
+            project
+                .into_iter()
+                .chain(crate::person_tools::descriptors())
+                .map(with_project),
+        )
         .collect()
 }
 
@@ -894,74 +820,11 @@ impl App {
                 record(&self.approve_onboarding(ctx, sid, notes).await?)
             }
             "onboarding_skip" => record(&self.skip_onboarding(ctx, sid).await?),
-            "task_delivery" => {
-                let task = self.agent_task_ref(project, args).await?;
-                record(&self.task_delivery(ctx, task.id.as_str()).await?)
-            }
-            "task_restart" | "task_pause" | "task_unpause" | "task_start_now" => {
-                let task = self.agent_task_ref(project, args).await?;
-                let id = task.id.as_str();
-                let summary = match name {
-                    "task_restart" => self
-                        .continue_task(ctx, id, &ContinueTask { account_id: None })
-                        .await
-                        .map_err(|err| match err {
-                            AppError::Conflict(why) if why.starts_with("the task is") => {
-                                AppError::Conflict(format!(
-                                    "{why}: stop it first (task_stop), then restart it"
-                                ))
-                            }
-                            other => other,
-                        })?,
-                    "task_pause" => self.pause_task_for_person(ctx, id).await?,
-                    "task_unpause" => self.resume_task_for_person(ctx, id).await?,
-                    _ => self.start_chained_now(ctx, id).await?,
-                };
-                Ok(json!({"task": record(&summary)?}))
-            }
-            "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
-            "ci_run" => record(
-                &self
-                    .ci_run_detail(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "ci_rerun" => record(
-                &self
-                    .ci_rerun_run(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "ci_cancel" => record(
-                &self
-                    .ci_cancel_run(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "cd_status" => match args.get("run_id").and_then(Value::as_str) {
-                Some(run) => record(&self.cd_run_detail(ctx, sid, run).await?),
-                None => record(&self.cd_overview(ctx, sid).await?),
-            },
-            "cd_deploy" => {
-                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?).ok_or_else(
-                    || AppError::Invalid("environment is dev or another [cd.<name>]".into()),
-                )?;
-                // A laptop's agent deploys dev-stage environments only (SPEC-257); without a
-                // typed confirmation a production-stage one is refused by the deploy anyway.
-                let production = env == "prod"
-                    || self.cd_overview(ctx, sid).await.is_ok_and(|cd| {
-                        cd.environments
-                            .iter()
-                            .any(|e| e.name == env && e.stage == "prod")
-                    });
-                if production {
-                    return Err(AppError::Forbidden(
-                        "only a person deploys production, on the project's CD page".into(),
-                    ));
-                }
-                let req = CdDeploy {
-                    confirm: None,
-                    expect: None,
-                    confirm_ms: None,
-                };
-                record(&self.cd_deploy(ctx, sid, &env, &req).await?)
+            // What a person does on the project's pages, shared with their Superagent in the
+            // sandbox (SPEC-487).
+            name if crate::person_tools::action(name).is_some() => {
+                self.person_project_tool(ctx, project, sandbox, name, args)
+                    .await
             }
             "project_files" => self.remote_files(sandbox, args).await,
             "project_file_read" => self.remote_file_read(sandbox, args).await,
@@ -1081,7 +944,6 @@ impl App {
                 Ok(json!({"deleted": own.name}))
             }
             // Project variables (SPEC-275 VAR-005): plain values, shown as they are.
-            "variables_list" => record(&self.project_variables(ctx, sid).await?),
             "variables_set" => {
                 let inputs: Vec<ProjectVariableInput> =
                     serde_json::from_value(args.get("variables").cloned().unwrap_or(Value::Null))

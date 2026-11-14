@@ -29,9 +29,10 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// MGT-006, SPEC-066 MGT-012), using its agent vault and the project browser as a task's agent
 /// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
 /// tasks for its person (SPEC-230, ADR-0178), and asking its person to start, change, message or
-/// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286). Everything
-/// else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 39] = [
+/// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
+/// for its person what they do on the project's pages ([`crate::person_tools`], SPEC-487,
+/// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
+pub const COCKPIT_TOOLS: [&str; 51] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -71,6 +72,19 @@ pub const COCKPIT_TOOLS: [&str; 39] = [
     "browser_screenshot",
     "browser_request_user_action",
     "browser_fill_secret",
+    // The person's project tools ([`crate::person_tools::PERSON_TOOLS`]).
+    "task_delivery",
+    "task_restart",
+    "task_pause",
+    "task_unpause",
+    "task_start_now",
+    "ci_runs",
+    "ci_run",
+    "ci_rerun",
+    "ci_cancel",
+    "cd_status",
+    "cd_deploy",
+    "variables_list",
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
@@ -108,9 +122,13 @@ impl McpCaller {
 /// Tool descriptors served to a Cockpit by `tools/list`.
 #[must_use]
 pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
+    // A task's agent has tools of its own under some of the person's names (`ci_rerun`,
+    // `cd_status`, `cd_deploy`, about its own work): the Superagent is served the person's.
     tool_descriptors()
         .into_iter()
+        .filter(|tool| crate::person_tools::action(&tool.name).is_none())
         .chain(cockpit_only_tool_descriptors())
+        .chain(crate::person_tools::descriptors())
         .filter(|tool| COCKPIT_TOOLS.contains(&tool.name.as_str()))
         .collect()
 }
@@ -714,6 +732,13 @@ impl App {
             _ if matches!(caller, McpCaller::Cockpit(_)) && !COCKPIT_TOOLS.contains(&name) => {
                 Err(AppError::Invalid(format!("unknown tool: {name}")))
             }
+            // What its person does on the project's pages (SPEC-487), before the tools a
+            // task's agent has under the same names.
+            _ if matches!(caller, McpCaller::Cockpit(_))
+                && crate::person_tools::action(name).is_some() =>
+            {
+                self.cockpit_person_tool(&project, name, &args).await
+            }
             "tasks_list" => self.tool_tasks_list(&project, &args).await,
             "task_get" => self.tool_task_get(&project, &args).await,
             "task_create" => self.tool_task_create(&project, &args).await,
@@ -801,6 +826,61 @@ impl App {
         };
         self.tool_result(&project.sandbox, name, &args, outcome, structured)
             .await
+    }
+
+    /// A person's project tool for their Superagent (SPEC-487 SAR-001, SAR-002): the page's
+    /// function with the person's rights as they are at this call (enabled, the tool's
+    /// [`yulius_domain::permission::Action`] on the project; the function checks the rest), and
+    /// one audit entry `superagent.tool` for a tool that changes something, refused or not.
+    async fn cockpit_person_tool(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        name: &str,
+        args: &Value,
+    ) -> AppResult<Value> {
+        use yulius_domain::permission::Action;
+        let action = crate::person_tools::action(name)
+            .ok_or_else(|| AppError::Invalid(format!("unknown tool: {name}")))?;
+        let outcome = async {
+            let user = self
+                .deps
+                .store
+                .user(&caller.user)
+                .await?
+                .filter(|user| user.disabled_at.is_none())
+                .ok_or_else(|| {
+                    AppError::Forbidden("the person this session acts for is disabled".into())
+                })?;
+            let (sandbox, _) = self.require(&user, &caller.sandbox, action).await?;
+            let ctx = crate::auth::AuthContext {
+                user,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            self.person_project_tool(&ctx, caller, &sandbox, name, args)
+                .await
+        }
+        .await;
+        if action != Action::View {
+            let detail =
+                crate::manage::tool_detail(caller, &json!({"tool": name, "ok": outcome.is_ok()}));
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    self.now(),
+                    &caller.actor,
+                    "superagent.tool",
+                    Some(caller.sandbox.as_str()),
+                    Some(&detail),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, tool = name, "a Superagent's tool was not audited");
+            }
+        }
+        outcome
     }
 
     /// A tool only a task's agent is served.
