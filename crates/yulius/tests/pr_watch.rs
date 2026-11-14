@@ -292,7 +292,8 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
 
 /// SPEC-491 DON-003: a pull request that conflicts with the integration branch is not tested,
 /// so its task is not Done, and its agent hears of the conflict also where no run exists at its
-/// head (a project without Yulius CI): the branch's own head is asked. Told once per head.
+/// head (a project without Yulius CI): the branch's pushed head, the pull request's, is asked.
+/// Told once per head.
 #[test]
 fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
     use yulius_ptyhost::test_support::locate_fake_agent;
@@ -323,6 +324,12 @@ fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
         std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
         git(worktree, &["commit", "-q", "-am", "task"])?;
         let head = git(worktree, &["rev-parse", "HEAD"])?;
+        // Pushed: the pull request's head.
+        let branch = task.branch.clone().ok_or("no branch")?;
+        git(
+            worktree,
+            &["push", "-q", "origin", &format!("HEAD:{branch}")],
+        )?;
         let open = DeliveryRecord {
             task_id: id.clone(),
             stage: DeliveryStage::PrOpen,

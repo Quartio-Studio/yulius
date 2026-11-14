@@ -5218,12 +5218,14 @@ async fn a_pull_request_without_checks_is_done_where_none_are_required() -> Test
     Ok(())
 }
 
-/// SPEC-491 DON-001 (14 November 2026: #474 was started "after #465" while #465's pull request
-/// #1287, green at its head, conflicted with `dev`): a pull request GitHub cannot merge is not
-/// tested, whatever its checks say. Its task is not Done, the task chained after it waits, and
-/// `#1 done` in a start rule is false; it starts once the pull request can merge again.
+/// SPEC-491 DON-001: where Yulius's clone cannot answer whether a pull request merges (this
+/// fixture's Git has no merge check), GitHub's flag decides: a pull request GitHub cannot merge
+/// is not tested, whatever its checks say. Its task is not Done and the task chained after it
+/// waits; it starts once the pull request can merge again. (Where the clone answers, it decides:
+/// `merge_train::github_s_flag_does_not_hold_a_pull_request_the_clone_merges`.)
 #[tokio::test]
-async fn a_green_pull_request_that_conflicts_is_not_done() -> TestResult {
+async fn a_green_pull_request_github_cannot_merge_is_not_done_where_the_clone_cannot_tell()
+-> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
     f.h.github.set_checks(&head, ChecksState::Success);
@@ -5294,9 +5296,29 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
         sandbox.body
     );
 
-    // The last of its work: the spec says done, and Yulius reads it at the turn's end.
-    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec: done")?;
+    // The spec moves (still in-progress): found where it is now, and it still holds the task.
+    let moved = "docs/specs/2026-10-08-checkout-api.md";
+    git(&wt, &["mv", SPEC_PATH, moved])?;
+    git(&wt, &["commit", "--quiet", "-m", "Spec: moved"])?;
     let t1 = TaskId::parse("t1")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    assert_eq!(
+        f.h.store
+            .task(&t1)
+            .await?
+            .and_then(|t| t.spec_path)
+            .as_deref(),
+        Some(moved),
+        "registered where it is now"
+    );
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "moved, still in-progress"
+    );
+    // The moved spec says done, read at the turn's end (review of SPEC-491, m2).
+    commit_file(&wt, moved, &finished_spec("t1"), "Spec: done")?;
     let task = f.h.store.task(&t1).await?.ok_or("t1")?;
     f.h.app.sync_steps_from_spec(&task).await?;
     let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
@@ -5349,6 +5371,33 @@ async fn a_closed_task_whose_spec_says_in_progress_did_not_end_done() -> TestRes
             );
         }
     }
+    Ok(())
+}
+
+/// SPEC-491 DON-004 (review of SPEC-491, m2): a task whose spec said in-progress and was then
+/// deleted (the task turned out to need none) has no spec left to say its work is unfinished:
+/// it is decided by its steps alone, Done with its tested pull request, and the chained task
+/// starts.
+#[tokio::test]
+async fn a_task_whose_spec_was_deleted_is_decided_by_its_steps() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let unfinished = valid_spec("t1").replace("- [ ] Implement", "- [x] Implement");
+    let (wt, head) = delivered_with_a_successor(&f, &unfinished).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(successor_after_the_turn(&f).await?, "chained");
+    git(&wt, &["rm", "--quiet", SPEC_PATH])?;
+    git(&wt, &["commit", "--quiet", "-m", "No spec needed"])?;
+    let t1 = TaskId::parse("t1")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    assert_eq!(f.h.store.spec_status(&t1).await?, None);
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], false, "{}", shown.body);
+    // The pushed head is the pull request's: its checks passed.
+    let pushed = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&pushed, ChecksState::Success);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(successor_after_the_turn(&f).await?, "queued");
     Ok(())
 }
 

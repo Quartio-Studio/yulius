@@ -2065,6 +2065,72 @@ async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> Tes
     Ok(())
 }
 
+/// SPEC-491 DON-001 (review of SPEC-491, M1): GitHub knows nothing of the union rule Yulius gives
+/// the changes log, so two pull requests that each add an entry at its top read "not mergeable"
+/// there while Yulius's own merge resolves them. Where the clone answers, it decides: the pull
+/// request is tested, the overview says no conflict, and the task chained after it starts.
+#[tokio::test]
+async fn github_s_flag_does_not_hold_a_pull_request_the_clone_merges() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` gains another entry at the top of the changes log: a union merge, not a conflict.
+    let other = tempfile::tempdir()?;
+    let clone = other.path().join("c");
+    git(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            f.integration,
+            f.origin.to_str().ok_or("path")?,
+            clone.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::write(
+        clone.join("CHANGES.md"),
+        "# Changes\n\n- another\n- first\n",
+    )?;
+    git(&clone, &["commit", "-q", "-am", "another entry"])?;
+    git(
+        &clone,
+        &["push", "-q", "origin", &format!("HEAD:{}", f.integration)],
+    )?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    // GitHub, which merges without that rule, calls it not mergeable.
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.mergeable = Some(false);
+    }
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(pr["conflicts"], false, "{}", overview.body);
+    app.advance_chains(&first).await;
+    assert_ne!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "the clone merges it: tested, and the chained task starts"
+    );
+    Ok(())
+}
+
 /// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
 /// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
 /// waits for it, Home counts it as working, and archiving it is refused (it would have ended the

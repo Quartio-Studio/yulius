@@ -1337,7 +1337,22 @@ impl App {
         // newer one written meanwhile (SPEC-341 LSS-002).
         let runtime = self.runtime(&task.id);
         let _steps = runtime.steps_lock.lock().await;
-        let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
+        let root = PathBuf::from(worktree);
+        // A spec moved or deleted since it was registered: found again where it is now, or, with
+        // none left, its kept status goes (review of SPEC-491, m2).
+        let rel = if root.join(spec_path).is_file() {
+            spec_path.clone()
+        } else if root.is_dir() {
+            match self.task_spec_path(task, &root).await {
+                Ok(found) => found,
+                Err(_) => {
+                    self.note_spec_status(&task.id, None).await;
+                    return Ok(false);
+                }
+            }
+        } else {
+            return Ok(false);
+        };
         let expected = task.id.clone();
         let report = tokio::task::spawn_blocking(move || {
             read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected))
@@ -1348,9 +1363,7 @@ impl App {
             return Ok(false);
         };
         // What the spec says of the task's work decides Done with the steps (SPEC-491 DON-004).
-        if self.note_spec_status(&task.id, report.status).await {
-            self.publish_task(&task.id).await;
-        }
+        self.note_spec_status(&task.id, report.status).await;
         let items: Vec<_> = report
             .plan
             .into_iter()

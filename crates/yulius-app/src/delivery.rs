@@ -680,7 +680,8 @@ fn pull_view(pull: &GhPull, checks: &str) -> PullView {
         base: pull.base.clone(),
         head: pull.head.clone(),
         checks: checks.to_owned(),
-        conflicts: pull.mergeable == Some(false),
+        // Decided per task by `App::pull_conflicts`, never by GitHub's flag alone (SPEC-491).
+        conflicts: false,
     }
 }
 
@@ -1458,6 +1459,11 @@ impl App {
         let path = match self.task_spec_path(task, &worktree).await {
             Ok(path) => path,
             Err(dir) => {
+                // No spec (any more) in a worktree that is there: nothing it said is left to
+                // keep the task from Done (review of SPEC-491, m2).
+                if worktree.is_dir() {
+                    self.note_spec_status(&task.id, None).await;
+                }
                 return SpecCheck::problem(
                     None,
                     format!(
@@ -2087,6 +2093,12 @@ impl App {
                     &pull,
                     if is_open(&pull) { "unknown" } else { "none" },
                 ));
+                if is_open(&pull)
+                    && self.pull_conflicts(&task, &sandbox, &pull).await
+                    && let Some(pr) = view.pr.as_mut()
+                {
+                    pr.conflicts = true;
+                }
                 let observed_state = if pull.merged {
                     PrState::Merged
                 } else if is_open(&pull) {
@@ -3404,17 +3416,23 @@ impl App {
         }
     }
 
-    /// Whether an open pull request of `task` conflicts with its base (SPEC-491 DON-001):
-    /// GitHub says it is not mergeable (a single pull request's answer; its lists say nothing),
-    /// or Yulius's own merge of its head with the integration branch, as last fetched, conflicts
-    /// (what the pull request watch tells the agent, PRN-004).
+    /// Whether an open pull request of `task` conflicts with its base (SPEC-491 DON-001). Yulius's
+    /// own merge of its head with the integration branch, as last fetched and with the clone's
+    /// merge drivers, decides (what the pull request watch tells the agent, PRN-004): GitHub
+    /// knows nothing of the union rules Yulius gives the changes log and the decision index, so
+    /// it calls a collision there a conflict that Yulius's merge resolves (review of SPEC-491,
+    /// M1). Only where the clone cannot answer (no worktree) does GitHub's flag decide; a list
+    /// of pull requests carries none, so there it is no conflict.
     pub(crate) async fn pull_conflicts(
         &self,
         task: &TaskRecord,
         sandbox: &SandboxRecord,
         pull: &GhPull,
     ) -> bool {
-        pull.mergeable == Some(false) || self.conflicts(task, sandbox, &pull.head_sha).await
+        match self.local_conflict(task, sandbox, &pull.head_sha).await {
+            Some(conflicts) => conflicts,
+            None => pull.mergeable == Some(false),
+        }
     }
 
     /// Whether a task's pull request is recorded as merged.

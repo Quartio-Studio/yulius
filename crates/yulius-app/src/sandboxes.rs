@@ -228,19 +228,20 @@ impl App {
         )
     }
 
-    /// Keeps what the task's spec says of its work, whenever Yulius reads the spec (DON-004).
-    /// Returns whether it changed; a failed write is logged and changes nothing.
+    /// Keeps what the task's spec says of its work, whenever Yulius reads the spec (DON-004);
+    /// `None` when the task has no spec (any more). A change is published to the pages that show
+    /// the task. A failed write is logged and changes nothing.
     pub(crate) async fn note_spec_status(
         &self,
         task: &yulius_domain::ids::TaskId,
         status: Option<yulius_domain::spec_format::SpecStatus>,
-    ) -> bool {
+    ) {
         let status = status.map(yulius_domain::spec_format::SpecStatus::as_str);
         match self.deps.store.set_spec_status(task, status).await {
-            Ok(changed) => changed,
+            Ok(true) => self.publish_task(task).await,
+            Ok(false) => {}
             Err(err) => {
                 tracing::warn!(task = %task, error = %err, "keeping the spec's status failed");
-                false
             }
         }
     }
