@@ -3,7 +3,8 @@
 Moved here, word for word, from the Evidence section of
 [SPEC-483](../SPEC-483-deep-security-and-quality-audit-fix-ever.md) when that file neared its
 size bound. Paths like `target/audit/sliceN/` name ignored scratch files of the task's
-worktree.
+worktree. Slice 28's last two entries (its fourth review round and its merge) were written at
+the move.
 
 ### Slice 21 (2026-11-14)
 
@@ -466,4 +467,5 @@ worktree.
   handlers, names and icons; every `shortSha` caller gives what it gave).
 - **Merged.** The merge armed at `56b576065` waited behind `dev`; its first merge train was
   dissolved when `dev` moved, the second passed, and pull request #1287 was squash-merged into
-  `dev` (`fea9402df`, whose own Yulius CI run passed).
+  `dev` as `35a12fb98`; its head, a merge of `dev` into the branch, was `fea9402df`, whose own
+  Yulius CI run passed.

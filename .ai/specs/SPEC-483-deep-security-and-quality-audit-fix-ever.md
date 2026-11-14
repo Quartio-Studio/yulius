@@ -2066,7 +2066,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 29: `yulius-server` `auth::tests::one_bearer_reader_takes_the_trimmed_token_of_a_bearer_header_only`
-  and the routes' tests (AC-148); `yulius` `browser::the_welcome_page_names_the_sandbox_and_links_its_listening_ports`,
+  and the routes' tests (AC-148), `yulius` `leftovers::the_loopback_routes_need_the_server_s_key`
+  (a padded key is taken) and `browser::another_authorization_scheme_beside_a_session_cookie_is_refused`; `yulius` `browser::the_welcome_page_names_the_sandbox_and_links_its_listening_ports`,
   extended to the refresh route without a listener (AC-148); `yulius-domain`
   `redact::tests::github_tokens_are_replaced_whole_by_one_scrub` and the adapters' tests
   (`yulius-git` `redact::tests`, `yulius-github` `error::tests`) (AC-149).
@@ -2622,7 +2623,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 The evidence of slices 1 to 20, all merged, is in
 [evidence/SPEC-483-slices-1-20.md](evidence/SPEC-483-slices-1-20.md), and of slices 21 to 28,
 all merged, in [evidence/SPEC-483-slices-21-28.md](evidence/SPEC-483-slices-21-28.md), word for
-word as they stood here (this file is bounded at 256 KiB); the later slices follow.
+word as they stood here, slice 28's merge added (this file is bounded at 256 KiB); the later
+slices follow.
 
 ### Slice 29 (2026-11-14)
 
@@ -2642,3 +2644,12 @@ word as they stood here (this file is bounded at 256 KiB); the later slices foll
   a bulk stop ends with `drain_queue()`, so stopping the first queued task lets the queue start
   the next before the bulk reaches it (commented on #1278); it is slice 30.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `dcafa7c26`): request changes. One minor, own code:
+  no route test pinned the one behaviour change (the leftovers key trimmed) nor that the key
+  goes through the shared reader. Nits: no test that another `Authorization` scheme beside a
+  valid session cookie is refused rather than taken as absent (pre-existing); the moved
+  evidence gained slice 28's last two entries, and named the pull request's head where the
+  squash commit on `dev` (`35a12fb98`) was meant. All answered: the leftovers test takes a
+  padded key, a new test refuses `Basic` beside a cookie, the evidence file says what was added
+  at the move. Each new test fails without its behaviour (`mutations-r1.log`: the key read
+  untrimmed; the extractor rewritten to fall back to the cookie).
