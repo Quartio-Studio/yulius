@@ -795,14 +795,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
   directory (`personal-mcp-of`: the owner's id); a launch that cannot write it fails. A
   restarted server reads it for a run it reattaches, so the rules of SPEC-332 MSC-009
   hold across a restart: only that person messages the session, and a hand-over restarts
-  it with the new owner's servers.
+  it with the new owner's servers. A reattached run whose mark names someone who is not
+  the task's holder (a hand-over's restart the old server did not finish) is restarted at
+  once. A mark that exists and cannot be read counts as none and is logged.
 - **RST-002** A `/goal` Yulius still has to type is marked in the run directory
-  (`typed-goal-pending`) from the typist's start until it ends with an outcome: the goal
-  recorded, the task flagged, or the prompt box left to a person who typed. A restarted
-  server watches a reattached run that still has the mark, as it watches a launch goal:
-  a goal Claude Code recorded before the restart ends the watch (the mark goes, nothing
-  is said); otherwise, after `launch_goal_ms`, the task is flagged with "Yulius restarted
-  before it set this task's goal" and the mark goes, so it is said once.
+  (`typed-goal-pending`, written before the spawn; it says whether the session opens with
+  a turn) until the typist ends with an outcome: the goal recorded, the task flagged, or
+  the prompt box left to a person who typed. A restarted server watches a reattached run
+  that still has the mark, as it watches a launch goal: a goal Claude Code recorded
+  before the restart ends the watch (the mark goes, nothing is said); otherwise, after
+  `launch_goal_ms`, the task is flagged with "Yulius restarted before it set this task's
+  goal" and the mark goes, so it is said once. A session whose opening turn has not ended
+  (the mark says it opens with one, and no Stop of the run was answered) gets that turn
+  back: its Stop ends it as it is, as before the restart, and the watch's time starts
+  there, so the flag is not raised inside the turn and taken away by its end. A folder
+  trust dialog still unanswered tells the person to type the goal after answering it.
 
 ## Plan
 
@@ -1283,13 +1290,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   limit without a process that becomes resumable keeps its `limit` pause through the
   pool's round and stays `waiting_capacity`; once the queue has room the next round
   queues it and its pause ends; when its turn comes it resumes past the limit.
-- **AC-114** A task's run holds its owner's personal MCP server; Yulius restarts and
-  reattaches the run. Another person's message to the task is refused for the MCP
-  servers, and when control passes to that person the run is resumed without the
-  previous owner's server.
-- **AC-115** Yulius restarts while a continued goal session is in its opening turn (the
-  run directory holds `typed-goal-pending`): the new server flags the task with "Yulius
-  restarted before it set this task's goal", and the mark is removed.
+- **AC-114** A task's run holds its owner's personal MCP server, which is then turned
+  off (so only the run's own record says it holds it); Yulius restarts and reattaches the
+  run. Another person's message to the task is refused for the MCP servers, and when
+  control passes to that person the run is resumed.
+- **AC-115** Yulius restarts while a continued goal session is in its opening turn of
+  12 s (the run directory holds `typed-goal-pending`), with a watch of 3 s: after that
+  turn's Stop was answered the new server flags the task with "Yulius restarted before it
+  set this task's goal", and the mark is removed.
+- **AC-117** A reattached run whose `personal-mcp-of` names another person than the
+  task's owner is restarted by the new server (a second run, a resume).
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1506,8 +1516,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `pool_supervision::a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers`
   (AC-114), `first_message::a_goal_still_to_be_typed_at_a_restart_is_flagged` (AC-115),
   `first_message::a_typed_goal_that_was_taken_leaves_no_marker` and
-  `first_message::a_typed_goal_recorded_before_a_restart_is_not_flagged` (AC-116); each
-  restart is a second server on the same data that reattaches the first one's run.
+  `first_message::a_typed_goal_recorded_before_a_restart_is_not_flagged` (AC-116),
+  `pool_supervision::a_reattached_run_with_another_persons_servers_is_restarted`
+  (AC-117); each restart is a second server on the same data that reattaches the first
+  one's run.
 
 ## Decisions
 
@@ -1585,6 +1597,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   keeps it, and has no later server to read it. A launch that cannot write the personal
   servers' mark fails rather than starts a run the next server knows nothing of; the
   goal's mark is only logged when it cannot be written, as the launch goal's is.
+  The first version watched from the reattach on, and its flag could come inside the
+  session's opening turn, whose end then set the task back to "your turn" (the review,
+  finding 1). The mark now says whether the session opens with a turn, and a restarted
+  server that finds no answered Stop of the run gives the run that turn back: the same
+  two facts the old server had, read from the run directory, not guessed from the screen.
+  A Stop that was answered by a hold (no capacity) counts as answered; such a run's
+  opening turn then ends through the gates, as every reattached run's did before, and a
+  flag raised before that end can still be taken away by it.
 - Slice 19 (no decision record: a column and the one function every start goes through).
   The auditor proposed to leave a paused task paused when it cannot start, so that the
   pause keeps the start. Not taken: a paused task would then wait beside the queue, not

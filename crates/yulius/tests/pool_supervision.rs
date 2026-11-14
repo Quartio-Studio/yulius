@@ -970,7 +970,7 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
         let bob = second_person(&app, &admin).await?;
         let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
-        personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
+        let (fleet, fleet_id) = personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
         wait_for("the run", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)
@@ -978,6 +978,11 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         assert_eq!(run_servers(&run.run_dir)?, ["docs", "fleet", "yulius"]);
+        // Turned off meanwhile, the server is only in the live run: after the restart nothing
+        // but the run's own record says that the run holds it.
+        let mut off = fleet;
+        off.enabled = Some(false);
+        app.update_mcp_server(&admin_ctx, &fleet_id, &off).await?;
         Ok::<_, Box<dyn std::error::Error>>((sandbox, admin, bob, id, run))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
@@ -1019,6 +1024,65 @@ fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> T
         .await?;
         let resumed = app.deps.store.attempts(&id).await?.remove(1);
         assert_eq!(run_servers(&resumed.run_dir)?, ["docs", "yulius"]);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 RST-001 (review): the old server stopped in the middle of a hand-over's restart of
+/// the run, so the reattached run holds the servers of someone who is no longer the task's
+/// holder (here the run's record names Bob while the task is the administrator's). The new
+/// server restarts the run at once.
+#[test]
+fn a_reattached_run_with_another_persons_servers_is_restarted() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = || FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let build = || {
+        build_with_github(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(),
+            Arc::new(FakeGitHub::default()),
+        )
+    };
+    let first = runtime()?;
+    let id = first.block_on(async {
+        let app = build()?;
+        let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
+        second_person(&app, &admin).await?;
+        let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
+        let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let mark = Path::new(&run.run_dir).join("personal-mcp-of");
+        assert_eq!(std::fs::read_to_string(&mark)?, admin.as_str());
+        std::fs::write(&mark, "u-bob")?;
+        Ok::<_, Box<dyn std::error::Error>>(id)
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build()?;
+        app.reconcile().await?;
+        wait_for("the restarted run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let resumed = app.deps.store.attempts(&id).await?.remove(1);
+        assert_eq!(resumed.launch_kind, LaunchKind::Resume);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

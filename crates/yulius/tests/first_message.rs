@@ -1150,9 +1150,11 @@ fn typed_goal_marker(run_dir: &str) -> PathBuf {
 }
 
 /// SPEC-483 RST-002: Yulius restarts while it still has to type a resumed session's `/goal`
-/// (the session's opening turn runs). The new server has no typist for it; it watches whether
-/// Claude Code recorded a goal and, as it did not, flags the task and says why, instead of
-/// leaving a goal task idle without a goal and without a word.
+/// (the session's opening turn runs). The new server has no typist for it; it waits that turn
+/// out, watches whether Claude Code recorded a goal and, as it did not, flags the task and says
+/// why, instead of leaving a goal task idle without a goal and without a word. The flag comes
+/// after the opening turn's end, whose Stop would otherwise take it away (the bound here, 3 s,
+/// is long over when the 12 s turn ends).
 #[test]
 fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1178,6 +1180,15 @@ fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
         .await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        // The opening turn ends under the new server: its Stop is answered.
+        let stop_answered = Path::new(&attempt.run_dir).join("stop-answered");
+        wait_for(
+            "the opening turn's end",
+            Duration::from_secs(60),
+            || async { stop_answered.exists() },
+        )
+        .await?;
         wait_for("the flag", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
@@ -1189,7 +1200,6 @@ fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
             "{said:?}"
         );
         // Flagged once: no later restart flags it again.
-        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         let marker = typed_goal_marker(&attempt.run_dir);
         wait_for("the marker's removal", Duration::from_secs(10), || async {
             !marker.exists()
