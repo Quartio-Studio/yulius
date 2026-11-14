@@ -29,8 +29,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
   agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
   SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
-  GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
-  is missing or disabled, the message says which), `internal` (500).
+  GitHub/provider failure), `internal` (500). A 503 has no such body: it comes from a reverse
+  proxy in front of Yulius, or from the preview proxy's bounds (plain text); the web UI reads it
+  as `unavailable`.
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
   The superadmin has `admin` on every sandbox, with or without a GitHub link (ACC-012); everyone
   else has the level GitHub grants, and no GitHub identity means no sandbox.

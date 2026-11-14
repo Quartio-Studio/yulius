@@ -1405,11 +1405,11 @@ pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still as
 pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
     let ahead = ahead.trim();
     if ahead.is_empty() {
-        format!("{asks}, then end with your summary. Do not promote unless the task asks for it.")
+        format!("{asks}, then end with your summary. Promotion is not yours to do.")
     } else {
         format!(
             "{asks}, then go on with the next step: the finished part of your plan is delivered. \
-             {ahead} Do not promote unless the task asks for it."
+             {ahead} Promotion is not yours to do."
         )
     }
 }
@@ -1613,14 +1613,25 @@ mod tests {
              deploy and verify an integration environment with `delivery_deploy`), then go on \
              with the next step: the finished part of your plan is delivered. 2 step(s) of your \
              plan are still ahead (next: \"Slice 2\"): they stay open, and the work you commit \
-             for them on this branch is delivered next, by a `delivery_merge` of its own. Do not \
-             promote unless the task asks for it."
+             for them on this branch is delivered next, by a `delivery_merge` of its own. \
+             Promotion is not yours to do."
         );
         assert_eq!(
             after_merge("", PROFILE_ASKS),
             "Finish what the delivery profile still asks for this stage (`delivery_status`; \
              deploy and verify an integration environment with `delivery_deploy`), then end with \
-             your summary. Do not promote unless the task asks for it."
+             your summary. Promotion is not yours to do."
         );
+        // SPEC-483 SHP-001 (ADR-0110): nothing Yulius types tells an agent to promote.
+        for text in [
+            after_merge("", PROFILE_ASKS),
+            after_merge(ahead, PROFILE_ASKS),
+        ] {
+            assert_eq!(
+                yulius_domain::cd::production_instruction(&text),
+                None,
+                "{text}"
+            );
+        }
     }
 }

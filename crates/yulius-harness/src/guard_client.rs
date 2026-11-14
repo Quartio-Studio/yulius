@@ -88,7 +88,8 @@ pub fn self_matching_pattern(command: &str) -> Option<(String, String)> {
 
 /// Whether `command` merges a pull request by hand (SPEC-444 PRN-011): `gh pr merge`, or
 /// `gh api` with method `PUT` on a pull request's `/merge`. Yulius merges through
-/// `delivery_merge` and its queue; a hand merge does not end the task's delivery.
+/// `delivery_merge` and its queue; a hand merge skips the queue's order and its test on the
+/// current base.
 #[must_use]
 pub fn hand_merge(command: &str) -> bool {
     let words = split_words(command);
@@ -253,7 +254,8 @@ pub fn pre_tool_use(input: &mut dyn Read, output: &mut dyn Write) -> i32 {
     let reason = if hand_merge(command) {
         "Yulius refused this command: Merging by hand is refused. Yulius merges your pull request \
          through `delivery_merge` and its merge queue, in order, on green Yulius CI; a hand merge \
-         skips that and does not end your goal's delivery. If a green pull request is not \
+         skips the queue's order, its test on the current base and the merge's own checks. If a \
+         green pull request is not \
          merging, `delivery_status` says why, and Yulius tells this session when it moves: \
          arm it once with `delivery_merge` and end your turn."
             .to_owned()
@@ -374,7 +376,11 @@ mod tests {
             denied.contains("\"permissionDecision\":\"deny\"")
                 && denied.contains("Merging by hand is refused")
                 && denied.contains("delivery_merge")
-                && denied.contains("delivery_status"),
+                && denied.contains("delivery_status")
+                // SPEC-483 SHP-005: a merge at a green head counts whoever made it (SPEC-441
+                // MQ-009); what a hand merge skips is the queue.
+                && denied.contains("skips the queue's order, its test on the current base")
+                && !denied.contains("does not end"),
             "{denied}"
         );
     }

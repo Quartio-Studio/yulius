@@ -760,10 +760,10 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
-         unrelated, generated or secret. No `git stash`: this worktree is yours. Stay current by \
-         merging `origin/{integration}` only for a conflict; rerun the tests. Numbered files \
-         (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
-         400 changed lines outside tests); split bigger work into chained tasks.\n\
+         unrelated, generated or secret. No `git stash`. Stay current by merging \
+         `origin/{integration}` before the review or for a conflict; rerun the tests. Numbered \
+         files (ADRs, migrations) take their number from `record_number`. One concern per pull \
+         request (about 400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`) marking findings own code \
          or pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
@@ -1764,7 +1764,7 @@ mod tests {
             "Yulius pushes plainly",
             "merging `origin/",
             // SPEC-441 MQ-011: the merge queue orders merges; nobody holds a green one back.
-            "only for a conflict; rerun the tests",
+            "before the review or for a conflict; rerun the tests",
             "the queue merges in turn: never hold a green one back",
             // SPEC-444 PRN-012: Yulius tells the task; it keeps its hands off when told.
             "Yulius types your PR's events with the next step (obey \"Hands off\")",

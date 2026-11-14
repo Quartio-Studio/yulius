@@ -410,9 +410,11 @@ watching, steering and unblocking.
   or a production that only promotes, as Yulius's own) needs no rollback, and the page says so and
   why; Yulius itself rolls back through its update, which restores the previous binary and database
   when the new build fails to start (its health check), or by a revert promoted again (SPEC-418).
-  Production (with its promotion) is always a person's: an administrator types the project's slug,
-  and on GitHub a ruleset only repository admins bypass keeps the production branch out of reach of
-  the agents' own token, which is never a person's
+  Only where a delivery profile promotes by itself (`auto_promote`, the Studio preset) does Yulius
+  promote, once each merged change passed its integration environments; a production deploy stays a
+  person's there too. Production (with its promotion) is otherwise always a person's: an
+  administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
+  keeps the production branch out of reach of the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
   as the person who started onboarding when they are a repository admin; where the GitHub plan
   has no rulesets, a sandbox admin waives it on the Git page's Production protection card, and

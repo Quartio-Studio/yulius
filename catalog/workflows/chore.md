@@ -24,5 +24,5 @@ A chore is small and boring on purpose.
   candidate verified, one kind of removal per commit).
 - Run every gate with `om-check-and-commit`; never weaken a test, a lint rule or an allowlist to
   get green.
-- Commit and deliver following `git-hygiene` and `delivery-pipeline`: merge on green, deploy,
-  verify, clean up.
+- Commit and deliver following `git-hygiene` and `delivery-pipeline`: merge on green, clean up;
+  deploy dev only if asked (`cd_deploy`); production is a person's.

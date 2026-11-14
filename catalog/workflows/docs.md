@@ -24,5 +24,5 @@ Documentation is how the next agent learns the product, so it must be true and f
   Mermaid diagrams with the text. Superseded decisions keep their record and link to the new one.
 - Check that every link and path resolves and that AGENTS.md still routes to every document.
 - If you find that the code is wrong rather than the docs, record it with `issue_create` and leave
-  the code alone. Commit and deliver following `git-hygiene` and `delivery-pipeline` (no spec,
-  no independent review needed for documentation only).
+  the code alone. Commit and deliver following `git-hygiene` and `delivery-pipeline`: no spec
+  for documentation only, but `delivery_merge` takes only a head an independent review approved.

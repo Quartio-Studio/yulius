@@ -56,9 +56,11 @@ no code path reaches; documents, texts shown to agents and people, and code that
       (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
       (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
       (merged, #1279);
-  14. documents and shipped texts against the code (P1-P14, QB9);
+  14. documents and shipped texts against the code (P1-P14, QB9): what Yulius ships and shows
+      (P1, P5-P7, P9-P13, P15) is slice 26, the repository's own instruction documents (P2-P4,
+      P14, QB9) slice 27;
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
-      #1281), the rest slice 25;
+      #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
@@ -552,6 +554,36 @@ went; two of the auditors' items had gained a user since and stay.
   `vault_enabled.enabled_by`/`enabled_at` (who and when, for a person reading the database;
   dropping a column needs a migration for no behaviour).
 
+### Slice 26: what Yulius ships and shows
+
+- **P1 (medium).** The goal's Done sentence ("never promote to `main` unless asked"), the
+  definition of done ("**Never promote to `main`** or deploy to production unless the request
+  asks for it") and the merge news ("Do not promote unless the task asks for it") told an
+  agent that promotion was its job when the task asked; ADR-0110 rejected exactly that
+  ("Agents promote when their task asks"), the briefing says production is a person's, and an
+  agent has no tool for it. `cd::production_instruction`, the rule that keeps such wording out
+  of the shipped workflows, did not cover these texts.
+- **P5, P6 (medium).** The Docs workflow said documentation needs "no independent review",
+  and the delivery skill "usually" none; `delivery_merge` takes only a head an independent
+  review approved. The Chore workflow said "merge on green, deploy, verify"; everywhere else a
+  merge deploys nothing and dev is deployed only when asked.
+- **P7, P11 (medium).** The Git page and the delivery dialog said agents "merge and release"
+  (the CD page of the same project: production is always deployed by a person); the profile
+  dialog said environment commands run "in the sandbox clone" (ADR-0175: a run reads its own
+  checkout). With `auto_promote` Yulius itself releases each merge, which `docs/product.md`'s
+  absolute "always a person's" left out.
+- **P9 (medium).** The delivery skill's "Machine-checked gates" table listed an issue link, a
+  size, a test diff and a draft flag that nothing checks, and told the agent the pull request
+  body links the issue (`Fixes #N`), which the body Yulius writes never does.
+- **P10 (medium).** Already right: the promotion route's row was corrected with P8 in slice 4.
+- **P12 (medium).** The merge guard refused a hand merge because it "does not end your goal's
+  delivery"; since SPEC-441 MQ-009 a merge at a green head counts whoever made it.
+- **P13 (medium).** The briefing said to merge the integration branch "only for a conflict";
+  the skill it names, and the review rule (an approval is of the exact head), say before the
+  review too.
+- **P15 (low).** `docs/api.md` listed the error code `unavailable` (503); no error kind or route
+  produces it.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1005,6 +1037,24 @@ went; two of the auditors' items had gained a user since and stay.
   pages carry no script and the same framing rule.
 - **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
   secret; a stored configuration that still names one parses as before.
+- **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
+  definition of done (short and full, and the request file) and the merge news pass
+  `cd::production_instruction`; they say promotion is not the agent's (a person's, to be asked
+  with `needs_you`, or automatic where the delivery profile says so).
+- **SHP-002** The Chore workflow, like Feature and Fix, deploys dev only when asked
+  (`cd_deploy`) and leaves production to a person.
+- **SHP-003** The Docs workflow and the delivery skill say a merge needs the independent review
+  `delivery_merge` asks for, documentation too.
+- **SHP-004** The Git page says agents merge and deploy the integration environments and a
+  person releases on the CD page (with `auto_promote`: Yulius releases each merge once they
+  pass); the delivery dialog says the same; the profile dialog says environment commands run
+  in the run's own copy of the stage branch's files, without Git.
+- **SHP-005** The guard's refusal of a hand merge says it skips the queue's order, its test on
+  the current base and the merge's own checks; the delivery skill says `Fixes #N` closes an
+  issue only for a merge into the repository's default branch, and to close it by hand
+  otherwise; the briefing says to merge the integration branch before the review
+  or for a conflict; the skill's gate table says which gate the merge tool checks and which
+  the review; `docs/api.md` lists only error codes a route produces.
 - **DED-001** Removing the items of slice 25 changes no behaviour a person or an agent sees:
   the gate and the whole e2e suite pass with them gone, the API and its event stream keep
   every field they sent; a workflow row seeded before the catalog that an instance still holds
@@ -1043,7 +1093,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
-- [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features
+- [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
+- [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing
 
 ## Acceptance criteria
 
@@ -1589,14 +1640,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   browser's `Accept-Encoding: gzip, br`. The proxy's refusal page (the landing's) has the
   CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'` and no
   script.
-- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
-  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
-  end in; a manual move names its account.
 - **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
   document is read-only and not busy, the text is the document's, and after 2.5 s it asked
   for no second rejoin. The same when the edit itself meets an ended document (409), its
   catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
   one edit, two joins, and a close ends within a second.
+- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
+  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
+  end in; a manual move names its account.
+- **AC-138** The request file, the short and full definitions of done and the merge news (with
+  and without steps ahead) contain no instruction to promote by `production_instruction`, and
+  say "Promotion to `main` and production deploys are not yours" or "Promotion is not yours
+  to do".
+- **AC-139** The Feature, Fix and Chore workflows name `cd_deploy` and "production is a
+  person's"; the Docs workflow names the independent review and not "no independent review".
+- **AC-140** The Git page of an `auto_promote` project says "Agents merge and deploy the
+  integration environments; Yulius releases each merge once they pass."; the sentence for
+  another profile ends "a person releases on the CD page."; no "Agents merge and release"; the
+  delivery dialog says "a person releases on the CD page"; a refused `gh pr merge` says
+  "skips the queue's order, its test on the current base" and never "does not end".
 
 ## Test plan
 
@@ -1858,6 +1920,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 26: `yulius-domain`
+  `request::tests::the_request_file_has_the_request_the_files_and_the_definition_of_done` and
+  `yulius-app` `agent_wait::tests::a_merge_with_steps_ahead_says_the_task_goes_on` (AC-138);
+  `workflows::catalog::tests::no_workflow_tells_agents_to_promote` (AC-139);
+  `yulius-harness` `guard_client::tests::hand_merges_are_refused` and e2e `git.e2e.ts` (AC-140);
+  `briefing::tests::small_input_contains_everything_in_order` (the briefing's Git line).
 - Slice 25: no new test (DED-001: nothing behaves differently). The tests that only exercised
   a deleted item went with it or now exercise what production calls
   (`current_used_percent_for`, `available_at_for`, `slug_or`, `set_account_state`,
@@ -1926,6 +1994,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 26 (no decision record: ADR-0110 and SPEC-441 decided; the texts follow). The Docs
+  workflow keeps the review rather than `delivery_merge` waiving it for a documentation-only
+  branch: a wrong instruction to an agent is as costly as wrong code, and the review of a
+  documentation change is short. The pull request body Yulius writes does not guess an issue
+  from the request; the skill tells the agent to add `Fixes #N` or close the issue (an issue
+  named in passing is not the one the work closes). The briefing's added words are paid for by
+  dropping "this worktree is yours" (its budget has no slack).
 - Slice 25 (no decision record): a dead item goes rather than being wired in where the
   auditors offered both. The two events could have been fired from the supervisor so that
   `apply` would be the one table of every change; that moves no behaviour, and the two writes
@@ -2327,14 +2402,15 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
 | W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
 | W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
-| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
-| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
+| P1, P5-P7, P9-P13 | documents | Shipped texts against the code: promotion "when asked", the Docs workflow's review, the Chore workflow's deploy, UI copy on who releases and where commands run, the skill's "machine-checked" gates and issue link, the promotion row (already right since slice 4), the guard's reason, the briefing's Git line | medium | slice 26 |
+| P2-P4, P14 | documents | The repository's own instruction documents: hand merges and polling, four promotion rules, a spec template the validator refuses, engineering documents without product code | medium | slice 27 |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 27 |
+| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 26 |
 | W7 | web UI | Dead exports and CSS rules | low | fixed (slice 24) |
 | D7 | GitHub | `webhook_secret` is stored and never read | low | fixed (slice 24) |
 | E5 | previews | The preview bridge has no listener since ADR-15 | low | fixed (slice 24) |
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 25 |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
 | QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
 | QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
@@ -2540,8 +2616,9 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Tests failing before the fix**: the proxied document came back without the app's
   `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
   `Accept-Encoding` for a document; a refused rejoin was asked again every
-  second (more than the two joins expected in 2.5 s; the count is not in the log). After the review: a 409 edit whose rejoin was refused left the
-  tab busy, unsaved, with "abcd" and a close that waited.
+  second (more than the two joins expected in 2.5 s; the count is not in the log). After the
+  review: a 409 edit whose rejoin was refused left the tab busy, unsaved, with "abcd" and a
+  close that waited.
 - **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
   `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
   app's `X-Frame-Options` removed again; no `frame-ancestors` of Yulius's own; the app's
@@ -2616,3 +2693,64 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** An instance last started before 2026-10-11 (what it keeps of its two old
   workflows is read from the catalog's rule, as `docs/operations.md` says).
+- **Review, round 2** (the same session, head `3706b94f8`): approve; three nits, answered in
+  slice 26: a line of slice 24's Evidence still over the wrap, a test line over it, and the
+  task module's doc missing the one switch outcome that goes through the table.
+- **Delivery.** Pull request #1282 merged into `dev` at `debab9992` (by its merge train), the
+  approved head `3706b94f8` squashed, whose own Yulius CI run passed.
+
+### Slice 26 (2026-11-14)
+
+- **Tests failing before the fix**: the request file named "**Never promote to `main`**", which
+  `production_instruction` reads as an instruction to promote; the merge news said "Do not
+  promote unless the task asks for it"; the Chore workflow named neither `cd_deploy` nor
+  "production is a person's"; the Docs workflow said "no independent review"; the guard's
+  refusal said "does not end your goal's delivery"; the Git page's sentence said agents
+  release.
+- **Tests failing without their fix** (`target/audit/slice26/mutate.py`, `mutations.log`, 7
+  cases, each failed its test): each old text brought back (the goal's sentence, the
+  definition of done's bullet, the merge news, the Chore and Docs workflows' lines, the guard's
+  reason, the Git page's sentence).
+- **Gate.** The first run failed at the repository check: the new auto-promote sentence named
+  the product in a string (`BRAND.name` instead). `scripts/dev ci` at `87f1f76be`: exit 0;
+  `4373 tests run: 4373 passed (1 slow), 17 skipped` (`target/audit/slice26/gate.log`; four
+  more than slice 25 came with `dev`). e2e `git.e2e.ts`, `cd.e2e.ts` and `workflows.e2e.ts`:
+  33 passed (`target/audit/slice26/e2e.log`, before the brand fix; the run of `git.e2e.ts`
+  after it, 6 passed, kept no log: the run after the review below has one).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `589eaf0ac`): request changes. Blocking, in own
+  code: the skill offered `Fixes #N` as a way to close an issue, but "GitHub honours closing
+  keywords only for a pull request into the repository's default branch": on a `dev` before
+  `main` project the issue stays open and the open-issues automation may start a second task
+  on it. Non-blocking: the `product.md` exception garbled its sentence and said production
+  where only promotion is automatic; the new texts told an agent of an `auto_promote` project
+  to ask a person for a promotion Yulius does itself. Nits: the delivery line's comment still
+  said agents release; "deploy" was dropped with "release" from the UI copy; an environment
+  run gets the stage branch's files without Git, not a checkout; the guard's reason left out
+  the merge's own checks; wraps, the spec's criteria order, a run with no log; the mock still
+  answered a store failure with 503 `unavailable`. All answered in `8bfd4f812`: the skill says
+  `Fixes #N` works only on the default branch and to close the issue by hand otherwise;
+  `product.md` says Yulius promotes (not deploys production) where the profile says so, after
+  the integration environments; the texts say promotion is "not yours" (a person's, or
+  automatic where the profile says so); the UI copy says agents merge and deploy the
+  integration environments; the rest as reported.
+- **Gate after it.** `scripts/dev ci` at `8bfd4f812`: exit 0; `4373 tests run: 4373 passed (1
+  slow), 17 skipped` (`target/audit/slice26/gate2.log`); the mutation cases, their old texts
+  updated, all failed their tests again (`mutations-r1.log`); e2e `git.e2e.ts` and `cd.e2e.ts`:
+  32 passed (`e2e-r1.log`).
+- **Review, round 2** (the same session, head `1c5877e7d`): approve, with four nits (left for
+  slice 27). It asked for the e2e files that use the mock's changed store failures:
+  `production-protection.e2e.ts` and `vidoc-switch.e2e.ts`, 26 passed
+  (`target/audit/slice26/e2e-r2.log`).
+- **CI at `1c5877e7d`** (run `9c6a7aaa`): `quality` failed in a test this slice does not touch,
+  `usage_credits::a_request_at_a_limit_nothing_says_the_end_of_ends_when_a_restart_retries_the_task`
+  (expected the audit "Yulius waits for a subscription…", found none); 8 of 8 alone passed. The
+  cause is in the test: `end_limit_requests` ends the request in one write and audits why in
+  the next, and six reads of the audit in `usage_credits.rs` came right after waiting for the
+  end. With a 300 ms delay before the audit write two tests failed
+  (`flake-probe-before.log`); with the reads waiting for the audit (`resolved_soon`, bounded
+  at 10 s) all 23 passed with the delay in (`flake-probe-after.log`). Fixed in `14a5821c3`.
+- **Gate after it.** `scripts/dev ci` at `14a5821c3`: exit 0; `4373 tests run: 4373 passed (1
+  slow), 17 skipped` (`target/audit/slice26/gate3.log`).
+- **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
+  behaviour).
