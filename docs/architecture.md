@@ -1900,7 +1900,10 @@ sentence and its last outcome; `App::merge_queue_for_person` lists a sandbox's a
 train (`train_summary`); `App::merge_for_person` is the page's `merge_task_pr` on green and otherwise
 `arm_merge` at the worktree's head, which the armed-merge pass merges under the owner's authority as for
 an agent's `delivery_merge`; `App::ci_run_first` moves a queued run before its sandbox's others
-(`CiStore::ci_run_to_front`; `ci_dispatch` starts each sandbox's queued runs in that order). A task's agent is served none of them; it keeps the tools about its own work
+(`CiStore::ci_run_to_front`; `ci_dispatch` starts each sandbox's queued runs in that order). What a task runs on is
+`task_setup.rs`: `App::switch_task_for_person` resolves a subscription's name and calls the page's
+`switch_task`; `App::set_task_model` stores a model or effort with the task (`TaskFieldUpdate`), which
+the next start of its session takes; a task's brief names its live run's subscription. A task's agent is served none of them; it keeps the tools about its own work
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task

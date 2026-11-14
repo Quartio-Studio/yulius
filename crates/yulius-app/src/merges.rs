@@ -380,10 +380,16 @@ impl App {
             .map(|run| (run.queued_at.0, run.id))
             .collect();
         queued.sort();
-        Ok(json!({
-            "run": run_id,
-            "queue": queued.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
-        }))
+        let queue: Vec<String> = queued.into_iter().map(|(_, id)| id).collect();
+        let first = queue.first().is_some_and(|id| id == run_id);
+        let mut answer = json!({"run": run_id, "first": first, "queue": queue});
+        if !first {
+            answer["note"] = json!(
+                "It moved as far forward as it goes: a run never goes before an earlier run of \
+                 its own commit, which comes first."
+            );
+        }
+        Ok(answer)
     }
 }
 

@@ -1510,6 +1510,30 @@ mod tests {
         }
     }
 
+    /// SPEC-487 MRG-003 (review of slice 5, R2-3): who armed a merge is saved with it, so a
+    /// restart keeps the merge the owner's; an agent's saved arm, and one saved before the
+    /// field existed, reads as an agent's.
+    #[test]
+    fn who_armed_a_merge_is_saved_with_it() -> Result<(), serde_json::Error> {
+        let saved = SavedArmed {
+            task: "t1".into(),
+            head: "aaa".into(),
+            summary: "armed by @alice, the task's owner".into(),
+            armed_at: 5,
+            by: Some("alice".into()),
+        };
+        let text = serde_json::to_string(&saved)?;
+        let read: SavedArmed = serde_json::from_str(&text)?;
+        assert_eq!(read.by.as_deref(), Some("alice"));
+        let agents: SavedArmed =
+            serde_json::from_str(r#"{"task":"t1","head":"aaa","summary":"approve","armed_at":5}"#)?;
+        assert_eq!(agents.by, None);
+        let mut agent = saved;
+        agent.by = None;
+        assert!(!serde_json::to_string(&agent)?.contains("\"by\""));
+        Ok(())
+    }
+
     /// WAI-003 (#255): a decision ends in one step, so the wait never reads an outcome next to a
     /// merge that still reads as armed, and always reads armed until that step.
     #[test]

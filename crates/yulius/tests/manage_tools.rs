@@ -596,6 +596,8 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "task_question_dismiss",
         "task_held_prompt",
         "task_merge",
+        "task_switch",
+        "task_model",
         "ci_prioritize",
         "ci_rerun",
         "ci_cancel",
