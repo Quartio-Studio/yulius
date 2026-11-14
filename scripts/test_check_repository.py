@@ -124,6 +124,7 @@ class RepositoryContracts(unittest.TestCase):
             "## Promote\nwhen the task asks for it, open needs_you.",
             "| promote | a person |\n| deploy dev | when the task asks |",
             "```text\npromote\n```\nwhen the task asks, say so.",
+            "```sh\necho promote it\necho when the task asks\n```",
         ]
         for line in fine:
             self.assertEqual(delivery_instruction_errors(line, "AGENTS.md"), [], line)

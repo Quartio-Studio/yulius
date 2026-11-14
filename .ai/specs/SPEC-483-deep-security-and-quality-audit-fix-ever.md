@@ -2024,12 +2024,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 28: e2e `workflows.e2e.ts` "unsaved changes are asked about on Back and on navigation
-  by code too" (AC-144; the editors' existing link tests keep the link case), `pulls.e2e.ts`
+  by code too" (AC-144), `places.e2e.ts` "leaving a new skill unsaved for another sandbox goes
+  where that sandbox was left" (a link, through the router's guard), `pulls.e2e.ts`
   "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
   `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
   the page)" (AC-146); `scripts/test_check_repository.py`
   `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote`'s heading, table and
-  fence cases (AC-147).
+  fence cases, a fence's lines each alone (AC-147).
 - Slice 27: `yulius-domain` `spec_format::tests::the_repository_spec_template_validates`
   (AC-141); `scripts/test_check_repository.py`
   `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote` and the repository check
