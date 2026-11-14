@@ -89,7 +89,8 @@ which abilities were withheld on purpose.
   `WITHHELD_TOOLS`, and a row in the ability table. Two callers serve it
   (`cockpit_person_tool`, `remote_project_tool`); the Global Superagent calls the second.
 - A call from the Superagent runs to its end and its audit entry even when its client goes
-  away, and the entry names the task, run or environment it was about.
+  away. The entry names the task, run or environment it was about, when the argument has
+  the shape of one, and no other text of the call: the audit holds nothing an agent chose.
 - The sandbox Superagent gets the dev-stage deploy that the Global Superagent is withheld
   (ADR-0271): it acts in one sandbox, for the person who sits at it.
 - A changed tool list restarts an open Superagent once it is idle (its launch digest), as
