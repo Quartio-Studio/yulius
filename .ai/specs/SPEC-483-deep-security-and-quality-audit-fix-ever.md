@@ -1891,8 +1891,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 
 - **AC-153** Called with only its project, every tool the remote MCP lists for a person's token
   answers, none with "unknown tool" (the Global Superagent's browser tools, which this dispatch
-  does not hold, are not called: they would open a browser); `sandbox_task_create`'s `model` and `effort` equal `task_create`'s, each with a
-  description; `DeviceStart` and `DevicePollRequest` show no polling code in `Debug` (ONE-008).
+  does not hold, are not called: they would open a browser); `sandbox_task_create`'s `model`
+  and `effort` equal `task_create`'s, each with a description; `DeviceStart` and
+  `DevicePollRequest` show no polling code in `Debug` (ONE-008).
 
 ## Test plan
 
