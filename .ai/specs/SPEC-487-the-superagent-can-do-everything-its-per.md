@@ -912,3 +912,26 @@ the function the web UI's route calls, with the person's rights checked at the c
   Decide" (#1175), the sidebar still "Loading tasks…" at a one-shot read; the test polls now
   (`b9533c662`), approved in round 3 (head `b9533c662`). Merged into `dev` by pull request #1298
   at `0ed362b97`, whose own Yulius CI run passed.
+
+### Slice 8b (2026-11-14)
+
+- **Tests and code:** `the_superagent_releases_production_once_its_person_types_the_slug`
+  (`tests/cd_rollback.rs`: the real Git adapter and ptyhost run the CD scripts) was written
+  before the code: production deployed through the panel (v2), a slug left out or mistyped
+  refused with the request kept, then rolled back from v3 to v2 with `main` unmoved, and a
+  promotion whose own answer ("nothing to promote") reaches both the click and the call; the
+  refusals before asking (a writer, a dev-stage environment, an unknown one or argument,
+  onboarding that does not wait). Over the MCP (`tests/cockpit.rs`) a dev rollback goes to the
+  CD page's at once and production, `promote` and `onboarding_start` are refused before asking
+  for a writer. `onboarding_starts_on_the_persons_click` (`tests/cross_sandbox.rs`) shows the
+  approval running Start onboarding as the person. The card: the e2e test failed before the
+  card and the mock's check (`superagent-requests.e2e.ts`, 18 of 18).
+- **Review of slice 8a, N2:** an unreadable `superagent-requests.json` is kept as `.bad`
+  (`a_saved_requests_file_that_cannot_be_read_is_kept`, failed first).
+- **Mutation:** ten one-line mutants, each failed or timed out in a named test (a refusal
+  removed makes the request wait for the person, so the test's call never ends:
+  `target/evidence/mutants-slice8b.py`, `mutants-slice8b.log`, `mutants-slice8b-rest.log`:
+  `survived=0`).
+- **Not tested:** a promotion that promotes (the CD fixture's production deploys promote by
+  themselves, so nothing is left; a promotion that runs is the delivery suites'); a Start
+  onboarding that starts (this harness has no Git; the onboarding suites start it).
