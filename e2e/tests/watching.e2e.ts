@@ -239,7 +239,7 @@ test('a watched session keeps the live terminal’s colours, not a past session�
 test('the view says whose task it is and that you watch it, above the transcript; the sidebar marks other people’s tasks', async ({ app, browser, screen }) => {
   await watchStudio12(app, browser);
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
-  await expect(browser.locator('.attention-bar .attention-text')).toHaveText("You are watching @anna-q's task. Only @anna-q can type in it; it acts on GitHub as them.");
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText("You are watching @anna-q's task. You can stop, archive or delete it; to type in it or change it, ask @anna-q for control.");
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   // In the flow above the transcript: it covers no line of it.
   expect(await browser.evaluate(() => {

@@ -842,11 +842,16 @@ function ownerOf(task) {
   return task.owner || task.created_by;
 }
 
-/** Changing a task needs write access and its ownership, like the server's `load_task`. */
+/** Steering a task needs write access and its ownership, like the server's `load_task` (SPEC-490). */
 function needTaskWrite(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
   const owner = ownerOf(task).login;
-  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: it acts on GitHub as them. Ask them for control.`);
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s and only they steer it: it acts on GitHub as them. Ask them for control on the task's page. You can still stop, archive or delete it.`);
+}
+
+/** Stop, archive, restore and delete need write access alone (SPEC-490 OWN-002). */
+function needTaskTidy(db, task) {
+  need(sandboxOf(db, task.sandbox_id), 'write');
 }
 
 function hashString(s) {
@@ -1752,7 +1757,7 @@ route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 });
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   if (task.status === 'chained' || task.status === 'prepared') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
@@ -1791,7 +1796,7 @@ route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.deleteRequests = (db.deleteRequests || 0) + 1;
   if (db.holdDelete) await db.holdDelete;
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   // A finished task is closed as it is deleted (SPEC-039); any other live task is stopped first.
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
   if (['starting', 'running', 'switching', 'stopping'].includes(task.status) && !finished) fail(409, 'conflict', 'stop the task before deleting it');
@@ -1804,7 +1809,7 @@ route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
   // Tests can hold the answers (`__yuliusMock.holdArchive = promise`).
   if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
   // archived (TSK-014); any other live task has to be stopped first.
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
@@ -1839,7 +1844,7 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   touch(db, task, { archived: false });
   return summary(task);
 });

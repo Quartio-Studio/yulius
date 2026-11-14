@@ -26,25 +26,35 @@ export function openTaskMenu(ctx, anchor, task) {
   const me = ctx.store.state.me?.user?.login;
   const can = taskActions(task, access, pr, me);
   const owner = otherOwner(task, me);
-  const why = owner ? `@${owner} owns this task` : allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
+  const write = allows(access, 'write');
+  // Steering is the owner's (SPEC-490): the reason says how to get it. Stop, archive and delete
+  // are open to whoever may work here, so theirs is the task's state.
+  const why = !write ? 'Requires write access' : owner ? `@${owner} owns this task: request control to do this` : 'Not available in this state';
+  const whyTidy = write ? 'Not available in this state' : 'Requires write access';
+  const request = task.control_request;
+  const asked = Boolean(request && request.by.login === me);
   openMenu(anchor, [
     // The same rule as the row it opens from (pull request, held prompt, browser request).
     { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, pr).label}` },
     task.status === 'chained' || task.status === 'prepared' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     task.status === 'prepared' ? { label: task.start_at ? 'Change time…' : 'Schedule…', disabled: !can.schedule, title: can.schedule ? null : why, onSelect: () => rescheduleTask(ctx, task) } : null,
-    { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : whyTidy, onSelect: () => stopTask(ctx, task) },
     can.resume
       ? { label: 'Resume', onSelect: () => resumeTask(ctx, task) }
-      : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause && task.pause.by === 'update' && !owner && allows(access, 'write') ? `Paused for a ${BRAND.name} update: it continues by itself` : allows(access, 'write') && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
+      : { label: 'Pause', disabled: !can.pause, title: can.pause ? 'Stops the agent where it is, until you resume it' : (task.pause && task.pause.by === 'update' && !owner && write ? `Paused for a ${BRAND.name} update: it continues by itself` : write && !owner ? 'Only a running task can be paused' : why), onSelect: () => pauseTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
+    // Someone else's task: ask its owner for control from here too (SPEC-490 OWN-007).
+    !can.askControl ? null
+      : asked ? { label: 'Withdraw request', title: `You asked @${owner} for control of this task`, onSelect: () => dropControlRequest(ctx, task) }
+      : { label: 'Request control', disabled: Boolean(request), title: request ? `@${request.by.login} already asked @${owner} for control` : `Asks @${owner} to hand this task over: it would act on GitHub as you`, onSelect: () => requestControl(ctx, task) },
     { separator: true },
     task.archived
-      ? { label: 'Restore', disabled: !can.restore, title: can.restore ? null : why, onSelect: () => restoreTask(ctx, task) }
-      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') && !owner ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!allows(access, 'write') || owner ? why : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
+      ? { label: 'Restore', disabled: !can.restore, title: can.restore ? null : whyTidy, onSelect: () => restoreTask(ctx, task) }
+      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (write ? 'Still running: stop the task before archiving it' : whyTidy), onSelect: () => archiveTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!write ? whyTidy : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -137,12 +147,22 @@ export function resumeTask(ctx, task) {
   return taskPost(ctx, task, 'resume', () => ctx.api.post(`/api/tasks/${enc(task.id)}/resume`), `Resumed #${task.number}`);
 }
 
+/**
+ * Whose task a confirmation is about (SPEC-490 OWN-006): "task #3" for one's own, "@anna-q's task
+ * #3" for someone else's, and who can continue it afterwards.
+ */
+function whose(ctx, task) {
+  const owner = otherOwner(task, ctx.store.state.me?.user?.login);
+  return owner ? { named: `@${owner}'s task #${task.number}`, later: `@${owner} can continue it later.` } : { named: `task #${task.number}`, later: 'You can continue it later.' };
+}
+
 /** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */
 export async function stopTask(ctx, task) {
+  const { named, later } = whose(ctx, task);
   if (task.status === 'prepared') {
     const cancel = await confirmDialog({
-      title: `Cancel task #${task.number}?`,
-      message: `It is prepared${task.start_at ? ` to start ${whenLabel(task.start_at)}` : ''} and will not start. You can continue it later.`,
+      title: `Cancel ${named}?`,
+      message: `It is prepared${task.start_at ? ` to start ${whenLabel(task.start_at)}` : ''} and will not start. ${later}`,
       confirmLabel: 'Cancel task',
       danger: true,
     });
@@ -151,8 +171,8 @@ export async function stopTask(ctx, task) {
   }
   if (task.status === 'chained') {
     const cancel = await confirmDialog({
-      title: `Cancel task #${task.number}?`,
-      message: `It is queued ${task.after && task.after.rule ? `until ${task.after.rule}` : `after #${task.after ? task.after.number : '?'}`} and will not start. You can continue it later.`,
+      title: `Cancel ${named}?`,
+      message: `It is queued ${task.after && task.after.rule ? `until ${task.after.rule}` : `after #${task.after ? task.after.number : '?'}`} and will not start. ${later}`,
       confirmLabel: 'Cancel task',
       danger: true,
     });
@@ -160,8 +180,8 @@ export async function stopTask(ctx, task) {
     return;
   }
   const ok = await confirmDialog({
-    title: `Stop task #${task.number}?`,
-    message: 'The agent session is interrupted and its process tree is stopped. You can continue the task later.',
+    title: `Stop ${named}?`,
+    message: `The agent session is interrupted and its process tree is stopped. ${later}`,
     confirmLabel: 'Stop task',
     danger: true,
   });
@@ -275,7 +295,7 @@ const DELETE_TIMEOUT_MS = 40000;
 export async function deleteTask(ctx, task) {
   const closing = isLive(task.status) ? ' Its finished session is closed first.' : '';
   const ok = await confirmDialog({
-    title: `Delete task #${task.number} permanently?`,
+    title: `Delete ${whose(ctx, task).named} permanently?`,
     message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. Its attachments stay where they are while another task’s request or an automation’s prompt names them; the others wait 7 days in the trash, from which the Superagent can restore them.${closing} Deleting the task cannot be undone.`,
     confirmLabel: 'Delete permanently',
     danger: true,

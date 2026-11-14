@@ -1168,7 +1168,12 @@ export function createSidebar(ctx) {
     row.archive.title = label;
   }
 
-  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive).map((row) => row.task);
+  // "Archive all" takes the viewer's own tasks (SPEC-490 OWN-003): another person's task is put
+  // away by naming it (its row's archive, its menu).
+  const archivable = (groupRows) => groupRows.filter((row) => {
+    const me = ctx.store.state.me?.user?.login;
+    return !otherOwner(row.task, me) && taskActions(row.task, sandbox.access, row.pr, me).archive;
+  }).map((row) => row.task);
 
   /**
    * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While
@@ -1176,7 +1181,7 @@ export function createSidebar(ctx) {
    */
   function archiveAllButton(groupRows) {
     if (!archivable(groupRows).length) return null;
-    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive every Done task', onClick: async () => {
+    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive your Done tasks', onClick: async () => {
       const tasks = archivable(groupRows);
       if (archivingAll || !tasks.length) return;
       archivingAll = true;
