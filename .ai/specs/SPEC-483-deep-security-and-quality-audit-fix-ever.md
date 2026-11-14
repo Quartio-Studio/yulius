@@ -2897,3 +2897,31 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested.** A subscription Claude really refuses (the test writes `relogin` with
   Claude's words into the store); a row left `error` with a credential by the old code on
   the running instance (the test writes one).
+- **Review, round 1** (a fresh session, read-only, head `1529f8d10`): request changes. One
+  major finding in this slice's code: the sign-in's dialog reads the subscription's
+  error, so for a refused subscription whose sign-in fails "It gives the refusal as the
+  reason the sign-in failed", and the sign-in's own reason "is now stored and shown
+  nowhere". The reason is in the sign-in's `exit` frame now and the dialog shows that
+  (AC-104, AC-108). Minor, answered: `docs/api.md` names the `relogin` case; the mock does
+  what the server does for a failed sign-in and for a reading; the usage-round block of
+  one test, which could not fail, is gone with its clause of AC-104; the two helpers in
+  `usage.js` no longer sit under another constant's comment. Nits answered: the
+  administration page uses `works` at its three places; the rule's comment says "the
+  background rounds". From before, taken on the way: a failed sign-in's write takes the
+  lock of the other status writes (not tested: the window is between a read and a write
+  of one function), and the start's sweep lists a task as lost only when its change was
+  made.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 8 cases, each
+  failed its test): the six above, a viewer watching a failed sign-in not told why, and
+  one who opens it later not told why. The new e2e test failed against the dialog's old
+  code (`target/audit/slice18/e2e-old2.log`: expected text containing "The sign-in ended
+  without producing a token").
+- **Gate after it.** `scripts/dev ci` at `c8f2643e6`: exit 0;
+  `4293 tests run: 4293 passed, 17 skipped` (`target/audit/slice18/gate2.log`). The run
+  before it at the same head failed in one test this change does not touch,
+  `mcp_bridge::tests::a_call_held_through_an_outage_is_answered_once_yulius_is_back`
+  (`gate2-flake.log`): its helper gives up a port and expects nobody to take it for
+  400 ms; another test's server took it. Reported as issue #1269; the gate was run again.
+- **Web UI after it.** `cd e2e && npx e2e run` at `3f6edfc0f` (the head but for a lint in a
+  Rust test): exit 0; `Test Files 84 passed | 1 skipped (85)`,
+  `Tests 1023 passed | 1 skipped (1024)` (`target/audit/slice18/e2e-full2.log`).
