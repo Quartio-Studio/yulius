@@ -1443,6 +1443,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   ends in the window before the switch claims it and the switch reads the status before
   that end has settled, the switch says "did not end in time" for a task that closed, and
   leaves its given-up mark in the slot until the task's next launch clears it.
+  A finished (`Done`) task whose idle session is moved and has to be given up rests as
+  stopped, not closed: RBT-001 closes only a running task, and its domain test says why
+  for this very case ("a switch or a stop in flight was cut"); the review asked for
+  `Closed`, which would change that rule for every loss during a switch, not only this
+  one. (A task's activity is cleared when it becomes `switching`, so the question does
+  not even arise in the store: a mutation that asked RBT-001's rule at the exit of a
+  given-up run changed no outcome.)
+  The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
+  task's intent before it knows it is the first to record), is not changed: no path
+  records a run's end while its reader still serves it and then starts another run.
+  The test starter takes its two waits as a pair, not a struct: it has two callers.
 - Slice 16 (no decision record): the loopback listener takes the public table as it is,
   422 for an invalid request included; nothing in the repository reads its 400 (the hook
   client takes any 5xx for "try again while held" and any other error for none, the
