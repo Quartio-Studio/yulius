@@ -779,7 +779,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
             "the request ended with the move"
         );
         assert_eq!(
-            resolved(&app, &id).await,
+            resolved_soon(&app, &id).await,
             ["Yulius takes the session on past the refusal that cut its turn"]
         );
         stop(&app, &id).await?;
@@ -915,6 +915,20 @@ async fn limit_request(
 }
 
 /// Why requests of `id` ended without a person or its agent (`task.needs_you.resolved`).
+/// [`resolved`] once it says something, or at the bound: a request ends in one write and why it
+/// ended is audited in the next (`end_limit_requests`), so a read right after the end can come
+/// before the audit (SPEC-483 slice 26: CI failed so under load).
+async fn resolved_soon(app: &App, id: &TaskId) -> Vec<String> {
+    let started = std::time::Instant::now();
+    loop {
+        let said = resolved(app, id).await;
+        if !said.is_empty() || started.elapsed() > Duration::from_secs(10) {
+            return said;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 async fn resolved(app: &App, id: &TaskId) -> Vec<String> {
     app.deps
         .store
@@ -1002,7 +1016,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
         );
         needs_nobody(&app, &id).await?;
         assert_eq!(
-            resolved(&app, &id).await,
+            resolved_soon(&app, &id).await,
             ["Yulius takes the session on past the refusal that cut its turn"]
         );
 
@@ -1113,7 +1127,7 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_the_agent_works_again(
         )
         .await?;
         assert_eq!(
-            resolved(&app, &id).await,
+            resolved_soon(&app, &id).await,
             ["the agent works again after the usage limit"]
         );
         stop(&app, &id).await?;
@@ -1156,7 +1170,7 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_a_restart_retries_the_
             matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
         })
         .await?;
-        assert_eq!(resolved(&app, &id).await, [WAITS]);
+        assert_eq!(resolved_soon(&app, &id).await, [WAITS]);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -1216,7 +1230,7 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
         )
         .await?;
         assert_eq!(
-            resolved(&app, &id).await,
+            resolved_soon(&app, &id).await,
             ["the agent works again after the usage limit"]
         );
         stop(&app, &id).await?;
@@ -1925,7 +1939,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
                 )
                 .await?;
                 assert_eq!(
-                    resolved(&app, &id).await,
+                    resolved_soon(&app, &id).await,
                     ["the agent works again after Claude Code paused the goal"]
                 );
                 stop(&app, &id).await?;

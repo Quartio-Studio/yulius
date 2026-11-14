@@ -8,10 +8,6 @@
 //! - **instance** workflows (`sandbox_id = None`): created, edited and deleted by instance
 //!   administrators;
 //! - **sandbox** workflows: need write access to their sandbox.
-//!
-//! Before the catalog, Yulius seeded "Feature" (`wf-feature`) and "Quick task" (`wf-quick-task`)
-//! as ordinary instance rows. [`App::retire_legacy_workflows`] removes them at startup when they
-//! are unchanged; an edited one whose id a default now answers to is kept as a custom copy.
 
 pub mod catalog;
 
@@ -81,70 +77,6 @@ impl WorkflowRecord {
     pub fn visible_in(&self, sandbox: &SandboxId) -> bool {
         self.sandbox_id.as_ref().is_none_or(|s| s == sandbox)
     }
-}
-
-/// The instance workflows Yulius seeded before the catalog, exactly as seeded (2026-10-07..10).
-fn legacy_seeds() -> [WorkflowRecord; 2] {
-    let seed = |id: &str,
-                name: &str,
-                description: &str,
-                steps: &[&str],
-                instructions: &str,
-                gate: bool| {
-        WorkflowRecord {
-            id: id.to_owned(),
-            sandbox_id: None,
-            name: name.to_owned(),
-            description: description.to_owned(),
-            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
-            instructions: instructions.to_owned(),
-            require_spec: gate,
-            require_tests: gate,
-            created_at: Timestamp(0),
-            builtin: false,
-            when_to_use: String::new(),
-        }
-    };
-    [
-        seed(
-            "wf-feature",
-            "Feature",
-            "Spec first, then implementation, tests and a pull request.",
-            &["Write spec with plan", "Implement", "Test", "Open PR"],
-            "Start by writing the task spec with a Plan checklist in the project's spec \
-             directory and keep the steps in sync with it. Implement only what the spec \
-             describes, add tests that prove the behavior, run the project's test command and \
-             open a pull request into the integration branch.",
-            true,
-        ),
-        seed(
-            "wf-quick-task",
-            "Quick task",
-            "A small change without required steps or gates.",
-            &[],
-            "",
-            false,
-        ),
-    ]
-}
-
-/// Whether two workflows say the same (name, description, steps, instructions and gates).
-fn same_content(a: &WorkflowRecord, b: &WorkflowRecord) -> bool {
-    (
-        &a.name,
-        &a.description,
-        &a.steps,
-        &a.instructions,
-        a.require_spec,
-        a.require_tests,
-    ) == (
-        &b.name,
-        &b.description,
-        &b.steps,
-        &b.instructions,
-        b.require_spec,
-        b.require_tests,
-    )
 }
 
 /// API view of a workflow.
@@ -218,60 +150,6 @@ fn validate(input: &Workflow) -> AppResult<WorkflowFields> {
 }
 
 impl App {
-    /// Retires the instance workflows Yulius seeded before the catalog (call once at startup;
-    /// idempotent): an unchanged one is deleted; an edited one is kept, as a custom copy named
-    /// "… (custom)" when a default workflow now answers to its id. References to an id a default
-    /// answers to stay (tasks and automations get the default); others are cleared as by a
-    /// delete. Returns how many were retired.
-    ///
-    /// # Errors
-    /// Store failures.
-    pub async fn retire_legacy_workflows(&self) -> AppResult<u32> {
-        let mut retired = 0;
-        for seed in legacy_seeds() {
-            let Some(row) = self.deps.store.workflow(&seed.id).await? else {
-                continue;
-            };
-            let replaced = catalog::default_workflow(&row.id).is_some();
-            let unchanged = same_content(&row, &seed);
-            if row.sandbox_id.is_some() || !(unchanged || replaced) {
-                continue; // a sandbox's own, or an edited one nothing shadows: a custom workflow
-            }
-            let copy = (!unchanged).then(|| WorkflowRecord {
-                id: self.deps.crypto.new_id(),
-                name: format!("{} (custom)", row.name)
-                    .chars()
-                    .take(MAX_NAME_CHARS)
-                    .collect(),
-                created_at: self.now(),
-                ..row.clone()
-            });
-            if self
-                .deps
-                .store
-                .retire_workflow(&row.id, copy.as_ref(), replaced)
-                .await?
-            {
-                retired += 1;
-                let detail = match &copy {
-                    Some(copy) => format!("{} (edits kept as {})", row.name, copy.name),
-                    None => row.name.clone(),
-                };
-                self.deps
-                    .store
-                    .audit(
-                        self.now(),
-                        "system",
-                        "workflow.retired",
-                        Some(&row.id),
-                        Some(&detail),
-                    )
-                    .await?;
-            }
-        }
-        Ok(retired)
-    }
-
     /// Workflows usable in a sandbox: the defaults, then instance and sandbox workflows (a
     /// stored row whose id a default answers to is not listed).
     ///
@@ -533,38 +411,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_seeds_are_the_old_built_ins() {
-        let [feature, quick] = legacy_seeds();
-        assert_eq!(
-            (feature.id.as_str(), feature.name.as_str()),
-            ("wf-feature", "Feature")
-        );
-        assert_eq!(
-            feature.steps,
-            ["Write spec with plan", "Implement", "Test", "Open PR"]
-        );
-        assert!(feature.require_spec && feature.require_tests);
-        assert!(
-            feature
-                .instructions
-                .contains("Implement only what the spec describes")
-        );
-        assert_eq!(quick.id, "wf-quick-task");
-        assert!(quick.steps.is_empty() && !quick.require_spec && !quick.require_tests);
-        assert!(same_content(&quick, &quick.clone()));
-        let mut edited = feature.clone();
-        edited.steps.push("Release".into());
-        assert!(!same_content(&feature, &edited));
-        // Only the content counts, not the id or time.
-        edited = WorkflowRecord {
-            id: "other".into(),
-            created_at: Timestamp(9),
-            ..feature.clone()
-        };
-        assert!(same_content(&feature, &edited));
-    }
-
-    #[test]
     fn validation_bounds() {
         assert!(validate(&input("  ", Vec::new())).is_err());
         assert!(validate(&input(&"x".repeat(MAX_NAME_CHARS + 1), Vec::new())).is_err());
@@ -578,7 +424,19 @@ mod tests {
     fn visibility() -> Result<(), yulius_domain::ids::IdError> {
         let s1 = SandboxId::parse("s1")?;
         let s2 = SandboxId::parse("s2")?;
-        let [_, mut record] = legacy_seeds();
+        let mut record = WorkflowRecord {
+            id: "wf-1".into(),
+            sandbox_id: None,
+            name: "Quick task".into(),
+            description: String::new(),
+            steps: Vec::new(),
+            instructions: String::new(),
+            require_spec: false,
+            require_tests: false,
+            created_at: Timestamp(1),
+            builtin: false,
+            when_to_use: String::new(),
+        };
         assert!(record.visible_in(&s1) && record.visible_in(&s2));
         record.sandbox_id = Some(s1.clone());
         assert!(record.visible_in(&s1) && !record.visible_in(&s2));

@@ -140,7 +140,7 @@ impl App {
     ) {
         let runtime = self.runtime(task_id);
         // No Stop hook ends a turn the API refused: the turn ends here.
-        runtime.end_turn(self.now());
+        runtime.end_turn();
         let next = {
             let Ok(mut episode) = runtime.context.lock() else {
                 return;

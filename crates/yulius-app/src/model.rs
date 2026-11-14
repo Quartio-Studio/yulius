@@ -818,17 +818,6 @@ pub struct MessageRecord {
     pub created_at: Timestamp,
 }
 
-/// A message plus the receipt state for one recipient task.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InboxEntry {
-    /// The message.
-    pub message: MessageRecord,
-    /// Delivered to the agent (hook context).
-    pub delivered: bool,
-    /// Read via the inbox tool.
-    pub read: bool,
-}
-
 /// An advisory scope claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeClaimRecord {

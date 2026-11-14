@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::admin::AccountView;
 use crate::api::notes::NoteSelection;
-use crate::api::sandboxes::Sandbox;
 use crate::api::tasks::TaskSummary;
 
 /// One server-pushed event. Delivery is best effort; on `Resync` clients refetch lists.
@@ -28,12 +27,6 @@ pub enum UiEvent {
     StepsUpdated {
         /// Task id.
         task_id: String,
-    },
-    /// A sandbox changed.
-    #[serde(rename = "sandbox.updated")]
-    SandboxUpdated {
-        /// New sandbox view.
-        sandbox: Sandbox,
     },
     /// An agent asked a person to act in the browser.
     #[serde(rename = "browser.action_requested")]

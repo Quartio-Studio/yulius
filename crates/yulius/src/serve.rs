@@ -341,27 +341,6 @@ pub fn browser_display_mode(args: &ServeArgs) -> yulius_browser::DisplayMode {
     yulius_browser::DisplayMode::Virtual(config)
 }
 
-/// Parses `first-last` into an inclusive port range.
-pub fn parse_port_range(text: &str) -> Result<std::ops::RangeInclusive<u16>, String> {
-    let (first, last) = text
-        .split_once('-')
-        .ok_or_else(|| format!("invalid port range {text:?}: expected first-last"))?;
-    let first: u16 = first
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid port range {text:?}"))?;
-    let last: u16 = last
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid port range {text:?}"))?;
-    if first == 0 || first > last {
-        return Err(format!(
-            "invalid port range {text:?}: first must be 1..=last"
-        ));
-    }
-    Ok(first..=last)
-}
-
 /// The Git adapter: on Linux every command confined to Git's own programs and the folders it
 /// works in, by the `git-confined` command of this program (`exe`; ADR-0322).
 fn git_adapter(exe: &Path, data_dir: &Path) -> GitAdapter {
@@ -666,12 +645,6 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         Ok(files) => tracing::debug!(files, "skill catalog ready"),
         Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),
     }
-    // The defaults now come from the workflow catalog (AUT-006).
-    match app.retire_legacy_workflows().await {
-        Ok(0) => {}
-        Ok(retired) => tracing::info!(retired, "retired the workflows seeded before the catalog"),
-        Err(err) => tracing::error!(error = %err, "cannot retire the legacy workflows"),
-    }
     let scheduler = app.start_automation_scheduler();
     // Agent runs' egress proxy shares the internal listener (SPEC-002 ADR-20). Wired before the
     // shells are adopted: a Superagent they start again gets the proxy (SPEC-186 SAV-001).
@@ -698,7 +671,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;
-    // An older binary started next (a rollback) could not join a split sandbox group (SPEC-053).
+    // Whatever starts next in this unit (this binary again, or an older one after a rollback)
+    // finds plain sandbox groups with the default CPU weight (SPEC-053, SPEC-362 CSW-004).
     if let Some(manager) = &isolation {
         manager.unsplit_cpu();
     }

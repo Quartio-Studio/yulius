@@ -238,17 +238,17 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   expect(await browser.evaluate(() => localStorage.getItem('yulius.sandboxOrder'))).toBeNull();
   expect(await hash()).toBe(start);
 
-  // A sandbox renamed on the server while a tab is pressed (SMO-004). The mock delivers a pushed
-  // event on a zero timeout, so a later zero timeout runs once the page handled it; the page's
-  // title (not held) shows the store has it.
+  // A sandbox renamed on the server while a tab is pressed (SMO-004). The server says `resync`
+  // and the page reads the sandboxes again; the page's title (not held) shows the store has it.
   const rename = (id: string, name: string) => browser.evaluate(async ([sandboxId, newName]) => {
     type Mock = { __yuliusMock: { sandboxes: { id: string, name: string }[], eventSockets: Set<{ push: (data: string) => void }> } };
     const db = (window as unknown as Mock).__yuliusMock;
     const pressed = document.querySelector('.tabrow-tabs .tab.dragging, .tabrow-tabs .tab:active');
     const sandbox = db.sandboxes.find((s) => s.id === sandboxId)!;
     sandbox.name = newName;
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // As the server tells of a changed sandbox: `resync`, and the page reads the sandboxes again.
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'resync' }));
+    for (let i = 0; i < 200 && !document.title.includes(newName); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
     return { same: Boolean(pressed?.isConnected), drawn: [...document.querySelectorAll('.tabrow-tabs .tab-name')].some((n) => n.textContent === newName) };
   }, [id, name] as const);
 
@@ -408,7 +408,8 @@ test('a sandbox tab dragged past either end of the row stops at its border', asy
     const db = (window as unknown as Mock).__yuliusMock;
     const sandbox = db.sandboxes.find((s) => s.id === 'sb_three')!;
     sandbox.name = 'sandbox-3-with-a-much-longer-name';
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
+    // As the server tells of a changed sandbox: `resync`, and the page reads the sandboxes again.
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'resync' }));
   });
   await expect.poll(names).toEqual(['product', 'sandbox-3-with-a-much-longer-name', 'studio']);
   const wide = await boxOf('sandbox-3-with-a-much-longer-name');

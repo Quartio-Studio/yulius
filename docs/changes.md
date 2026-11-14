@@ -15,6 +15,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   queued CI run first in its project's queue. The person's own agent has them too through
   the remote MCP.
 
+- What Yulius tells agents and people agrees with how it works (SPEC-483 slice 26, task #465).
+  The goal and the merge news no longer say an agent may promote when its task asks: promotion
+  is a person's. The Chore workflow no longer deploys after a merge, and the Docs workflow no
+  longer says documentation needs no review (the merge always needs one). The Git page says
+  agents merge and a person releases on the CD page (Yulius itself with auto-promote). The
+  merge guard, the briefing, the delivery skill and the API's error codes say what is true.
+- Code nothing used is gone (SPEC-483 slice 25, task #465): task events, a fail reason and a
+  start timeout nothing produced, API contract items, domain and store helpers only their own
+  tests called, the message inbox readers (nothing writes messages since SPEC-028), "rotate
+  now" without a subscription, the start-up clean-up of workflows seeded before the catalog
+  in October, and unused Cargo features. Nothing behaves differently. A CD run's
+  `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`) is now documented.
 - The Superagent sees what waits for its person, and answers when told (SPEC-487 slice 4,
   task #469). A task's "Needs you" reached it only when the person pasted or screenshotted
   it, and a look at what a task was doing took 4 to 9 `session_read` calls with guessed

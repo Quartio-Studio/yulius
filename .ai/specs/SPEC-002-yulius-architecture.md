@@ -141,10 +141,12 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
   - Absolute `localhost` URLs inside page bodies or scripts are not rewritten (not done: body
     rewriting is fragile). Apps should use relative URLs or their dev server's proxy, as on any
     remote dev box.
-- *Cookies in iframes*:
+- *Cookies*:
   - Preview origins are subdomains of the Yulius host, so they are **same-site** with Yulius.
-    The iframe is therefore not a third-party context, and its cookies work under third-party
-    cookie blocking (Safari ITP, Firefox TCP, Chrome).
+    The handshake's redirects between Yulius and a preview are therefore same-site navigations,
+    and the grant cookie works under third-party cookie blocking (Safari ITP, Firefox TCP,
+    Chrome). (Written for the panel's frames, which ADR-15 removed; SPEC-483 slice 25 reworded
+    it.)
   - `sslip.io` is **not** on the Public Suffix List (checked 2026-10-09), so the site is
     `sslip.io`. For the same reason a bare `localhost` does not work for local development
     (`*.localhost` hosts are sites of their own); use `yulius.localhost`.
@@ -1686,7 +1688,7 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | `chained` | chain controller (ADR-16) | predecessor Done (the chain evaluated still stored), or a person's Start now → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
 | `prepared` | the person, or the background tick for a time (SPEC-105, ADR-0085) | Start now, or its time on the minute tick once onboarding no longer blocks the sandbox → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | No timeout without a time (it never starts by itself); with one, at most a minute late, or at the first tick after a restart; at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
-| `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
+| `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(spawn_error)` (the ptyhost's spawn timeout; SPEC-483 slice 25 removed the never-written `failed(start_timeout)`). |
 | `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
 | `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`; one that cannot be ended keeps the task `running` in it, flagged (SPEC-483 SWT-002). |
 | `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the hold ends without the pool — a held hook nobody asked about for 45 s, a transcript line (prompt or interrupt; for a `limit` pause also agent work or a turn end) written after the hold, or a typed prompt replacing a held turn — → `running` (held again at submit when still no capacity); the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min (every 15 s while a hook is held); the pause row survives restarts; a held hook gives up after 8 days (fails open). |
@@ -2226,12 +2228,11 @@ Defaults are never stored: `App::workflows_for` lists them first, then the store
 sandbox workflows, and lookups by id (`visible_workflow`, `task_workflow`) answer them from the
 catalog, so a release replaces their content. The API marks them `builtin: true` with
 `when_to_use`; `PUT`/`DELETE` on one answer 409 ("duplicate it to customise"), and a duplicate is
-an ordinary custom workflow. A stored row whose id a default answers to is never listed. At
-startup `App::retire_legacy_workflows` handles the two instance rows seeded before the catalog
-(`wf-feature` "Feature", `wf-quick-task` "Quick task"): one still equal to its seed is deleted
-(references to `wf-feature` stay and reach the default; those to `wf-quick-task` are cleared as by
-a delete); an edited `wf-feature` is kept as a new custom instance workflow "Feature (custom)"; an
-edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`workflow.retired`).
+an ordinary custom workflow. A stored row whose id a default answers to is never listed. The
+two instance rows seeded before the catalog (`wf-feature` "Feature", `wf-quick-task` "Quick
+task") were retired at startup by the releases from 2026-10-11 until SPEC-483 slice 25 removed
+that step: a `wf-feature` row an instance still holds is hidden by the default (references to it
+reach the default), a `wf-quick-task` row is listed as a custom instance workflow.
 
 ## 8. Security and trust model
 

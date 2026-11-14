@@ -19,15 +19,6 @@ pub trait WorkflowStore: Send + Sync {
     async fn workflows(&self, sandbox: &SandboxId) -> AppResult<Vec<WorkflowRecord>>;
     /// Workflow by id.
     async fn workflow(&self, id: &str) -> AppResult<Option<WorkflowRecord>>;
-    /// Atomically inserts `copy` (when given) and deletes the workflow `id`, clearing automation
-    /// references to it unless `keep_references` (another workflow now answers to the id);
-    /// `false` when `id` was absent (nothing is inserted then).
-    async fn retire_workflow(
-        &self,
-        id: &str,
-        copy: Option<&WorkflowRecord>,
-        keep_references: bool,
-    ) -> AppResult<bool>;
     /// Inserts a workflow; `Capacity` when its scope already holds `max_per_scope`.
     async fn insert_workflow(&self, workflow: &WorkflowRecord, max_per_scope: u32)
     -> AppResult<()>;

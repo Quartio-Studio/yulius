@@ -92,10 +92,10 @@ pub enum Trigger {
     Proactive,
     /// The current account hit a usage limit the CLI reported; always move off it.
     LimitReached,
-    /// A user asked for a specific account, or to rotate now (ROT-007).
+    /// A person asked for a specific account (ROT-007).
     Manual {
-        /// Requested account; `None` rotates to the best other account.
-        account: Option<AccountId>,
+        /// Requested account.
+        account: AccountId,
     },
 }
 
@@ -140,8 +140,6 @@ pub enum Refusal {
     Exhausted,
     /// The requested account belongs to another provider.
     ProviderMismatch,
-    /// No other candidate exists.
-    NoCandidate,
 }
 
 /// Audit explanation for a [`Decision`].
@@ -335,7 +333,7 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
         Trigger::Start => placing.select_or_wait(None),
         Trigger::Proactive => proactive(&placing),
         Trigger::LimitReached => placing.select_or_wait(placing.left),
-        Trigger::Manual { account } => manual(&placing, account),
+        Trigger::Manual { account } => manual(&placing, &account),
     }
 }
 
@@ -390,7 +388,7 @@ pub fn decide_leaving_out(
 #[must_use]
 pub fn keeps_account(input: &RotationInput, account: &AccountId) -> bool {
     let asked = Trigger::Manual {
-        account: Some(account.clone()),
+        account: account.clone(),
     };
     let refused = DecisionReason::ManualRefused(Refusal::Exhausted);
     decide(input, asked).1 != refused
@@ -462,17 +460,10 @@ fn proactive(placing: &Placing<'_>) -> (Decision, DecisionReason) {
     placing.select_or_wait(placing.left)
 }
 
-fn manual(placing: &Placing<'_>, account: Option<AccountId>) -> (Decision, DecisionReason) {
+fn manual(placing: &Placing<'_>, id: &AccountId) -> (Decision, DecisionReason) {
     let input = placing.input;
     let refuse = |refusal| (Decision::Stay, DecisionReason::ManualRefused(refusal));
-    let Some(id) = account else {
-        // "Rotate now": the best other account.
-        return match ranked_for(input, placing.family, input.current.as_ref()).first() {
-            Some((target, assessment)) => switch(target, assessment.tier),
-            None => refuse(Refusal::NoCandidate),
-        };
-    };
-    let Some(target) = find(input, &id) else {
+    let Some(target) = find(input, id) else {
         return refuse(Refusal::UnknownAccount);
     };
     if target.provider != input.task_provider {
@@ -1008,11 +999,8 @@ mod tests {
                 account("a5", usage(99.0, 10.0, None))?,
             ],
         )?;
-        let manual = |name: &str| -> Result<Trigger, IdError> {
-            Ok(Trigger::Manual {
-                account: Some(id(name)?),
-            })
-        };
+        let manual =
+            |name: &str| -> Result<Trigger, IdError> { Ok(Trigger::Manual { account: id(name)? }) };
         assert_eq!(
             decide(&rotation, manual("a2")?).1,
             DecisionReason::ManualRefused(Refusal::Exhausted)
@@ -1043,16 +1031,6 @@ mod tests {
             (
                 Decision::Switch { account: id("a5")? },
                 DecisionReason::ManualChoice
-            )
-        );
-        let now = Trigger::Manual { account: None };
-        assert_eq!(switched_to(&decide(&rotation, now.clone()).0), Some("a4"));
-        let alone = input(Some("a1"), vec![account("a1", usage(10.0, 10.0, None))?])?;
-        assert_eq!(
-            decide(&alone, now),
-            (
-                Decision::Stay,
-                DecisionReason::ManualRefused(Refusal::NoCandidate)
             )
         );
         Ok(())
@@ -1206,14 +1184,6 @@ mod tests {
             switched_to(&decide(&unseen, Trigger::LimitReached).0),
             Some("other")
         );
-        // "Rotate now" still asks for another subscription.
-        assert_eq!(
-            decide(&alone, Trigger::Manual { account: None }),
-            (
-                Decision::Stay,
-                DecisionReason::ManualRefused(Refusal::NoCandidate)
-            )
-        );
         Ok(())
     }
 
@@ -1250,11 +1220,8 @@ mod tests {
     /// and with no subscription for either model the task waits for the first that can run one.
     #[test]
     fn a_choice_and_a_wait_follow_the_placing_model() -> Result<(), IdError> {
-        let choose = |name: &str| -> Result<Trigger, IdError> {
-            Ok(Trigger::Manual {
-                account: Some(id(name)?),
-            })
-        };
+        let choose =
+            |name: &str| -> Result<Trigger, IdError> { Ok(Trigger::Manual { account: id(name)? }) };
         let all_out = fable_task(
             Some("a"),
             vec![

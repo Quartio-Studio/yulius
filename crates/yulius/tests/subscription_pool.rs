@@ -321,7 +321,8 @@ async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered()
         "a held poll is not the end of the opening turn"
     );
 
-    // A person's request meanwhile would block an ordinary Stop (the gate's inbox reason).
+    // An old message row addressed to the task (nothing writes them since SPEC-028) blocks no
+    // Stop either.
     let message = MessageRecord {
         id: yulius_domain::ids::MessageId::parse("m-open")?,
         sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,

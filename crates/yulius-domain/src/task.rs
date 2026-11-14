@@ -1,7 +1,10 @@
 //! Task and attempt state machines (SPEC-002 §6.1, §6.2).
 //!
-//! Every nonterminal state has an owner, an exit trigger and a timeout; the timeouts are
-//! constants here and enforced by the application supervisor.
+//! Every nonterminal state has an owner and an exit trigger. [`TaskStatus::apply`] is the table of
+//! the changes events cause, from which the supervisor, the capacity controller and a waiting
+//! task's start changes take the next status; a start that fails and a switch that ends without
+//! its new run are written as their outcome directly (`failed_*`, `stopped_switch_failed`), and a
+//! run lost while its switch was ending it goes through the table (`Lost(SwitchTimeout)`).
 
 /// Why a task's live run ended without a normal close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,8 +31,6 @@ pub enum StopReason {
 pub enum FailReason {
     /// The process could not be spawned.
     SpawnError,
-    /// The process did not report running in time.
-    StartTimeout,
     /// Preconditions failed (worktree, credentials, capacity rejection).
     Precondition,
     /// No Claude account was usable to run it (SPEC-246 CLA-005).
@@ -41,7 +42,7 @@ pub enum FailReason {
 pub enum TaskStatus {
     /// Waiting for a free session slot. Owner: scheduler.
     Queued,
-    /// Process spawn in progress. Owner: supervisor. Timeout: [`START_TIMEOUT_MS`].
+    /// Process spawn in progress. Owner: supervisor.
     Starting,
     /// Agent process alive. Owner: supervisor.
     Running,
@@ -110,8 +111,6 @@ pub enum TaskEvent {
     CapacityGranted,
     /// The process host reported the agent running.
     Spawned,
-    /// Spawning failed or timed out.
-    StartFailed(FailReason),
     /// The agent process exited; `normal` when it exited cleanly on the user's request.
     Exited {
         /// Clean exit (status 0, not signalled).
@@ -127,8 +126,6 @@ pub enum TaskEvent {
     SwitchStarted,
     /// The replacement run is live.
     SwitchCompleted,
-    /// The switch failed or timed out.
-    SwitchAborted(StopReason),
     /// No account has capacity right now.
     CapacityExhausted,
     /// Capacity returned on the account a paused live run already uses.
@@ -161,8 +158,6 @@ pub struct TransitionError {
     pub event: TaskEvent,
 }
 
-/// Spawn must report running within this time.
-pub const START_TIMEOUT_MS: i64 = 30_000;
 /// Maximum total duration of an account/provider switch.
 pub const SWITCH_TIMEOUT_MS: i64 = 120_000;
 /// Graceful interrupt period before SIGTERM.
@@ -220,7 +215,6 @@ impl TaskStatus {
             (S::Chained | S::Prepared, E::ChainChosen) => S::Chained,
             (S::Chained | S::Prepared, E::PreparedChosen) => S::Prepared,
             (S::Starting, E::Spawned) => S::Running,
-            (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
             (S::Running, E::Exited { normal: true }) => S::Closed,
             (S::Running | S::Starting, E::Exited { normal: false }) => {
@@ -240,7 +234,6 @@ impl TaskStatus {
             (S::WaitingCapacity, E::Exited { normal: false }) => S::Stopped(StopReason::Crashed),
             (S::WaitingCapacity, E::Lost(reason)) => S::Stopped(reason),
             (S::Switching, E::SwitchCompleted) => S::Running,
-            (S::Switching, E::SwitchAborted(reason)) => S::Stopped(reason),
             (S::WaitingCapacity, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
             (S::Stopping, E::Reaped | E::Exited { .. } | E::Killed) => {
                 S::Stopped(StopReason::Cancelled)
@@ -292,7 +285,6 @@ impl TaskStatus {
             Self::Stopped(StopReason::SwitchTimeout) => "stopped_switch_timeout",
             Self::Stopped(StopReason::ServerLost) => "stopped_server_lost",
             Self::Failed(FailReason::SpawnError) => "failed_spawn_error",
-            Self::Failed(FailReason::StartTimeout) => "failed_start_timeout",
             Self::Failed(FailReason::Precondition) => "failed_precondition",
             Self::Failed(FailReason::NoAccount) => "failed_no_account",
             Self::Chained => "chained",
@@ -311,7 +303,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 20] = [
+pub const ALL_STATUSES: [TaskStatus; 19] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -327,7 +319,6 @@ pub const ALL_STATUSES: [TaskStatus; 20] = [
     TaskStatus::Stopped(StopReason::SwitchTimeout),
     TaskStatus::Stopped(StopReason::ServerLost),
     TaskStatus::Failed(FailReason::SpawnError),
-    TaskStatus::Failed(FailReason::StartTimeout),
     TaskStatus::Failed(FailReason::Precondition),
     TaskStatus::Failed(FailReason::NoAccount),
     TaskStatus::Chained,
@@ -786,10 +777,6 @@ mod tests {
         assert_eq!(
             s.apply(TaskEvent::CapacityExhausted)?,
             TaskStatus::WaitingCapacity
-        );
-        assert_eq!(
-            s.apply(TaskEvent::SwitchAborted(StopReason::SwitchTimeout))?,
-            TaskStatus::Stopped(StopReason::SwitchTimeout)
         );
         assert!(TaskStatus::Closed.apply(TaskEvent::SwitchStarted).is_err());
         Ok(())
