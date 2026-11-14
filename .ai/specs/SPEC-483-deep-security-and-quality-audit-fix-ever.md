@@ -2985,3 +2985,29 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Delivery.** Pull request #1271 merged into `dev` at `4f8ed0dd9` (the approved head
   with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
   passed.
+
+### Slice 19 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice19/before.log`): the task that was to
+  resume past its limit came out of the queue as a plain resume (the checks of a resume
+  past a limit failed), and the task continued on `b-second` ran on `a-first`, the pool's
+  choice.
+- **Tests failing without their fix** (`target/audit/slice19/mutate.py`, `mutations.log`, 8
+  cases, each failed its test): the start not kept; a queued task started with the
+  queue's plain start; the pool's own choice kept too (the task then ran on the
+  subscription that had filled up); a person's choice not kept; a kept start losing its
+  prompt; a kept resume past a limit coming back a plain resume; a start of an earlier
+  wait read again; a start kept for a task that is not queued.
+- **The suites:** `2854 tests run: 2854 passed, 17 skipped` for the app, the binary and
+  the store (`target/audit/slice19/suite1.log`), before the unit test and the restart in
+  one test were added; the gate ran after them.
+- **Gate.** `scripts/dev ci` at `51d4412ff`: exit 0; `4315 tests run: 4315 passed, 17 skipped`
+  (`target/audit/slice19/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A person's held prompt through the queue with a real pause (the kind and
+  the prompt are tested in the store and in the round trip, the path with a `limit` pause
+  and with a person's Continue); a start that waits for a supertask's or an update's hold
+  (the same branch as the session limit); the migration on the running instance's
+  database (a version-56 database made in the test opens at 57).
