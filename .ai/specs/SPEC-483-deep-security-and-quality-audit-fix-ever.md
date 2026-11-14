@@ -1040,7 +1040,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
 - [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
-- [ ] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features
+- [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features
 
 ## Acceptance criteria
 
@@ -2575,3 +2575,25 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   in iframes" still arguing from the frames (pre-existing).
 - **Delivery.** Pull request #1281 merged into `dev` at `3864dc11b`, the approved head
   `3eddcf9eb` squashed, whose own Yulius CI run passed.
+
+### Slice 25 (2026-11-14)
+
+- **No new test** (DED-001). In code and tests (`crates/`, `e2e/`, `Cargo.*`): 44 files, 840
+  lines out and 159 in, against `3864dc11b` (slice 24 merged).
+- **Gate.** The first run failed at `cargo fmt --check` (a blank line the removed imports
+  left) and the second at `cargo doc` (two links to removed import paths and a public doc
+  linking the now-private `slug_or`); both fixed. `scripts/dev ci` at `b8ce13c3b`: exit 0;
+  `4369 tests run: 4369 passed (1 slow), 17 skipped` (`target/audit/slice25/gate.log`; two
+  fewer than slice 24: the deleted tests of the workflow shim, and the tests that only
+  exercised a deleted item were folded into others); clippy, cargo-shear, cargo-deny and the
+  repository check passed.
+- **The whole e2e suite** at `b8ce13c3b`: one failure,
+  `navigation.e2e.ts` "a sandbox tab follows the pointer…": the test renamed a sandbox by
+  pushing a `sandbox.updated` event, which the server never sends and whose handler this slice
+  removed. The test now pushes `resync`, as the server does, and waits for the page to read
+  the sandboxes again; the drag-time check (SMO-004) holds on that real path: 83 files
+  passed, 1 skipped; 1025 tests passed (`target/audit/slice25/e2e-all.log`); then, at
+  `fbc08fa12` (the test's fix), `navigation.e2e.ts` and `home.e2e.ts`: 15 passed (`e2e-r.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** An instance last started before 2026-10-11 (its two old workflows now stay
+  as ordinary rows, as `docs/operations.md` says).
