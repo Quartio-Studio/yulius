@@ -442,6 +442,12 @@ the function the web UI's route calls, with the person's rights checked at the c
   the launch already takes the task's model. The answer says when it applies and that
   `task_switch` starts the session again now. No page sets a task's model after its creation:
   this is a person's function written as a page's would be (ADR-0330).
+- **What a task runs on is in every brief, and the Global Superagent may move a task**
+  (review of slice 6, F3, F4). A subscription's label is what the Subscriptions panel shows
+  everyone signed in, so a task's agent reading the list learns nothing a person of the
+  project could not; ids and emails stay an administrator's. `task_switch` and `task_model`
+  change only the person's own task and merge no code, so the Global Superagent keeps them,
+  unlike `task_merge` and `change_merge`.
 - **Excluding a subscription from the pool is not a person's ability** because the pool has
   no such setting; the table says so rather than adding one here.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
