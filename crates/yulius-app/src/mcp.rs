@@ -268,7 +268,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, its plan is complete and nothing of its pull request is left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done: its agent finished, no work it declared is left (its plan is complete and its spec, if any, says done) and its pull request is merged, or open and would merge as it is, with nothing of it left to come (a merge Yulius is about to make, or one its agent was not told of yet, is not done); with start_rule until the rule is true (`#12 merged` when the merge itself matters); with after_all_tasks until every task of the project with work still coming is done; prepared, it waits until the person starts it, or until start_at. The answer's start_rule is the rule as stored. A supertask (for broad work such as security hardening or one-shotting the product) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
@@ -1496,7 +1496,9 @@ mod tests {
         };
         let (create, schema) = tool("task_create");
         for said in [
-            "nothing of its pull request is left to come",
+            // SPEC-491: the one Done rule, with its declared work and a pull request that merges.
+            "no work it declared is left (its plan is complete and its spec, if any, says done)",
+            "open and would merge as it is, with nothing of it left to come",
             "a merge Yulius is about to make",
             "`#12 merged` when the merge itself matters",
             "with after_all_tasks until every task of the project with work still coming is done",

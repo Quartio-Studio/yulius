@@ -609,9 +609,11 @@ context.
    in the task status `chained` (§6.1) with a row in `task_chains`.
    - *Starting.* The chain is re-evaluated when the predecessor's run ends, after its clean Stop
      hook (after the automatic pull request), when it is cancelled or deleted, and every minute.
-     **Done** is the sidebar's rule (#35): a finished turn (`running`/`waiting`, or `closed`) and a
-     pull request recorded as merged, or open with checks green or none required (read from
-     GitHub). Released tasks go `chained → queued` (compare-and-set) and then start normally.
+     **Done** is the sidebar's rule (#35): a finished turn (`running`/`waiting`, or `closed`), no
+     work the task declared left (no open step, and a spec that does not say `draft`, `approved`
+     or `in-progress`) and a pull request recorded as merged, or open and tested: in no conflict
+     with its base, with checks green or none required by the project (read from GitHub and
+     Yulius's clone; SPEC-491, ADR-0332). Released tasks go `chained → queued` (compare-and-set) and then start normally.
    - *Needing a person.* A predecessor that ends otherwise sets a reason, and the task stays
      `chained` and shows as Needs you until Start now, Cancel or a continued predecessor.
    - *Branch.* A chained task starts from its predecessor's branch until that branch is merged.

@@ -517,6 +517,8 @@ function summary(task) {
     merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
     goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
+    // Its spec says its work is not finished (SPEC-491 DON-004).
+    spec_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.spec_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,

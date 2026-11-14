@@ -367,6 +367,7 @@ TaskSummary = {
   "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
   "attention": {"kind":"terminal|yulius","problem|null","action|null","link|null"}|null,   // SPEC-472: why `activity` is `needs_attention`
   "background_shells": "0|1|…|null",
+  "spec_unfinished": false,
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
@@ -423,6 +424,13 @@ left running (Claude Code's "· 1 shell", probed every 5 s) and the background a
 end said it waits for (`turn_duration.pendingBackgroundAgentCount`, SPEC-032); null when not known.
 The UI shows a `done` task as Done only when no such background work is running ("Working · 1 background task still running"
 otherwise), and applies the same shell condition to Done by a tested pull request.
+`spec_unfinished` is true while the agent is idle and the task's spec, as Yulius last read it,
+says `draft`, `approved` or `in-progress`: work the task declared is left, however complete its
+plan reads, so the task is not Done by its plan and pull request (it reads "Your turn", as with
+open steps; SPEC-491 DON-004). A pull request is tested, for Done, when it is open, its `conflicts`
+is false (Yulius's own merge of its head with the integration branch does not conflict; GitHub's
+flag is asked only where the task has no clone) and its `checks` are `success`, or `none` where the project requires none
+(under a profile with `require_checks` a pull request nothing reported on reads `pending`).
 
 ```json
 TaskDetail = TaskSummary + {
@@ -493,7 +501,9 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   (`jev`, `default`, or null for a value the request picked) and the workflow's name; it is null
   when nothing was on Auto. Without a Jev key Auto still works, with the defaults.
 - **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
-  is Done: a finished turn and a pull request merged, or open with checks green or none required.
+  is Done: a finished turn, no work it declared left (no open step, and a spec that does not say
+  `draft`, `approved` or `in-progress`) and a pull request merged, or open and tested: in no
+  conflict with its base, with checks green or none required by the project (SPEC-491).
 - **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`
   passes; `new_scope`, `drops_scope` and `redirect` are held. Claude Code shows the reason, and the
   text stays in its input box. The task's `held_prompt` is set and the UI shows the choices:
@@ -597,7 +607,7 @@ GitOverview = {"integration_branch","production_branch","default_branch",
   "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
   "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",
-      "checks":"none|pending|success|failure|unknown"}
+      "checks":"none|pending|success|failure|unknown", "conflicts": false}
 ChecksAccess = {"repo":"owner/name", "missing":["Checks","Commit statuses"],
   "read_from":["check runs","commit statuses","Actions runs"], "message":"…",
   "settings_url":"https://github.com/…/settings/apps/<slug>/permissions|null"}

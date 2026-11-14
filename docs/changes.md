@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- A task whose work is not finished no longer reads Done (SPEC-491, task #474,
+  [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+  Task #465 read Done, and the tasks chained after it started, while its pull request
+  conflicted with `dev` and its spec still named work to do. A pull request now counts as
+  tested only when it would merge as it is: no conflict with its base, and checks passed or
+  none required by the project (the list reads "In review · PR #N · conflicts with dev"). A
+  task whose spec does not say `done` has work left, however complete its plan reads: it is
+  "Your turn", not Done, and chains and start rules wait. The step tools and `spec_check` tell
+  the agent so, and the pull request watch tells a conflict also where no CI run exists.
+
 - One reader of a bearer token and one GitHub-token scrub (SPEC-483 slice 29, task #465).
   Five routes read `Authorization: Bearer` their own way (the leftovers key untrimmed) and Git's
   and GitHub's adapters each kept the loop that removes GitHub tokens; each is written once now.

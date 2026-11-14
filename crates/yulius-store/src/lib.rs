@@ -159,6 +159,10 @@ const MIGRATIONS: &[&str] = &[
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0058_closed_at_only_when_closed.sql"),
+    // Schema version 59 (SPEC-491). The file is 0060, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0060_task_spec_status.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -830,6 +834,46 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-491 DON-004: a version-58 database gets the column; what a task's spec says of its
+    /// work is kept and read back, a write that changes nothing says so, and a task whose spec
+    /// was never read has none.
+    #[tokio::test]
+    async fn a_task_keeps_what_its_spec_says_of_its_work() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::ports::store::CoordinationStore as _;
+        use yulius_domain::ids::TaskId;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v58.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..58] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 58)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'waiting', 'ui', 'u1', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = TaskId::parse("t1")?;
+        assert_eq!(store.spec_status(&task).await?, None);
+        assert!(store.set_spec_status(&task, Some("in-progress")).await?);
+        assert!(!store.set_spec_status(&task, Some("in-progress")).await?);
+        assert_eq!(
+            store.spec_status(&task).await?.as_deref(),
+            Some("in-progress")
+        );
+        assert!(store.set_spec_status(&task, Some("done")).await?);
+        assert_eq!(store.spec_status(&task).await?.as_deref(), Some("done"));
+        assert!(store.set_spec_status(&task, None).await?);
+        assert_eq!(store.spec_status(&task).await?, None);
+        assert_eq!(store.spec_status(&TaskId::parse("gone")?).await?, None);
+        Ok(())
+    }
+
     /// SPEC-483 CLT-002: a version-57 database loses the close time of tasks that are not
     /// closed (continued since, or created chained or prepared with one); a closed task keeps it.
     #[test]
@@ -853,10 +897,13 @@ mod tests {
             )?;
         }
         drop(SqliteStore::open(&path)?);
-        assert_eq!(schema_version(), 58);
         let raw = rusqlite::Connection::open(&path)?;
         let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 58, "the version-57 database was migrated");
+        assert_eq!(
+            version,
+            schema_version(),
+            "the version-57 database was migrated"
+        );
         let mut rows = raw.prepare("SELECT id, closed_at FROM tasks ORDER BY id")?;
         let closed: Vec<(String, Option<i64>)> = rows
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

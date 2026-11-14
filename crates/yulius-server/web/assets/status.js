@@ -136,6 +136,17 @@ export function planOpen(task) {
 }
 
 /**
+ * Whether work the task declared is left (SPEC-491 DON-004): steps of its plan, or a spec that
+ * does not say done (`spec_unfinished`), however complete the plan reads. Such a task is not Done.
+ */
+export function workLeft(task) {
+  return planOpen(task) || task.spec_unfinished === true;
+}
+
+/** Why an idle task whose plan reads complete is still the person's turn. */
+const SPEC_UNFINISHED = 'Every step is finished, but its spec does not say done: work it declared is left.';
+
+/**
  * How a task's status reads: an SVG `icon` (one distinct shape per state, dom.js), a colour
  * `tone`, a plain `label`, and the sidebar `group` — `needs` (waiting for the user), `working`
  * (running or on its way), `done` (finished, TSK-014) or `ended` (stopped or failed). `glyph` is
@@ -151,8 +162,8 @@ export function statusInfo(task) {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
     // waiting: the agent finished its turn — unless its background shells still run (it wakes by
     // itself when they report, TSK-014) or it waits in `yulius wait` (Yulius wakes it, SPEC-085).
-    // Stopped with work left (steps open, or a goal set, not met or failed) the next move is the
-    // user's; with nothing open it answered (SPEC-429);
+    // Stopped with work left (steps open, a spec that does not say done, or a goal set, not met or
+    // failed) the next move is the user's; with nothing open it answered (SPEC-429);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
@@ -168,8 +179,9 @@ export function statusInfo(task) {
       const shells = backgroundShells(task);
       if (shells) return stillWorking(shells, task.background_shells_since);
       if (task.yulius_wait === true) return { ...WAITING_ON_YULIUS };
-      if (!planOpen(task) && task.goal_unfinished !== true) return { ...ANSWERED };
-      return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+      if (!workLeft(task) && task.goal_unfinished !== true) return { ...ANSWERED };
+      const turn = { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+      return !planOpen(task) && task.spec_unfinished === true ? { ...turn, detail: SPEC_UNFINISHED } : turn;
     }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
@@ -326,14 +338,15 @@ export function supertaskLine(task) {
 /**
  * statusInfo plus what only the live store knows: a browser action request from the agent makes
  * a live task "Needs you in the browser", and the pull request of a finished turn makes it
- * "Done" (tested: checks green or not required, or merged), "In review" (checks running) or
- * "Needs you" (checks failing) (#35). `actionRequests` is store.state.actionRequests and `pr` the
+ * "Done" (tested: checks green or not required and no conflict with its base, or merged), "In
+ * review" (checks running, or a conflict) or "Needs you" (checks failing) (#35). `actionRequests` is store.state.actionRequests and `pr` the
  * task's pull request from store.pullsOf(). The sidebar, the Tasks page, the task header and the
  * Git page all use this, so they always agree.
  *
  * The one rule for Done (SPEC-001 TSK-014): the last turn ended cleanly, nothing needs the user,
  * no background shell is left, and the work is evidently complete — Claude Code recorded the goal
- * as achieved (activity `done`), or the plan is complete and the pull request is tested. Failing
+ * as achieved (activity `done`), or no declared work is left (the plan complete, the spec not
+ * saying otherwise: SPEC-491) and the pull request is tested. Failing
  * checks need the user once the agent stopped; a background shell, or the agent waiting in
  * `yulius wait`, keeps it Working (SPEC-085); checks still running (without an achieved goal) are
  * In review. The group `needs` is what Home and the tabs count: "Needs you" means a person has to
@@ -367,9 +380,10 @@ function taskInfoOf(task, actionRequests, pr) {
   // The agent finished and its pull request exists (#35): done once it is tested — checks green
   // or not required — or merged; in review while checks run; needs you when they fail.
   // Only after a finished turn: a task waiting for approval (needs_attention) or working is not done (#68).
-  // A plan with open steps is not finished work, whatever its pull request says (#139): the task's
-  // own state shows ("Your turn"); failing checks still need you. The server counts the same way
-  // (`AttentionFacts` in yulius-domain).
+  // A plan with open steps is not finished work, whatever its pull request says (#139), and nor is
+  // a spec that does not say done (SPEC-491 DON-004): the task's own state shows ("Your turn");
+  // failing checks still need you. The server counts the same way (`AttentionFacts` in
+  // yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') {
@@ -385,7 +399,7 @@ function taskInfoOf(task, actionRequests, pr) {
     // CI could not run (disk, a timeout, the host): not the code, and nothing for a person yet; the
     // agent is told to run it again (S5).
     if (pr.state === 'open' && pr.checks === 'error') return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · CI could not run (not the code)`, group: 'working', pr };
-    if (planOpen(task)) return info;
+    if (workLeft(task)) return info;
     const shells = backgroundShells(task);
     if (shells) return { ...info, ...stillWorking(shells, task.background_shells_since), pr };
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
@@ -394,8 +408,11 @@ function taskInfoOf(task, actionRequests, pr) {
     if (task.activity === 'done' && task.merge_armed !== true) return done;
     // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
     if (task.yulius_wait === true) return { ...info, pr };
-    // Tested means known green (or no required checks); running or unreadable checks are not.
+    // Tested means it would merge as it is: known green (or no required checks) and no conflict
+    // with its base (SPEC-491 DON-001); running or unreadable checks are not. Of a conflict the
+    // pull request watch tells its agent, which goes on by itself.
     if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
+    if (pr.state === 'open' && pr.conflicts === true) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · conflicts with ${pr.base || 'its base'}`, group: 'working', pr };
     return done;
   }
   return info;

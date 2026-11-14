@@ -227,13 +227,25 @@ impl App {
         }
     }
 
-    /// The step nudges for a task now (plan shape and pace).
+    /// The step nudges for a task now (plan shape and pace), and what keeps a complete plan's
+    /// task from Done.
     pub(crate) async fn step_nudges(&self, task: &TaskRecord, states: &[StepState]) -> Vec<String> {
         let coarse_ok = self.spec_policy(task).await == SpecPolicy::NotRequired;
-        rules::nudges(states, self.now(), coarse_ok)
+        let mut nudges: Vec<String> = rules::nudges(states, self.now(), coarse_ok)
             .into_iter()
             .map(|n| n.to_string())
-            .collect()
+            .collect();
+        // A complete plan beside a spec that does not say done: the task is not Done (SPEC-491
+        // DON-007).
+        if !states.is_empty()
+            && states.iter().all(|state| state.status.is_resolved())
+            && let Ok(Some(status)) = self.deps.store.spec_status(&task.id).await
+            && let Some(note) = yulius_domain::spec_format::SpecStatus::parse(&status)
+                .and_then(yulius_domain::spec_format::SpecStatus::unfinished_note)
+        {
+            nudges.push(note);
+        }
+        nudges
     }
 
     /// The one-shot nudge for this turn end, marked as given (`None` when there is none or it
