@@ -6355,6 +6355,7 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
     let (first, is_error) =
         cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-c"})).await?;
     assert!(!is_error, "{first}");
+    assert_eq!(first["first"], true, "{first}");
     assert_eq!(order().await?, ["run-c", "run-a", "run-b"]);
     // A millisecond before the project's earliest; another project's queue is left as it was.
     assert_eq!(
@@ -6376,6 +6377,14 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
     let (moved, is_error) =
         cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-new"})).await?;
     assert!(!is_error, "{moved}");
+    // It moved as far as it may, and says it is not first (review of slice 5, R2-1).
+    assert_eq!(moved["first"], false, "{moved}");
+    assert!(
+        moved["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("own commit")),
+        "{moved}"
+    );
     let place = f.h.store.ci_run("run-new").await?.ok_or("run")?.queued_at;
     assert_eq!(
         place,
