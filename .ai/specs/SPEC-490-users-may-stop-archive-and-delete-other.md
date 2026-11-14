@@ -178,8 +178,8 @@ are their creator's (reported as issue #1289, see Decisions).
 - [x] One rule in the domain decides view, tidy and control, and every owner check goes through it
 - [x] Stop, close-out, archive, restore and delete work on another person's task over the API and the tools
 - [x] A tidy by someone else is audited with the owner and said in the task's terminal
-- [ ] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
-- [ ] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
+- [x] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
+- [x] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
 - [ ] Independent review of the first pull request (the rule and the UI), findings fixed
 - [ ] The owner hears of a request anywhere, and control can be asked for from the task menu
 - [ ] The person who handed a task over takes it back (schema 59, the route, the UI)
