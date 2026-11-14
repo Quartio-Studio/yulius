@@ -50,7 +50,8 @@ yulius remote status                             # who the token acts for, and i
 `~/.config/yulius/remote-credentials.json` (readable only by you). This file is separate from
 the token of `yulius login`; `yulius onboard` and `yulius secrets import` use that one when you
 have it, else this one. Inside a GitHub checkout,
-`--project` defaults to its `origin`. Pass `--project owner/name` anywhere else.
+`--project` defaults to its `origin`. Pass `--project owner/name` (or set `YULIUS_PROJECT`)
+anywhere else; `--server` (`YULIUS_SERVER`) picks the instance when several are stored.
 
 **When the instance moves to another URL** the CLI follows by itself (SPEC-466): the old URL
 answers with a redirect that says it is a move (`X-Yulius-Moved-To`), and `yulius remote` and its
