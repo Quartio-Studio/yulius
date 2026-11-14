@@ -493,7 +493,30 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     await wait(2500);
     const ended = { readOnly: endedDoc.readOnly, busy: endedDoc.busy, text: endedText, joins: endedJoins };
     endedDoc.destroy();
-    return { refused, after, closedFast, rejoined, csrf, lost, ended };
+
+    // The edit itself meets a document the server no longer has (409), its catch-up too, and
+    // the rejoin is refused for lack of access: the typing is given up as for a refused edit.
+    let goneText = 'abc';
+    let goneJoins = 0;
+    let goneEdits = 0;
+    const goneApi = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { goneJoins += 1; if (goneJoins > 1) throw Object.assign(new Error('forbidden'), { status: 403, code: 'forbidden' }); return { session: 's5', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        if (url.endsWith('/edit')) goneEdits += 1;
+        throw Object.assign(new Error('ended'), { status: 409, code: 'conflict' });
+      },
+      get: async () => { throw Object.assign(new Error('ended'), { status: 409, code: 'conflict' }); },
+    };
+    const goneDoc = createLiveDoc({ api: goneApi, sid: 'sb', root: 'task:t1', path: 'g', client: 'page', user: 'u', canWrite: () => true, getText: () => goneText, onRemote() {}, onReset: (t: string) => { goneText = t; }, onState() {}, onSynced() {} });
+    await goneDoc.join();
+    goneText = 'abcd'; goneDoc.local([3, 'd']);
+    await until(() => goneDoc.readOnly);
+    await wait(2500);
+    const goneStarted = Date.now();
+    await goneDoc.close();
+    const gone = { readOnly: goneDoc.readOnly, busy: goneDoc.busy, saved: goneDoc.saved, text: goneText, joins: goneJoins, edits: goneEdits, closedFast: Date.now() - goneStarted < 1000 };
+    goneDoc.destroy();
+    return { refused, after, closedFast, rejoined, csrf, lost, ended, gone };
   });
   expect(result).toEqual({
     refused: { text: 'abc', readOnly: true, busy: false, saved: true, told: true },
@@ -503,6 +526,7 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     csrf: { edits: 2, readOnly: false, text: 'abcd' },
     lost: { text: 'abc', readOnly: true, busy: false, joins: 1, gets: 1 },
     ended: { readOnly: true, busy: false, text: 'abc', joins: 2 },
+    gone: { readOnly: true, busy: false, saved: true, text: 'abc', joins: 2, edits: 1, closedFast: true },
   });
 });
 

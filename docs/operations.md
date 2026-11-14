@@ -487,8 +487,9 @@ listener serves them too. The proxy in front only has to:
    WebSockets and streaming as for the main host.
 
 Preview origins must be subdomains of the Yulius host (the default): they are then the same site
-as Yulius, so their cookies work inside the panel's frames (no third-party cookie blocking), and
-Yulius never relies on `SameSite` for its own protection. `YULIUS_PREVIEW_DOMAIN` (or
+as Yulius, so the handshake's redirects between Yulius and a preview are same-site navigations
+whose grant cookie no browser treats as third-party, and Yulius never relies on `SameSite` for
+its own protection. `YULIUS_PREVIEW_DOMAIN` (or
 `--preview-domain`) sets another parent domain or `off`. A public URL that is an IP address has no
 previews. For local development use a name such as `http://yulius.localhost:8080`: browsers
 resolve `*.yulius.localhost` by themselves, and a bare `localhost` would not work

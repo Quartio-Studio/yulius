@@ -1249,9 +1249,10 @@ resolves to nothing, the run gets the server without that variable or token.
   - On a preview origin, `/__yulius/` is the proxy's: `handshake` (trades the token for the
     `__Host-yulius_preview` cookie — `yulius_preview` over HTTP —, host-only, `HttpOnly`,
     `SameSite=Lax`, 12 h; then 303 to `landing`), `landing?to` (303 to `to` when the cookie
-    stuck, else an explanation), `ping` (204, reachability), `denied`. Any other request needs the grant cookie: a GET
-    navigation without one gets 302 to `/api/previews/authorize`, anything else 401. Grants are
-    re-checked against the Yulius session and write access every 30 s and live in memory.
+    stuck, else an explanation), `ping` (204, reachability), `denied`. Any other request needs
+    the grant cookie: a GET navigation without one gets 302 to `/api/previews/authorize`,
+    anything else 401. Grants are re-checked against the Yulius session and write access every
+    30 s and live in memory.
   - Refused: a host that names no sandbox (404), a port outside the sandbox's range or one of
     Yulius's own (403), credentialed requests and WebSockets from other origins than the
     preview itself and the same sandbox's other previews (403; navigations from anywhere are

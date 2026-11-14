@@ -17,7 +17,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
   ```
   default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:;
-  connect-src 'self' https://*.<host>; frame-src 'self' https://*.<host> data:; frame-ancestors 'none'; base-uri 'none'
+  connect-src 'self' https://*.<host>; frame-src 'self' data:; frame-ancestors 'none'; base-uri 'none'
   ```
 
   There are no inline scripts (`boot.js` is a file). Inline `style` attributes carry computed values

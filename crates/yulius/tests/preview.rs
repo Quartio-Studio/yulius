@@ -457,6 +457,13 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
         StatusCode::FORBIDDEN,
         "a blocked cookie is reported, not looped"
     );
+    // SPEC-483 PRV-001: the proxy's own pages carry no script and are framed by nothing else.
+    assert_eq!(
+        lost.header("content-security-policy").as_deref(),
+        Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
+    );
+    assert!(!lost.body.contains("<script"), "{}", lost.body);
+    assert!(lost.body.contains("Allow cookies for it"), "{}", lost.body);
     let page = fetch(&f.h, &host, "/", &[("cookie", &grant)]).await?;
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.body.contains("Fixture app"), "{}", page.body);
@@ -490,7 +497,7 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
 /// headers kept and only framed by the preview itself, its body byte for byte, its length and
 /// its encoding (the browser's `Accept-Encoding` reaches the app); no script is appended.
 #[tokio::test]
-async fn responses_are_rewritten_to_work_inside_the_yulius_page() -> TestResult {
+async fn responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin() -> TestResult {
     let f = fixture().await?;
     let host = f.host(f.port);
     let grant = grant(&f, f.port, &f.alice).await?;
