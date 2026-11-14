@@ -2597,6 +2597,22 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   the sandboxes again; the drag-time check (SMO-004) holds on that real path: 83 files
   passed, 1 skipped; 1025 tests passed (`target/audit/slice25/e2e-all.log`); then, at
   `fbc08fa12` (the test's fix), `navigation.e2e.ts` and `home.e2e.ts`: 15 passed (`e2e-r.log`).
+- **Review, round 1** (a fresh session, head `f2874b71d`): request changes. One major in own
+  code: a second e2e test, "a sandbox tab dragged past either end of the row stops at its
+  border", still renamed a sandbox with the removed `sandbox.updated`, so it passed only when an
+  unrelated reload of the sandboxes came after the rename. Minor: the new module doc of
+  `task.rs` said the supervisor writes a run's statuses itself, while it takes every change but
+  two from `apply` (the Decisions said the same); "`TokenUsage::is_unknown` … is read by the
+  harness" (tests only); SPEC-002 and SPEC-001 AUT-006 and AC-AUT-5 still described the
+  removed retirement, and `docs/operations.md` and DED-001 said a leftover "Feature" row could be
+  deleted in Settings, while the default answering to its id hides it. Nits: an e2e comment,
+  four lines over the wrap, a store test's name, the observe tests' comparison. All answered in
+  `cf89b680d`: the test pushes `resync`; the module doc and the Decisions say which changes go
+  through the table; `is_unknown` is gone; the specs and operations say what an instance keeps
+  (a hidden `wf-feature`, a listed `wf-quick-task`).
+- **Gate after it.** `scripts/dev ci` at `cf89b680d`: exit 0; `4369 tests run: 4369 passed (1
+  slow), 17 skipped` (`target/audit/slice25/gate2.log`). The whole e2e suite at the same head:
+  84 files passed, 1 skipped; 1026 tests passed (`target/audit/slice25/e2e-all2.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** An instance last started before 2026-10-11 (its two old workflows now stay
-  as ordinary rows, as `docs/operations.md` says).
+- **Not tested.** An instance last started before 2026-10-11 (what it keeps of its two old
+  workflows is read from the catalog's rule, as `docs/operations.md` says).
