@@ -53,7 +53,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
-      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21;
+      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
+      (merged, #1276);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -884,7 +885,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
-- [x] Slice 21: Yulius types into a session by one rule, whatever it types
+- [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
 
 ## Acceptance criteria
 
@@ -2038,7 +2039,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | fixed (slice 20) |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | fixed (slice 20) |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 21 |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | fixed (slice 21) |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
 | E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
@@ -2158,3 +2159,9 @@ stood here (this file is bounded at 256 KiB); the slice in hand follows.
   keeping its flag while Yulius compacts.
 - **Gate after it.** `scripts/dev ci` at `26c79dcba`: exit 0;
   `4347 tests run: 4347 passed (1 slow), 17 skipped` (`target/audit/slice21/gate4.log`).
+- **Review, fourth and fifth look** (the same session): approve at `b6f1b8d77`
+  ("Nothing of severity minor or above in own code remains"), and at `ee6bc62aa` after the
+  evidence of slices 1 to 20 moved to its own file (Yulius refused a spec above 256 KiB).
+- **Delivery.** Pull request #1276 merged into `dev` at `6c8663268` (the approved head
+  with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
+  passed.
