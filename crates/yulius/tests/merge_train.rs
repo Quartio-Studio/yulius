@@ -2025,3 +2025,40 @@ async fn a_task_chained_after_a_dropped_armed_merge_waits_for_its_news() -> Test
     assert!(app.task_summary(&task).await?.yulius_wait);
     Ok(())
 }
+
+/// SPEC-487 CHN-002 (review round 3, R3-7): a pull request GitHub reports merged before
+/// Yulius's record says so (a person merged it; the next reconciliation records it) is news
+/// like any other merge: the task the watch saw with it open is not Done before it was told.
+#[tokio::test]
+async fn a_merge_github_reports_first_is_news_too() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let next = chained_after_t1(&f).await?;
+    let first = TaskId::parse("t1")?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // The watch sees the pull request open (reading the task makes this server know its run).
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("task")?;
+    app.task_summary(&task).await?;
+    app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
+        .await;
+    // A person merges it on GitHub; the record still says open.
+    let person = yulius_app::model::Secret("person-token".into());
+    app.deps
+        .github
+        .merge_pull(&person, "acme", "app", 1, "squash", &head)
+        .await?;
+    use yulius_app::ports::store_ext::DeliveryStore;
+    assert_eq!(
+        f.h.store.delivery(&first).await?.map(|record| record.stage),
+        Some(DeliveryStage::PrOpen)
+    );
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its agent has not heard of the merge"
+    );
+    Ok(())
+}
