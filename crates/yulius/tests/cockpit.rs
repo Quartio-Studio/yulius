@@ -1662,11 +1662,16 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "instance",
             "instance_update",
             "merge_queue",
+            "person_ask",
+            "sandbox_request_amend",
+            "sandbox_request_withdraw",
+            "sandbox_requests",
             "sandbox_task_create",
             "sandbox_task_get",
             "sandbox_task_message",
             "sandbox_task_stop",
             "sandbox_task_update",
+            "sandbox_tasks_list",
             "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
@@ -1952,6 +1957,66 @@ async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
             .await?
             .is_empty()
     );
+    Ok(())
+}
+
+/// Review of slice 8a, F2: once its call ended (here dropped), a request no longer belongs to
+/// that call: a `notifications/cancelled` naming the same id later withdraws nothing.
+#[tokio::test]
+async fn a_cancel_after_the_call_ended_withdraws_nothing() -> TestResult {
+    let f = fixture().await?;
+    seed_sandbox(&f.h, "s2", "website", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/website", perms("write"));
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    let internal = f.h.internal.clone();
+    let bearer = Creds {
+        bearer: Some(token.clone()),
+        ..Creds::default()
+    };
+    let asking = {
+        let bearer = bearer.clone();
+        tokio::spawn(async move {
+            call(
+                &internal,
+                Method::POST,
+                "/mcp",
+                Some(
+                    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                    "name": "sandbox_task_create",
+                    "arguments": {"sandbox": "website", "prompt": "Rewrite the README"}}}),
+                ),
+                &bearer,
+            )
+            .await
+            .map(|resp| resp.body)
+            .map_err(|err| err.to_string())
+        })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while waiting_requests(&f).await? != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the request never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    asking.abort();
+    let _ = asking.await;
+    let cancelled = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}})),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(cancelled.status, StatusCode::ACCEPTED);
+    assert_eq!(waiting_requests(&f).await?, 1, "the request still waits");
     Ok(())
 }
 

@@ -584,6 +584,9 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "sandbox_task_update",
         "sandbox_task_message",
         "sandbox_task_stop",
+        "sandbox_request_amend",
+        "sandbox_request_withdraw",
+        "person_ask",
         // The changing ones of the person's project tools (SPEC-487).
         "task_restart",
         "task_pause",

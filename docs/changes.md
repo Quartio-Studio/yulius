@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   a playground's guest stops, archives and deletes only their own tasks; a refused Start
   onboarding pushes no first commit, and an onboarding task that never ran goes to whoever
   starts onboarding.
+- The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
+  [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
+  A request to create, change, message or stop a task in another sandbox ended after 4 minutes,
+  at Esc or at a restart, so a person who stepped away came back to nothing and the Superagent
+  asked the same thing again. Now the card stays on its panel until the person answers it, also
+  across a restart of Yulius; the Superagent reads how each ended (`sandbox_requests`), changes a
+  waiting one in place (`sandbox_request_amend`) or withdraws it, lists another sandbox's tasks
+  without asking (`sandbox_tasks_list`), and leaves a decision only the person makes on the same
+  panel as a question answered Yes or No (`person_ask`).
 - The CLI's sign-in has one contract (SPEC-483 slice 32, task #465). The server and `yulius
   login` each defined the device sign-in's answers, the server's state a free word the CLI might
   not read; both now use one definition, and a state the CLI does not know reads as expired.

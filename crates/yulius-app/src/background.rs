@@ -60,8 +60,12 @@ impl App {
     pub fn start_background(self: &Arc<Self>) {
         // When the previous server was last alive (SPEC-358 MSB-006).
         let outage = self.start_outage_watch();
+        // No Superagent request is written until the saved ones are back (SPEC-487 XRQ-002).
+        self.begin_cross_restore();
         let app = Arc::clone(self);
         tokio::spawn(async move {
+            // The Superagents' requests that waited, and their outcomes (SPEC-487 XRQ-002).
+            app.restore_cross_requests().await;
             // Nothing waits for the recount (SPEC-091 RCT-005).
             drop(app.recover().await);
             // The runs are reattached: the tasks that went idle while Yulius was down are woken

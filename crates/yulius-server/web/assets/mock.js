@@ -3700,8 +3700,14 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (db.holdAnswer) await db.holdAnswer;
   const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
   if (!request) fail(404, 'not_found', 'not found');
+  if ((body.revision ?? 0) !== request.view.revision) fail(409, 'conflict', 'the Superagent changed this request since you read it: read it again');
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.
+  if (request.view.action === 'ask') {
+    db.superagentAnswers = [...(db.superagentAnswers || []), body.approve ? 'yes' : 'no'];
+    return body.approve ? { outcome: 'approved', answer: 'yes' } : { outcome: 'declined', answer: 'no' };
+  }
   if (!body.approve) return { outcome: 'declined' };
   const target = db.sandboxes.find((s) => s.id === request.view.sandbox.id);
   if (!target || !['write', 'admin'].includes(target.access)) fail(404, 'not_found', 'not found');
@@ -6945,14 +6951,20 @@ export function createMockTransport(params) {
       task: task ? { number: task.number, title: task.title, status: task.status } : null,
       // As the server says it: an update with no start option (or a supertask) starts the task now.
       starts_now: action === 'update' && (startsNow ?? !Object.keys(options).length),
-      title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
+      title, prompt, options, asked_at: new Date().toISOString(), revision: 0,
     };
     db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
     emit(db, { type: 'superagent.requests', sandbox_id: source });
     return view.id;
   };
-  // The Superagent's call ended (it was interrupted, or nobody answered): its request goes.
-  db.endSuperagentRequest = (source, id) => {
+  // The Superagent amended its request (SPEC-487 XRQ-003): new text, the next revision.
+  db.amendSuperagentRequest = (source, id, prompt) => {
+    const request = (db.superagentRequests || []).find((r) => r.view.id === id);
+    request.view = { ...request.view, prompt, revision: request.view.revision + 1 };
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+  };
+  // The Superagent withdrew its request (SPEC-487 XRQ-003): it goes.
+  db.withdrawSuperagentRequest = (source, id) => {
     db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
     emit(db, { type: 'superagent.requests', sandbox_id: source });
   };
