@@ -1543,7 +1543,11 @@ A resumed goal session (Continue, a switch) gets its `/goal` typed after its con
 one line of at most 700 code units (Claude Code takes a longer write as a paste, which is no
 command): the request when it fits, else the request file named; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
-(only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
+(only keystrokes count as typing; focus and mouse reports and terminal answers do not). While that
+goal is still to be typed the run directory holds `typed-goal-pending`: a server that restarts
+then has no typist for it, watches the reattached run as it watches a launch goal, and flags a
+task that Claude Code recorded no goal for
+([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) RST-002). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
 for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the config dir's user
@@ -2031,7 +2035,8 @@ per name by rank and attaches the enabled winners. The holder is ADR-0186's: a t
 an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
 MCP API answers 404 for another person's server, administrators included, and `task_message` from
 anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
-`TaskRuntime::personal_mcp_of`, was started with one); a hand-over resumes such a run with the new
+`TaskRuntime::personal_mcp_of`, was started with one; the run directory's `personal-mcp-of` gives
+that back to a server that restarted, SPEC-483 RST-001); a hand-over resumes such a run with the new
 owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).

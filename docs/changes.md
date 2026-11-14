@@ -19,6 +19,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   terminal. Each is a person's function with their rights at the call; a task's agent gets
   none of them.
 
+- A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
+  20, task #465). A session started with its owner's personal MCP servers is still known
+  as that after a restart, so a hand-over restarts it and the previous owner's credential
+  does not stay with the new owner. And a goal task whose `/goal` Yulius still had to type
+  when it restarted is flagged ("Yulius restarted before it set this task's goal") unless
+  Claude Code had recorded the goal, instead of idling without a goal and without a word.
 - The Superagent does what its person does on the project's pages (SPEC-487 slice 2, task
   #469, ADR-0330). It was served 39 tools and none for a task's Continue, Pause or Start now,
   for CI, a task's delivery or a deploy, so it handed those back as steps to click, used
@@ -39,7 +45,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   to get a held prompt typed, or to continue on a subscription a person chose was queued
   and later started as a plain resume on the pool's choice: it sat at the limit's error,
   lost the prompt, or ran elsewhere. The queue keeps each task's start now, across a
-  restart too.
+  restart too. A chosen subscription that fills up while the task waits is given up, said
+  in the task's terminal, instead of failing the task. And a paused task whose start met a
+  full queue is no longer left waiting for good: its pause stays until the start is made
+  or queued.
 - A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
   slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
   `error`, the background round then read its usage and stored `ok`, and tasks were placed

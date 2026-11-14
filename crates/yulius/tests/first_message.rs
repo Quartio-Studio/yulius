@@ -1144,6 +1144,155 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
     Ok(())
 }
 
+/// The run directory's marker of a `/goal` Yulius still has to type (SPEC-483 RST-002).
+fn typed_goal_marker(run_dir: &str) -> PathBuf {
+    Path::new(run_dir).join("typed-goal-pending")
+}
+
+/// SPEC-483 RST-002: Yulius restarts while it still has to type a resumed session's `/goal`
+/// (the session's opening turn runs). The new server has no typist for it; it waits that turn
+/// out, watches whether Claude Code recorded a goal and, as it did not, flags the task and says
+/// why, instead of leaving a goal task idle without a goal and without a word. The flag comes
+/// after the opening turn's end, whose Stop would otherwise take it away (the bound here, 3 s,
+/// is long over when the 12 s turn ends).
+#[test]
+fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert!(typed_goal_marker(&attempt.run_dir).is_file());
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(&data, &fake, opening_turn(), port, probe, |config| {
+            config.launch_goal_ms = 3_000;
+            config.goal_ready_ms = 4_000;
+        })
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        // The opening turn ends under the new server: its Stop is answered.
+        let stop_answered = Path::new(&attempt.run_dir).join("stop-answered");
+        wait_for(
+            "the opening turn's end",
+            Duration::from_secs(60),
+            || async { stop_answered.exists() },
+        )
+        .await?;
+        // Not flagged inside the turn: the watch's time starts at the turn's end.
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        assert!(notices(&mut watch).iter().all(|n| !n.contains("goal")));
+        wait_for("the flag", Duration::from_secs(45), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("Yulius restarted before it set this task's goal")),
+            "{said:?}"
+        );
+        // Flagged once: no later restart flags it again.
+        let marker = typed_goal_marker(&attempt.run_dir);
+        wait_for("the marker's removal", Duration::from_secs(10), || async {
+            !marker.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 RST-002: Claude Code recorded the typed goal, and the server stopped before it
+/// removed the marker. The new server's watch finds the goal in the run's transcript: no flag,
+/// and the marker goes.
+#[test]
+fn a_typed_goal_recorded_before_a_restart_is_not_flagged() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id, marker) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let marker = typed_goal_marker(&attempt.run_dir);
+        wait_for("the typed goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        wait_for("the marker's removal", Duration::from_secs(20), || async {
+            !marker.exists()
+        })
+        .await?;
+        // What a server stopped between the goal's record and that removal leaves.
+        std::fs::write(&marker, b"")?;
+        Ok::<_, BoxError>((port, id, marker))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(&data, &fake, opening_turn(), port, probe, |config| {
+            config.launch_goal_ms = 3_000;
+            config.goal_ready_ms = 4_000;
+        })
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        wait_for("the marker's removal", Duration::from_secs(30), || async {
+            !marker.exists()
+        })
+        .await?;
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let said = notices(&mut watch);
+        assert!(!said.iter().any(|n| n.contains("goal")), "{said:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 RST-002: a goal Yulius typed and Claude Code took leaves no marker, so no later
+/// server watches it or flags the task.
+#[test]
+fn a_typed_goal_that_was_taken_leaves_no_marker() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let marker = typed_goal_marker(&attempt.run_dir);
+        assert!(marker.is_file());
+        wait_for("the typed goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        wait_for("the marker's removal", Duration::from_secs(20), || async {
+            !marker.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// The run directory's marker of a launch `/goal` not confirmed yet (SPEC-146 GWR-001).
 fn launch_goal_marker(run_dir: &str) -> PathBuf {
     Path::new(run_dir).join("launch-goal-pending")
