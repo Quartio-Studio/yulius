@@ -155,6 +155,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0057_queued_start.sql"),
+    // Schema version 58 (SPEC-483 CLT-002). The file is 0058, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0058_closed_at_only_when_closed.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -826,6 +830,48 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-483 CLT-002: a version-57 database loses the close time of tasks that are not
+    /// closed (continued since, or created chained or prepared with one); a closed task keeps it.
+    #[test]
+    fn a_task_that_is_not_closed_loses_its_old_close_time() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v57.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..57] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 57)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, closed_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 1, 500, 300),
+                   ('t2', 's1', 2, 'T', 'p', 'claude', 'chained', NULL, 'ui', 'u1', 1, 500, 1),
+                   ('t3', 's1', 3, 'T', 'p', 'claude', 'closed', NULL, 'ui', 'u1', 1, 500, 400);",
+            )?;
+        }
+        drop(SqliteStore::open(&path)?);
+        assert_eq!(schema_version(), 58);
+        let raw = rusqlite::Connection::open(&path)?;
+        let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(version, 58, "the version-57 database was migrated");
+        let mut rows = raw.prepare("SELECT id, closed_at FROM tasks ORDER BY id")?;
+        let closed: Vec<(String, Option<i64>)> = rows
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            closed,
+            [
+                ("t1".into(), None),
+                ("t2".into(), None),
+                ("t3".into(), Some(400))
+            ]
+        );
+        Ok(())
+    }
+
     /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
     /// read while the task waits, and is gone from the row once it left the queue; one written
     /// by hand that this build cannot read gives none.
@@ -853,10 +899,13 @@ mod tests {
             )?;
         }
         let store = SqliteStore::open(&path)?;
-        assert_eq!(schema_version(), 57);
         let raw = rusqlite::Connection::open(&path)?;
         let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 57, "the version-56 database was migrated");
+        assert_eq!(
+            version,
+            schema_version(),
+            "the version-56 database was migrated"
+        );
         let kept = |raw: &rusqlite::Connection| -> rusqlite::Result<Option<String>> {
             raw.query_row(
                 "SELECT queued_start FROM tasks WHERE id = 't1'",

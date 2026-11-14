@@ -19,7 +19,8 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
 /// The status change of [`TaskStore::transition_task`], with its bookkeeping. A task that
 /// leaves the queue loses the start kept for its wait (SPEC-483 QST-001): a held prompt stays
-/// in the database no longer than a pause's continuation does. `release_scheduled`
+/// in the database no longer than a pause's continuation does. `closed_at` is the time of the
+/// close the task is in, `NULL` while it is not closed (SPEC-483 CLT-001). `release_scheduled`
 /// (intake.rs) repeats the bookkeeping for prepared → queued.
 fn transition(
     c: &rusqlite::Connection,
@@ -29,7 +30,6 @@ fn transition(
     activity: Option<Activity>,
     at: Timestamp,
 ) -> AppResult<bool> {
-    let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
     let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
     let n = c
         .execute(
@@ -38,16 +38,16 @@ fn transition(
              working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
                OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
                WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
-             closed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE closed_at END, \
-             queued_at = CASE WHEN ?5 IS NOT NULL THEN ?5 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
+             closed_at = CASE WHEN ?1 != 'closed' THEN NULL WHEN status = 'closed' THEN \
+               COALESCE(closed_at, ?3) ELSE ?3 END, \
+             queued_at = CASE WHEN ?4 IS NOT NULL THEN ?4 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
              queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
              gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
-             WHERE id = ?6 AND (?7 IS NULL OR status = ?7)",
+             WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
             params![
                 next.as_str(),
                 activity.map(Activity::as_str),
                 at.0,
-                closed,
                 queued,
                 id,
                 expected.map(TaskStatus::as_str)
@@ -1652,6 +1652,50 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// SPEC-483 CLT-001: `closed_at` is the time of the close the task is in. It is set when
+    /// the task is closed, kept while it stays closed, and cleared when it is taken up again.
+    #[tokio::test]
+    async fn a_close_time_is_the_close_the_task_is_in() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 100, 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let closed_at =
+            || async { Ok::<_, AppError>(store.task(&task).await?.and_then(|t| t.closed_at)) };
+        let to = |next: TaskStatus, at: i64| {
+            let (store, task) = (&store, &task);
+            async move {
+                store
+                    .transition_task(task, None, next, None, Timestamp(at))
+                    .await
+            }
+        };
+        assert!(to(TaskStatus::Closed, 200).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(200)));
+        // Closed again (an archive, a repeated close): still the close of 200.
+        assert!(to(TaskStatus::Closed, 300).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(200)));
+        // Continued: no longer closed, so no close time.
+        assert!(to(TaskStatus::Starting, 400).await?);
+        assert_eq!(closed_at().await?, None);
+        assert!(to(TaskStatus::Queued, 450).await?);
+        assert_eq!(closed_at().await?, None);
+        // Closed once more: the new close.
+        assert!(to(TaskStatus::Closed, 500).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(500)));
+        Ok(())
+    }
 
     /// SPEC-472 ATN-001: a row whose reason is not JSON, or is JSON of another shape, gives no
     /// reason instead of an error; a reason without a kind is none.
