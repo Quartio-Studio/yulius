@@ -103,6 +103,7 @@ class RepositoryContracts(unittest.TestCase):
             "then fix/revert through `dev` and promote.": "and promote",
             "Poll live run IDs until the checks pass.": "Poll live run",
             "gh pr checks <number> --required --watch": "gh pr checks",
+            "## Is a hand merge allowed? No\n`gh pr merge 12 --squash`": "gh pr merge",
         }
         for line, word in bad.items():
             errors = delivery_instruction_errors(line, "AGENTS.md")
@@ -119,6 +120,10 @@ class RepositoryContracts(unittest.TestCase):
             "when your task needs one, ask a person (in Yulius: `needs_you`) and finish the rest.",
             "Promotion is not an agent's, even when the user asks.",
             "Promotion is a person's: when a task asks for it, it asks with needs_you.",
+            # SPEC-483 slice 28: a heading, a table row and a fence line end their block.
+            "## Promote\nwhen the task asks for it, open needs_you.",
+            "| promote | a person |\n| deploy dev | when the task asks |",
+            "```text\npromote\n```\nwhen the task asks, say so.",
         ]
         for line in fine:
             self.assertEqual(delivery_instruction_errors(line, "AGENTS.md"), [], line)
