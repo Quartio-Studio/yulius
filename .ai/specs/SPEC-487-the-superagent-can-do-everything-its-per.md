@@ -786,3 +786,12 @@ the function the web UI's route calls, with the person's rights checked at the c
   written before the code and first run after it. The superadmin's four actions are run
   through the function directly (the test server has no superadmin's Superagent); their
   refusals are the functions' own on a server without an update helper.
+- **Mutation:** six one-line mutants (any action, anyone's update, an unconfirmed restart,
+  restart taken for cancel, no status, the Global Superagent restarting), each failed by a
+  named test (`target/evidence/mutants-slice7.py`, `mutants-slice7.log`: `survived=0`).
+- **Gate:** `scripts/dev ci` passed on `0efe23d26` (4382 tests, 17 skipped;
+  `target/evidence/gate-slice7.log`); the commit after it changes this specification only.
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** an update or a restart that runs (the test server has no update helper; the
+  buttons' functions, with real helpers, are tested by the update suites); the Superagent's
+  own session across the restart (slice 9).
