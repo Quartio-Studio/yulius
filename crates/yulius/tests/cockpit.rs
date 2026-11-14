@@ -5646,6 +5646,18 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         "{answer}"
     );
     assert_eq!(answer["others_left_alone"], 2, "{answer}");
+    // The waiting tasks were cancelled before the running ones were stopped.
+    let stopped: Vec<u64> = answer["done"]
+        .as_array()
+        .ok_or("done")?
+        .iter()
+        .filter_map(|task| task["number"].as_u64())
+        .collect();
+    assert_eq!(
+        stopped,
+        vec![n(queued), n(prepared), n(run1), n(run2)],
+        "{answer}"
+    );
     for task in [queued, prepared] {
         assert!(
             f.h.store
