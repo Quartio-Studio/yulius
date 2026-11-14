@@ -323,3 +323,39 @@ test('a change announced while nobody watched reaches the view that watches agai
     return chip520(browser).getAttribute('title');
   }, { timeout: 5_000 }).toBe('Pull request #520 · merged');
 });
+
+// SPEC-483 slice 28 (W5): one pull request chip and one table of what its checks say, for the
+// sidebar, the Tasks list, the Git page and the task's delivery strip (three copies had drifted:
+// "checks failed" against "checks failing", unknown checks said nowhere in one of them).
+test('every pull request chip says its checks the same way (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const { prChip, prChecks } = await import('/assets/dom.js' as string);
+    const { deliveryStrip, prLine } = await import('/assets/actions.js' as string);
+    const pr = (checks: string, state = 'open') => ({ number: 7, state, checks, url: 'https://github.com/o/r/pull/7', title: 'T', base: 'dev', head: 'feat/x' });
+    const out: Record<string, unknown> = {};
+    for (const checks of ['success', 'failure', 'pending', 'unknown', 'none']) {
+      const chip = prChip(pr(checks)) as HTMLElement;
+      const strip = (deliveryStrip({}, {}, { pr: pr(checks) }) as HTMLElement[])[0];
+      const line = prLine(pr(checks)) as HTMLElement;
+      out[checks] = {
+        text: prChecks(pr(checks))?.text ?? null,
+        chip: chip.getAttribute('title'),
+        strip: strip.getAttribute('title'),
+        line: line.textContent,
+      };
+    }
+    out.merged = prChecks(pr('failure', 'merged'));
+    out.mergedChip = (prChip(pr('failure', 'merged')) as HTMLElement).getAttribute('title');
+    return out;
+  });
+  expect(read).toEqual({
+    success: { text: 'checks passed', chip: 'Pull request #7 · open · checks passed', strip: 'Pull request #7 · open · checks passed — delivery details', line: 'PR #7Topenchecks passeddev ← feat/x' },
+    failure: { text: 'checks failing', chip: 'Pull request #7 · open · checks failing', strip: 'Pull request #7 · open · checks failing — delivery details', line: 'PR #7Topenchecks failingdev ← feat/x' },
+    pending: { text: 'checks running', chip: 'Pull request #7 · open · checks running', strip: 'Pull request #7 · open · checks running — delivery details', line: 'PR #7Topenchecks runningdev ← feat/x' },
+    unknown: { text: 'checks unknown', chip: expect.stringMatching(/^Pull request #7 · open · checks unknown\. .*can’t read this pull request’s checks/), strip: expect.stringMatching(/checks unknown\. .*can’t read.* — delivery details$/), line: 'PR #7Topenchecks unknowndev ← feat/x' },
+    none: { text: 'no checks', chip: 'Pull request #7 · open · no checks', strip: 'Pull request #7 · open · no checks — delivery details', line: 'PR #7Topenno checksdev ← feat/x' },
+    merged: null,
+    mergedChip: 'Pull request #7 · merged',
+  });
+});
