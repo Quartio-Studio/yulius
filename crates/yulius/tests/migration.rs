@@ -47,6 +47,9 @@ struct FakeMoveHelper {
     unknown: AtomicBool,
     /// How often systemd was asked about the helper's service.
     asked_active: AtomicUsize,
+    /// When set, the helper writes its last report (ended at this time) and its service ends
+    /// just as systemd is asked: between the server's two reads.
+    ends_when_asked: std::sync::atomic::AtomicI64,
 }
 
 impl MoveHelper for FakeMoveHelper {
@@ -108,6 +111,11 @@ impl MoveHelper for FakeMoveHelper {
 
     fn helper_active(&self) -> Option<bool> {
         self.asked_active.fetch_add(1, Ordering::SeqCst);
+        let ended = self.ends_when_asked.swap(0, Ordering::SeqCst);
+        if ended != 0 {
+            self.ends(Some(0), ended);
+            return Some(false);
+        }
         (!self.unknown.load(Ordering::SeqCst)).then(|| self.alive.load(Ordering::SeqCst))
     }
 }
@@ -852,6 +860,27 @@ async fn a_silent_helper_is_lost_only_once_its_service_ended() -> TestResult {
         }
     }
     assert!(updates.last().is_none(), "the update helper was asked");
+
+    // The helper writes its last report and ends between the report's read and systemd's
+    // answer: the run ended, it is not lost.
+    i.helper.alive.store(false, Ordering::SeqCst);
+    i.helper.unknown.store(false, Ordering::SeqCst);
+    i.helper.ends_when_asked.store(i.now(), Ordering::SeqCst);
+    let ended = i.view().await?;
+    assert_eq!(ended["run"]["state"], "ended");
+    // Ended well: not continued; its checklist stopped in Copy, so it can be aborted.
+    assert_eq!(
+        ended["can"],
+        json!({"plan": true, "move": false, "abort": true})
+    );
+    // Back to the silent run, whose service ended.
+    let silent_since = i.now() - LOST_AFTER_MS - 1;
+    i.helper.says(|status| {
+        status.state = MoveHelperState::Running;
+        status.exit_code = None;
+        status.updated_at = silent_since;
+        status.ended_at = None;
+    });
 
     // Systemd says the service ended: the run stopped without a word, and may be continued.
     i.helper.alive.store(false, Ordering::SeqCst);

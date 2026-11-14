@@ -830,9 +830,6 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
-    /// read while the task waits, and is gone from the row once it left the queue; one written
-    /// by hand that this build cannot read gives none.
     /// SPEC-483 CLT-002: a version-57 database loses the close time of tasks that are not
     /// closed (continued since, or created chained or prepared with one); a closed task keeps it.
     #[test]
@@ -875,6 +872,9 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
+    /// read while the task waits, and is gone from the row once it left the queue; one written
+    /// by hand that this build cannot read gives none.
     #[tokio::test]
     async fn a_queued_task_keeps_its_start_while_it_waits() -> Result<(), Box<dyn std::error::Error>>
     {

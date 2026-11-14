@@ -334,7 +334,7 @@ impl Facts {
 
 /// Reads the helper's files; a request the helper took, or one too old to be taken, is removed.
 fn read(helper: &dyn MoveHelper, now: i64) -> Files {
-    let report = helper.helper_status();
+    let mut report = helper.helper_status();
     let mut pending = helper.pending();
     if let Some(request) = &pending {
         let taken = report.as_ref().is_some_and(|run| run.id == request.id);
@@ -353,6 +353,11 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
         .as_ref()
         .filter(|run| silent(run, now))
         .and_then(|_| helper.helper_active());
+    if service_active == Some(false) {
+        // A helper writes its last report before its service ends: one that ended between the
+        // two reads is read ended, not lost.
+        report = helper.helper_status();
+    }
     Files {
         installed: helper.installed(),
         pending,
