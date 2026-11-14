@@ -1,11 +1,11 @@
 ---
 yulius-task: 7b50f659-ab91-451e-ad88-c994a6edbf1f
-status: in-progress
+status: done
 ---
 
 # SPEC-491: a task whose work is not finished never reads Done
 
-Status: in-progress
+Status: done
 Date: 2026-11-14
 Owner: Yulius task #474
 Scope authorization: the request of task #474 (2026-11-14). The person reported, about #465 (the
@@ -86,7 +86,8 @@ supertask's wait and the tools.
 - [x] The API, the web UI and the counts say the same as the chains (DON-006)
 - [x] The agent is told what keeps its task from Done (DON-007)
 - [x] ADR-0332, SPEC-001, SPEC-487, the architecture, the API reference and the changes log state one rule (DON-008)
-- [ ] Every gate green and the independent review of the exact head approved
+- [x] Every gate green on the head with dev merged in (the Rust gate, the end-to-end suite, the security scan)
+- [x] The independent review's findings answered and the final head approved
 
 ## Acceptance criteria
 
@@ -130,9 +131,12 @@ supertask's wait and the tools.
 - **Stored, not read at the decision.** The counts ask for every idle task many times a minute
   and a closed task has no worktree left; the status is written when Yulius reads the spec
   anyway.
-- **A conflict is read from GitHub or from Yulius's own clone.** GitHub's list of pull requests
-  carries no mergeability, and one request per pull request per overview would cost the rate
-  limit; the clone's answer is what the pull request watch tells the agent.
+- **Yulius's own clone decides a conflict; GitHub's flag only where there is no clone.** GitHub's
+  list of pull requests carries no mergeability, and one request per pull request per overview
+  would cost the rate limit; the clone's answer is what the pull request watch tells the agent.
+  GitHub's `mergeable` also knows nothing of the union rules Yulius gives the changes log and the
+  decision index: the first version asked it too, and the review found it held a chain on every
+  changes-log collision the clone merges, while the sidebar read Done (round 1, M1).
 - **A conflicting pull request is Working, not "Needs you".** The watch tells its agent within
   20 seconds, so "Needs you" would be a false alarm each time `dev` moves; a pull request left
   that way for an hour is flagged as stalled (PRN-009).
@@ -140,3 +144,57 @@ supertask's wait and the tools.
   bringing it up to date is part of the merge, which Yulius does when a merge is asked for.
 - **The merge gate is unchanged.** `check_merge` still lets a merge pass with no check
   reported: a project without any CI must be able to merge. Only what reads as Done changes.
+
+## Evidence
+
+Run in this task's worktree on 14 November 2026; logs in the ignored `target/evidence/`.
+
+- **Before the fix** (the tests written first, run on the unfixed code): the three delivery
+  tests of DON-001, DON-002 and DON-004 and the merge-train test of DON-001 failed, the chained
+  task `queued` where it must stay `chained` (`before-fix-delivery.txt`, `before-fix-merge-train.txt`:
+  `left: Some(Queued)`, `right: Some(Chained)`, "its pull request cannot merge"). The test of a
+  profile that requires no checks passed before and after, as it must.
+- **With each fix taken out again** (mutation checks after the commit): the watch test fails
+  ("the conflict was not typed") without the branch-head lookup; the round-1 tests fail with
+  GitHub's flag deciding again (`merge_train::github_s_flag_does_not_hold_a_pull_request_the_clone_merges`)
+  and without clearing a deleted spec's status (`delivery::a_task_whose_spec_was_deleted_is_decided_by_its_steps`).
+- **Tests of the change:** `delivery::a_pull_request_nothing_reported_on_is_not_done_where_checks_are_required`,
+  `…_without_checks_is_done_where_none_are_required`,
+  `…_a_green_pull_request_github_cannot_merge_is_not_done_where_the_clone_cannot_tell`,
+  `…_a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished` (tested, then merged;
+  `spec_check` says why; the spec moved, then `done`), `…_a_closed_task_whose_spec_says_in_progress_did_not_end_done`,
+  `…_a_task_whose_spec_was_deleted_is_decided_by_its_steps`;
+  `merge_train::a_task_chained_after_a_green_pull_request_that_conflicts_waits` (real Git: a
+  chained task and a `#N done` start rule wait while the green head conflicts, start once the
+  agent merged `dev` in and the new head passed), `merge_train::github_s_flag_does_not_hold_a_pull_request_the_clone_merges`;
+  `pr_watch::a_conflict_is_told_without_a_run_at_the_head`; `mcp_coordination::a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more`
+  (the step tools' note); the store's `a_task_keeps_what_its_spec_says_of_its_work` (version-58 file);
+  the domain's `pull_signals_from_wire_names` and `group_follows_the_sidebar_rule`; the web UI's
+  `task-done.e2e.ts` "a conflicting pull request and a spec that does not say done keep a task
+  out of Done (unit, in the page)".
+- **Fixtures changed with the rule:** the merge-train fixture's spec and two delivery count
+  tests now model a finished task with a spec that says `done`; the multi-slice delivery test
+  ends with its spec set to `done` before the chained task starts.
+- **Gate** `scripts/dev ci` at `d1eaac4e6` (dev merged in at `1f984f366`): passed, 4393 tests
+  run, 4393 passed, 17 skipped; repository contracts passed (`gate-4.txt`). Earlier runs: at
+  `e5f9443f7` one failure, `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run`
+  (`switch_timeout` recorded where `lost` was expected), in switch code this change does not
+  touch; it passed 20 of 20 alone and 120 of 120 at 48 in parallel and is filed as #1291; the
+  next run passed 4388 of 4388. After the dev merge one failure in this change's own test text
+  (`mcp::tests::the_start_choices_say_what_done_waits_for`, the reworded `task_create` text),
+  fixed in `d1eaac4e6`.
+- **End-to-end suite** (`cd e2e && npx e2e run`) at the merged head: 84 files passed, 1
+  skipped; 1034 tests passed, 1 skipped (`e2e-full-2.txt`).
+- **Security scan:** `yulius security-scan` printed "Security scan disabled: Vidoc is turned
+  off in Yulius"; nothing was scanned (disabled, not passed).
+- **Independent review** in a fresh session (round 1, at `e5f9443f7`): request changes, one
+  major (M1, GitHub's `mergeable` held a chain on a conflict the clone's union rule resolves,
+  while the sidebar read Done), one minor (m2, a deleted or moved spec kept its status) and
+  three nits (a changed status not published; the `task_create` text; the watch and the Done
+  check asked different heads). All are own code but the `task_create` text, which the change
+  should have updated; all fixed in `cf3aa7b92`, `594ee7ae8` and `d1eaac4e6`, with the tests
+  above.
+- **Not tested here:** the instance itself. It runs `main` at `ec07d1331`, older than ADR-0328,
+  and gets this change only with a person's promotion. GitHub's real `mergeable` answer is
+  modelled by the fake.
+
