@@ -503,6 +503,21 @@ test('Refresh all is off when no subscription is signed in, and one subscription
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-483 SGN-002: a subscription that reads `error` needs a sign-in as one that reads `relogin`
+// does (the server's one rule: only `ok` and `limited` work), so the page asks it for no reading.
+test('a subscription in error is asked for no usage reading (SPEC-483)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.accounts.forEach((account, i) => { if (i > 0) account.status = 'error'; });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  await screen.getByRole('button', 'Refresh all').click();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 1 subscription.")')).toBeVisible();
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1 });
+});
+
 // RFR-015: the page reads a card that may be out of date by itself once per visit. A redraw of the
 // list does not ask again, a failure of that reading says nothing, and a later Refresh does ask.
 test('the page reads an old card by itself once per visit and says nothing when that fails (SPEC-473)', async ({ app, browser, screen }) => {
@@ -1140,6 +1155,31 @@ test('a sign-in of a subscription whose email was typed does not say Claude conf
   // The toast names an email only when Claude gave it; the typed one stays on the card.
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #3 is connected")')).toHaveText('Claude #3 is connected. Tasks can use it now.');
   await expect(browser.locator('main .account-card:has-text("Claude #3") .account-sub')).toHaveText('agent@example.com');
+});
+
+// SPEC-483 SGN-001: a subscription Claude refused keeps needing a sign-in, with Claude's reason,
+// when a new sign-in fails; the dialog says why that sign-in failed, not why Claude refused.
+test('a failed sign-in of a refused subscription says its own reason and leaves the refusal on the card (SPEC-483)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+  const again = browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")');
+  await again.click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await enterCode(browser, 'fail');
+  const outcome = dialog.getByRole('alert');
+  await expect(outcome).toContainText('Sign-in failed');
+  await expect(outcome).toContainText('The sign-in ended without producing a token');
+  await expect(outcome).not.toContainText('Your organization has disabled');
+  await dialog.getByRole('button', 'Close').last().click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('main .card:has-text("Claude #3")')).toContainText('Your organization has disabled Claude subscription access for Claude Code');
+  await expect(again).toBeVisible();
+  const account = await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    const found = db.accounts.find((a) => a.id === 'acc_c3');
+    return found ? found.status : null;
+  });
+  expect(account).toBe('relogin');
 });
 
 test('a failed Claude sign-in says why and Try again signs in in the same dialog (SPEC-243 LGN-004, LGN-005)', async ({ app, browser, screen }) => {

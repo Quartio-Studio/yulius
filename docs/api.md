@@ -1626,12 +1626,13 @@ temporary config directory in a server-owned PTY 500 columns
 wide so tokens and URLs never wrap. It uses the terminal protocol above: `resize` and
 `take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
 runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
-status and the CLI's exit code. Output is masked before it reaches any viewer (Claude tokens
+status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
 become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
 into the account (`ok`, `account.updated`), and the temporary directory
-is overwritten and removed. A login that ends without a credential sets `error` with a message;
-an account that still holds a working credential keeps its status and records
-`re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
+is overwritten and removed. A first login that ends without a credential sets `error` with a
+message; an account that still holds a working credential keeps its status and records
+`re-login failed: …`; one that needs a new sign-in (`relogin`) stays so with the reason it had
+(the failed login's own reason is in its `exit` frame). Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
 Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
 (`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,

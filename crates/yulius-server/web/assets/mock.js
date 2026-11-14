@@ -3973,9 +3973,12 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
     if (answer.note !== false) account.last_error = `usage: ${answer.fail}`;
     fail(502, 'upstream', answer.fail);
   }
-  account.last_error = null;
+  // Like the server: a reading changes neither the status nor the reason of a subscription
+  // that does not work (SPEC-483 SGN-002).
+  const working = account.status === 'ok' || account.status === 'limited';
+  if (working) account.last_error = null;
   if (answer.unread) return { ...account, usage_read: false };
-  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
+  Object.assign(account, { status: working ? answer.status || account.status : account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
   return { ...account, usage_read: true };
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
@@ -6279,6 +6282,9 @@ function startLogin(db, accountId) {
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
+/** Why the mock's sign-in fails: what the server's exit frame and a first sign-in's error say. */
+const SIGN_IN_FAILED = 'the sign-in ended without producing a token (exit code 1)';
+
 class LoginSession {
   constructor(db, accountId) {
     this.db = db;
@@ -6332,14 +6338,16 @@ class LoginSession {
     if (this.input === 'fail') {
       this.out(`\r\n${c(203, 'OAuth error: the authorization code was not accepted.')}\r\n`);
       if (account) {
-        // Like the server: a working account keeps its state and notes the failed re-login.
+        // Like the server: a working account keeps its state and notes the failed re-login, one
+        // Claude refused keeps needing a sign-in with Claude's reason, and only a first sign-in
+        // that fails is an error (SPEC-483 SGN-001).
         const working = account.status === 'ok' || account.status === 'limited';
-        Object.assign(account, working
-          ? { last_error: 're-login failed: the sign-in ended without producing a token (exit code 1)' }
-          : { status: 'error', last_error: 'the sign-in ended without producing a token (exit code 1)' });
+        if (working) account.last_error = `re-login failed: ${SIGN_IN_FAILED}`;
+        else if (account.status === 'relogin') account.last_error = account.last_error || SIGN_IN_FAILED;
+        else Object.assign(account, { status: 'error', last_error: SIGN_IN_FAILED });
         emit(this.db, { type: 'account.updated', account });
       }
-      this.end('error', 1);
+      this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
     this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
@@ -6357,15 +6365,15 @@ class LoginSession {
     this.end('ok', 0);
   }
 
-  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer. */
-  end(status, code) {
+  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer, a failed one with `cause`. */
+  end(status, code, cause = undefined) {
     if (this.done) return;
     this.done = true;
     this.status = status;
     this.code = code;
     if (this.ws) {
       this.ws.push(JSON.stringify(this.state()));
-      this.ws.push(JSON.stringify({ type: 'exit', status, code }));
+      this.ws.push(JSON.stringify({ type: 'exit', status, code, cause }));
     }
   }
 
