@@ -2738,5 +2738,19 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   slow), 17 skipped` (`target/audit/slice26/gate2.log`); the mutation cases, their old texts
   updated, all failed their tests again (`mutations-r1.log`); e2e `git.e2e.ts` and `cd.e2e.ts`:
   32 passed (`e2e-r1.log`).
+- **Review, round 2** (the same session, head `1c5877e7d`): approve, with four nits (left for
+  slice 27). It asked for the e2e files that use the mock's changed store failures:
+  `production-protection.e2e.ts` and `vidoc-switch.e2e.ts`, 26 passed
+  (`target/audit/slice26/e2e-r2.log`).
+- **CI at `1c5877e7d`** (run `9c6a7aaa`): `quality` failed in a test this slice does not touch,
+  `usage_credits::a_request_at_a_limit_nothing_says_the_end_of_ends_when_a_restart_retries_the_task`
+  (expected the audit "Yulius waits for a subscription…", found none); 8 of 8 alone passed. The
+  cause is in the test: `end_limit_requests` ends the request in one write and audits why in
+  the next, and six reads of the audit in `usage_credits.rs` came right after waiting for the
+  end. With a 300 ms delay before the audit write two tests failed
+  (`flake-probe-before.log`); with the reads waiting for the audit (`resolved_soon`, bounded
+  at 10 s) all 23 passed with the delay in (`flake-probe-after.log`). Fixed in `14a5821c3`.
+- **Gate after it.** `scripts/dev ci` at `14a5821c3`: exit 0; `4373 tests run: 4373 passed (1
+  slow), 17 skipped` (`target/audit/slice26/gate3.log`).
 - **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
   behaviour).
