@@ -207,3 +207,40 @@ the function the web UI's route calls, with the person's rights checked at the c
   ever sees a secret's value, which the person types masked beside the chat.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
+
+## Evidence
+
+### Slice 1 (2026-11-13 and 14)
+
+- **The 13 November case, reproduced before the fix.** `merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge`
+  and the first version of the CHN-002 test both failed with the chained task `Queued`
+  (expected `Chained`); `manage_tools::a_start_rule_reads_back_whole` failed with
+  `"runs_after":1` and no rule for a rule naming three tasks.
+- **Tests first, each seen to fail without its change:** the armed, green pull request; the
+  merge not told; the news typed and its prompt hook held at its check; a server started again
+  before the armed merges are back; an armed merge dropped on a green head; news typed while a
+  turn runs; a queue entry that gets its turn before the news; a merge during an update's
+  hold; a merge GitHub reports first; a supertask and Home's counts; the rule read back;
+  `after_all_tasks` (what it names and leaves out, nothing left, the 64 bound, access first).
+- **Mutation:** `python3 target/evidence/mutants.py`: twelve mutants of the news rule and its
+  uses, each failed by a named test, `survived=0`.
+- **Load:** the three session tests of `tests/task_done.rs` 64 times each beside 96 busy loops
+  on 64 CPUs: 64 of 64 iterations passed (two earlier versions of the fix failed 1 of 48 and
+  1 of 96 there, which is how the watcher reading a turn's prompt late was found).
+- **Gate:** `scripts/dev ci` (repository check, cargo check, fmt, clippy, the macOS compile,
+  the workspace's tests, doctests, deny, shear, cargo doc) passed on each head given to the
+  review; on the head before the last round's delta: 4296 tests passed, 17 skipped.
+- **End-to-end, web:** `npx e2e run tests/intake.e2e.ts`: 18 passed (the rule editor's note).
+- **Security scan:** Vidoc is switched off for this project in Yulius: `yulius security-scan`
+  reports "disabled", which is not a pass.
+- **Independent review** (a fresh session, read-only, its own build and gate run): three
+  rounds of findings, all in this slice's own code and all answered test-first. Round 1: the
+  window after the news was typed, the restart before the armed merges are restored, what
+  `after_all_tasks` named. Round 2: news typed while a turn runs, an update's hold, two
+  readings of the delivery in one decision (its load run failed the CHN-002 test 3 of 96).
+  Round 3: an entry that leaves Claude Code's queue alone before the news. Not filed as an
+  issue: an armed merge's outcome is kept in memory only (older code); after a restart the
+  watch still tells a green head that no merge is armed and why.
+- **Not tested:** the watch telling a merge to a run reattached after a restart of the
+  server; real Claude Code's queue records (the fake agent's follow the records seen with the
+  real tool for SPEC-471 and SPEC-479).
