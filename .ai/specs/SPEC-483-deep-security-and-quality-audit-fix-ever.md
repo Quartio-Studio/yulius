@@ -3142,3 +3142,29 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   before it has a subscription must end the pause too, and does (the task is `failed`).
 - **Delivery.** Pull request #1272 merged into `dev` at `326e89925`, whose own Yulius CI
   run passed.
+
+### Slice 20 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice20/before.log`): after the restart
+  the hand-over restarted nothing ("timed out waiting for the resumed run"), and no run
+  directory held the mark of a goal still to be typed.
+- **Tests failing without their fix** (`target/audit/slice20/mutate.py`, `mutations.log`, 9
+  cases, each failed its test): a run with personal servers leaving no mark; the restarted
+  server not reading it; a goal still to be typed leaving no mark; the restarted server
+  not watching it; its watch saying the launch goal's sentence; a typed goal that was
+  taken keeping its mark; a recorded goal's mark staying after the watch; and, for the
+  pause's end moved after slice 19's review, a launch that has its subscription and a
+  launch that fails each leaving the pause open.
+- **The suites:** `2750 tests run: 2750 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice20/suite1.log`), before the fourth test was added; the gate ran
+  after it.
+- **Gate.** `scripts/dev ci` at `05ba32d9b`: exit 0; `4321 tests run: 4321 passed, 17 skipped`
+  (`target/audit/slice20/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed since the suite's last run
+  (`426c3c789`, slice 19); it was not run again.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real Claude Code session and a real update of the instance (the
+  restart is a second server on the same data); a launch that cannot write the personal
+  servers' mark; the two nits of slice 19 that have no order a test can make (a queueing
+  that lost to a concurrent change; the pool's round reading a refused start as waiting).
