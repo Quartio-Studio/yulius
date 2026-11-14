@@ -247,8 +247,9 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
     const pressed = document.querySelector('.tabrow-tabs .tab.dragging, .tabrow-tabs .tab:active');
     const sandbox = db.sandboxes.find((s) => s.id === sandboxId)!;
     sandbox.name = newName;
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // As the server tells of a changed sandbox: `resync`, and the page reads the sandboxes again.
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'resync' }));
+    for (let i = 0; i < 200 && !document.title.includes(newName); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
     return { same: Boolean(pressed?.isConnected), drawn: [...document.querySelectorAll('.tabrow-tabs .tab-name')].some((n) => n.textContent === newName) };
   }, [id, name] as const);
 
