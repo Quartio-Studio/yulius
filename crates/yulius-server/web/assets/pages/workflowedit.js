@@ -9,7 +9,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate, currentLocation, linkTarget } from '../router.js';
+import { href, navigate, currentLocation, guardLeave } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
 import { workflowIcon } from './workflows.js';
@@ -276,16 +276,12 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
     }
   }
 
-  const onBeforeUnload = (event) => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } };
-  const onLink = async (event) => {
-    const link = event.target.closest && event.target.closest('a[data-route]');
-    if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this workflow are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
-  };
-  window.addEventListener('beforeunload', onBeforeUnload);
-  document.addEventListener('click', onLink, true);
+  // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
+  const leaveGuard = guardLeave({
+    dirty: () => Boolean(dirty()),
+    ask: () => confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this workflow are not saved.', confirmLabel: 'Leave', danger: true }),
+    onLeave: () => { saved = snapshot(); },
+  });
 
   // A default workflow is read-only: Duplicate opens a custom copy in this builder.
   const duplicate = h('button', { type: 'button', class: 'btn btn-primary', hidden: true, onClick: () => navigate(`${base}/new?from=${encodeURIComponent(id)}`) }, 'Duplicate to customise');
@@ -332,6 +328,6 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   return {
     el,
     start() { if (creating) nameInput.focus(); },
-    destroy() { alive = false; window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
+    destroy() { alive = false; leaveGuard(); },
   };
 }

@@ -9,7 +9,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge, bar } from '../dom.js';
-import { href, navigate, linkTarget } from '../router.js';
+import { href, navigate, guardLeave } from '../router.js';
 import { allows } from '../status.js';
 import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind } from '../startchoice.js';
@@ -364,17 +364,12 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     }
   }
 
-  const onBeforeUnload = (event) => { if (dirty()) { event.preventDefault(); event.returnValue = ''; } };
-  const onLink = async (event) => {
-    const link = event.target.closest && event.target.closest('a[data-route]');
-    if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
-  };
-  renderStart();
-  window.addEventListener('beforeunload', onBeforeUnload);
-  document.addEventListener('click', onLink, true);
+  // Unsaved changes: every way out asks (the router's guard, SPEC-483 slice 28).
+  const leaveGuard = guardLeave({
+    dirty: () => Boolean(dirty()),
+    ask: () => confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true }),
+    onLeave: () => { saved = snapshot(); },
+  });
   el.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
@@ -410,6 +405,6 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   return {
     el,
-    destroy() { alive = false; offRuns(); offTasks(); window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
+    destroy() { alive = false; offRuns(); offTasks(); leaveGuard(); },
   };
 }
