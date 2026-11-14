@@ -54,7 +54,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
       (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
-      (merged, #1276);
+      (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -468,6 +468,28 @@ no code path reaches; documents, texts shown to agents and people, and code that
   export shows as "Closed" and the project list as `closed_at_ms`; a repeated close moved
   it. A task created without a start but chained or prepared (no caller does so today)
   got one too.
+
+### Slice 23: one rule for a task's group, and an edit refused for lack of access
+
+- **W2 (medium).** The sidebar's rule (`status.js`) and the server's (`AttentionFacts::group`,
+  which Home's cards, the project tabs and the page title count) disagreed twice. A run paused
+  by a person or by an update is Paused under Working in the sidebar whatever it waited for
+  (SPEC-191: "It counts in the Working group"); the server had no pause fact, so a paused task
+  that had a permission prompt, "Your turn", a held prompt or a browser request was counted as
+  needing you. And the onboarding task of a `pending` sandbox, listed in the sidebar's Working
+  group as "Waits for Start onboarding", was a closed task to the server and counted nowhere.
+  The mock counts with the sidebar's rule, so no e2e test could see it.
+- **D8 (medium), the case left.** SPEC-487 CHN-001 (#1270) made a merge that is armed keep an
+  idle task out of Done, through `yulius_wait`; an achieved goal (`activity: done`) still
+  came first, in the server's rule, in both "is it done" functions of `delivery.rs` and in the
+  sidebar. An agent whose goal was judged achieved after it armed its merge was Done: a task
+  chained after it started before the merge, and archiving it closed it, which ends the armed
+  merge (slice 15) with a reason typed to nobody.
+- **W3 (medium).** `livedoc.js` answered a refused edit (403: the person may no longer change
+  the folder, such as a worktree whose owner changed) by setting `readOnly` and keeping the
+  edit: the file read Unsaved for good, the page asked before every unload, more typing
+  piled up unsent, a close waited its full 10 s and dropped it, and `readOnly`, never reset,
+  had no reader.
 
 ## Requirements
 
@@ -889,8 +911,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `reloading`) or cannot say. Systemd is asked only of such a silent report, each time;
   once it says the service ended, the report is read again (a helper writes its last
   report before its service ends, so one that ended between the two reads is ended, not
-  lost). While running, no update or restart starts and nothing continues the move; once lost, a
-  move can be continued or aborted as before.
+  lost). While running, no update or restart starts and nothing continues the move; once
+  lost, a move can be continued or aborted as before.
 - **MOV-002** A move's mark that exists is a mark, whatever its bytes: the first start
   that finds it queues the lost tasks and removes it.
 - **CLT-001** A task's `closed_at` is the time of the close the task is in: set when it is
@@ -898,6 +920,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   takes it out of `closed`.
 - **CLT-002** Migration 0058 (schema version 58) clears `closed_at` of every task that is
   not closed.
+- **GRP-001** A run paused by a person or by an update (the pause the task's view shows) is
+  in the Working group whatever it waits for: permission prompt, "Your turn", held prompt,
+  browser request, failing checks. A stop asked for still makes it Ended.
+- **GRP-002** The onboarding task a `pending` sandbox waits for (closed, never run) is in
+  the Working group and counted in line (`counts.queued`), by the server and the sidebar.
+- **GRP-003** A finished turn whose merge is armed is in the Working group, an achieved
+  goal's too: the task's view says `merge_armed`, the list reads "Waiting for checks or
+  merge", a task chained after it waits, and archiving it is refused (the merge stays armed).
+- **LVE-001** An edit the server refuses with 403 gives the server's text back: nothing of
+  the tab's waits (not saved, not busy, a close ends at once), typing is not kept, the
+  Editor makes the file read-only and says "Read-only: you can no longer change this folder";
+  joining the document again (the file opened again) asks again.
 
 ## Plan
 
@@ -925,7 +959,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
-- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing
+- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
+- [ ] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved
 
 ## Acceptance criteria
 
@@ -1444,6 +1479,23 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-130** A running task closed at 200, closed again at 300, continued at 400, queued
   at 450 and closed at 500 has the close times 200, 200, none, none, 500; a version-57
   database's running and chained tasks lose their close time, a closed one keeps it.
+- **AC-131** A running task with a permission prompt counts 1 needing you; paused by its
+  owner it counts 1 working and none needing you; resumed, 1 needing you again. In the
+  sidebar's rule a paused task with a permission prompt or a held prompt reads Paused,
+  counted working.
+- **AC-132** A `pending` sandbox with its onboarding task waiting for Start onboarding and a
+  task chained after it counts 2 in line, none working, none needing you; the sidebar's
+  counter says the same of the onboarding task.
+- **AC-133** An armed, green pull request whose task's goal is then achieved: the chained
+  task stays chained, the task's view says `merge_armed: true`, the project counts it
+  working, archiving it answers 409 and it stays running with the merge armed. The sidebar
+  reads "Waiting for checks or merge" with and without the pull request; an achieved goal
+  without an armed merge is still "Done · PR #7".
+- **AC-134** A live document whose edit is refused with 403 has the server's text back, is
+  read-only, saved and not busy; typing more sends nothing; close ends within a second; a new
+  join clears the read-only state. In the Editor the status says "Read-only: you can no
+  longer change this folder", the editor is read-only, the text is the file's and nothing
+  reads Unsaved.
 
 ## Test plan
 
@@ -1687,6 +1739,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-128, a fake `systemctl`), `host_move::a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes`
   (AC-129); `yulius-store` `tasks::tests::a_close_time_is_the_close_the_task_is_in` and
   `tests::a_task_that_is_not_closed_loses_its_old_close_time` (AC-130).
+- Slice 23: `yulius-domain` `task::tests::group_follows_the_sidebar_rule` (GRP-001 to
+  GRP-003, every activity and pull request case); `yulius`
+  `task_pause::a_paused_task_is_counted_working_whatever_it_waited_for` (AC-131),
+  `import_server` (the onboarding test's counts, AC-132),
+  `merge_train::an_achieved_goal_with_an_armed_merge_is_not_done` (AC-133); e2e
+  `task-done.e2e.ts` "a paused task, a waiting onboarding task and an armed merge are counted
+  as the server counts them" (the sidebar's rule in the page), `live-editor.e2e.ts` "an edit
+  refused for lack of access gives the text back and leaves nothing waiting" (the document
+  against a scripted server) and "… makes the file read-only in the Editor and says so" (the
+  mock refuses edits on a switch).
 
 ## Decisions
 
@@ -1750,6 +1812,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 23 (no decision record: SPEC-191, SPEC-153 and SPEC-487 already decided each case;
+  the slice makes the second rule say what the first said). The pause wins over everything
+  but an end, as the sidebar always had it: a paused run cannot answer a prompt or a person
+  until it is resumed, so "Needs you" asked for something that could not be done. The
+  onboarding task is counted in line rather than working, as the sidebar lists it beside the
+  prepared tasks; the sidebar's counter changed, not its group. An armed merge is its own
+  fact (`merge_armed`) rather than "news due" (`yulius_wait`) applied to achieved goals:
+  CHN-003 keeps an achieved goal Done once nothing but news is left, and only the armed merge
+  is work still to come. Archiving such a task is refused by the existing rule for live tasks
+  ("stop the task before archiving it") instead of a new message. A refused edit gives the
+  text back rather than keeping it for a later retry: the refusal is about access, which does
+  not come back by retrying, and the person still sees their file; a new join asks again.
 - Slice 22 (no decision record: each fix makes a reading agree with what the code
   already said). A silent report is lost on systemd's word, not on a longer timeout: the
   copy may block the report's write for any time, and a longer wait would only delay a
@@ -2104,7 +2178,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
-| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 23 (the case left after SPEC-487 CHN-001: an achieved goal) |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
@@ -2113,11 +2187,11 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | fixed (slice 21) |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 22 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 22 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 22 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 13 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | fixed (slice 22) |
+| E7 | move | An unreadable move mark does nothing and stays | low | fixed (slice 22) |
+| QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 23 |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 23 |
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
 | P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
@@ -2240,7 +2314,8 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 
 ### Slice 22 (2026-11-14)
 
-- **Tests failing before the fix** (the six new tests, run against a stub that answered
+- **Tests failing before the fix** (the five new tests and the changed `installed` test,
+  run against a stub that answered
   nothing for the helper's service): a silent helper whose service still ran read
   `lost`; `FileMoveHelper` asked nothing of systemd and could not name the service; a
   mark of bytes that are not text left the task `stopped (server lost)`; a second close
@@ -2269,3 +2344,7 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** A real systemd (the tests answer as `systemctl show` does, with a fake
   `systemctl`); a real copy that holds the helper's report back for a minute.
+- **Review, round 2** (the same session, head `e417e1c6c`): approve; two nits in the spec
+  ("the diff adds five tests", and a line of MOV-001 over the wrap), answered in slice 23.
+- **Delivery.** Pull request #1277 merged into `dev` at `fb9f12a60`, the approved head
+  `e417e1c6c` squashed, whose own Yulius CI run passed.

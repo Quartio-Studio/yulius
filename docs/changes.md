@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Home, the project tabs and the sidebar count a task the same way (SPEC-483 slice 23, task
+  #465). A paused task that had been waiting for a person was counted as needing you while
+  the sidebar showed it Paused under Working; a new project's onboarding task waiting for
+  Start onboarding was listed but counted nowhere. A task whose goal is achieved while its
+  merge is armed is no longer Done: it reads "Waiting for checks or merge", a task chained
+  after it keeps waiting, and archiving it is refused instead of ending the merge unseen.
+  And in the Editor, a change refused because you may no longer change the folder makes the
+  file read-only and says so, instead of leaving it "Unsaved" for good.
 - A move whose helper has said nothing for a minute is no longer taken for a stopped move
   while systemd says the helper still runs it (SPEC-483 slice 22, task #465). A copy that
   kept the disk busy could hold the helper's report back: the card offered to continue the
