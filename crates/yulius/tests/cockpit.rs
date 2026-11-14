@@ -4781,7 +4781,10 @@ async fn a_superagent_whose_process_cannot_be_ended_is_not_restarted() -> TestRe
 /// call (a task is changed by its owner only), and each change is audited with the Superagent.
 #[tokio::test]
 async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> TestResult {
-    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_app::ports::store_ext::{AutomationStore, CiStore};
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
     use yulius_domain::ids::UserId;
     use yulius_domain::task::{StopReason, TaskStatus};
 
@@ -4793,6 +4796,7 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
             .ok_or("alice's cockpit token")?;
     let running =
         support::seed_task(&f.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t-run", "tok-run").await?;
     let stopped = support::seed_task(
         &f.h,
         "t-stop",
@@ -4814,8 +4818,20 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     )
     .await?;
     let said = |record: &Value| record.to_string();
+    let pause_of = |task: yulius_domain::ids::TaskId| {
+        let f = &f;
+        async move {
+            let record = f.h.store.task(&task).await?.ok_or("task")?;
+            let summary = serde_json::to_value(f.h.app.task_summary(&record).await?)?;
+            Ok::<_, Box<dyn std::error::Error>>(summary["pause"].clone())
+        }
+    };
+    // Every changing call and whether it went through, in order: the audit must say the same.
+    let mut expected: Vec<(&str, bool)> = Vec::new();
 
-    // Continue: a running task says what to do first; a stopped one goes through Continue.
+    // Continue: a running task says what to do first, a waiting one too; a stopped one goes
+    // through Continue (here to the start, which needs the repository's clone: the page's
+    // answer).
     let (refused, is_error) = cockpit_tool(
         &f,
         &token,
@@ -4824,10 +4840,24 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     )
     .await?;
     assert!(
-        is_error && said(&refused).contains("stop it first"),
+        is_error && said(&refused).contains("stop it first (task_stop), then restart it"),
         "{refused}"
     );
-    // (Here Continue reaches the start, which needs the repository's clone: the page's answer.)
+    expected.push(("task_restart", false));
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_restart",
+        json!({"number": prepared.number}),
+    )
+    .await?;
+    assert!(
+        is_error
+            && said(&refused).contains("task_start_now starts it now")
+            && !said(&refused).contains("task_stop"),
+        "{refused}"
+    );
+    expected.push(("task_restart", false));
     let (continued, is_error) = cockpit_tool(
         &f,
         &token,
@@ -4839,21 +4869,32 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
         is_error && said(&continued).contains("not cloned"),
         "{continued}"
     );
-    // Pause and resume, with the page's refusals.
+    expected.push(("task_restart", false));
+
+    // Pause and resume: the running task's pause is stored and shown, then gone.
     let (refused, is_error) =
         cockpit_tool(&f, &token, "task_pause", json!({"number": prepared.number})).await?;
     assert!(
         is_error && said(&refused).contains("Only a running task can be paused"),
         "{refused}"
     );
+    expected.push(("task_pause", false));
+    let (paused, is_error) =
+        cockpit_tool(&f, &token, "task_pause", json!({"number": running.number})).await?;
+    assert!(!is_error, "{paused}");
+    expected.push(("task_pause", true));
+    assert_eq!(pause_of(running.id.clone()).await?["by"], "person");
     let (resumed, is_error) = cockpit_tool(
         &f,
         &token,
         "task_unpause",
-        json!({"number": prepared.number}),
+        json!({"number": running.number}),
     )
     .await?;
     assert!(!is_error, "{resumed}");
+    expected.push(("task_unpause", true));
+    assert!(pause_of(running.id.clone()).await?.is_null());
+
     // Start now.
     let (started, is_error) = cockpit_tool(
         &f,
@@ -4864,6 +4905,7 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     .await?;
     assert!(!is_error, "{started}");
     assert_ne!(started["task"]["status"], "prepared", "{started}");
+    expected.push(("task_start_now", true));
     // A task's delivery, as its page shows it.
     let (delivery, is_error) = cockpit_tool(
         &f,
@@ -4876,13 +4918,19 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     assert!(delivery["next_actions"].is_array(), "{delivery}");
 
     // The person's rights at the call: a task is changed by its owner only.
-    for tool in ["task_restart", "task_pause", "task_start_now"] {
+    for tool in [
+        "task_restart",
+        "task_pause",
+        "task_unpause",
+        "task_start_now",
+    ] {
         let (refused, is_error) =
             cockpit_tool(&f, &token, tool, json!({"number": carols.number})).await?;
         assert!(
             is_error && said(&refused).contains("@carol"),
             "{tool}: {refused}"
         );
+        expected.push((tool, false));
     }
     assert_eq!(
         f.h.store.task(&carols.id).await?.ok_or("task")?.status,
@@ -4898,17 +4946,57 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     .await?;
     assert!(!is_error, "{delivery}");
 
-    // CI and CD.
+    // CI: the runs are read, a queued run is cancelled, a run that is not there is not found.
     let (ci, is_error) = cockpit_tool(&f, &token, "ci_runs", json!({})).await?;
     assert!(!is_error, "{ci}");
     assert_eq!(ci["runs"], json!([]), "{ci}");
-    for tool in ["ci_run", "ci_rerun", "ci_cancel"] {
+    let now = f.h.app.now();
+    f.h.store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: "run-queued".into(),
+                sandbox_id: sid(),
+                reference: CiRef::PullRequest(7),
+                sha: "a".repeat(40),
+                source: GateSource::ProjectConfig,
+                state: RunState::Queued,
+                reason: None,
+                requested_by: "yulius".into(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: now,
+                started_at: None,
+                ended_at: None,
+            },
+            &[],
+        )
+        .await?;
+    let (read, is_error) =
+        cockpit_tool(&f, &token, "ci_run", json!({"run_id": "run-queued"})).await?;
+    assert!(!is_error, "{read}");
+    assert_eq!(read["state"], "queued", "{read}");
+    let (cancelled, is_error) =
+        cockpit_tool(&f, &token, "ci_cancel", json!({"run_id": "run-queued"})).await?;
+    assert!(!is_error, "{cancelled}");
+    expected.push(("ci_cancel", true));
+    assert_eq!(
+        f.h.store.ci_run("run-queued").await?.ok_or("run")?.state,
+        RunState::Cancelled
+    );
+    for tool in ["ci_rerun", "ci_cancel"] {
         let (refused, is_error) = cockpit_tool(&f, &token, tool, json!({"run_id": "nope"})).await?;
         assert!(
             is_error && said(&refused).to_lowercase().contains("not found"),
             "{tool}: {refused}"
         );
+        expected.push((tool, false));
     }
+    let (refused, is_error) = cockpit_tool(&f, &token, "ci_run", json!({"run_id": "nope"})).await?;
+    assert!(is_error, "{refused}");
+
+    // CD: the state is read; production is a person's; dev goes to the deploy (which needs the
+    // repository's clone here).
     let (cd, is_error) = cockpit_tool(&f, &token, "cd_status", json!({})).await?;
     assert!(!is_error, "{cd}");
     let (refused, is_error) =
@@ -4917,23 +5005,49 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
         is_error && said(&refused).contains("only a person deploys production"),
         "{refused}"
     );
+    expected.push(("cd_deploy", false));
+    let (dev, is_error) =
+        cockpit_tool(&f, &token, "cd_deploy", json!({"environment": "dev"})).await?;
+    assert!(
+        is_error && said(&dev).contains("not cloned"),
+        "dev goes to the deploy: {dev}"
+    );
+    expected.push(("cd_deploy", false));
     let (variables, is_error) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
     assert!(!is_error, "{variables}");
 
-    // Every change is audited with the Superagent, refused ones too; a read is not.
-    use yulius_app::ports::store::AuditStore;
-    use yulius_app::ports::store_ext::AutomationStore;
-    let tools: Vec<(String, bool)> =
+    // One audit entry per changing call, refused ones too, in order, with what it was about;
+    // none for a read. The actor is the Superagent.
+    let entries: Vec<Value> =
         f.h.store
             .audit_details("s1", "superagent.tool", 200)
             .await?
             .iter()
-            .filter_map(|detail| {
-                let detail: Value = serde_json::from_str(detail).ok()?;
-                assert_eq!(detail["via"], "cockpit", "{detail}");
-                Some((detail["tool"].as_str()?.to_owned(), detail["ok"].as_bool()?))
-            })
+            .rev()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
             .collect();
+    let audited: Vec<(&str, bool)> = entries
+        .iter()
+        .filter_map(|detail: &Value| Some((detail["tool"].as_str()?, detail["ok"].as_bool()?)))
+        .collect();
+    assert_eq!(audited, expected, "{entries:?}");
+    assert!(
+        entries.iter().all(|detail| detail["via"] == "cockpit"),
+        "{entries:?}"
+    );
+    assert_eq!(entries[0]["task"], json!(running.number), "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|detail| detail["tool"] == "ci_cancel" && detail["run"] == "run-queued"),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|detail| detail["tool"] == "cd_deploy" && detail["environment"] == "dev"),
+        "{entries:?}"
+    );
     assert!(
         f.h.store
             .automation_audit("s1", 200)
@@ -4943,34 +5057,6 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
             .all(|entry| entry.actor == "cockpit:alice"),
         "the actor is the Superagent"
     );
-    for expected in [
-        ("task_restart", false),
-        ("task_pause", false),
-        ("task_unpause", true),
-        ("task_start_now", true),
-        ("ci_rerun", false),
-        ("ci_cancel", false),
-        ("cd_deploy", false),
-    ] {
-        assert!(
-            tools
-                .iter()
-                .any(|(tool, ok)| (tool.as_str(), *ok) == expected),
-            "{expected:?} is not audited: {tools:?}"
-        );
-    }
-    for read in [
-        "task_delivery",
-        "ci_runs",
-        "ci_run",
-        "cd_status",
-        "variables_list",
-    ] {
-        assert!(
-            !tools.iter().any(|(tool, _)| tool == read),
-            "{read}: {tools:?}"
-        );
-    }
     Ok(())
 }
 

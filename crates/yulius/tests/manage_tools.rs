@@ -584,6 +584,14 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "sandbox_task_update",
         "sandbox_task_message",
         "sandbox_task_stop",
+        // The changing ones of the person's project tools (SPEC-487).
+        "task_restart",
+        "task_pause",
+        "task_unpause",
+        "task_start_now",
+        "ci_rerun",
+        "ci_cancel",
+        "cd_deploy",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
