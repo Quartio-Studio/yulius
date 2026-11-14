@@ -3276,3 +3276,24 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Delivery.** Pull request #1274 merged into `dev` at `e310b08b6` (the approved head
   with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
   passed.
+
+### Slice 21 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice21/before.log`): with a person's
+  keystroke from before the refusal the terminal never said that the session was left to
+  them (the compaction was typed), and no message could be tried between `/compact` and
+  its Enter (nothing marked that moment).
+- **Tests failing without their fix** (`target/audit/slice21/mutate.py`, `mutations.log`, 4
+  cases, each failed its test): a draft from before the refusal not keeping `/compact`
+  out; `/compact` not holding the typing mark; the goal's typist not holding it; a
+  message not asking for it.
+- **Gate.** `scripts/dev ci` at `3d4c7877d`: exit 0;
+  `4337 tests run: 4337 passed (1 slow), 17 skipped` (`target/audit/slice21/gate.log`);
+  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
+  passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real Claude Code prompt box with a real draft (the test records a
+  keystroke; the fake agent has no box); the line that wakes a compacted session with a
+  draft in the box (the same function and rule as `/compact`); a typing mark that stays
+  set for more than 5 s (Yulius's line is then typed all the same).
