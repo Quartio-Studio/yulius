@@ -1131,7 +1131,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
 - [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
 - [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing (merged, #1283)
-- [ ] Slice 27: the repository's own instructions deliver, specify and describe the code as it is
+- [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is
 
 ## Acceptance criteria
 
@@ -2819,3 +2819,24 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   the approved head squashed.
 - **Not tested.** An agent's reading of the new texts (the tests read the texts, not a model's
   behaviour).
+
+### Slice 27 (2026-11-14)
+
+- **Tests failing before the fix**: the spec template (old head, old sections) failed
+  `validate_spec` with the missing frontmatter and six missing sections; the check's unit test
+  failed for want of `delivery_instruction_errors`; the Git page's sentences named "the
+  integration environments" a profile without any lacks.
+- **Tests failing without their fix** (`target/audit/slice27/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): the template's old head; the template without "Test plan"; the
+  check letting `gh pr merge` or a self-merge through; `git.md` telling to merge by hand again
+  (the repository check refuses it, which also shows the check runs); the Git page naming
+  environments it lacks.
+- **Generated skill copies.** `apm install` (apm-cli 0.35.1, in a virtual environment) refused
+  to overwrite the old copies it had no record of; they were moved aside
+  (`target/audit/slice27/apm-aside/`) and installed again; only the four content hashes of
+  `apm.lock.yaml` were kept (the newer apm also renamed a target).
+- **Gate.** `scripts/dev ci` at `af88f6eb1`: exit 0; `4374 tests run: 4374 passed (1 slow), 17
+  skipped` (`target/audit/slice27/gate.log`); e2e `git.e2e.ts` and `cd.e2e.ts`: 32 passed
+  (`e2e.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** An agent following the rewritten instructions (the check reads the wording).
