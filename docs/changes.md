@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Code nothing used is gone (SPEC-483 slice 25, task #465): task events, a fail reason and a
+  start timeout nothing produced, API contract items, domain and store helpers only their own
+  tests called, the message inbox readers (nothing writes messages since SPEC-028), "rotate
+  now" without a subscription, the start-up clean-up of workflows seeded before the catalog
+  in October, and unused Cargo features. Nothing behaves differently. A CD run's
+  `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`) is now documented.
 - Previews pass pages through as the dev server sends them (SPEC-483 slice 24, task #465).
   The preview proxy appended a script to every page for a framed browser panel that no longer
   exists, and fetched every page uncompressed for it. Pages now keep their compression and

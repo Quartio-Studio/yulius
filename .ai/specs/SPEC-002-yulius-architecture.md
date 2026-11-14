@@ -141,10 +141,12 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
   - Absolute `localhost` URLs inside page bodies or scripts are not rewritten (not done: body
     rewriting is fragile). Apps should use relative URLs or their dev server's proxy, as on any
     remote dev box.
-- *Cookies in iframes*:
+- *Cookies*:
   - Preview origins are subdomains of the Yulius host, so they are **same-site** with Yulius.
-    The iframe is therefore not a third-party context, and its cookies work under third-party
-    cookie blocking (Safari ITP, Firefox TCP, Chrome).
+    The handshake's redirects between Yulius and a preview are therefore same-site navigations,
+    and the grant cookie works under third-party cookie blocking (Safari ITP, Firefox TCP,
+    Chrome). (Written for the panel's frames, which ADR-15 removed; SPEC-483 slice 25 reworded
+    it.)
   - `sslip.io` is **not** on the Public Suffix List (checked 2026-10-09), so the site is
     `sslip.io`. For the same reason a bare `localhost` does not work for local development
     (`*.localhost` hosts are sites of their own); use `yulius.localhost`.
