@@ -1371,6 +1371,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command was sent with text left in the prompt box)".
 - **AC-125** A compaction is held and flagged; Yulius restarts; the new server (hold 3 s)
   takes the recovery up again and the task goes on (a second run).
+- **AC-126** A compaction is held for a key that left no text; a prompt hook for a
+  command reaches Yulius (the box is emptied, no turn starts): Yulius types its command,
+  and at that moment the task no longer reads Needs your action; the session is
+  compacted.
 - **AC-122** A reattached run that holds another person's servers and sits at a usage
   limit is restarted past the limit (a resume that continues the interrupted turn, no
   limit record left in a transcript).
@@ -1617,7 +1621,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `context_full::a_draft_typed_during_the_compaction_keeps_the_wake_up_out` (AC-124, the
   key at the pause point after the Enter, `LineEntered`);
   `context_full::a_command_sent_behind_real_text_continues_in_a_fresh_session` (AC-121)
-  and `context_full::a_compaction_held_at_a_restart_is_taken_up_again` (AC-125).
+  and `context_full::a_compaction_held_at_a_restart_is_taken_up_again` (AC-125);
+  `context_full::a_hold_whose_box_was_emptied_without_a_key_ends_its_flag` (AC-126, the
+  hook sent by the test with the run's own token).
 
 ## Decisions
 
@@ -1704,7 +1710,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the hold's: it ends with it on every way out, and a restart of Yulius does not turn a
   hold into "gave up". Yulius's own Enter empties the box in what Yulius knows, since a
   hook may not say so for a command; without that the very key the hold was for kept the
-  wake-up out after the compaction. The rule is not the message's rule (`box_held`: a person's keys, and a
+  wake-up out after the compaction. The review went to a fourth look at one change,
+  against the rule of three rounds, as slice 17's did: the third round's only finding
+  above a nit was a regression of this slice's own second-round fix, with its fix named
+  by the reviewer in two lines; a split would have delivered the regression or held back
+  the rest. The rule is not the message's rule (`box_held`: a person's keys, and a
   minute after their last one): a line for a full session also stays behind a message of
   Yulius's own whose Enter failed, and does not wait for a person who is only near.
   The goal's typist keeps its own question (did a person type since the run was
@@ -3441,3 +3451,17 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   real text is taken from how it reads slash commands, at the start of the input only);
   the hold's ten minutes; a run that ends, or a terminal that never goes quiet, during a
   hold (the flag's end there is the same line as when its person types).
+- **Review, round 3** (the same session, head `f687673ac`): request changes. Every finding
+  of round 2 fixed; one minor, "a regression of the R2-2 fix": the flag of a hold was
+  ended before the command only when the hold had run out, not when the box was emptied
+  without a key. It ends whenever the hold's flag is up now (AC-126). The reviewer's own
+  test for it (the text sent by an Enter nobody typed) could not fail: that prompt starts
+  a turn, which ends every flag. The test empties the box by a command's prompt hook
+  instead, which starts none, and the mutation fails it. Nits: the comment and TYP-001
+  say that Claude Code may run no prompt hook for a command (2.1.292 ran none for
+  `/compact`); the comment names the Enter a TUI may drop.
+- **Tests failing without their fix, after round 3** (`mutations4.log`, 20 cases, each
+  failed its test): the nineteen above, and a hold whose box was emptied without a key
+  keeping its flag while Yulius compacts.
+- **Gate after it.** `scripts/dev ci` at `26c79dcba`: exit 0;
+  `4347 tests run: 4347 passed (1 slow), 17 skipped` (`target/audit/slice21/gate4.log`).
