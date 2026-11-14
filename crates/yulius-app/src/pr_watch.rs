@@ -409,8 +409,10 @@ pub(crate) struct NewsFacts {
     /// Claude Code's queue holds something a turn's end hands on, or handed it on to a turn
     /// not seen yet (SPEC-471, SPEC-479).
     pub prompt_waits: bool,
-    /// Since when the session is idle as far as Yulius knows (ms): its last turn's end, or 0
-    /// while a turn runs.
+    /// Since when the session is idle (ms): its last turn's end, while the task reads idle.
+    /// 0 while the task works (a Stop that Yulius's gate blocked moves the turn's end too,
+    /// and its turn goes on), and for a run without hooks, whose turn ends Yulius reads from
+    /// the transcript only: no bound applies then, and the queue alone decides.
     pub idle_since_ms: i64,
     /// Now (ms).
     pub now_ms: i64,
@@ -528,7 +530,7 @@ impl App {
             // News typed whose turn is not waited for any longer (its bound ran out, or Claude
             // Code's queue handed it on) is due no longer: the list says so now, not at the
             // task's next event (SPEC-487 CHN-002).
-            let stale = self.pr_news_typed(&task.id);
+            let stale = self.pr_news_typed(&task);
             if stale.typed_ms > 0 && !stale.typed_pending() {
                 *runtime
                     .pr_news
@@ -675,8 +677,11 @@ impl App {
 
     /// What is known of news the watch typed into `task`'s session whose turn has not begun
     /// (the typed fields of [`NewsFacts`]; the rest is its default).
-    fn pr_news_typed(&self, task: &TaskId) -> NewsFacts {
-        let Some(runtime) = self.existing_runtime(task) else {
+    fn pr_news_typed(&self, task: &TaskRecord) -> NewsFacts {
+        let idle = task
+            .activity
+            .is_some_and(yulius_domain::task::Activity::is_idle);
+        let Some(runtime) = self.existing_runtime(&task.id) else {
             return NewsFacts::default();
         };
         let Some(news) = *runtime
@@ -686,17 +691,16 @@ impl App {
         else {
             return NewsFacts::default();
         };
-        // A turn runs while one began after the last end Yulius knows of.
-        let (began, ended) = (
-            runtime.turn_began_ms.load(Ordering::SeqCst),
-            runtime.turn_end_ms.load(Ordering::SeqCst),
-        );
         NewsFacts {
             typed_ms: news.typed_ms,
             in_queue: news.in_queue,
             // Asked only for news that is known to be queued.
             prompt_waits: news.in_queue && runtime.queue_may_hand_on(),
-            idle_since_ms: if began > ended { 0 } else { ended },
+            idle_since_ms: if idle {
+                runtime.turn_end_ms.load(Ordering::SeqCst)
+            } else {
+                0
+            },
             now_ms: self.now().0,
             ..NewsFacts::default()
         }
@@ -750,7 +754,7 @@ impl App {
             return true;
         }
         let store = &self.deps.store;
-        let typed = self.pr_news_typed(&task.id);
+        let typed = self.pr_news_typed(task);
         let pull = record.and_then(|record| {
             let merged = merged_elsewhere || past_merge(&record.stage);
             (merged || record.stage == DeliveryStage::PrOpen)
@@ -1539,13 +1543,17 @@ mod tests {
         };
         assert!(news_due(&queued(true), &told));
         assert!(!news_due(&queued(false), &told), "handed on and seen");
-        // Once the session is idle, a hand-over whose turn never shows waits two minutes.
+        // Once the task reads idle, a hand-over whose turn never shows waits two minutes from
+        // its last turn's end. While it works, however long ago a Stop came (one that
+        // Yulius's gate blocked moves the turn's end and the turn goes on), and for a run
+        // whose turn ends are not known, the queue alone decides (`idle_since_ms` 0).
         let idle_since = |idle_since_ms| NewsFacts {
             idle_since_ms,
             ..queued(true)
         };
         assert!(news_due(&idle_since(38 * minute + 1), &told));
         assert!(!news_due(&idle_since(38 * minute), &told));
+        assert!(news_due(&idle_since(0), &told));
         // What Claude Code's queue holds says nothing about news not read in it: news typed
         // into an idle session, or queued news whose record was not read yet (time decides).
         let unread = |now_ms| NewsFacts {

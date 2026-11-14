@@ -238,7 +238,11 @@ the function the web UI's route calls, with the person's rights checked at the c
   window after the news was typed, the restart before the armed merges are restored, what
   `after_all_tasks` named. Round 2: news typed while a turn runs, an update's hold, two
   readings of the delivery in one decision (its load run failed the CHN-002 test 3 of 96).
-  Round 3: an entry that leaves Claude Code's queue alone before the news. Not filed as an
+  Round 3: an entry that leaves Claude Code's queue alone before the news. Round 4 approved
+  that head with one low note and two nits, which the commit after it answers: the two
+  minutes of an idle session count only while the task reads idle (a Stop that Yulius's gate
+  blocked moves the turn's end and the turn goes on), and two consequences are recorded in
+  ADR-0328. Not filed as an
   issue: an armed merge's outcome is kept in memory only (older code); after a restart the
   watch still tells a green head that no merge is armed and why.
 - **Not tested:** the watch telling a merge to a run reattached after a restart of the

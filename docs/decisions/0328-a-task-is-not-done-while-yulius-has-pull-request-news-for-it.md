@@ -109,6 +109,13 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   the spent mark away and lets the chains go on.
 - News typed in the instant before a restart of the server is not remembered as "typed":
   the task may read Done until its turn begins.
+- A turn Claude Code starts by itself in the third of a second between the watch's stamp and
+  its Enter (a background shell's notification) looks like the news' own turn: its prompt
+  hook ends the mark, and the news waits in the queue behind it with no mark to keep. Times
+  cannot tell the two turns apart; the task may read Done at that turn's end until the news'
+  turn begins.
+- For a run without hooks the end of a turn is read from the transcript only, so the two
+  minutes of an idle session do not apply to queued news: the queue alone decides.
 - A rule of 64 tasks reads each named task once per pass, and a reading may ask GitHub (an
   idle task with an open pull request and no armed merge); passes run at every turn's end in
   the sandbox and every minute.
