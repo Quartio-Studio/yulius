@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   a playground's guest stops, archives and deletes only their own tasks; a refused Start
   onboarding pushes no first commit, and an onboarding task that never ran goes to whoever
   starts onboarding.
+- The CLI's sign-in has one contract (SPEC-483 slice 32, task #465). The server and `yulius
+  login` each defined the device sign-in's answers, the server's state a free word the CLI might
+  not read; both now use one definition, and a state the CLI does not know reads as expired.
+- One reader of RFC 3339 time (SPEC-483 slice 31, task #465). GitHub's, the transcripts', the
+  imports' and the app's readers took different inputs (GitHub's took 31 February); every crate
+  now reads timestamps one way, and converts dates with the domain's calendar.
 - A task whose work is not finished no longer reads Done (SPEC-491, task #474,
   [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
   Task #465 read Done, and the tasks chained after it started, while its pull request

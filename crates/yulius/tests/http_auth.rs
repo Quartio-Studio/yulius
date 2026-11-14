@@ -15,6 +15,7 @@ use yulius_app::auth::{
 use yulius_app::error::AppError;
 use yulius_app::model::{SandboxRecord, UserRecord};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore, UserStore};
+use yulius_contracts::api::auth::DeviceStatus;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::TaskStatus;
@@ -1006,7 +1007,7 @@ async fn a_second_device_approval_leaves_no_token() -> TestResult {
     );
     assert_eq!(live_tokens(&h, &bob).await?, bob_before);
     let got = h.app.device_poll(&grant.device_code).await?;
-    assert_eq!(got.status, "approved");
+    assert_eq!(got.status, DeviceStatus::Approved);
     assert!(
         got.token.is_some(),
         "the first approval's token reaches the CLI"
@@ -1081,7 +1082,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     .await?;
     assert_eq!(approve.status, StatusCode::NO_CONTENT);
     let got = h.app.device_poll(&consumed.device_code).await?;
-    assert_eq!(got.status, "approved");
+    assert_eq!(got.status, DeviceStatus::Approved);
 
     h.app.purge_device_grants().await?;
     assert!(
@@ -1092,11 +1093,11 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     );
     assert_eq!(
         h.app.device_poll(&pending.device_code).await?.status,
-        "pending"
+        DeviceStatus::Pending
     );
 
     h.clock.0.fetch_add(
-        i64::from(pending.expires_in_s) * 1000,
+        i64::try_from(pending.expires_in_s)? * 1000,
         std::sync::atomic::Ordering::SeqCst,
     );
     h.app.purge_device_grants().await?;
@@ -1108,7 +1109,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     );
     assert_eq!(
         h.app.device_poll(&pending.device_code).await?.status,
-        "expired"
+        DeviceStatus::Expired
     );
     Ok(())
 }

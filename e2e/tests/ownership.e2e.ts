@@ -69,6 +69,8 @@ test("someone else's task is archived from the sidebar and deleted from its menu
   await expect(screen.getByText('Task #13 archived.')).toBeVisible();
   await expect(done).toBeHidden();
   const stopped = browser.locator('.task-row:has-text("Payment webhook")');
+  // Its menu is built from the task the page holds: wait until it shows this one as @anna-q's.
+  await expect(browser.locator('.task-row:has-text("Payment webhook") .task-owner')).toBeVisible();
   await stopped.hover();
   await stopped.getByRole('button', 'Task actions').click();
   await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task: request control to do this')).toBeDisabled();
@@ -88,8 +90,9 @@ test("Archive all leaves other people's Done tasks", async ({ app, browser, scre
   await touchTask(browser, 'sb_studio', 13, { owner: { login: 'anna-q' } });
   const theirs = browser.locator('.task-row:has-text("Improve the code")');
   await firstShown(theirs);
-  // The sidebar knows it is anna-q's before Archive all is pressed.
-  await expect(browser.locator('.task-row:has-text("Improve the code") .task-owner[title="@anna-q owns this task"]')).toBeVisible();
+  // The page takes the Done tasks it shows as someone else's when the button is pressed: wait until
+  // it shows this one as @anna-q's (it was archived when the change came after the press).
+  await expect(browser.locator('.task-row:has-text("Improve the code") .task-owner')).toBeVisible();
   const all = screen.getByRole('button', 'Archive all');
   await expect(all).toHaveAttribute('title', 'Archive your Done tasks');
   await all.click();
@@ -104,6 +107,8 @@ test('control is asked for and the request withdrawn from the task menu in the s
   await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
   const row = browser.locator('.task-row:has-text("Checkout API")');
   await firstShown(row);
+  // The menu is built from the task the page holds: wait until it shows this one as @anna-q's.
+  await expect(browser.locator('.task-row:has-text("Checkout API") .task-owner')).toBeVisible();
   const menu = async () => { await row.hover(); await row.getByRole('button', 'Task actions').click(); };
   await menu();
   await screen.getByRole('menuitem', /^Request control/).click();
