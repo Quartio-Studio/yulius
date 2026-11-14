@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- One dispatch of the Superagent's tools (SPEC-483 slice 33, task #465). The Yulius MCP and the
+  remote MCP each kept the same 18 project tools and the protocol handshake; a tool added to one
+  only would have been listed and answered "unknown tool". The device sign-in's polling code is
+  no longer printed in debug output.
 - The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
   [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
   A request to create, change, message or stop a task in another sandbox ended after 4 minutes,
