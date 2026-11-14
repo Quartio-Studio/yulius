@@ -926,23 +926,33 @@ impl App {
         // Claude Code holds in its queue for the session, which a resumed session does not get
         // back: a prompt entered while this turn ran, by its person or by Yulius for one. While
         // one waits the session stays, is answered as on a subscription that stays, and moves
-        // at a later turn's end (SPEC-479 SWQ-001). Asked after the same read.
-        let (busy, prompt_waits) =
-            if matches!(decision.0, Decision::Switch { .. }) && !self.switch_cooling(&task.id) {
-                let prompts_before = self.prompts_passed(&task.id);
-                self.await_transcript_read(&task.id).await;
-                let busy = self.shells_running_now(&task.id).await;
-                crate::race::reached(
-                    crate::race::Point::SwitchProbed,
-                    std::path::Path::new(task.id.as_str()),
+        // at a later turn's end (SPEC-479 SWQ-001). Asked after the same read. A look at the
+        // background work that gives no answer counts as work running, as for everyone who
+        // asks before a session is ended (SPEC-483 SWT-001).
+        let (busy, prompt_waits) = if matches!(decision.0, Decision::Switch { .. })
+            && !self.switch_cooling(&task.id)
+        {
+            let prompts_before = self.prompts_passed(&task.id);
+            self.await_transcript_read(&task.id).await;
+            let work = self.background_work_now(&task.id).await;
+            if work.is_none() {
+                tracing::info!(
+                    task = %task.id,
+                    "the session is not moved to another subscription at this turn's end: its background work could not be told"
                 );
-                (
-                    busy,
-                    self.prompt_waits_for_turns_end(&task.id, prompts_before),
-                )
-            } else {
-                (false, false)
-            };
+            }
+            let busy = work != Some(false);
+            crate::race::reached(
+                crate::race::Point::SwitchProbed,
+                std::path::Path::new(task.id.as_str()),
+            );
+            (
+                busy,
+                self.prompt_waits_for_turns_end(&task.id, prompts_before),
+            )
+        } else {
+            (false, false)
+        };
         // A session that works on after this boundary (a gate's block, its goal) and runs an
         // older Claude Code than runs get now restarts on the newer one here, as a move to
         // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's

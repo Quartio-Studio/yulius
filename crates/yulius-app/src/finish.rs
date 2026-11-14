@@ -1473,12 +1473,6 @@ impl App {
         }
     }
 
-    /// Whether the task's agent has background work running right now: a fresh probe of its
-    /// shells, or background agents its last turn end said it waits for.
-    pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
-        self.background_work_now(task_id).await == Some(true)
-    }
-
     /// Whether the task's last turn end waits for background agents, or its transcript names
     /// live Monitors or agents launched or resumable and not ended (BGW-004, BGW-006).
     fn background_agents_now(&self, task_id: &TaskId) -> bool {
@@ -1493,8 +1487,9 @@ impl App {
     /// Whether anything of the task's agent runs in the background right now: background agents
     /// its last turn end said it waits for, live Monitors, agents launched or resumable and not
     /// ended (BGW-004, BGW-006), or shells a fresh probe finds (`yulius wait` alone does not
-    /// count, DSK-102). `None` when the probe gives no answer; a task without a live agent
-    /// process has none.
+    /// count, DSK-102). `None` when the probe gives no answer: who asks before ending or
+    /// restarting the session takes that as work running (SPEC-483 SWT-001). A task without a
+    /// live agent process has none.
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self.background_agents_now(task_id) {
             return Some(true);

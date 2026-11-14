@@ -109,3 +109,100 @@ async fn a_mark_that_cannot_be_read_still_brings_the_tasks_back() -> TestResult 
     assert_eq!((report.queued, report.from), (2, None));
     Ok(())
 }
+
+/// A process host that finds every run ended, cleanly, while Yulius was down.
+struct EndedHost;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::session::SessionHost for EndedHost {
+    async fn spawn(
+        &self,
+        _: &std::path::Path,
+        _: &str,
+        _: &str,
+        _: &yulius_app::ports::session::LaunchPlan,
+        _: &[u8; 32],
+        _: (u16, u16),
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
+        Err(yulius_app::error::AppError::Upstream(
+            "no spawn here".into(),
+        ))
+    }
+    async fn attach(
+        &self,
+        _: &std::path::Path,
+        _: &[u8; 32],
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
+        Err(yulius_app::error::AppError::Upstream(
+            "no attach here".into(),
+        ))
+    }
+    fn inspect(&self, _: &std::path::Path) -> yulius_app::ports::session::RunInspection {
+        yulius_app::ports::session::RunInspection::Exited(yulius_app::ports::session::RunExit {
+            code: Some(0),
+            signal: None,
+            spawn_failed: false,
+            usage: None,
+        })
+    }
+    fn terminate(&self, _: &std::path::Path) -> yulius_app::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+/// A task the old server left switching, and one it left running, each with a run that is found
+/// ended.
+async fn ended_while_down() -> Result<Harness, Box<dyn std::error::Error>> {
+    let h = harness_with(HarnessOptions {
+        session_host: Some(std::sync::Arc::new(EndedHost)),
+        configure: Some(Box::new(|config| config.max_live_sessions = 0)),
+        ..HarnessOptions::default()
+    })?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "app", "u-alice").await?;
+    for (task, status) in [
+        ("t-switching", TaskStatus::Switching),
+        ("t-left", TaskStatus::Running),
+    ] {
+        seed_task(&h, task, "s1", "u-alice", status, None).await?;
+        seed_live_attempt(&h, task, &format!("token-{task}")).await?;
+    }
+    Ok(h)
+}
+
+/// SPEC-483 SWT-002 (review, round 3): the server died while a task was switching, and the run
+/// that switch had asked to end is found ended at the next start. The switch was lost with the
+/// server: the task is lost to the restart, as one found with no run is, and a move brings it
+/// back. It is not closed as a task whose session left by itself is.
+#[tokio::test]
+async fn a_task_left_switching_whose_run_ended_is_lost_to_the_restart() -> TestResult {
+    let h = ended_while_down().await?;
+    drop(h.app.recover().await);
+    assert_eq!(status(&h, "t-switching").await?, LOST);
+    // The session of a running task left while Yulius was down: the task follows it.
+    assert_eq!(status(&h, "t-left").await?, TaskStatus::Closed);
+    for task in ["t-switching", "t-left"] {
+        let run = h
+            .store
+            .attempt(&AttemptId::parse(&format!("a-{task}"))?)
+            .await?;
+        assert_eq!(
+            run.ok_or("no run")?.exit_reason.as_deref(),
+            Some("exited"),
+            "{task}"
+        );
+    }
+
+    let moved = ended_while_down().await?;
+    let data = moved.app.config.data_dir.clone();
+    std::fs::write(
+        data.join(MOVE_PENDING),
+        r#"{"version":1,"from":"https://old.example","to":"https://new.example","at":1}"#,
+    )?;
+    drop(moved.app.recover().await);
+    assert_eq!(status(&moved, "t-switching").await?, TaskStatus::Queued);
+    assert_eq!(status(&moved, "t-left").await?, TaskStatus::Closed);
+    let report: MoveReport = serde_json::from_str(&std::fs::read_to_string(data.join(MOVED))?)?;
+    assert_eq!((report.queued, report.left, report.failed), (1, 0, 0));
+    Ok(())
+}
