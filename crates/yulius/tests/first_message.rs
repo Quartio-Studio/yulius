@@ -1189,6 +1189,9 @@ fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
             || async { stop_answered.exists() },
         )
         .await?;
+        // Not flagged inside the turn: the watch's time starts at the turn's end.
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        assert!(notices(&mut watch).iter().all(|n| !n.contains("goal")));
         wait_for("the flag", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
