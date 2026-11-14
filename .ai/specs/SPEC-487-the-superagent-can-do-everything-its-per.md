@@ -150,7 +150,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 1's documents: product, architecture, API, the decision and the changes log
 - [x] Slice 1's independent review answered test-first
 - [x] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
-- [ ] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
+- [x] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
 - [ ] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
 - [ ] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
 - [ ] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
@@ -421,3 +421,37 @@ the function the web UI's route calls, with the person's rights checked at the c
   (the goal's verdict "not met") and that an error then ended: the idle time still counts
   from that earlier Stop, so for the seconds until Claude Code hands the entry on, the
   two-minute bound may read as over.
+
+### Slice 3 (2026-11-14)
+
+- **Slice 2 is merged:** pull request #1273 into `dev` at `01793e80c`, whose Yulius CI run
+  passed (squash `dbc33d88f`). The two comment notes of its last review are this slice's first
+  commit.
+- **Tests and code:** the integration tests of the four tools, of `with_draft` and of the
+  close were written before the application code they call, and first run after it; the
+  store's two writes and their tests were written together. That each test fails without
+  the behaviour it names is shown by mutation instead: fifteen one-line mutants (the
+  compare of the old request, the unstarted rule, the queue's swap and its stored start,
+  the kept attachments, the owner check of an order, a close in the first turn, what `all`
+  takes, the stop order, the owner and the minute of `with_draft`, the audit's tasks), each
+  failed by a named test (`target/evidence/mutants-slice3.py`, `mutants-slice3.log`:
+  `survived=0`).
+- **Found by the tests while writing:** a draft typed seconds ago was typed over by
+  `with_draft` (the rule reads a fresh draft as a draft, not as "at the keyboard"): the
+  minute now holds for the owner too. A bulk stop started queued tasks only to stop them (a
+  cancelled task's slot went to the next one): waiting tasks are stopped first, and the
+  answer shows the order. A running task with no activity yet (its first turn) counted as
+  idle for a close: it is working, as the lists show it.
+- **The shared code keeps its other callers:** the Superagent, management, remote MCP,
+  Global Superagent, message and queued-message test files pass (159 tests), and the unit
+  tests of `yulius-app`, `yulius-domain`, `yulius-store` and `yulius-harness` (1341).
+- **Gate:** `scripts/dev ci` passed on `a614b0eaa` (4341 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice3.log`); the commit after it changes this
+  specification only.
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** a real Claude Code session calling the new tools, and its prompt box with
+  a real draft behind a pasted message (the fake agent echoes what it is sent as one prompt;
+  that Claude Code submits a draft and a paste behind it as one prompt is SPEC-480's own
+  finding, issue #1199); a bulk call of more than 100 tasks (`not_reached` is set by a
+  count); two orders of the same queue at the same moment (one transaction each; the second
+  reads the places the first wrote).
