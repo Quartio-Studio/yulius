@@ -160,7 +160,7 @@ async fn task_numbers_and_status_cas() -> R {
         .transition_task(
             &a.id,
             Some(TaskStatus::Starting),
-            TaskStatus::Failed(yulius_domain::task::FailReason::StartTimeout),
+            TaskStatus::Failed(yulius_domain::task::FailReason::SpawnError),
             None,
             Timestamp(31),
         )
