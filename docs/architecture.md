@@ -1697,7 +1697,15 @@ hold (`yulius-app/src/supertask.rs`,
 without a live run waits `queued` while its project has a pending supertask (only an earlier one
 counts, for a supertask). A supertask also waits while the project has a working task. Live runs
 are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
-the other. A held task's summary lists what it waits for (`held_by`).
+the other. A held task's summary lists what it waits for (`held_by`). A start that has to wait
+(the session limit, a supertask's or an update's hold) is kept with its task
+(`tasks.queued_start`: a new session or a resume, its prompt, a resume past a usage limit, the
+subscription a person chose), and `start_run` gives a queued task that start whoever starts it
+later; it is written with the change to `queued` and removed by the change out of it. A chosen
+subscription that could not take the task when its turn comes is given up, said in the task's
+terminal. A paused task's pause ends where its start is made or queued, so a start the full
+queue refuses leaves it for the pool's next round
+([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) QST-001).
 
 ```mermaid
 flowchart LR

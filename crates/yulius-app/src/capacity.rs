@@ -867,7 +867,8 @@ impl App {
                         self.supertask_holds.capacity_held();
                         return Resume::Waiting(None);
                     }
-                    self.end_pause(&task.id, "started").await;
+                    // The start ends the pause once it is made or waits in the queue
+                    // (`start_run`); one that is refused (the queue is full) leaves it open.
                     let start = match store.provider_sessions(&task.id).await {
                         _ if pause.kind == PauseKind::Prompt
                             && self.held_opening(&task.id).await =>
