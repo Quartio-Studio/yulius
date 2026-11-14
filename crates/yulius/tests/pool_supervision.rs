@@ -883,6 +883,149 @@ fn run_servers(run_dir: &str) -> Result<Vec<String>, Box<dyn std::error::Error>>
     Ok(names)
 }
 
+/// Bob: a second person, who may write the sandbox's repository (the stand-in for GitHub of the
+/// test says so) and has a GitHub token.
+async fn second_person(
+    app: &App,
+    admin: &UserId,
+) -> Result<UserRecord, Box<dyn std::error::Error>> {
+    let bob = UserRecord {
+        id: UserId::parse("u-bob")?,
+        github_login: Some("bob".into()),
+        display_name: "Bob".into(),
+        is_superadmin: false,
+        is_instance_admin: false,
+        ..app.deps.store.user(admin).await?.ok_or("admin")?
+    };
+    app.deps.store.insert_user(&bob).await?;
+    app.deps
+        .store
+        .save_github_token(
+            &yulius_app::model::GitHubTokenRecord {
+                user_id: bob.id.clone(),
+                access: app.deps.crypto.seal(b"token-bob")?,
+                refresh: None,
+                expires_at: None,
+                refresh_expires_at: None,
+            },
+            app.now(),
+        )
+        .await?;
+    Ok(bob)
+}
+
+fn ctx_of(user: UserRecord) -> AuthContext {
+    AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    }
+}
+
+/// The administrator's personal MCP server `fleet` (its input and id) and the sandbox's `docs`.
+async fn personal_and_shared_servers(
+    app: &Arc<App>,
+    admin: &AuthContext,
+    sandbox: &SandboxId,
+) -> Result<(McpServerInput, String), Box<dyn std::error::Error>> {
+    let mut fleet = mcp_input("fleet", "http");
+    fleet.scope = Some("instance".into());
+    fleet.audience = Some("personal".into());
+    let fleet_id = app
+        .create_mcp_server(admin, sandbox.as_str(), &fleet)
+        .await?
+        .id;
+    app.create_mcp_server(admin, sandbox.as_str(), &mcp_input("docs", "http"))
+        .await?;
+    Ok((fleet, fleet_id))
+}
+
+/// SPEC-483 RST-001: Yulius restarts while a run holds its owner's personal MCP server. The new
+/// server still knows it (the run directory says whose servers the run was started with): only
+/// the owner messages the session, and a hand-over restarts it with the new owner's servers,
+/// as before the restart (SPEC-332 MSC-009).
+#[test]
+fn a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = || FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let build = || {
+        let github = Arc::new(FakeGitHub::default());
+        github.set_perm("bob", "acme/pool", support::perms("write"));
+        build_with_github(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(),
+            github,
+        )
+    };
+    let first = runtime()?;
+    let (sandbox, admin, bob, id, run) = first.block_on(async {
+        let app = build()?;
+        let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
+        let bob = second_person(&app, &admin).await?;
+        let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
+        let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert_eq!(run_servers(&run.run_dir)?, ["docs", "fleet", "yulius"]);
+        Ok::<_, Box<dyn std::error::Error>>((sandbox, admin, bob, id, run))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build()?;
+        app.reconcile().await?;
+        assert_eq!(
+            app.deps.store.live_attempt(&id).await?.map(|a| a.id),
+            Some(run.id.clone()),
+            "the same run, reattached"
+        );
+        // Bob does not message the session that holds the administrator's server.
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: sandbox.clone(),
+            user: bob.id.clone(),
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: "cockpit:bob".into(),
+            detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+        };
+        let refused = app
+            .tool_task_message(&caller, &serde_json::json!({"task_id": id.as_str(), "text": "hi"}))
+            .await;
+        assert!(
+            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("MCP servers")),
+            "{refused:?}"
+        );
+        // Control passes to Bob: the run is resumed without the administrator's server.
+        let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        app.request_task_control(&ctx_of(bob.clone()), id.as_str())
+            .await?;
+        app.accept_task_control(&admin_ctx, id.as_str()).await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let resumed = app.deps.store.attempts(&id).await?.remove(1);
+        assert_eq!(run_servers(&resumed.run_dir)?, ["docs", "yulius"]);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-332 MSC-004, MSC-009: a person's task run gets their personal MCP server, a task an
 /// automation of theirs started does not, and a hand-over restarts a live run holding the previous
 /// owner's personal server, resuming it with the new owner's servers.
@@ -906,44 +1049,10 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             github,
         )?;
         let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
-        let bob = UserRecord {
-            id: UserId::parse("u-bob")?,
-            github_login: Some("bob".into()),
-            display_name: "Bob".into(),
-            is_superadmin: false,
-            is_instance_admin: false,
-            ..app.deps.store.user(&admin).await?.ok_or("admin")?
-        };
-        app.deps.store.insert_user(&bob).await?;
-        app.deps
-            .store
-            .save_github_token(
-                &yulius_app::model::GitHubTokenRecord {
-                    user_id: bob.id.clone(),
-                    access: app.deps.crypto.seal(b"token-bob")?,
-                    refresh: None,
-                    expires_at: None,
-                    refresh_expires_at: None,
-                },
-                app.now(),
-            )
-            .await?;
-        let ctx = |user: UserRecord| AuthContext {
-            user,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
-        let admin_ctx = ctx(app.deps.store.user(&admin).await?.ok_or("admin")?);
-        let mut fleet = mcp_input("fleet", "http");
-        fleet.scope = Some("instance".into());
-        fleet.audience = Some("personal".into());
-        let fleet_id = app
-            .create_mcp_server(&admin_ctx, sandbox.as_str(), &fleet)
-            .await?
-            .id;
-        app.create_mcp_server(&admin_ctx, sandbox.as_str(), &mcp_input("docs", "http"))
-            .await?;
+        let bob = second_person(&app, &admin).await?;
+        let admin_ctx = ctx_of(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        let ctx = ctx_of;
+        let (fleet, fleet_id) = personal_and_shared_servers(&app, &admin_ctx, &sandbox).await?;
 
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
         // Running, not only spawned: control waits while a launch settles its servers.

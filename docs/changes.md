@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
+  20, task #465). A session started with its owner's personal MCP servers is still known
+  as that after a restart, so a hand-over restarts it and the previous owner's credential
+  does not stay with the new owner. And a goal task whose `/goal` Yulius still had to type
+  when it restarted is flagged ("Yulius restarted before it set this task's goal") unless
+  Claude Code had recorded the goal, instead of idling without a goal and without a word.
 - A start that has to wait in the queue is no longer forgotten (SPEC-483 slice 19, task
   #465). When every session slot was taken, a task that was to resume past a usage limit,
   to get a held prompt typed, or to continue on a subscription a person chose was queued
