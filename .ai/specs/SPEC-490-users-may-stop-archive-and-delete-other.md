@@ -1,5 +1,5 @@
 ---
-yulius-task: 42c13112-2302-432f-ab26-08ee3802b561
+yulius-task: b712b6fe-5df1-41bd-bc2c-3067c851236a
 status: done
 ---
 
@@ -395,6 +395,11 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   runs (13 tests each) after that. `scripts/dev ci` at `7732a83a9`: exit 0, 4413 tests passed.
 - After round 2's fixes, at `f65ae5520`: `scripts/dev ci` exit 0, 4414 tests passed, 17
   skipped; `npx e2e run` 84 files passed, 1 skipped, 1042 tests passed, 1 skipped.
+- Delivery: slice 2 was delivered by Yulius task #475 from branch
+  `feat/475-deliver-task-473-s-second-slice-consent`, because task #473's own `delivery_merge`
+  is refused after its first pull request merged (issue #1299). That branch is `dev` at
+  `3523948f3` fast-forwarded to the approved head `df00249f3` (the same tree), plus this
+  spec's `yulius-task` line and this bullet.
 
 **Not tested here:** the desktop notification of a request (the browser's `Notification` is
 the same path the notification centre's other entries use, and its e2e covers only the bell
