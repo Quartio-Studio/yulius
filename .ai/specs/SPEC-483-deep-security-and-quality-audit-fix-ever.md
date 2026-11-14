@@ -2653,3 +2653,5 @@ slices follow.
   padded key, a new test refuses `Basic` beside a cookie, the evidence file says what was added
   at the move. Each new test fails without its behaviour (`mutations-r1.log`: the key read
   untrimmed; the extractor rewritten to fall back to the cookie).
+- **Gate after it.** `scripts/dev ci` at `368bd692b`: exit 0; `4383 tests run: 4383 passed (1
+  slow), 17 skipped` (`gate3.log`).
