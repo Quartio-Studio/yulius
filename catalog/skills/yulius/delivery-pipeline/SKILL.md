@@ -5,8 +5,9 @@ description: The one autonomous path every feature and fix takes, from a ready i
 
 # Delivery pipeline
 
-Every feature and fix takes the same path. There is no human acceptance step: the gates are
-machine-checked and the review is independent, so you decide, record why, and move on.
+Every feature and fix takes the same path. There is no human acceptance step: the merge tool
+checks CI, the review and freshness, and the independent review checks the rest, so you decide,
+record why, and move on.
 
 ```text
 ready issue → spec → slices (test first) → local gates → independent review → fixes
@@ -94,7 +95,9 @@ Small: one concern, about 400 changed lines outside tests and generated files; s
 into chained tasks, or, when its slices share one spec and one reviewer's context, into several
 pull requests of one task, each slice a step from the start. The body says what changes for whom, links the spec and the issue
 (`Fixes #N`), and lists the evidence: commands run and their results, the review verdict and its
-head. (In Yulius the pull request is opened for you when your work is ready.)
+head. (In Yulius the pull request is opened for you when your work is ready; its body names no
+issue, so add `Fixes #N` with `gh pr edit` when your task has one, or close the issue yourself
+after the merge.)
 
 ## 6. Merge on green
 
@@ -163,17 +166,17 @@ the issue through the merge, and add the entry to the changes log.
 6. Show that a regression test fails without the fix.
 7. A change of a wire format updates the golden fixtures and both sides.
 
-## Machine-checked gates (what "green" means)
+## What "green" means
 
-| Gate | Rule |
-| --- | --- |
-| Base | the pull request targets the integration branch, is not a draft |
-| Issue | it links exactly one ready issue |
-| Size | about 400 changed lines outside tests and generated files, or a recorded reason |
-| Tests | a behavior change changes a test; a bug fix starts with a failing test |
-| CI | the project gate passed on the exact head, on our own machines |
-| Review | an independent approval exists for the exact head, with no later changes requested |
-| Fresh | the branch is up to date with the integration branch |
+| Gate | Rule | Checked by |
+| --- | --- | --- |
+| Base | the pull request targets the integration branch, is not a draft | Yulius, which opens it |
+| Issue | it links exactly one ready issue | you and the review |
+| Size | about 400 changed lines outside tests and generated files, or a recorded reason | you and the review |
+| Tests | a behavior change changes a test; a bug fix starts with a failing test | you and the review |
+| CI | the project gate passed on the exact head, on our own machines | `delivery_merge` |
+| Review | an independent approval exists for the exact head, with no later changes requested | `delivery_merge` (`reviewed_head`) |
+| Fresh | the branch is up to date with the integration branch | `delivery_merge` |
 
 What we leave out on purpose: human approvals, paid GitHub rulesets and Actions minutes, module
 locks (claim paths and talk to the other task instead), and metrics dashboards.
