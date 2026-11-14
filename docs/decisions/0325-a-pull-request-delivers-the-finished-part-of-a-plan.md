@@ -5,7 +5,9 @@
 Accepted. Specified in [SPEC-484](../../.ai/specs/SPEC-484-task-plans-show-all-known-work-from-the.md);
 task #466. Amends SPEC-001 STP-006, STP-008, GIT-001 and DLV-008 and SPEC-002 ADR-19 ("every
 step is done" as a condition of the merge, the bound of 30 steps, the "too fine" nudge). Builds
-on [ADR-0269](0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md).
+on [ADR-0269](0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md). Amended by
+[0332](0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md): a task
+whose plan reads complete while its spec does not say `done` has work left and is not Done.
 
 ## Context
 

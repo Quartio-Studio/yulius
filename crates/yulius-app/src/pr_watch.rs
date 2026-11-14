@@ -5,7 +5,8 @@
 //! [`WATCH_EVERY`], this watch looks at each running task whose delivery has an open pull
 //! request, from Yulius's own records and clone, and types what needs the task into its session
 //! with the next step (PRN-001..PRN-006): a red run at its head or of a merge candidate holding
-//! it, a conflict with the integration branch, how its armed merge ended, its merge, and why a
+//! it, a conflict with the integration branch (of the run's head, or the branch's own where no
+//! run exists), how its armed merge ended, its merge, and why a
 //! green head is not merging, with "Hands off" while a candidate holds it. Each event is typed
 //! once, by key, kept in [`PR_NOTICES_FILE`] (PRN-007). A session quiet for
 //! [`CHECK_IN_AFTER_MS`] gets a check-in (PRN-008), and a pull request with no progress for
@@ -957,7 +958,14 @@ impl App {
             }
         }
         let head = own.map(|run| run.sha.clone());
-        if let Some(head) = &head
+        // Without a run at its head (a project without Yulius CI) the branch's pushed head is
+        // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
+        // to hear of it there too.
+        let conflict_head = match &head {
+            Some(head) => Some(head.clone()),
+            None => self.branch_head(task).await,
+        };
+        if let Some(head) = &conflict_head
             && hold == Hold::Free
             && self.conflicts(task, &sandbox, head).await
         {
@@ -1054,43 +1062,83 @@ impl App {
         Some(text)
     }
 
+    /// The head of the task's branch as last pushed (the clone's remote-tracking branch), which
+    /// is the pull request's head: the one the Git overview and `task_is_done` ask about, so the
+    /// watch tells the conflict they read (review of SPEC-491, nit 5). Local commits not pushed
+    /// yet are not the pull request's.
+    async fn branch_head(&self, task: &TaskRecord) -> Option<String> {
+        let worktree = task.worktree_path.as_deref().map(std::path::Path::new)?;
+        let branch = task.branch.as_deref()?;
+        self.deps
+            .git
+            .resolve_commit(worktree, &format!("refs/remotes/origin/{branch}"))
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Whether `head` conflicts with the integration branch as Yulius's clone last fetched it,
     /// with the repository's merge drivers (PRN-004); cached per head and integration commit.
+    /// No answer counts as no conflict: [`Self::local_conflict`] says when there is none.
     async fn conflicts(&self, task: &TaskRecord, sandbox: &SandboxRecord, head: &str) -> bool {
+        self.local_conflict(task, sandbox, head)
+            .await
+            .unwrap_or(false)
+    }
+
+    /// [`Self::conflicts`], `None` when the clone cannot answer: the task has no worktree (left
+    /// or never made), the integration branch or `head` is not in it, or Git failed.
+    pub(crate) async fn local_conflict(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        head: &str,
+    ) -> Option<bool> {
         // In the task's worktree, as delivery's own check: the merge drivers of the clone's old
         // checkout could be stale (review minor 11).
-        let Some(repo) = task.worktree_path.as_deref().map(std::path::PathBuf::from) else {
-            return false;
-        };
+        let repo = task
+            .worktree_path
+            .as_deref()
+            .map(std::path::PathBuf::from)?;
         let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
-        let Ok(Some(base)) = self.deps.git.resolve_commit(&repo, &integration).await else {
-            return false;
-        };
+        let base = self
+            .deps
+            .git
+            .resolve_commit(&repo, &integration)
+            .await
+            .ok()
+            .flatten()?;
         let pair = format!("{head}:{base}");
-        let Some(runtime) = self.existing_runtime(&task.id) else {
-            return false;
-        };
-        if let Some((checked, conflicts)) = runtime
-            .pr_conflict
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        // Kept with the task's run; a task this server has no run of is asked each time.
+        let runtime = self.existing_runtime(&task.id);
+        if let Some(runtime) = &runtime
+            && let Some((checked, conflicts)) = runtime
+                .pr_conflict
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
             && checked == pair
         {
-            return conflicts;
+            return Some(conflicts);
         }
-        let conflicts = match self.deps.git.merge_base(&repo, &base, head).await {
-            Ok(Some(since)) => matches!(
-                self.deps.git.adds_to(&repo, &base, &since, head).await,
-                Ok(None)
-            ),
-            _ => false,
+        let conflicts = match self.deps.git.merge_base(&repo, &base, head).await.ok()? {
+            // No common history: nothing to merge three ways, and no conflict to report.
+            None => false,
+            Some(since) => self
+                .deps
+                .git
+                .adds_to(&repo, &base, &since, head)
+                .await
+                .ok()?
+                .is_none(),
         };
-        *runtime
-            .pr_conflict
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
-        conflicts
+        if let Some(runtime) = runtime {
+            *runtime
+                .pr_conflict
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
+        }
+        Some(conflicts)
     }
 }
 

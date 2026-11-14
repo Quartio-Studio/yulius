@@ -138,16 +138,19 @@ impl FakeRemote for Origin {
     }
 }
 
+/// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
+/// whose spec does not say done is not Done, SPEC-491 DON-004).
 fn valid_spec(task: &str) -> String {
     format!(
-        "---\nyulius-task: {task}\nstatus: in-progress\n---\n# Change {task}\n\n\
+        "---\nyulius-task: {task}\nstatus: done\n---\n# Change {task}\n\n\
          ## Goal\nShip change {task}.\n\n\
          ## Context\nParallel tasks deliver at once.\n\n\
          ## Requirements\n- It lands.\n\n\
          ## Plan\n- [x] Write the spec\n- [x] Make the change\n\n\
          ## Acceptance criteria\n- It is merged.\n\n\
          ## Test plan\n- The merge train test.\n\n\
-         ## Decisions\n- None yet.\n"
+         ## Decisions\n- None yet.\n\n\
+         ## Evidence\n- The gate: passed.\n"
     )
 }
 
@@ -1951,6 +1954,179 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
         status().await,
         Some(TaskStatus::Chained),
         "merged: it starts"
+    );
+    Ok(())
+}
+
+/// SPEC-491 DON-001, DON-003 (14 November 2026: #474 was started "after #465" at 18:20:13, while
+/// #465's pull request #1287 had passed at its head and, since `dev` moved at 18:16:56,
+/// conflicted with it): a pull request whose head conflicts with the integration branch, as
+/// Yulius's own clone has it, is not tested, whatever its run said. Its task is not Done, the
+/// task chained after it waits, and the Git overview and the counts say so; once its agent
+/// merged the integration branch in and the new head passed, the chained task starts.
+#[tokio::test]
+async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("shared.txt", "mine\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    // A task that waits on a start rule naming it asks the same question.
+    let number = TaskStore::task(&f.h.store, &first)
+        .await?
+        .ok_or("t1")?
+        .number;
+    let ruled = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "after change 1", "start_rule": format!("#{number} done")})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(ruled.body["status"], "chained", "{}", ruled.body);
+    let ruled = TaskId::parse(ruled.body["id"].as_str().ok_or("id")?)?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` moves in the same file, and Yulius's clone learns of it.
+    f.advance_dev("shared.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+
+    app.advance_chains(&first).await;
+    app.advance_all_chains().await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its pull request cannot merge"
+    );
+    assert_eq!(
+        status_of_task(&f, &ruled).await,
+        Some(TaskStatus::Chained),
+        "`#1 done` is false"
+    );
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(
+        (&pr["checks"], &pr["conflicts"]),
+        (&json!("success"), &json!(true)),
+        "{}",
+        overview.body
+    );
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["running"], 1,
+        "in review, not Done: {}",
+        sandbox.body
+    );
+
+    // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
+    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
+    git(&worktree, &["add", "-A"])?;
+    git(&worktree, &["commit", "-q", "--no-edit"])?;
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("t1")?;
+    app.sync_steps_from_spec(&task).await?;
+    app.auto_open_pr(&first).await;
+    let merged_head = git(&worktree, &["rev-parse", "HEAD"])?;
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "feat/1-train"])?,
+        merged_head,
+        "pushed: {}",
+        f.wait(1, &worktree).await?
+    );
+    f.record_passed(&app, 1, &merged_head).await?;
+    app.advance_chains(&first).await;
+    app.advance_all_chains().await;
+    for waiting in [&next, &ruled] {
+        assert_ne!(
+            status_of_task(&f, waiting).await,
+            Some(TaskStatus::Chained),
+            "it merges cleanly and is tested: it starts"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-491 DON-001 (review of SPEC-491, M1): GitHub knows nothing of the union rule Yulius gives
+/// the changes log, so two pull requests that each add an entry at its top read "not mergeable"
+/// there while Yulius's own merge resolves them. Where the clone answers, it decides: the pull
+/// request is tested, the overview says no conflict, and the task chained after it starts.
+#[tokio::test]
+async fn github_s_flag_does_not_hold_a_pull_request_the_clone_merges() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` gains another entry at the top of the changes log: a union merge, not a conflict.
+    let other = tempfile::tempdir()?;
+    let clone = other.path().join("c");
+    git(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            f.integration,
+            f.origin.to_str().ok_or("path")?,
+            clone.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::write(
+        clone.join("CHANGES.md"),
+        "# Changes\n\n- another\n- first\n",
+    )?;
+    git(&clone, &["commit", "-q", "-am", "another entry"])?;
+    git(
+        &clone,
+        &["push", "-q", "origin", &format!("HEAD:{}", f.integration)],
+    )?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    // GitHub, which merges without that rule, calls it not mergeable.
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.mergeable = Some(false);
+    }
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(pr["conflicts"], false, "{}", overview.body);
+    app.advance_chains(&first).await;
+    assert_ne!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "the clone merges it: tested, and the chained task starts"
     );
     Ok(())
 }

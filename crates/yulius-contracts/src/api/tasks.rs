@@ -120,6 +120,11 @@ pub struct TaskSummary {
     /// open plan, an idle agent answered (SPEC-429).
     #[serde(default)]
     pub goal_unfinished: bool,
+    /// While the agent is idle: the task's spec says its work is not finished (`status` other
+    /// than `done` or `abandoned`), so work it declared is left, however complete its plan
+    /// reads: the task is not Done, whatever its pull request says (SPEC-491 DON-004).
+    #[serde(default)]
+    pub spec_unfinished: bool,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]
