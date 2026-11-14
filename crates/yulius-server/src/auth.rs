@@ -48,6 +48,17 @@ pub fn cookie_value(parts: &Parts, name: &str) -> Option<String> {
 /// An authenticated request.
 pub struct Auth(pub AuthContext);
 
+/// The token of an `Authorization` value `Bearer <token>`, trimmed; `None` for another scheme.
+pub(crate) fn bearer_token(value: &str) -> Option<&str> {
+    value.strip_prefix("Bearer ").map(str::trim)
+}
+
+/// The bearer token of a request's `Authorization` header: the one reader every route uses
+/// (SPEC-483 slice 29).
+pub(crate) fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    bearer_token(headers.get(header::AUTHORIZATION)?.to_str().ok()?)
+}
+
 impl FromRequestParts<AppState> for Auth {
     type Rejection = ApiError;
 
@@ -60,11 +71,9 @@ impl FromRequestParts<AppState> for Auth {
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
         {
-            let token = value
-                .strip_prefix("Bearer ")
-                .ok_or(AppError::Unauthenticated)?;
+            let token = bearer_token(value).ok_or(AppError::Unauthenticated)?;
             let ctx = app
-                .authenticate_bearer(token.trim())
+                .authenticate_bearer(token)
                 .await?
                 .ok_or(AppError::Unauthenticated)?;
             // A read-only token reads (SPEC-247 RMT-002): no state-changing method, and no
@@ -221,6 +230,28 @@ pub fn clear_cookie(secure: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 29 (QB8): one reader of `Authorization: Bearer` for every route.
+    #[test]
+    fn one_bearer_reader_takes_the_trimmed_token_of_a_bearer_header_only()
+    -> Result<(), axum::http::header::InvalidHeaderValue> {
+        let with = |value: &[u8]| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                header::AUTHORIZATION,
+                axum::http::HeaderValue::from_bytes(value)?,
+            );
+            Ok::<_, axum::http::header::InvalidHeaderValue>(bearer(&headers).map(str::to_owned))
+        };
+        assert_eq!(with(b"Bearer abc")?, Some("abc".to_owned()));
+        assert_eq!(with(b"Bearer  abc ")?, Some("abc".to_owned()));
+        assert_eq!(with(b"Basic abc")?, None);
+        assert_eq!(with(b"Bearerabc")?, None);
+        assert_eq!(with(b"Bearer \xff")?, None);
+        assert_eq!(bearer(&axum::http::HeaderMap::new()), None);
+        assert_eq!(bearer_token("Bearer k "), Some("k"));
+        Ok(())
+    }
 
     #[test]
     fn a_guest_reaches_only_their_playgrounds_work() {
