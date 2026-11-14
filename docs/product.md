@@ -189,7 +189,9 @@ watching, steering and unblocking.
   train, merges a task's pull request for its owner (at once on green, otherwise armed until
   its checks pass) and puts a queued CI run first in the project's queue. It reads the subscriptions and
   which one a task runs on with which model and effort, moves a task to the subscription its
-  person names, and sets a task's model or effort for its next start. It no longer hands such a job back as steps to click or
+  person names, and sets a task's model or effort for its next start. It reads the instance (its build, an
+  update offered, the host's load and disk, the sessions), and for a superadmin checks for,
+  installs or cancels an update and restarts Yulius, with the buttons' own refusals. It no longer hands such a job back as steps to click or
   uses a finished task as hands; an ability it lacks it names
   (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
   After an update

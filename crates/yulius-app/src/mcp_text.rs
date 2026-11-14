@@ -1575,6 +1575,7 @@ mod tests {
             task(6, json!({"held_prompt": {"class": "new_scope", "at": "x"}})),
             task(7, json!({"pause": {"by": "person", "user": {"login": "alice"}, "since": "x", "pending": false}})),
             task(8, json!({"pause": {"by": "update", "user": null, "since": null, "pending": true}})),
+            task(9, json!({"subscription": "Team Max", "model": "claude-sonnet-5-5", "effort": "high"})),
         ]});
         let text = render("tasks_list", &json!({}), &value);
         let line = |number: u64| {
@@ -1604,6 +1605,10 @@ mod tests {
             ),
             (7, "· paused by @alice"),
             (8, "· held for an update of Yulius"),
+            (
+                9,
+                "· on subscription \"Team Max\" · model claude-sonnet-5-5 · effort high",
+            ),
         ] {
             assert!(
                 line(number).contains(said),

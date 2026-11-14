@@ -478,5 +478,13 @@ mod tests {
                 .iter()
                 .any(|t| t.name == "task_merge")
         );
+        // Nor updating or restarting the instance (SPEC-487 INS-004): text it reads in one
+        // sandbox must not restart everyone's work. It is the Superagent's only
+        // (`person_tools::SUPERAGENT_ONLY`), so no remote tool serves it.
+        assert!(
+            !global_tool_descriptors()
+                .iter()
+                .any(|t| t.name == "instance_update")
+        );
     }
 }

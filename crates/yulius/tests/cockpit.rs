@@ -1659,6 +1659,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "instance",
+            "instance_update",
             "merge_queue",
             "sandbox_task_create",
             "sandbox_task_get",
@@ -6666,6 +6668,132 @@ async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResu
         ),
     ] {
         let result = support::mcp_tool(&f.h, "tok-run", tool, args).await?;
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            result["isError"] == true && text.contains("unknown tool"),
+            "{tool}: {result}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-487 INS-001 to INS-003 (wall 1): the Superagent reads the instance as Settings shows
+/// it (its build, the host's load, memory and disk, the sessions, an update offered or under
+/// way); a superadmin's Superagent checks for an update, updates, restarts and cancels with the
+/// buttons' own refusals, at once (the person's decision of 2026-11-13); anyone else is told
+/// it is a superadmin's.
+#[tokio::test]
+async fn the_superagent_reads_the_instance_and_a_superadmins_updates_it() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+
+    let (instance, is_error) = cockpit_tool(&f, &token, "instance", json!({})).await?;
+    assert!(!is_error, "{instance}");
+    assert!(instance["status"]["vm"].is_object(), "{instance}");
+    assert!(instance["status"]["sessions"].is_object(), "{instance}");
+    assert!(instance["update"]["current"].is_object(), "{instance}");
+
+    // Alice is no superadmin: every change is refused with whose it is.
+    for action in ["check", "update", "restart", "cancel"] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "instance_update", json!({"do": action})).await?;
+        assert!(
+            is_error && said(&refused).contains("only a superadmin"),
+            "{action}: {refused}"
+        );
+    }
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "instance_update", json!({"do": "reboot"})).await?;
+    assert!(is_error && said(&refused).contains("`do`"), "{refused}");
+
+    // A superadmin's: the buttons' functions, confirmed by asking; their refusals as they are
+    // (no update helper on this test server, nothing offered, nothing to cancel).
+    let mut root =
+        f.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    root.is_superadmin = true;
+    let ctx = yulius_app::auth::AuthContext {
+        user: root,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let checked =
+        f.h.app
+            .instance_update_for_person(&ctx, "check", None)
+            .await?;
+    assert!(checked["current"].is_object(), "{checked}");
+    for (action, why) in [
+        ("update", "no update is offered"),
+        ("restart", "not available on this server"),
+        ("cancel", "cancel"),
+    ] {
+        let refused =
+            f.h.app
+                .instance_update_for_person(&ctx, action, None)
+                .await
+                .err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|err| err.public_message().to_lowercase().contains(why)),
+            "{action}: {refused:?}"
+        );
+    }
+    // Through the tool, as the store says she is now a superadmin (review of slice 7, F5): the
+    // person's flag is read at the call, and the restart's own refusal comes back.
+    f.h.store
+        .execute_for_tests(
+            "UPDATE users SET is_superadmin = 0; \
+             UPDATE users SET is_superadmin = 1 WHERE id = 'u-alice';",
+        )
+        .await?;
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "instance_update", json!({"do": "restart"})).await?;
+    assert!(
+        is_error && said(&refused).contains("not available on this server"),
+        "{refused}"
+    );
+    let audited: Vec<Value> = yulius_app::ports::store::AuditStore::audit_details(
+        &f.h.store,
+        "s1",
+        "superagent.tool",
+        50,
+    )
+    .await?
+    .iter()
+    .filter_map(|detail| serde_json::from_str(detail).ok())
+    .collect();
+    assert!(
+        audited
+            .iter()
+            .any(|d| d["tool"] == "instance_update" && d["do"] == "restart" && d["ok"] == false),
+        "{audited:?}"
+    );
+
+    // A task's agent is served neither.
+    support::seed_task(
+        &f.h,
+        "t-x",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-x", "tok-x").await?;
+    for tool in ["instance", "instance_update"] {
+        let result = support::mcp_tool(&f.h, "tok-x", tool, json!({"do": "check"})).await?;
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
         assert!(
             result["isError"] == true && text.contains("unknown tool"),
