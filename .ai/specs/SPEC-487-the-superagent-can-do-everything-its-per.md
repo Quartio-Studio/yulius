@@ -745,3 +745,12 @@ the function the web UI's route calls, with the person's rights checked at the c
   the bound at 4071 characters after two sentences were shortened).
 - **The shared code keeps its other callers:** every test of `yulius`, `yulius-app`,
   `yulius-harness` and `yulius-store` passes (3096).
+- **Gate:** `scripts/dev ci` passed on `cb2069c46` (4380 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice6.log`); the commit after it changes this
+  specification only.
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** a move through `task_switch` that reaches a session (the page's
+  `switch_task`, called with the resolved id, is tested by its own suites with real sessions;
+  here its refusals and the name's resolution are); a model taken at a real launch (the launch
+  takes the task's model, tested by the launch's suites); `subscriptions` with usage readings
+  (the panel's `capacity_view`, tested by its suites).
