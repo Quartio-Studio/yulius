@@ -546,10 +546,12 @@ function createRequests(ctx, sandbox, onCount) {
     if (gone.length) for (const [id, shown] of cards) if (ids.has(id)) shown.rearm();
     for (const id of gone) { cards.get(id).destroy(); cards.delete(id); }
     for (const request of items) {
-      if (cards.has(request.id)) continue;
+      const old = cards.get(request.id);
+      // An amended request (SPEC-487) is drawn again, to be read to its end again.
+      if (old && old.revision === (request.revision || 0)) continue;
       const shown = card(request);
       cards.set(request.id, shown);
-      el.append(shown.el);
+      if (old) { old.el.replaceWith(shown.el); old.destroy(); } else el.append(shown.el);
     }
     el.hidden = cards.size === 0;
     if (onCount) onCount(cards.size);
@@ -601,7 +603,8 @@ function createRequests(ctx, sandbox, onCount) {
       sending = true;
       update();
       try {
-        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+        // The revision it showed: one the Superagent amended since is refused (409).
+        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve, revision: request.revision || 0 });
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
@@ -633,6 +636,7 @@ function createRequests(ctx, sandbox, onCount) {
         hint,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
+      revision: request.revision || 0,
       destroy() {
         clearTimeout(timer);
         if (seen) seen.disconnect();

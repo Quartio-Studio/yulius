@@ -1960,6 +1960,66 @@ async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
     Ok(())
 }
 
+/// Review of slice 8a, F2: once its call ended (here dropped), a request no longer belongs to
+/// that call: a `notifications/cancelled` naming the same id later withdraws nothing.
+#[tokio::test]
+async fn a_cancel_after_the_call_ended_withdraws_nothing() -> TestResult {
+    let f = fixture().await?;
+    seed_sandbox(&f.h, "s2", "website", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/website", perms("write"));
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    let internal = f.h.internal.clone();
+    let bearer = Creds {
+        bearer: Some(token.clone()),
+        ..Creds::default()
+    };
+    let asking = {
+        let bearer = bearer.clone();
+        tokio::spawn(async move {
+            call(
+                &internal,
+                Method::POST,
+                "/mcp",
+                Some(
+                    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                    "name": "sandbox_task_create",
+                    "arguments": {"sandbox": "website", "prompt": "Rewrite the README"}}}),
+                ),
+                &bearer,
+            )
+            .await
+            .map(|resp| resp.body)
+            .map_err(|err| err.to_string())
+        })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while waiting_requests(&f).await? != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the request never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    asking.abort();
+    let _ = asking.await;
+    let cancelled = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}})),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(cancelled.status, StatusCode::ACCEPTED);
+    assert_eq!(waiting_requests(&f).await?, 1, "the request still waits");
+    Ok(())
+}
+
 /// SPEC-442 (review round 1): over the MCP, `sandbox_task_get` reads a task of another sandbox
 /// at once, `sandbox_task_stop` asks for a stop of that task, and a cancelled call is audited
 /// `cancelled` with its action in both sandboxes.

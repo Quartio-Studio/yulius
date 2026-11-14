@@ -36,7 +36,9 @@ one by one.
   requests and its 20 latest outcomes (approved with what was done, declined, failed with why,
   withdrawn). `sandbox_request_amend` replaces the text and options of a waiting create, message
   or question in place, checked as a new request is, keeping its id; a change of start or a stop
-  is withdrawn and asked again. `sandbox_request_withdraw` removes one (audited `withdrawn`).
+  is withdrawn and asked again. An amended request takes the next revision: its card is drawn
+  again, and the person's answer names the revision it showed, so text changed after they read
+  it never runs on their click (409). The amendment is audited, without its text. `sandbox_request_withdraw` removes one (audited `withdrawn`).
   Another Superagent's request is not found.
 - **`person_ask {question}`** leaves a decision on the Superagent's own panel: the question read
   to its end, **Yes** / **No**; the answer (`yes` or `no`) is the call's or is read later. Nothing

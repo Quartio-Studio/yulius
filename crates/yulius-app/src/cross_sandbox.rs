@@ -254,12 +254,38 @@ struct Waiting {
     detail: Value,
     /// When it was asked: the panel lists requests in this order.
     asked_at: Timestamp,
+    /// How many times its Superagent amended it: the person's answer names the revision its
+    /// card showed (review of slice 8a, F1).
+    revision: u32,
     /// The MCP call that waits for it (its Superagent's shell and JSON-RPC id), which a
     /// `notifications/cancelled` names.
     call: Option<String>,
     /// Where its answer goes while that call still waits; none once the call ended (the
     /// request stays, and `sandbox_requests` tells the outcome, SPEC-487 XRQ-001).
     answer: Option<oneshot::Sender<AppResult<Value>>>,
+}
+
+impl Waiting {
+    /// Its call ended: no answer goes there, and a later `notifications/cancelled` naming that
+    /// call (the id reused, a client started again) withdraws nothing (review of slice 8a, F2).
+    fn stop_waiting(&mut self) {
+        self.answer = None;
+        self.call = None;
+    }
+
+    /// How it ended, kept for its Superagent (XRQ-004).
+    fn ended(&self, outcome: Value, at: Timestamp) -> Answered {
+        Answered {
+            id: self.id.clone(),
+            user: self.user.as_str().to_owned(),
+            source: self.source.as_str().to_owned(),
+            target: self.target.slug.clone(),
+            action: self.action.as_str().to_owned(),
+            task: self.task.as_ref().map(|task| task.number),
+            outcome,
+            at: at.0,
+        }
+    }
 }
 
 /// How a request ended, for its Superagent to read later (SPEC-487 XRQ-004).
@@ -290,6 +316,8 @@ struct SavedRequest {
     actor: String,
     detail: Value,
     asked_at: i64,
+    #[serde(default)]
+    revision: u32,
 }
 
 /// [`SUPERAGENT_REQUESTS_FILE`]'s content.
@@ -342,7 +370,7 @@ struct Ends<'a> {
 impl Drop for Ends<'_> {
     fn drop(&mut self) {
         if let Some(request) = self.app.cross_requests.lock().get_mut(&self.id) {
-            request.answer = None;
+            request.stop_waiting();
         }
     }
 }
@@ -678,6 +706,7 @@ impl App {
                     actor: caller.actor.clone(),
                     detail: caller.detail.clone(),
                     asked_at: self.now(),
+                    revision: 0,
                     call,
                     answer: Some(tx),
                 },
@@ -692,7 +721,7 @@ impl App {
         // The call stops waiting; the request stays on the panel (XRQ-001).
         let stop_waiting = || match self.cross_requests.lock().get_mut(&id) {
             Some(request) => {
-                request.answer = None;
+                request.stop_waiting();
                 true
             }
             None => false,
@@ -758,6 +787,7 @@ impl App {
                         "title": w.args.get("title"),
                         "prompt": text,
                         "options": options,
+                        "revision": w.revision,
                         "asked_at": rfc3339(w.asked_at),
                     });
                     (view, w.task.clone())
@@ -796,6 +826,7 @@ impl App {
         sid: &str,
         id: &str,
         approve: bool,
+        revision: Option<u32>,
     ) -> AppResult<Value> {
         if !ctx.is_browser() {
             return Err(AppError::Forbidden(
@@ -805,11 +836,24 @@ impl App {
         let request = {
             let mut waiting = self.cross_requests.lock();
             match waiting.get(id) {
-                Some(w) if w.user == ctx.user.id && w.source.as_str() == sid => waiting.remove(id),
+                Some(w) if w.user == ctx.user.id && w.source.as_str() == sid => {
+                    // Amended since the card was drawn: the person has not read what would run.
+                    if revision.unwrap_or(0) != w.revision {
+                        return Err(AppError::Conflict(
+                            "the Superagent changed this request since you read it: read it \
+                             again"
+                                .into(),
+                        ));
+                    }
+                    waiting.remove(id)
+                }
                 _ => None,
             }
         }
         .ok_or(AppError::NotFound)?;
+        // Taken: a restart from here on neither shows it again nor loses it unanswered (its
+        // outcome is kept when it ends; review of slice 8a, F4).
+        self.save_cross_requests();
         // Taken, it is answered to the end even if this request is cancelled (the person's page
         // went away): the waiting call gets the outcome either way.
         let app = Arc::clone(self);
@@ -859,16 +903,7 @@ impl App {
             Ok(value) => value.clone(),
             Err(err) => json!({"outcome": "failed", "error": err.public_message()}),
         };
-        self.keep_outcome(Answered {
-            id: request.id.clone(),
-            user: request.user.as_str().to_owned(),
-            source: request.source.as_str().to_owned(),
-            target: request.target.slug.clone(),
-            action: request.action.as_str().to_owned(),
-            task: request.task.as_ref().map(|task| task.number),
-            outcome: kept,
-            at: self.now().0,
-        });
+        self.keep_outcome(request.ended(kept, self.now()));
         self.audit_cross(
             &source,
             &request.target,
@@ -1016,12 +1051,13 @@ impl App {
             "cancelled",
         )
         .await;
-        self.save_cross_requests();
+        let outcome = json!({
+            "outcome": "cancelled",
+            "note": format!("The call was cancelled: {}.", request.action.nothing()),
+        });
+        self.keep_outcome(request.ended(outcome.clone(), self.now()));
         if let Some(waiting) = request.answer {
-            let _ = waiting.send(Ok(json!({
-                "outcome": "cancelled",
-                "note": format!("The call was cancelled: {}.", request.action.nothing()),
-            })));
+            let _ = waiting.send(Ok(outcome));
         }
     }
 
@@ -1052,7 +1088,13 @@ impl App {
             (target.id.as_str(), "from_sandbox", source.sandbox.as_str()),
             (source.sandbox.as_str(), "to_sandbox", target.id.as_str()),
         ];
-        for (sandbox, side, other) in sides {
+        // A question to the person is asked in its own sandbox: one row (review of slice 8a, F6).
+        let sides = if target.id == source.sandbox {
+            &sides[1..]
+        } else {
+            &sides[..]
+        };
+        for &(sandbox, side, other) in sides {
             let mut extra = about.clone();
             extra[side] = json!(other);
             if let Err(err) = self
@@ -1111,6 +1153,7 @@ impl App {
                     actor: w.actor.clone(),
                     detail: w.detail.clone(),
                     asked_at: w.asked_at.0,
+                    revision: w.revision,
                 })
                 .collect(),
             answered: self.cross_requests.answered().iter().cloned().collect(),
@@ -1170,6 +1213,7 @@ impl App {
                 actor: entry.actor,
                 detail: entry.detail,
                 asked_at: Timestamp(entry.asked_at),
+                revision: entry.revision,
                 call: None,
                 answer: None,
             });
@@ -1308,17 +1352,21 @@ impl App {
             }
         }
         check_visible(&new_args)?;
-        let user = {
+        let (user, target, action, task) = {
             let mut waiting = self.cross_requests.lock();
             let w = waiting
                 .get_mut(&id)
                 .filter(|w| w.user == caller.user && w.source == caller.sandbox)
                 .ok_or(AppError::NotFound)?;
             w.args = new_args;
-            w.user.clone()
+            w.revision += 1;
+            (w.user.clone(), w.target.clone(), w.action, w.task.clone())
         };
         self.save_cross_requests();
         self.announce_cross_requests(&user, &caller.sandbox);
+        // Audited without its text, as an answer is (review of slice 8a, F6).
+        self.audit_cross(caller, &target, action, task.as_ref(), "amended")
+            .await;
         Ok(json!({
             "request": id,
             "note": "Amended: the panel shows the new text; it keeps its place.",
@@ -1355,11 +1403,13 @@ impl App {
             "withdrawn",
         )
         .await;
+        let outcome = json!({
+            "outcome": "withdrawn",
+            "note": format!("Withdrawn: {}.", request.action.nothing()),
+        });
+        self.keep_outcome(request.ended(outcome.clone(), self.now()));
         if let Some(waiting) = request.answer {
-            let _ = waiting.send(Ok(json!({
-                "outcome": "withdrawn",
-                "note": format!("Withdrawn: {}.", request.action.nothing()),
-            })));
+            let _ = waiting.send(Ok(outcome));
         }
         Ok(json!({"request": id, "note": format!("Withdrawn: {}.", request.action.nothing())}))
     }

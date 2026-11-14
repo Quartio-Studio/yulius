@@ -246,7 +246,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "sandbox_request_amend".into(),
-            description: "Change what one of your waiting requests asks, in place (it keeps its place and id): a new task's prompt, title and options (sandbox_task_create's arguments without sandbox, complete), a message's text, or a question's text. Use it instead of asking again when the person wants a sentence added. A change of a task's start, or a stop, is withdrawn and asked again.".into(),
+            description: "Change what one of your waiting requests asks, in place (it keeps its place and id): a new task's prompt, title and options (sandbox_task_create's arguments without sandbox, complete), a message's text, or a question's text. Use it instead of asking again when the person wants a sentence added. The card is drawn again for the person to read anew (an answer to the old text is refused). A change of a task's start, or a stop, is withdrawn and asked again.".into(),
             input_schema: json!({"type": "object", "properties": {
                 "request": {"type": "string", "description": "The request id (sandbox_requests)"}
             }, "required": ["request"], "additionalProperties": true}),

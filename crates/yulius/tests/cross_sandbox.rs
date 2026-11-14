@@ -379,7 +379,15 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
     assert!(matches!(refused, Some(AppError::NotFound)), "{refused:?}");
     let theirs = w.h.app.tool_sandbox_requests(&bobs).await?;
     assert_eq!(theirs["waiting"], json!([]), "{theirs}");
-    let approved = answer(&w, &w.alice, "s1", &id, true).await?;
+    // Amended once: the card the person read shows revision 1.
+    let approved = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/s1/superagent/requests/{id}"),
+        Some(json!({"approve": true, "revision": 1})),
+        &w.alice,
+    )
+    .await?;
     assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
     let task =
         w.h.store
@@ -441,6 +449,74 @@ async fn a_waiting_request_is_amended_or_withdrawn() -> TestResult {
             .any(|row| row["outcome"] == "withdrawn"),
         "withdrawn is audited"
     );
+    // Review of slice 8a, F3: the Superagent reads that it was withdrawn.
+    let mine = w.h.app.tool_sandbox_requests(&caller).await?;
+    assert_eq!(mine["answered"][0]["request"], other.as_str(), "{mine}");
+    assert_eq!(
+        mine["answered"][0]["outcome"]["outcome"], "withdrawn",
+        "{mine}"
+    );
+    Ok(())
+}
+
+/// Review of slice 8a, F1 and F6: a request amended after the person read it is not approved
+/// as read: the answer names the revision the card showed, and an older one is refused while
+/// the request keeps waiting. The amendment is audited, without its text.
+#[tokio::test]
+async fn an_amended_request_is_answered_only_as_read() -> TestResult {
+    let w = world(300).await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let first = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
+    let id = first["request"].as_str().ok_or("request")?.to_owned();
+    assert_eq!(waiting(&w, 1).await?[0]["revision"], 0);
+    w.h.app
+        .tool_sandbox_request_amend(&caller, &json!({"request": id, "prompt": "Delete it all"}))
+        .await?;
+    let listed = waiting(&w, 1).await?;
+    assert_eq!(listed[0]["revision"], 1);
+    assert_eq!(listed[0]["prompt"], "Delete it all");
+    for stale in [
+        json!({"approve": true}),
+        json!({"approve": true, "revision": 0}),
+    ] {
+        let refused = call(
+            &w.h.router,
+            Method::POST,
+            &format!("/api/sandboxes/s1/superagent/requests/{id}"),
+            Some(stale.clone()),
+            &w.alice,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::CONFLICT,
+            "{stale}: {:?}",
+            refused.body
+        );
+    }
+    waiting(&w, 1).await?;
+    assert_eq!(task_count(&w, "s2").await?, 0);
+    let approved = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/s1/superagent/requests/{id}"),
+        Some(json!({"approve": true, "revision": 1})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(approved.status, StatusCode::OK, "{:?}", approved.body);
+    assert_eq!(task_count(&w, "s2").await?, 1);
+    for sandbox in ["s1", "s2"] {
+        let rows = audited(&w, sandbox).await?;
+        assert!(
+            rows.iter().any(|row| row["outcome"] == "amended"),
+            "{sandbox}: {rows:?}"
+        );
+        assert!(
+            !format!("{rows:?}").contains("Delete it all"),
+            "no text audited"
+        );
+    }
     Ok(())
 }
 
@@ -556,6 +632,8 @@ async fn a_decision_waits_on_the_panel_and_its_answer_is_kept() -> TestResult {
         .filter_map(|a| a["outcome"]["answer"].as_str())
         .collect();
     assert_eq!(answers, ["no", "yes"], "{mine}");
+    // Review of slice 8a, F6: its own sandbox is both sides: one row per answer.
+    assert_eq!(audited(&w, "s1").await?.len(), 2);
     for question in ["", &"x".repeat(5000)] {
         let refused = w
             .h
@@ -845,7 +923,8 @@ async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult
     // Polled once (the request is taken), then dropped, as a cancelled HTTP request is.
     let _ = tokio::time::timeout(
         Duration::ZERO,
-        w.h.app.superagent_request_answer(&ctx, "s1", &id, true),
+        w.h.app
+            .superagent_request_answer(&ctx, "s1", &id, true, None),
     )
     .await;
     let outcome = tokio::time::timeout(WAIT, call_).await???;

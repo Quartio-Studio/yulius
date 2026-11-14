@@ -19,6 +19,7 @@ type Asking = {
   __yuliusMock: {
     askSuperagent: (source: string, request: unknown) => string;
     withdrawSuperagentRequest: (source: string, id: string) => void;
+    amendSuperagentRequest: (source: string, id: string, prompt: string) => void;
     askBrowserSignIn: () => boolean;
     tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string }[];
   };
@@ -409,4 +410,23 @@ test('a decision the Superagent leaves to its person is answered Yes or No on it
   await expect(card).toBeHidden();
   await expect(browser.locator('.toast:has-text("Answered no")')).toBeVisible();
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentAnswers: string[] } }).__yuliusMock.superagentAnswers)).toEqual(['yes', 'no']);
+});
+
+// Review of slice 8a, F1: a request the Superagent amends while its card is shown is drawn
+// again with the new text, read to its end again, and approved as drawn (the mock refuses an
+// answer naming an older revision, as the server does).
+test('an amended request is drawn again and approved as drawn', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const before = await productTasks(browser);
+  const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Rewrite the README' });
+  const card = screen.getByRole('group', 'Your Superagent asks to start a task in product');
+  await expect(card).toBeVisible();
+  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.amendSuperagentRequest('sb_studio', i, 'Rewrite the README and the guide'), id);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe('Rewrite the README and the guide');
+  await screen.getByRole('button', 'Create task').click();
+  await expect(card).toBeHidden();
+  const created = await productTasks(browser);
+  expect(created.length).toBe(before.length + 1);
+  expect(created[created.length - 1].prompt).toBe('Rewrite the README and the guide');
 });

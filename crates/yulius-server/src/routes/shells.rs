@@ -134,6 +134,9 @@ pub async fn superagent_requests(
 #[serde(deny_unknown_fields)]
 pub struct RequestAnswer {
     approve: bool,
+    /// The revision of the request the card showed (SPEC-487, review of slice 8a, F1).
+    #[serde(default)]
+    revision: Option<u32>,
 }
 
 /// `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": bool}`: the person approves
@@ -147,7 +150,7 @@ pub async fn superagent_request_answer(
     let answer: RequestAnswer = serde_json::from_slice(&body)
         .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?;
     Ok(Json(
-        app.superagent_request_answer(&ctx, &sid, &id, answer.approve)
+        app.superagent_request_answer(&ctx, &sid, &id, answer.approve, answer.revision)
             .await?,
     ))
 }
