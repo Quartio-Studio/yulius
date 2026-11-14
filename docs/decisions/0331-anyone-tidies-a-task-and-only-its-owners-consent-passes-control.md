@@ -48,7 +48,8 @@ task's own page, and a hand-over could not be undone by the person who gave it.
   the rule: a Superagent's `task_message` to a running task (SPEC-230 allowed it unless the
   task held personal secrets), a restore of attachments into a task, and Start onboarding.
 - **An onboarding task that never ran is its starter's.** A sandbox whose onboarding nobody
-  started has no task, or one Yulius made by itself and never ran; whoever starts onboarding
+  started has no task, or one that never ran (Yulius made it for a new task, or another start
+  has not run it yet); whoever starts onboarding
   gets it (created for them, or passed to them as an audited hand-over) and it acts on GitHub as
   them. One that has run is started by its owner, like any task, and anyone else is refused
   before the repository's first commit is pushed.

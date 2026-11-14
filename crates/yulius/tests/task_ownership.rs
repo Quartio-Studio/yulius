@@ -1097,17 +1097,36 @@ async fn the_giver_takes_a_task_back() -> TestResult {
         "{said:?}"
     );
 
-    for who in [&f.bob, &carol] {
-        let refused = take_back(&f, who).await?;
-        assert_eq!(refused.status, 403, "{}", refused.body);
-        assert!(
-            refused.body.to_string().contains("@alice"),
-            "{}",
-            refused.body
-        );
-    }
+    // Bob owns it now: nothing to take back from himself.
+    let own = take_back(&f, &f.bob).await?;
+    assert_eq!(own.status, 409, "{}", own.body);
+    let refused = take_back(&f, &carol).await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("@alice"),
+        "{}",
+        refused.body
+    );
+    let mut events = f.h.app.events.subscribe();
     let back = take_back(&f, &f.alice).await?;
     assert_eq!(back.status, 200, "{}", back.body);
+    // Bob, from whom it was taken, is told in his own event stream (OWN-010).
+    let mut told = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::ControlTakenBack { task_id, by, .. } =
+            &envelope.event
+        {
+            told.push((envelope.user.clone(), task_id.clone(), by.clone()));
+        }
+    }
+    assert_eq!(
+        told,
+        vec![(
+            Some(UserId::parse("u-b")?),
+            id_of(&f).to_owned(),
+            "alice".to_owned()
+        )]
+    );
     assert_eq!(back.body["owner"]["login"], "alice");
     assert_eq!(back.body["control_from"], serde_json::Value::Null);
     assert_eq!(github_actor(&f.h, "tt").await?, "alice");
@@ -1154,7 +1173,27 @@ async fn taking_back_ends_when_control_moves_again() -> TestResult {
         to_alice.body
     );
     assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let mut events = f.h.app.events.subscribe();
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
     let returned = control(&f, Method::POST, "/accept", &f.alice).await?;
+    // Its notice promises no take-back (review round 2).
+    let said = notices(&mut watch);
+    assert!(
+        said.iter().any(|n| n.contains("from @alice to @bob"))
+            && !said.iter().any(|n| n.contains("can take it back")),
+        "{said:?}"
+    );
+    // Handed back on request: nobody took anything back.
+    while let Ok(envelope) = events.try_recv() {
+        assert!(
+            !matches!(
+                envelope.event,
+                yulius_contracts::events::UiEvent::ControlTakenBack { .. }
+            ),
+            "{:?}",
+            envelope.event
+        );
+    }
     assert_eq!(returned.body["owner"]["login"], "bob", "{}", returned.body);
     assert_eq!(returned.body["control_from"], serde_json::Value::Null);
     assert_eq!(take_back(&f, &f.alice).await?.status, 409);

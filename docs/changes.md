@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Consent to control can be withdrawn, and a request is heard anywhere (SPEC-490 slice 2, task
   #473). Whoever handed a task over on request takes it back with one click (Take back on the
-  task's page, `POST /api/tasks/{tid}/control/take-back`, schema 59), until control moves again;
+  task's page, `POST /api/tasks/{tid}/control/take-back`, schema 60), until control moves again;
   the person it is taken from is told. A request for control reaches its owner as a
   notification and a toast that opens the task, and marks its row in the sidebar. Review fixes:
   a playground's guest stops, archives and deletes only their own tasks; a refused Start

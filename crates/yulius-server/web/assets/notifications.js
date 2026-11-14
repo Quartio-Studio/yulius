@@ -181,9 +181,10 @@ export function createNotificationCenter(ctx) {
   }
 
   // A request for control of one of the viewer's tasks (SPEC-490 OWN-008): heard wherever they
-  // are, as an entry under the bell (once per request, also across a reload) and a toast that
-  // opens the task, where they hand it over or decline. An answered request's entry is read.
-  watch('task', (task) => {
+  // are, as an entry under the bell (once per request, also across a reload, and for one that
+  // waited before the page loaded) and, when it arrives while they are here, a toast that opens
+  // the task, where they hand it over or decline. An answered request's entry is read.
+  function heardRequest(task, live) {
     const me = ctx.store.state.me?.user?.login;
     const request = task.control_request;
     if (!me || !task.owner || task.owner.login !== me) return;
@@ -194,20 +195,25 @@ export function createNotificationCenter(ctx) {
     const sandbox = sandboxOf(task.sandbox_id);
     const route = taskRoute(task);
     add({ kind: 'warn', title, detail: `It would act on GitHub as them${sandbox ? ` · ${sandbox.name}` : ''}`, route, key, once: true });
-    toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+    if (live) toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  }
+  watch('task', (task) => heardRequest(task, true));
+  // A sandbox's tasks as first loaded: requests that waited before the page did. Later list
+  // changes come with their own task event.
+  const loaded = new Set();
+  watch('tasks', (sandboxId) => {
+    if (loaded.has(sandboxId)) return;
+    loaded.add(sandboxId);
+    (ctx.store.tasksOf(sandboxId) || []).forEach((task) => heardRequest(task, false));
   });
 
-  // A task the viewer had is taken back by the person who handed it to them (SPEC-490 OWN-010).
-  const holders = new Map(); // task id → { owner, from } as last seen
-  watch('task', (task) => {
-    const me = ctx.store.state.me?.user?.login;
-    const now = { owner: task.owner && task.owner.login, from: task.control_from && task.control_from.login };
-    const before = holders.get(task.id);
-    holders.set(task.id, now);
-    if (!me || !before || before.owner !== me || now.owner === me || !before.from || before.from !== now.owner) return;
-    const title = `@${now.owner} took back control of #${task.number} ${task.title || 'Task'}`;
+  // The person who handed a task to the viewer took it back (SPEC-490 OWN-010): the server tells
+  // the person it was taken from, wherever they are.
+  watch('control-taken-back', (event) => {
+    const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
+    const title = `@${event.by} took back control of #${event.number} ${event.title || 'Task'}`;
     const route = taskRoute(task);
-    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route, key: `taken:${task.id}:${task.updated_at}` });
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route });
     toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 

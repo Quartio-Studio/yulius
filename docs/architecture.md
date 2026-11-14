@@ -2887,10 +2887,10 @@ Start onboarding all ask the same rule. A playground's guest tidies only their o
 (`TaskRefusal::Guest`). Anyone else who may work in the project asks for control, from the
 task's page or its menu; the owner hears of it wherever they are (a notification, a toast, a
 mark on the sidebar row) and hands it over or declines, and an absent owner's task passes at
-once. A hand-over on request records its giver (`tasks.control_from`, schema 59), who takes the
+once. A hand-over on request records its giver (`tasks.control_from`, schema 60), who takes the
 task back without asking (`App::take_back_task_control`, one conditional update) until control
 moves again: handed on, handed back to the giver, or passed from an absent owner, which clear
-or replace it. An onboarding task Yulius made by itself that never ran passes to whoever
+or replace it. An onboarding task that never ran passes to whoever
 starts onboarding.
 
 ```mermaid

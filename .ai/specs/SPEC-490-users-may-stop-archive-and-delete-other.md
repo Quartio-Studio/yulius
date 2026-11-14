@@ -135,9 +135,10 @@ are their creator's (reported as issue #1289, see Decisions).
   exception for administrators or the superadmin. Start onboarding is control of the
   onboarding task. One that has run (it has a session on record) is started by its owner, and
   anyone else is refused before anything is prepared, so a refusal pushes no first commit. One
-  Yulius created by itself that has never run is nobody's yet: whoever starts onboarding takes
-  it, as an audited hand-over (`task.control_passed`); a sandbox without one gets it created for
-  them (review round 1).
+  that has never run is nobody's yet, however it was made (by Yulius for a new task, or by
+  another person's start that has not run it yet): whoever starts onboarding takes it, as an
+  audited hand-over (`task.control_passed`); a sandbox without one gets it created for them
+  (review rounds 1 and 2).
 - **OWN-005** The owner learns who tidied. A stop, close-out, archive, restore or deletion of a
   task by someone who does not own it is audited under that person's name with the owner's
   (`task.stopped`, `task.closed_by_person`, `task.archived`, `task.unarchived`,
@@ -161,7 +162,7 @@ are their creator's (reported as issue #1289, see Decisions).
   switched on) that opens the task, and the task's row in the sidebar says "@login asks for
   control" until it is answered. A request waits without a time limit: silence is not consent.
 - **OWN-009** Consent can be withdrawn. A hand-over on request records who gave control
-  (`tasks.control_from`, schema version 59). That person takes the task back without asking
+  (`tasks.control_from`, schema version 60: the file is `0059`, after `dev`'s `0060`). That person takes the task back without asking
   (`POST /api/tasks/{tid}/control/take-back`): one conditional update of the owner and the
   giver, then what a hand-over does (commit identity, fingerprints, a restart for personal MCP
   servers, the terminal notice "Control of this task returned to @a: it acts on GitHub as @a
@@ -284,9 +285,12 @@ are their creator's (reported as issue #1289, see Decisions).
   the task for the creator and then refusing would create it as a side effect of a refusal,
   which SPEC-246 forbids. Yulius also creates it by itself, resting, when someone creates a task
   in a pending sandbox (SPEC-097), for the sandbox's creator: nobody has given that task
-  anything yet, so whoever starts onboarding takes it. One that has run (a start that failed
-  after its session began, a stopped onboarding) is its owner's like any task, and the refusal
-  comes before the empty repository's first commit (review round 1).
+  anything yet, so whoever starts onboarding takes it. The rule is "never ran", not "made by
+  Yulius": a task another person's start made a moment ago, or whose start failed before a
+  session, has not acted for anyone either, and both people meant to start onboarding (review
+  round 2). One that has run (a start that failed after its session began, a stopped onboarding)
+  is its owner's like any task, and the refusal comes before the empty repository's first commit
+  (review round 1).
 - **A playground's guest tidies only their own tasks.** A guest joined by a link (ADR-0260) and
   works beside the maker for a while; "users of the instance" are its accounts, and a guest is
   not one. Deleting the maker's tasks, which cannot be undone, is not what a guest link offers;
@@ -358,6 +362,21 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   is the version).
 - Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off
   in Yulius"; nothing was scanned. That is unrun, not passed.
+
+- Review round 2 (a fresh session), at `f1dace4ab`: REQUEST CHANGES. Findings, all in this
+  change's code, each fixed: (major) the person a task was taken back from was told only when
+  their page had seen the task change before, so usually not; now the server sends them a
+  `task.control_taken_back` event (`App::take_back_task_control`, tested in
+  `task_ownership::the_giver_takes_a_task_back`, e2e with no earlier event); (minor) a voluntary
+  hand-back was reported as a take-back, gone with the event (no event on a hand-back, tested);
+  the hand-over notice promised a take-back on a hand-back to the giver, now worded from the
+  stored giver (tested); "schema 59" in the documents, now 60, and `control_from` missing from
+  `TaskSummary` in `docs/api.md`; a request that waited before the page loaded was not under
+  the bell, now added from a sandbox's first loaded list (e2e `controlask=1`); the onboarding
+  rule's wording ("made by Yulius") is now "never ran", as the code decides; the owner's own
+  take-back answers 409 "you already own this task". Left as they are: a take-back during a
+  personal-MCP launch says "ask again once it runs" (the hand-over's existing refusal), and the
+  extra query per task in lists for `control_from` (one indexed read, as for the request).
 
 **Not tested here:** the desktop notification of a request (the browser's `Notification` is
 the same path the notification centre's other entries use, and its e2e covers only the bell

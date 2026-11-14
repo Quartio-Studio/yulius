@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -231,9 +231,24 @@ test('the giver takes the task back, and whoever had it hears so', async ({ app,
   await expect(browser.locator('.taskview .watch')).toBeHidden();
   await terminalShown(browser);
 
-  // mkarp had #11 from anna-q, who takes it back: he hears so.
+  // mkarp has had #11 since before the page loaded (anna-q handed it to him); she takes it back:
+  // the server tells him, wherever he is (review round 2: no earlier event to compare with).
   await app.open(mock('/s/studio/t/13', '&ambient=0'));
-  await touchTask(browser, 'sb_studio', 11, { owner: { login: 'mkarp' }, controlFrom: { login: 'anna-q' } });
-  await touchTask(browser, 'sb_studio', 11, { owner: { login: 'anna-q' }, controlFrom: null });
-  await expect(browser.locator('.toast').filter({ hasText: '@anna-q took back control of #11 3D model viewer' })).toBeVisible();
+  await eventsConnected(browser);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { takeBack: (s: string, n: number, by: string) => void } }).__yuliusMock.takeBack('sb_studio', 11, 'anna-q'));
+  const taken = '@anna-q took back control of #11 3D model viewer';
+  await expect(browser.locator('.toast').filter({ hasText: taken })).toBeVisible();
+  await screen.getByRole('button', /^Notifications \(\d+ unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${taken}`))).toBeVisible();
+});
+
+// SPEC-490 OWN-008 (review round 2): a request that waited before the owner opened Yulius is
+// under the bell too, once.
+test('a request that waited before the page loaded is heard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13', '&ambient=0&controlask=1'));
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  const asked = '@anna-q asks for control of #12 Checkout API';
+  await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();
+  await screen.getByRole('button', /^Notifications/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${asked}`))).toHaveCount(1);
 });

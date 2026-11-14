@@ -150,6 +150,9 @@ impl App {
                     .into(),
             )
             })?;
+        if crate::tasks::owns(&task, &ctx.user.id) {
+            return Err(AppError::Conflict("you already own this task".into()));
+        }
         if giver != ctx.user.id {
             return Err(AppError::Forbidden(format!(
                 "only @{}, who handed task #{} over, takes it back; ask @{} for control",
@@ -165,6 +168,17 @@ impl App {
         }
         self.pass_task_control(&task, &ctx.user, ctx, Handover::TakenBack)
             .await?;
+        // Whoever had it hears of it wherever they are (OWN-010).
+        self.events.publish_to_user(
+            task.owner.clone(),
+            yulius_contracts::events::UiEvent::ControlTakenBack {
+                task_id: task.id.as_str().to_owned(),
+                sandbox_id: task.sandbox_id.as_str().to_owned(),
+                number: task.number,
+                title: task.title.clone(),
+                by: self.login_of(&ctx.user.id).await,
+            },
+        );
         self.control_summary(&task).await
     }
 
@@ -354,11 +368,19 @@ impl App {
                 ),
                 "task.control_taken_back",
             ),
+            // Handed back to its giver, nobody can take it back: the giver stored says.
             Handover::Requested => (
-                format!(
-                    "Control of this task passed from @{from} to @{to}: it now acts on GitHub \
-                     as @{to}. @{from} can take it back."
-                ),
+                match store.control_from(&task.id).await? {
+                    Some(giver) => format!(
+                        "Control of this task passed from @{from} to @{to}: it now acts on \
+                         GitHub as @{to}. @{} can take it back.",
+                        self.login_of(&giver).await
+                    ),
+                    None => format!(
+                        "Control of this task passed from @{from} to @{to}: it now acts on \
+                         GitHub as @{to}."
+                    ),
+                },
                 "task.control_passed",
             ),
             Handover::OwnerAbsent | Handover::Unstarted => (

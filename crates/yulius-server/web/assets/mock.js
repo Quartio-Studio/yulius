@@ -21,7 +21,8 @@
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
 // guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies),
-// labtask=1 (with guest=1: the maker's stopped task in `lab`, SPEC-490).
+// labtask=1 (with guest=1: the maker's stopped task in `lab`, SPEC-490),
+// controlask=1 (anna-q's request for control of studio #12 waits, SPEC-490).
 // move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
 // no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
 // preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
@@ -442,6 +443,11 @@ function seed(params) {
   // A playground's guests (SPEC-410). `guestlink=1|dead`: signed out, holding a link to `lab`;
   // `guest=1`: signed in as a guest of `lab`, who sees nothing else.
   db.guestInvites = [];
+  // `controlask=1`: anna-q asked for control of studio #12 before the page loaded (SPEC-490 OWN-008).
+  if (params.get('controlask') === '1') {
+    const asked = db.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 12);
+    if (asked) asked.controlRequest = { by: { login: 'anna-q' }, at: '2026-11-14T10:00:00Z' };
+  }
   if (params.get('guestlink') || params.get('guest') === '1') {
     const lab = guestPlayground(db);
     if (params.get('guestlink') !== 'dead') {
@@ -6830,6 +6836,13 @@ export function createMockTransport(params) {
     doc.session_id = sessionId;
     doc.transcript = [];
     db.appendTranscript(sandboxId, number, items);
+  };
+  // The person who handed a task to the viewer takes it back (SPEC-490 OWN-010): the task changes
+  // and the server tells the viewer, as `App::take_back_task_control` does.
+  db.takeBack = (sandboxId, number, by) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: null });
+    emit(db, { type: 'task.control_taken_back', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
