@@ -105,8 +105,8 @@ impl App {
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
-    /// count what the sidebar lists (#147, #170). Ended tasks are answered without reading the
-    /// store.
+    /// count what the sidebar lists (#147, #170). Of an ended task only whether it is the
+    /// onboarding task its sandbox waits for is read.
     ///
     /// # Errors
     /// Store failures.
@@ -115,10 +115,13 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        if task.status.is_resting() || task.status == TaskStatus::Stopping {
-            return Ok(TaskGroup::Ended);
-        }
         let store = &self.deps.store;
+        if task.status.is_resting() || task.status == TaskStatus::Stopping {
+            let mut facts = AttentionFacts::new(task.status, task.activity);
+            facts.awaits_start_onboarding =
+                self.is_awaited_onboarding(task).await? && !store.has_attempts(&task.id).await?;
+            return Ok(facts.group());
+        }
         let held_prompt = store.pending_hold(&task.id).await?.is_some();
         let chain_blocked = task.status == TaskStatus::Chained
             && store
@@ -161,6 +164,9 @@ impl App {
             yulius_wait: finished
                 && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
+            paused: self.pause_view(task).await.is_some(),
+            awaits_start_onboarding: false,
+            merge_armed: finished && self.merge_is_armed(&task.id),
         }
         .group())
     }
