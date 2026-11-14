@@ -927,11 +927,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   the Working group and counted in line (`counts.queued`), by the server and the sidebar.
 - **GRP-003** A finished turn whose merge is armed is in the Working group, an achieved
   goal's too: the task's view says `merge_armed`, the list reads "Waiting for checks or
-  merge", a task chained after it waits, and archiving it is refused (the merge stays armed).
-- **LVE-001** An edit the server refuses with 403 gives the server's text back: nothing of
-  the tab's waits (not saved, not busy, a close ends at once), typing is not kept, the
-  Editor makes the file read-only and says "Read-only: you can no longer change this folder";
-  joining the document again (the file opened again) asks again.
+  merge", a task chained after it waits, a supertask waits for it, and archiving it is
+  refused (the merge stays armed). This narrows SPEC-487 CHN-003 ("an achieved goal is Done
+  as before") by the armed merge alone.
+- **LVE-001** An edit the server refuses as `forbidden` (403) gives the typing up: the tab's
+  text is the document's as it had it, nothing of the tab's waits (not saved, not busy, the
+  tab not marked modified, a close ends at once), typing is not kept, teammates' steps since
+  are caught up once (a refused catch-up asks nothing more), the Editor makes the file
+  read-only and says "Read-only: you can no longer change this folder". Only a successful join
+  (the file opened again) makes it writable again. A 403 for a stale session token
+  (`csrf_invalid`) is not a refusal of access: the edit is sent again.
 
 ## Plan
 
@@ -1490,12 +1495,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   task stays chained, the task's view says `merge_armed: true`, the project counts it
   working, archiving it answers 409 and it stays running with the merge armed. The sidebar
   reads "Waiting for checks or merge" with and without the pull request; an achieved goal
-  without an armed merge is still "Done · PR #7".
+  without an armed merge is still "Done · PR #7". A supertask created then is held by it.
 - **AC-134** A live document whose edit is refused with 403 has the server's text back, is
   read-only, saved and not busy; typing more sends nothing; close ends within a second; a new
-  join clears the read-only state. In the Editor the status says "Read-only: you can no
-  longer change this folder", the editor is read-only, the text is the file's and nothing
-  reads Unsaved.
+  join clears the read-only state. A refusal as `csrf_invalid` sends the edit again and the
+  document stays writable. When the catch-up is refused too, the text is the document's, the
+  document is read-only and not busy, and after 1.5 s nothing more was asked (one join, one
+  catch-up). In the Editor the status says "Read-only: you can no longer change this folder",
+  the editor is read-only, the text is the file's and the tab reads `notes.txt×` (not marked
+  modified).
 
 ## Test plan
 
@@ -1824,6 +1832,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   ("stop the task before archiving it") instead of a new message. A refused edit gives the
   text back rather than keeping it for a later retry: the refusal is about access, which does
   not come back by retrying, and the person still sees their file; a new join asks again.
+  The typing is given up in the tab itself (the text it had from the document), not by a
+  catch-up: a person who lost all access to the project gets no catch-up either, and a
+  rejoin loop would make the file writable again for each try (review of slice 23). The
+  awaited onboarding task is now also one of the tasks "after all current tasks" names
+  (`manage.rs`); it counts as done once onboarding stops holding tasks, which they wait for
+  anyway.
 - Slice 22 (no decision record: each fix makes a reading agree with what the code
   already said). A silent report is lost on systemd's word, not on a longer timeout: the
   copy may block the report's write for any time, and a longer wait would only delay a

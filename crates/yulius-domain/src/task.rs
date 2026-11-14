@@ -492,8 +492,7 @@ impl AttentionFacts {
     /// paused by a person or an update is Working, whatever it waited for (SPEC-191). A held
     /// prompt or a pending browser request needs you. A finished turn whose merge is armed is
     /// Working, an achieved goal's too (SPEC-487 CHN-001). After a finished turn the pull
-    /// request speaks: failing checks
-    /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
+    /// request speaks: failing checks need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
     /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
     /// could not run keeps it Working (In review); with the plan complete, background shells
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its

@@ -1930,8 +1930,8 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
 
 /// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
 /// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
-/// waits for it, Home counts it as working, and archiving it is refused (it would have ended the armed merge, said to
-/// nobody); the merge stays armed.
+/// waits for it, Home counts it as working, and archiving it is refused (it would have ended the
+/// armed merge, said to nobody); the merge stays armed.
 #[tokio::test]
 async fn an_achieved_goal_with_an_armed_merge_is_not_done() -> TestResult {
     let f = fixture().await?;

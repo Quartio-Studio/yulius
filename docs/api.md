@@ -187,7 +187,8 @@ the Working group: running tasks that do not wait for a person (working, kept go
 agent's background shells, a finished turn whose pull request's checks still run or whose Yulius
 CI run could not run, or whose merge is armed, an achieved goal's too), starting, switching and
 paused ones (`waiting_capacity`, and a run paused by a person or an update, whatever it waited
-for: SPEC-483 GRP-001 to GRP-003). Done tasks, tasks being stopped and ended ones count nowhere; the status page's `live_sessions` counts live processes.
+for: SPEC-483 GRP-001 to GRP-003). Done tasks, tasks being stopped and ended ones count
+nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
 rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
 a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
@@ -197,8 +198,8 @@ pull request of a finished turn whose plan is complete counts as Done or In revi
 a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
 recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
-ended task or one being stopped never counts; a paused or queued one only for a held prompt or a
-browser request.
+ended task or one being stopped never counts; a queued one or one paused for capacity only for a
+held prompt or a browser request; a run paused by a person or an update never.
 
 ## Import (`yulius onboard` / `yulius import`)
 

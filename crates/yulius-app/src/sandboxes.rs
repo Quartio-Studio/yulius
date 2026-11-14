@@ -164,7 +164,7 @@ impl App {
             yulius_wait: finished
                 && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
-            paused: self.pause_view(task).await.is_some(),
+            paused: self.is_paused(task).await,
             awaits_start_onboarding: false,
             merge_armed: finished && self.merge_is_armed(&task.id),
         }
