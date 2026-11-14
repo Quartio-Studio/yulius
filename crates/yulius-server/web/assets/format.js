@@ -137,6 +137,30 @@ export function bytes(n) {
   return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
+/**
+ * A size as the server words a limit (`uploads.rs` `human_size`, the same steps): `512 KB`,
+ * `3.4 MB`, `1 GB`, binary units with the short names, a whole unit or one decimal cut (not
+ * rounded). [`bytes`] words a measurement (`3.0 GiB`); the two stay apart because the server
+ * and the e2e tests share each wording (SPEC-483 slice 28).
+ */
+export function limitSize(n) {
+  const KIB = 1024;
+  const MIB = 1024 * KIB;
+  const GIB = 1024 * MIB;
+  const unit = (size, name) => (n % size === 0
+    ? `${n / size} ${name}`
+    : `${Math.floor(n / size)}.${Math.floor(((n % size) * 10) / size)} ${name}`);
+  if (n >= GIB) return unit(GIB, 'GB');
+  if (n >= MIB) return unit(MIB, 'MB');
+  if (n >= KIB) return `${Math.floor(n / KIB)} KB`;
+  return `${n} bytes`;
+}
+
+/** The first seven characters of a commit, or '' without one. */
+export function shortSha(sha) {
+  return sha ? String(sha).slice(0, 7) : '';
+}
+
 /** "UTC+02:00" from an offset in minutes. */
 export function utcOffset(minutes) {
   const m = Number(minutes) || 0;
