@@ -1916,6 +1916,33 @@ async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() 
         "it goes on by itself: {}",
         shown.body
     );
+    // SPEC-487 TCT-004 (review of slice 3, R2-1): its owner cannot close it out meanwhile.
+    // A close would end the task with its pull request tested and its plan complete, which
+    // reads Done for a closed task, and the chained task would start before the merge.
+    {
+        let record = TaskStore::task(&f.h.store, &first).await?.ok_or("t1")?;
+        let owner = yulius_app::ports::store::UserStore::user(&f.h.store, &record.owner)
+            .await?
+            .ok_or("owner")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: owner,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let refused = app.close_task_for_person(&ctx, "t1").await.err();
+        assert!(
+            matches!(&refused, Some(yulius_app::error::AppError::Conflict(why))
+                if why.contains("goes on by itself") && why.contains("chained after it wait")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            TaskStore::task(&f.h.store, &first).await?.map(|t| t.status),
+            Some(TaskStatus::Running)
+        );
+        app.advance_chains(&first).await;
+        assert_eq!(status().await, Some(TaskStatus::Chained));
+    }
 
     f.decide_until(&app, || async { f.merged(&app, 1).await })
         .await?;

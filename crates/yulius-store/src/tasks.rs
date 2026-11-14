@@ -339,7 +339,7 @@ impl TaskStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
         self.tasks_query(
-            // Tasks that share a place (queued in one pass, as after a restart) keep the order
+            // Tasks that share a place (queued in the same millisecond) keep the order
             // they were created in: the queue's order is one order, whoever reads it.
             format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
@@ -1008,12 +1008,18 @@ impl TaskStore for SqliteStore {
             for (slot, id) in slots.iter().zip(&order) {
                 wanted[*slot] = id;
             }
-            // Each slot keeps its place, moved after the one before it where two shared a
-            // millisecond or the creation order would decide otherwise: places are told apart
-            // by time alone, so the order written is the order read. Without ties only the
-            // named tasks change.
-            let mut last = i64::MIN;
-            for (slot, id) in wanted.iter().enumerate() {
+            // From the first named slot on, each slot keeps its place, moved after the one
+            // before it where two shared a millisecond or the creation order would decide
+            // otherwise: places are told apart by time alone, so the order written is the
+            // order read. Without ties only the named tasks change; what stands before the
+            // first named slot is never touched.
+            let first = slots.first().copied().unwrap_or(0);
+            // A task before the first named slot that shares its place stays in front of it.
+            let mut last = match first.checked_sub(1) {
+                Some(before) => queue[before].1,
+                None => i64::MIN,
+            };
+            for (slot, id) in wanted.iter().enumerate().skip(first) {
                 let place = queue[slot].1.max(last.saturating_add(1));
                 last = place;
                 let held = queue
@@ -1025,13 +1031,17 @@ impl TaskStore for SqliteStore {
                 }
                 // The stored start is the task's while its `at` is its place (`queued_start`):
                 // it moves with the place. The right-hand sides read the row as it was.
+                // A task the call did not name was not changed by anyone: its place moves by
+                // milliseconds to keep the order, and it does not read as updated.
+                let named = order.iter().any(|named| named == id);
                 tx.execute(
-                    "UPDATE tasks SET queued_at = ?2, updated_at = ?3, \
+                    "UPDATE tasks SET queued_at = ?2, \
+                       updated_at = CASE WHEN ?4 THEN ?3 ELSE updated_at END, \
                        queued_start = CASE WHEN json_valid(queued_start) \
                          AND json_extract(queued_start, '$.at') = queued_at \
                          THEN json_set(queued_start, '$.at', ?2) ELSE queued_start END \
                      WHERE id = ?1 AND status = 'queued'",
-                    params![id, place, at.0],
+                    params![id, place, at.0, named],
                 )
                 .map_err(db)?;
             }

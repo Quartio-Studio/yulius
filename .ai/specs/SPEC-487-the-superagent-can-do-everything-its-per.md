@@ -137,7 +137,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SAR-005 | A refusal says what to do instead, by what the task is doing: `task_restart` on a task that runs says to stop it first; on one that waits in a chain or prepared, that `task_start_now` starts it; on one that is queued or waits for capacity, that it goes on by itself; on the onboarding task of a project that has not started onboarding, that a person starts it on the project's page. The state decides, read once before Continue is called; the onboarding refusal is recognised by the constant the page's check answers with. | `person_tools::tests::a_task_that_is_not_resting_is_told_what_to_do_by_its_state`, `a_refused_continue_of_an_onboarding_says_who_starts_it`; the Superagent test (a running and a prepared task) |
 | TCT-001 | `task_edit {title}` renames a task for its owner: the title, trimmed, 1 to 120 characters on one line. The task's branch and pull request keep theirs. Audited `task.renamed` under the person's name. | `cockpit::the_superagent_renames_edits_and_orders_its_persons_tasks`; `task_edit::tests::a_title_is_one_bounded_line` |
 | TCT-002 | `task_edit {prompt}` replaces the whole request of a task that has not started (queued, chained, prepared or waiting for capacity, with no run and no session), by one conditional update: a start either follows it and reads the new request or makes it fail, and it applies only while the request is still the text that was read, so a message queued meanwhile is never overwritten. Files attached to the old request that the new text does not mention follow it, each a line `@'/path'`; the answer carries the whole text that was replaced. A task that has started keeps its request and is told with `task_message`. Title and request are both checked before either is written. Audited `task.request_replaced` (sizes, no text). | the same test (attached file kept, placed file not doubled, started task, another person's task); `store::a_prompt_is_replaced_only_while_unstarted_and_as_it_was_read`; `request::tests::a_replaced_request_keeps_its_attached_files` |
-| TCT-003 | `tasks_reorder {numbers}` puts the person's queued tasks in the order given: they take the slots they hold among themselves in the queue (the earliest to the first), in one transaction, and every task not named keeps its slot, so no other person's task moves. The queue has one order (the place, then the order of creation); where tasks shared a millisecond, as after a restart that queued them in one pass, the places from there on are written a millisecond apart so the order asked for is the order read. Each task's stored start keeps naming its place. Refused, with nothing changed, when one of them is not queued, is another person's, is no task, or is named twice, and for fewer than two. | the same test; `store::queued_tasks_swap_the_places_they_hold`, `queued_tasks_that_share_a_millisecond_take_the_order_asked_for`; `task_edit::tests::a_call_names_a_bounded_list_of_tasks_each_once` |
+| TCT-003 | `tasks_reorder {numbers}` puts the person's queued tasks in the order given: they take the slots they hold among themselves in the queue (the earliest to the first), in one transaction, and every task not named keeps its slot, so no other person's task moves. The queue has one order (the place, then the order of creation); where tasks shared a millisecond, the places from the first named slot on are written a millisecond apart so the order asked for is the order read. Each task's stored start keeps naming its place. Refused, with nothing changed, when one of them is not queued, is another person's, is no task, or is named twice, and for fewer than two. | the same test; `store::queued_tasks_swap_the_places_they_hold`, `queued_tasks_that_share_a_millisecond_take_the_order_asked_for`; `task_edit::tests::a_call_names_a_bounded_list_of_tasks_each_once` |
 | TCT-004 | `task_close` closes out a running task whose agent is idle, for its owner: the session ends gracefully and the task is `closed`, as Yulius closes a finished task, whatever its plan or pull request say; `task_restart` continues it. Background shells it left end with the session. Refused: a task in a turn (a turn in progress counts whatever its activity reads; its first turn, before any activity is known, too) with "wait or stop it"; a task Yulius still has pull request news for (CHN-001, CHN-002: it goes on by itself and its chain waits for that); one that has not started; one that waits with a session of its own (queued again, held for capacity); one that has ended. Audited `task.closed_by_person`. | `task_message::the_owner_closes_out_an_idle_task` (a live session); `task_edit::tests::only_an_idle_running_task_is_closed_out` (every case of the rule); `cockpit::the_superagent_acts_on_several_of_its_persons_tasks_in_one_call` (the refusals through the tool, a held task with a live run among them) |
 | TCT-005 | `tasks_bulk {do, numbers \| all}` does one action (stop, pause, unpause, message) to several tasks in one call. Each task gets what the single tool does, with its checks and its audit; one task's refusal does not stop the others, and the answer names the tasks done and the tasks refused with the reason. `all` is every task of the person's own that the action applies to (stop: not ended; pause: running and not paused; unpause: paused by a person; message: running or not started); other people's tasks are left alone and counted. A stop takes the waiting tasks before the running ones, so no session it frees starts a task it is about to stop. An unpause of a task nobody paused is refused, not listed as done. At most 100 tasks a call; what `all` did not reach is said. The call runs to its last task and its audit when the client goes away, from the Superagent and through the remote MCP. | the same test; `task_edit::tests::all_takes_the_tasks_an_action_applies_to`, `a_bulk_stop_takes_the_waiting_tasks_first`; `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely`, `a_bulk_call_whose_client_went_away_still_reaches_every_task`; `cockpit::a_bulk_call_reaches_a_hundred_tasks_and_says_what_is_left` |
 | TCT-006 | `task_message {with_draft: true}`: the task's owner, and only they, has a message sent past text they left unsent in the task's prompt box (SPEC-480 held every message until they went to the terminal). The message is typed behind that text, after a blank line, and both are submitted as one prompt; that submit ends the draft as a prompt sent from the box does, also a draft known only from its mark after a restart of the server; never within a minute of their last key, and not while a prompt Yulius held for a decision (TSK-013) is back in the box. The refusal for a draft names the argument. | `task_message::the_owner_sends_a_message_past_their_own_draft` (a live session: at the keyboard, without the argument, another owner, a held prompt, then sent as one prompt and the next plain message typed), `a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft` |
@@ -311,11 +311,12 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **The order is a swap of slots, not a new clock** (TCT-003). The queue is one order across
   all sandboxes (`COALESCE(queued_at, created_at)`, then the order of creation, which the
   query now says). Writing new times would move the person's tasks past other people's;
-  swapping the slots they already hold moves nobody else. Tasks often share a millisecond (a
-  restart queues every waiting task in one pass), and a swap of equal places is no swap
-  (review round 1): so the write walks the whole queue and puts each place after the one
-  before it. Only then are other tasks' places touched, by milliseconds and never in their
-  order. A column of its own for the order was rejected: one more thing to keep in step with
+  swapping the slots they already hold moves nobody else. Two tasks can share a millisecond
+  (each is queued at its own clock reading, and several are queued in quick succession), and
+  a swap of equal places is no swap (review round 1): so the write walks the queue from the
+  first named slot and puts each place after the one before it. Only where places are
+  shared are other tasks' places touched, by milliseconds, never in their order, and such a
+  task does not read as updated (review round 2). A column of its own for the order was rejected: one more thing to keep in step with
   `queued_at` for a case the places already carry.
 - **Closing out is for an idle session** (TCT-004). "Set it to done" is not a state a person
   sets: Done is computed (slice 1). What they mean is that the session should end and the
@@ -454,16 +455,18 @@ the function the web UI's route calls, with the person's rights checked at the c
   Global Superagent, message and queued-message test files pass (159 tests), and the unit
   tests of `yulius-app`, `yulius-domain`, `yulius-store` and `yulius-harness` (1341).
 - **Independent review, round 1** (a fresh session, head `8cdf484f9`): request changes. All
-  its findings are in this slice's code and are answered, tests first (they fail on that
-  head, `target/evidence/s3-r1-red.log`, and pass now, `s3-r1-green.log`):
+  its findings are in this slice's code and are answered with tests: five of the seven integration
+  tests written for them fail on that head (`target/evidence/s3-r1-red.log`; the other two
+  cover the provider-session case and the 100 bound, which held already and had no test)
+  and all pass now (`s3-r1-green.log`); the close rule's unit test came with the rule:
   - F1, medium: after a restart of the server `with_draft` sent the message and answered
     "the box is empty again", but the draft, known from its mark alone, stayed: every later
     message was refused and the task was flagged after ten minutes. The submit Yulius makes
     for the owner now counts as the prompt that follows the draft (the reviewer's probe is
     the regression test).
   - F10 (rated a nit, found to matter): two queued tasks that share a millisecond were not
-    swapped, and a restart queues every waiting task in one pass. The order is now written
-    along the whole queue, and the queue's query names its second key.
+    swapped. The order is now written along the queue, and the queue's query names its
+    second key.
   - F2, F3: a close is decided by one rule over the task's state, a turn in progress, pull
     request news still to come and whether it has started (a held task with a live session
     was told it "has not started"; a flag standing mid-turn read as idle; a task with an
@@ -487,5 +490,16 @@ the function the web UI's route calls, with the person's rights checked at the c
   each; the second reads the places the first wrote); a close-out refused for a turn in
   progress or for pull request news, through a live session (the rule is unit-tested with
   every case; the facts are read from the functions the task list uses); a prompt whose hook
-  is still being answered when the close is decided (a window of milliseconds: the close is
-  a graceful shutdown, and the task can be continued).
+  is still being answered when the close is decided (up to the three seconds its scope check may take,
+  or as long as an update or a pause holds the prompt: the close is a graceful shutdown, and
+  the task can be continued).
+- **Round 2** (head `9e8118bd9`): approved; the reviewer's own gate run passed. Its notes
+  are answered in the commit after the merge of pull request #1275 (into `dev` at
+  `ae5370970`, whose Yulius CI run passed): a close-out of a task with an armed, green pull
+  request is refused and its chained task keeps waiting, shown through the real functions
+  (`merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge`); an
+  order writes nothing before its first named slot and leaves `updated_at` of tasks it did
+  not name alone (`store::an_order_leaves_the_tasks_it_does_not_name_as_they_were`); the
+  limit of the mark that ends a draft sent past is said where it is kept; the wording of
+  this section and of the news refusal. Left as it is: the `turn` fact of a close through a
+  live session.
