@@ -11,7 +11,7 @@ import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
 import { CLOSE_REVOKED } from '../termsocket.js';
 import { accountUsage, capacityPanel } from '../layout.js';
-import { limitsNow } from '../usage.js';
+import { limitsNow, needsSignIn, works } from '../usage.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
@@ -432,8 +432,6 @@ export function mountAccountsPage(ctx, route) {
   let reading = 0;
   let readingAll = false;
   const NO_NEW_READING = 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.';
-  /** A subscription works while it is `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
-  const works = (account) => ['ok', 'limited'].includes(account.status);
   /** A subscription that works can be read; one that needs a sign-in offers that instead. */
   const signedIn = works;
   /** Draws again what the card of `id` says about its reading (the card asks the queue). */
@@ -576,7 +574,7 @@ export function mountAccountsPage(ctx, route) {
         read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }
       const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
-      const broken = !works(account);
+      const broken = needsSignIn(account);
       return h('div', { class: 'card card-pad stack' },
         usageHost,
         h('div', { class: 'row-wrap' },

@@ -503,6 +503,21 @@ test('Refresh all is off when no subscription is signed in, and one subscription
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-483 SGN-002: a subscription that reads `error` needs a sign-in as one that reads `relogin`
+// does (the server's one rule: only `ok` and `limited` work), so the page asks it for no reading.
+test('a subscription in error is asked for no usage reading (SPEC-483)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.accounts.forEach((account, i) => { if (i > 0) account.status = 'error'; });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  await screen.getByRole('button', 'Refresh all').click();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 1 subscription.")')).toBeVisible();
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1 });
+});
+
 // RFR-015: the page reads a card that may be out of date by itself once per visit. A redraw of the
 // list does not ask again, a failure of that reading says nothing, and a later Refresh does ask.
 test('the page reads an old card by itself once per visit and says nothing when that fails (SPEC-473)', async ({ app, browser, screen }) => {

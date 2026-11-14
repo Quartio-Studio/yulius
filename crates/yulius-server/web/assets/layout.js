@@ -3,7 +3,7 @@
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
-import { limitsNow, percentNow, placingModel } from './usage.js';
+import { limitsNow, needsSignIn, percentNow, placingModel } from './usage.js';
 import { PROVIDERS, fallbackLine, modelLabel } from './models.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
@@ -442,7 +442,7 @@ export function renderStatus(data) {
 
   // One line that says whether anything needs a person; those accounts are listed first. A
   // subscription at its limit needs nobody: the pool uses the others until it resets.
-  const troubled = accounts.filter((a) => ['relogin', 'pending_login', 'error'].includes(a.status));
+  const troubled = accounts.filter(needsSignIn);
   const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Not isolated: agent sessions run without an OS sandbox' };

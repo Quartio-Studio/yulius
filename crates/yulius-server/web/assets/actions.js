@@ -8,7 +8,7 @@ import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
-import { limitInEffect, limitsNow, modelWindow, placingModel, usedUp } from './usage.js';
+import { limitInEffect, limitsNow, modelWindow, needsSignIn, placingModel, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
@@ -183,7 +183,7 @@ export function continueTask(ctx, task) {
  * is not known is not let through on that.
  */
 export function cannotTake(account, task, accounts = null) {
-  if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
+  if (needsSignIn(account)) return 'Needs a new sign-in';
   const usage = account.usage || {};
   const known = Boolean(task && task.model);
   const model = known && accounts ? placingModel(accounts, task.model) : known ? task.model : null;
