@@ -1,11 +1,11 @@
 ---
 yulius-task: 42c13112-2302-432f-ab26-08ee3802b561
-status: in-progress
+status: done
 ---
 
 # SPEC-490: anyone who may work in a project stops, archives and deletes its tasks; control passes only by the owner's consent
 
-Status: in-progress
+Status: done
 Date: 2026-11-14
 Owner: Yulius task #473
 Scope authorization: the request of task #473 (by MrFishPL, 2026-11-14): "users should be able
@@ -186,12 +186,12 @@ are their creator's (reported as issue #1289, see Decisions).
 - [x] A tidy by someone else is audited with the owner and said in the task's terminal
 - [x] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
 - [x] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
-- [ ] Independent review of the first pull request (the rule and the UI), findings fixed
+- [x] Independent review of the first pull request (the rule and the UI), findings fixed
 - [x] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
 - [x] The owner hears of a request anywhere, and control can be asked for from the task menu
 - [x] The person who handed a task over takes it back (schema 59, the route, the UI)
-- [ ] Independent review of the second pull request (consent), findings fixed
-- [ ] Gates green on the final head, evidence recorded
+- [x] Independent review of the second pull request (consent), findings fixed
+- [x] Gates green on the final head, evidence recorded
 
 ## Acceptance criteria
 
@@ -308,3 +308,62 @@ are their creator's (reported as issue #1289, see Decisions).
 - **No agent asks, grants or takes back.** Asking and consenting stay a person's own acts in
   the page or the API: a Superagent reads transcripts and web pages, and consent given on a
   sentence it read there is not the owner's.
+
+## Evidence
+
+Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-delete-other`.
+
+**Slice 1** (Plan items 1-7): pull request #1292, merged into `dev` on 2026-11-14 at head
+`aa154aec4`, whose own Yulius CI run passed.
+
+- `scripts/dev ci` at `cae995db3`: exit 0, 4389 tests passed (lint, docs, deps, macOS build
+  included). `cd e2e && npx e2e run`: 1036 passed and one of the new tests failed on its timing;
+  it was fixed (`2bd5c0875`) and `ownership.e2e.ts` then passed 9 of 9. The full suite was not
+  run again until slice 2, below.
+- Every route and MCP tool that takes a task was traced down to its check (Context, "Every way
+  to change a task"). Three ways in that asked no owner were found and closed: `task_message`,
+  the attachment restore, Start onboarding.
+- Mutation check (`target/mutants-473.py`, removing each part of the rule): 12 of 12 killed.
+- Review round 1 (a fresh session, `om-code-review`), at `cae995db3`: APPROVE, with seven minor
+  findings, all in this change's code and fixed in slice 2: a stronger action shrinking to
+  `Work`, guests tidying the maker's tasks, a refused Start onboarding pushing a first commit,
+  an onboarding task made for the creator blocking everyone else, no test of a close-out by
+  someone else, the superadmin missing from the steering test, a notice creating a runtime.
+  The merge of `dev` was reviewed apart (APPROVE at `aa154aec4`).
+- Changed existing tests (the old rule refused what is now open): `http_auth.rs` (the
+  superadmin archives another person's task; continue is still refused), `prepared.rs` (a
+  non-owner's stop of a prepared task), `cockpit.rs` (`task_close` and a named `tasks_bulk`
+  stop of another person's task), `secrets_scopes.rs`, `pool_supervision.rs` and
+  `task_message.rs` (a message is refused for being someone else's task, whatever it holds).
+
+**Slice 2** (Plan items 8-12), final head before the review:
+
+- `scripts/dev ci` (after merging `dev` at `50d6efc70`): exit 0, 4414 tests passed, 17
+  skipped.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 84 files passed, 1 skipped; 1041 tests
+  passed, 1 skipped.
+- Mutation check, slice 1's and slice 2's rules together: 19 of 19 killed (guests, the giver
+  check, the giver's access, the giver recorded, the onboarding claim before the push, a
+  close-out said, a stronger action kept).
+- New tests: `task_access::tests` (guest, stronger action), `playground_guests::
+  a_guest_tidies_only_their_own_tasks`, `projects::
+  onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters`, `task_message::
+  someone_else_closes_out_an_idle_task_and_is_named`, `task_ownership::
+  the_giver_takes_a_task_back`, `task_ownership::taking_back_ends_when_control_moves_again`,
+  `store::the_giver_takes_a_task_back_until_control_moves_again`,
+  `yulius-store tests::version_fifty_eight_tasks_have_no_giver`, e2e `ownership.e2e.ts` (the
+  owner hears of a request; the giver takes the task back) and `playground-guests.e2e.ts`.
+- Migration numbering: `dev` merged SPEC-491's `0060_task_spec_status.sql` as schema version
+  59 first; this change's `0059_task_control_from.sql` follows it as version 60 (the position
+  is the version).
+- Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off
+  in Yulius"; nothing was scanned. That is unrun, not passed.
+
+**Not tested here:** the desktop notification of a request (the browser's `Notification` is
+the same path the notification centre's other entries use, and its e2e covers only the bell
+and the toast); real GitHub permissions (the tests use the fake GitHub and cached
+permissions); a real Claude Code session receiving the "Stopped by" notice (the fake agent's
+terminal hub is checked).
+
+**Reported, not changed:** issue #1289, any writer can run their own prompt as another person
+through that person's automation (who an automation runs as).
