@@ -274,6 +274,97 @@ async fn anyone_who_may_work_tidies_another_persons_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-490 OWN-005, AC-6: a stop, an archive and a restore of a task by someone who does not
+/// own it are audited under their login with the owner's, and the stop is said in the task's
+/// terminal; the owner's own page actions leave no such entry and say nothing.
+#[tokio::test]
+async fn a_tidy_by_someone_else_names_them_and_the_owner() -> TestResult {
+    let f = fixture().await?;
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let entry = |action: &'static str, task: &'static str| {
+        let store = f.h.store.clone();
+        async move {
+            let found = store
+                .automation_audit(task, 50)
+                .await?
+                .into_iter()
+                .find(|e| e.action == action);
+            Ok::<_, Box<dyn std::error::Error>>(found)
+        }
+    };
+    assert_eq!(
+        task_call(&f, Method::POST, "/stop", &f.bob).await?.status,
+        200
+    );
+    let stopped = entry("task.stopped", "t1")
+        .await?
+        .ok_or("no stop audited")?;
+    assert_eq!(stopped.actor, "bob");
+    let detail: serde_json::Value =
+        serde_json::from_str(stopped.detail.as_deref().unwrap_or_default())?;
+    assert_eq!(detail["owner"], "alice", "{detail}");
+    assert!(
+        detail["task"].as_str().is_some_and(|t| t.starts_with('#')),
+        "{detail}"
+    );
+    let said = notices(&mut watch);
+    assert!(said.iter().any(|n| n == "Stopped by @bob."), "{said:?}");
+
+    seed_task(&f.h, "t-rest", "s1", "u-a", RESTING, None).await?;
+    for (rest, action) in [
+        ("/archive", "task.archived"),
+        ("/restore", "task.unarchived"),
+    ] {
+        let path = format!("/api/tasks/t-rest{rest}");
+        let done = call(&f.h.router, Method::POST, &path, None, &f.bob).await?;
+        assert_eq!(done.status, 200, "{rest}: {}", done.body);
+        let audited = entry(action, "t-rest").await?.ok_or("not audited")?;
+        assert_eq!(audited.actor, "bob", "{rest}");
+        assert!(
+            audited
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains(r#""owner":"alice""#)),
+            "{rest}: {:?}",
+            audited.detail
+        );
+    }
+
+    // The owner's own stop and archive: as before, no entry and no notice.
+    seed_task(&f.h, "t-own", "s1", "u-a", TaskStatus::Queued, None).await?;
+    let mut own = f.h.app.runtime(&TaskId::parse("t-own")?).hub.watch();
+    for rest in ["/stop", "/archive"] {
+        let path = format!("/api/tasks/t-own{rest}");
+        let done = call(&f.h.router, Method::POST, &path, None, &f.alice).await?;
+        assert_eq!(done.status, 200, "{rest}: {}", done.body);
+    }
+    assert_eq!(f.h.store.automation_audit("t-own", 50).await?.len(), 0);
+    assert!(notices(&mut own).is_empty());
+
+    // A deletion is audited for everyone; someone else's names the owner too.
+    let deleted = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/tasks/t-rest",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert!(deleted.status.is_success(), "{}", deleted.body);
+    let audited = entry("task.deleted", "t-rest")
+        .await?
+        .ok_or("not audited")?;
+    assert!(
+        audited
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains(r#""owner":"alice""#)),
+        "{:?}",
+        audited.detail
+    );
+    Ok(())
+}
+
 /// SPEC-490 OWN-002: a task that waits to start is cancelled by anyone who may work.
 #[tokio::test]
 async fn anyone_who_may_work_cancels_a_task_that_waits() -> TestResult {
