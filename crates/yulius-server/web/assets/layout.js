@@ -1158,7 +1158,7 @@ export function createSidebar(ctx) {
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
     const label = `Archive task #${task.number}`;
-    const archivable = taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
+    const archivable = taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login, Boolean(ctx.guest && ctx.guest())).archive;
     // The keyboard on a quick Archive that hides (the task was continued) goes to its row's link,
     // never to the page (#331); a rebuild after this keeps it there.
     if (!archivable && document.activeElement === row.archive) row.link.focus({ preventScroll: true });

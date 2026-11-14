@@ -429,7 +429,12 @@ impl App {
         id: &str,
         action: Action,
     ) -> AppResult<TaskRecord> {
-        self.load_task_to(ctx, id, TaskAction::of(action)).await
+        // A stronger action asked (`Configure`) keeps its own access check (review round 1).
+        let (action, needs) = TaskAction::with_access(action);
+        let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
+        let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
+        self.require_task_at(ctx, &task, action, needs).await?;
+        Ok(task)
     }
 
     /// The task `id` for `ctx`'s person to view, tidy or control (SPEC-490 OWN-001, ADR-0331):
@@ -461,12 +466,30 @@ impl App {
         task: &TaskRecord,
         action: TaskAction,
     ) -> AppResult<AccessLevel> {
-        let (_, level) = self
-            .require_for(ctx, &task.sandbox_id, action.sandbox_action())
-            .await?;
-        match task_access::decide(action, level, owns(task, &ctx.user.id)) {
+        self.require_task_at(ctx, task, action, action.sandbox_action())
+            .await
+    }
+
+    /// [`App::require_task`] with the sandbox action `needs` checked for the project, at least
+    /// the task action's own.
+    async fn require_task_at(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+        action: TaskAction,
+        needs: Action,
+    ) -> AppResult<AccessLevel> {
+        let (_, level) = self.require_for(ctx, &task.sandbox_id, needs).await?;
+        let guest = self.is_guest(&ctx.user);
+        match task_access::decide_for(action, level, owns(task, &ctx.user.id), guest) {
             Ok(()) => Ok(level),
             Err(TaskRefusal::NotOwner) => Err(self.not_the_owner(task).await),
+            Err(TaskRefusal::Guest) => Err(AppError::Forbidden(format!(
+                "Task #{} is @{}'s: a guest stops, archives and deletes only their own tasks on \
+                 this playground.",
+                task.number,
+                self.login_of(&task.owner).await
+            ))),
             // `require_for` refused a level below the action's already.
             Err(TaskRefusal::Access) => Err(AppError::Forbidden(
                 "this needs write access to the project".into(),
@@ -566,10 +589,12 @@ impl App {
         if owns(task, &ctx.user.id) {
             return;
         }
+        // Nobody watches a task that has no runtime: a cancelled queued task gets none.
+        let Some(runtime) = self.existing_runtime(&task.id) else {
+            return;
+        };
         let login = self.login_of(&ctx.user.id).await;
-        self.runtime(&task.id)
-            .hub
-            .notice(format!("{what} by @{login}."));
+        runtime.hub.notice(format!("{what} by @{login}."));
     }
 
     /// Tasks of a sandbox (archived or active).

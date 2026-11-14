@@ -20,7 +20,8 @@
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
-// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
+// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies),
+// labtask=1 (with guest=1: the maker's stopped task in `lab`, SPEC-490).
 // move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
 // no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
 // preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
@@ -447,6 +448,8 @@ function seed(params) {
       db.guestInvites.push({ id: 'inv_seed', sandbox_id: lab.id, code: MOCK_GUEST_CODE, created_by: 'mkarp', created_at: iso(HOUR), expires_at: isoIn(7 * DAY), guests: [] });
     }
     if (['1', 'dead'].includes(params.get('guestlink'))) db.signedIn = false;
+    // `labtask=1`: the maker's stopped task in the playground, which a guest may not put away (SPEC-490).
+    if (params.get('labtask') === '1') db.tasks.push(t(guestPlayground(db).id, 1, 'Sketch the landing page', 'claude', 'stopped_cancelled', null, { author: 'mkarp', noSteps: true }));
     if (params.get('guest') === '1') becomeGuest(db, db.guestInvites[0], 'Carol');
   }
   return db;
@@ -852,6 +855,8 @@ function needTaskWrite(db, task) {
 /** Stop, archive, restore and delete need write access alone (SPEC-490 OWN-002). */
 function needTaskTidy(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
+  const owner = ownerOf(task).login;
+  if (db.me.user.guest && owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest stops, archives and deletes only their own tasks on this playground.`);
 }
 
 function hashString(s) {

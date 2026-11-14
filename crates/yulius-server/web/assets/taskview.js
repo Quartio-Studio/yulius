@@ -407,7 +407,7 @@ export function mountTaskView(ctx, sandbox, task) {
     let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
-    const can = taskActions(current, access, pr, me());
+    const can = taskActions(current, access, pr, me(), Boolean(ctx.guest && ctx.guest()));
     const request = current.control_request;
     // Control of the task (SPEC-070), on its own row above what else the task needs.
     let control = null;

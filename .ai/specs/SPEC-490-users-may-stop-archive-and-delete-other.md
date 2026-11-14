@@ -181,6 +181,7 @@ are their creator's (reported as issue #1289, see Decisions).
 - [x] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
 - [x] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
 - [ ] Independent review of the first pull request (the rule and the UI), findings fixed
+- [ ] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
 - [ ] The owner hears of a request anywhere, and control can be asked for from the task menu
 - [ ] The person who handed a task over takes it back (schema 59, the route, the UI)
 - [ ] Independent review of the second pull request (consent), findings fixed

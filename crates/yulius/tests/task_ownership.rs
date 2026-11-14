@@ -181,7 +181,8 @@ async fn only_the_owner_steers_a_task() -> TestResult {
     f.h.store
         .update_user_flags(&UserId::parse("u-admin")?, None, Some(true))
         .await?;
-    for who in [&f.bob, &admin] {
+    let superadmin = crate::support::setup_superadmin_creds(&f.h).await?;
+    for who in [&f.bob, &admin, &superadmin] {
         for (method, path, body) in steering(id) {
             let refused = call(&f.h.router, method.clone(), &path, body, who).await?;
             assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
