@@ -37,7 +37,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | Command | Actual work |
 | --- | --- |
 | `scripts/dev doctor` | Compiler/tool versions and Python prerequisite |
-| `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`); checker regression tests; locked all-target compilation |
+| `scripts/dev check` | Local Markdown links, no merge conflict marker lines outside vendored assets, skills (frontmatter, "Use when" description, body size, deployments equal `.apm/skills`), Cargo inheritance/layers, one integration test binary for the composition crate, web UI design tokens (no colour, type, radius or spacing literals in `styles.css`; WCAG contrast of every theme in `tokens.css`), instructions that tell an agent to merge by hand, promote or poll; checker regression tests; locked all-target compilation |
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev macos` | Clippy with warnings denied on every target for `aarch64-apple-darwin`; on Linux the vendored C (ring, SQLite) is compiled by the pinned zig. Type-checks only: nothing is linked |
@@ -59,12 +59,11 @@ Use the full gate after implementation stabilizes.
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
-the UI has no Node at runtime) and are not part of `scripts/dev ci`. Run them after UI changes:
+the UI has no Node at runtime) and are not part of `scripts/dev ci`: Yulius CI runs them as its
+`e2e` job. Run them after UI changes:
 `cd e2e && npm ci --ignore-scripts && npx e2e run`.
 No provider login, database, Docker daemon or paid model call is part of ordinary CI.
-Product crates are added per the SPEC-002 delivery checkpoints.
-Its binary-only workspace has no doctest targets; the gate reports this as not
-applicable and automatically runs doctests when library targets are added.
+The gate runs the doctests of every library crate.
 
 `cargo-deny` fetches RustSec advisory data; fresh evidence requires network access.
 If a network failure prevents that, report it as unverified rather than suppressing

@@ -15,6 +15,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   queued CI run first in its project's queue. The person's own agent has them too through
   the remote MCP.
 
+- The repository's own instructions deliver as Yulius does (SPEC-483 slice 27, task #465).
+  AGENTS.md, the Git and workflow documents, the Git skill and the pull request template no
+  longer tell an agent to merge its own pull request by hand, to poll, or to promote; they
+  describe the review, `delivery_merge`, the merge queue and a person's promotion on the CD
+  page, and the repository check refuses the old wording. The spec template is now the form
+  `spec_check` validates. The engineering documents describe the product code, and a few
+  server options and an internal route are documented.
 - What Yulius tells agents and people agrees with how it works (SPEC-483 slice 26, task #465).
   The goal and the merge news no longer say an agent may promote when its task asks: promotion
   is a person's. The Chore workflow no longer deploys after a merge, and the Docs workflow no
