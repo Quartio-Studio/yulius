@@ -2981,3 +2981,21 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   skipped` (`target/audit/slice28/gate.log`); e2e of the editors, places, navigation, pull
   requests, Git, file drops, CD, CI and the instance page: 12 files, 148 passed (`e2e.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `402f4eb31`): request changes. One major, own
+  code: a guarded Back or Forward put the address back with a new history entry, so Back,
+  Leave, Back landed in the editor again, and after Forward and Cancel a later Back went to the
+  page Forward had been declined; the Decisions' claim that the browser offers nothing better
+  was wrong. Minor: Leave ended the guard of a page that stays (a way out to its own address);
+  four `slice(0, 7)` copies were left; the chip test read titles only. Nits: an export nothing
+  imports, `limitSize` rounding where the server cuts, a line starting with "#465" read as a
+  heading. The reviewer also saw the Git page's review column say "No checks" where it said
+  "In review". All answered in `b7efd61d8`, `396bd75e1` and `742015de3`: entries carry their
+  place and a guarded move is undone and made again (Decisions); writing it, the move from the
+  tab's first entry (entry 0) was taken for no move, and the second event of a move in hash mode
+  was not tested: both are now.
+- **Gate after it.** `scripts/dev ci` at `742015de3`: exit 0; `4374 tests run: 4374 passed (1
+  slow), 17 skipped` (`gate2.log`); e2e of 16 files (the editors, places, navigation, pull
+  requests, Git, file drops, CD, CI, editor, sandbox Docker, shortcuts, loading shapes): 206
+  passed (`e2e2.log`); the mutation cases (`mutations-r1.log`, 21) all failed their tests (a
+  flag that told the router's own moves apart survived: `emit` already ignores a return to the
+  address in view, so the flag went, and the check that lets a move's own events by got a test).
