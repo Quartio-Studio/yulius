@@ -42,7 +42,7 @@ export function profileSentence(profile) {
   const prod = profile.production_branch || 'production';
   const envs = environments(profile);
   const checks = profile.require_checks === false ? 'Checks don’t block merging.' : 'Merges wait for green checks.';
-  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} Agents merge; Yulius releases each merge. This page shows where things are.`;
+  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} Agents merge; ${BRAND.name} releases each merge. This page shows where things are.`;
   const agents = 'Agents merge; a person releases on the CD page. This page shows where things are.';
   let text = `Merged work collects on ${int}`;
   if (envs.integration.length) text += `, is checked on ${listNames(envs.integration.map((e) => e.name))}`;
