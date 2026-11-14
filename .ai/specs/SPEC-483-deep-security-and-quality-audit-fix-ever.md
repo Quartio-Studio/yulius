@@ -1755,7 +1755,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   sends for one move changes nothing, also from the tab's first entry. A navigation by code
   (`navigate()`) asks the same and goes on after Leave; Leave to the address in view keeps the
   page, and a later change is asked about again (the new skill's page too). Without a change,
-  Back asks nothing (ONE-001).
+  Back asks nothing, nor does leaving an editor before it has loaded; an address typed over
+  unsaved work in hash mode is put back, and Back and Forward across it keep asking (ONE-001).
 - **AC-145** The chips of an open pull request with failing, passing, running and unknown
   checks, as a link, a span and a button, say "checks failing", "checks passed", "checks
   running" and "checks unknown" (with why) in their titles and names (a span's screen-reader
@@ -2036,7 +2037,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   by code too" and "Forward from the first page of the tab is asked about and undone once"
   (AC-144), `places.e2e.ts` "leaving a new skill unsaved for another sandbox goes where that
   sandbox was left" (a link, through the router's guard) and "a new skill left for its own
-  address still asks about a later change", `pulls.e2e.ts`
+  address still asks about a later change", `workflows.e2e.ts` "an editor left before it has
+  loaded leaves without a question" and "an address typed over unsaved work keeps the history
+  countable", `pulls.e2e.ts`
   "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
   `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
   the page)" (AC-146); `scripts/test_check_repository.py`
@@ -2127,8 +2130,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (`history.state`), which says how far a move went (`history.go(-steps)`, then
   `history.go(steps)`); the events of its own moves are let by. Putting the address back with a
   new entry (the first version) added an entry on every answer and sent a later Back to the
-  page Forward had been declined (review of slice 28). Only a move of unknown length, an address
-  typed in hash mode, is still put back by a new entry. A size keeps two wordings: `limitSize` is the
+  page Forward had been declined (review of slice 28). An address typed in hash mode makes an
+  entry the router did not label: it is labelled where it stands and the address is put back
+  by a new entry after it. An editor has nothing unsaved until it has loaded. A size keeps two
+  wordings: `limitSize` is the
   server's wording of a limit (the uploads' messages, which tests on both sides read) and
   `bytes` the wording of a measurement (`3.0 GiB`); one would change a message the server
   sends or the disk figures people compare with `df`. "Checks failing" is the wording kept: it
@@ -2986,10 +2991,10 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   Leave, Back landed in the editor again, and after Forward and Cancel a later Back went to the
   page Forward had been declined; the Decisions' claim that the browser offers nothing better
   was wrong. Minor: Leave ended the guard of a page that stays (a way out to its own address);
-  four `slice(0, 7)` copies were left; the chip test read titles only. Nits: an export nothing
+  `slice(0, 7)` copies were left; the chip test read titles only. Nits: an export nothing
   imports, `limitSize` rounding where the server cuts, a line starting with "#465" read as a
   heading. The reviewer also saw the Git page's review column say "No checks" where it said
-  "In review". All answered in `b7efd61d8`, `396bd75e1` and `742015de3`: entries carry their
+  "In review". (Six `slice(0, 7)` copies were left in all, `stages.js` included.) All answered in `b7efd61d8`, `396bd75e1` and `742015de3`: entries carry their
   place and a guarded move is undone and made again (Decisions); writing it, the move from the
   tab's first entry (entry 0) was taken for no move, and the second event of a move in hash mode
   was not tested: both are now.
@@ -2999,3 +3004,18 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   passed (`e2e2.log`); the mutation cases (`mutations-r1.log`, 21) all failed their tests (a
   flag that told the router's own moves apart survived: `emit` already ignores a return to the
   address in view, so the flag went, and the check that lets a move's own events by got a test).
+- **Review, round 2** (the same session, head `2a7ac2395`): approve, with two nits: N1, own
+  code, an address typed over unsaved work in hash mode left an unlabelled entry, so a later
+  move across it was miscounted and, after a Cancel, Back and Forward were ignored until the
+  next navigation; N2, the count of `slice(0, 7)` copies above. The merge was armed.
+- **CI at `2a7ac2395`** (run `60e1d04b`): `e2e` failed, `responsive.e2e.ts` "every top-level page
+  is centred": the test opens each page by its address, and the automation editor, left before
+  it had loaded, counted its empty baseline as a change, which the guard now asks about on a
+  typed address (before, a link click while it loaded asked too). Reproduced locally; the
+  automation and MCP editors have nothing unsaved until they have loaded (the workflow editor
+  already had none), tested on all five editors. N1 is fixed with it (its test failed first),
+  N2 in the Evidence above, in `ebaff95d1`.
+- **Gate after it.** `scripts/dev ci` at `ebaff95d1`: exit 0; `4374 tests run: 4374 passed (1
+  slow), 17 skipped` (`gate3.log`); the whole e2e suite: 85 files, 1032 passed, 1 skipped
+  (`e2e-full.log`); the new mutation cases (`mutations-ci.log`: a typed entry left unlabelled,
+  a loading automation or MCP server counted as unsaved) failed their tests.
