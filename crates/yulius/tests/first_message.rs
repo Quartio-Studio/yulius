@@ -1144,6 +1144,46 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
     Ok(())
 }
 
+/// SPEC-483 TYP-002: a person starts to type just before Yulius types a resumed session's
+/// `/goal` (the opening turn is over and nobody had typed; Yulius may wait for the typing mark
+/// there). Asked again with the mark held, their key keeps the goal out, and the task says that
+/// it has no goal, as when they typed earlier.
+#[test]
+fn a_key_just_before_the_goal_keeps_it_out_and_is_said() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        {
+            let (app, key, id, person) = (app.clone(), id.clone(), id.clone(), ctx.user.id.clone());
+            yulius_app::race::on(
+                yulius_app::race::Point::LineReady,
+                Path::new(key.as_str()),
+                move || app.record_typing(&id, &person),
+            );
+        }
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n
+                    .contains("Someone typed in the terminal before Yulius set the task's goal")),
+            "{said:?}"
+        );
+        assert!(!screen(&app, &id).contains("GOAL SET"), "no goal was typed");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-483 TYP-002: while Yulius types a resumed session's `/goal` (the line is in the prompt
 /// box, its Enter not sent yet), a message for the task is refused as while another message is
 /// being typed, and the goal is set as it was typed.

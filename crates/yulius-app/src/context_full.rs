@@ -52,7 +52,7 @@ const COMPACT_HELD_NOTICE: &str = "Yulius holds the compaction of this full sess
     prompt; in ten minutes Yulius compacts the session all the same.";
 
 /// The reason of the flag that says a compaction waits for a person's possible draft.
-pub(crate) fn held_for_a_draft() -> AttentionRecord {
+fn held_for_a_draft() -> AttentionRecord {
     AttentionRecord::yulius(COMPACT_HELD_PROBLEM, COMPACT_HELD_ACTION)
 }
 
@@ -584,7 +584,8 @@ impl App {
             }
             // A person who typed since: the prompt box (and any draft in it) is theirs.
             if typed_since() {
-                self.left_to_its_person(task_id, kind, &wanted);
+                self.left_to_its_person(task_id, kind, held.is_some(), &wanted)
+                    .await;
                 return false;
             }
             if self.has_draft(task_id) {
@@ -612,18 +613,24 @@ impl App {
             tracing::warn!(task = %task_id, "the terminal never went quiet; nothing typed for a full session");
             return false;
         }
+        crate::race::reached(
+            crate::race::Point::LineReady,
+            std::path::Path::new(task_id.as_str()),
+        );
         // One typist at a time; what was asked above is asked again with the mark held, since
         // the wait for it gives a person time to start typing.
         let _typing = Typing::wait(&runtime.typing_message, TYPING_TURN_WAIT).await;
         if typed_since() {
-            self.left_to_its_person(task_id, kind, &wanted);
+            self.left_to_its_person(task_id, kind, held.is_some(), &wanted)
+                .await;
             return false;
         }
         if !self.context_is(task_id, &wanted) || !self.attempt_live(task_id, attempt).await {
             return false;
         }
         if held.is_some() {
-            self.end_compaction_hold(task_id).await;
+            // Nobody emptied the box: the task works again while Yulius compacts it.
+            self.end_compaction_hold(task_id, Activity::Working).await;
         }
         if let Err(err) = self.send_input(task_id, line.as_bytes()).await {
             tracing::warn!(task = %task_id, error = %err, "could not type into a full session");
@@ -646,23 +653,29 @@ impl App {
     }
 
     /// A person typed since the line was asked for: nothing is typed, and for a compaction the
-    /// terminal says that the full session is theirs (only while it is still wanted).
-    fn left_to_its_person(
+    /// terminal says that the full session is theirs (only while it is still wanted). A
+    /// compaction that was `held` for their possible draft is theirs too now: its flag ends,
+    /// and the task waits for them as any full session a person types into does.
+    async fn left_to_its_person(
         &self,
         task_id: &TaskId,
         kind: Line,
+        held: bool,
         wanted: &impl Fn(&ContextEpisode) -> bool,
     ) {
         tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
         if kind == Line::Compact && self.context_is(task_id, wanted) {
             self.runtime(task_id).hub.notice(LEFT_TO_PERSON);
         }
+        if held {
+            self.end_compaction_hold(task_id, Activity::Waiting).await;
+        }
     }
 
     /// Tells the session's person that its compaction waits for what they may have left in the
     /// prompt box (SPEC-483 TYP-001): the task is flagged with the reason and what to do, and
-    /// its terminal says so. The flag ends when the box is emptied
-    /// ([`Self::settle_draft_flag`]) or when the hold is over.
+    /// its terminal says so. The flag ends when its person types (the session is theirs then)
+    /// or when the hold is over ([`Self::end_compaction_hold`]).
     async fn tell_of_held_compaction(&self, task_id: &TaskId) {
         if let Err(err) = self.flag_attention(task_id, held_for_a_draft()).await {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task whose draft holds its compaction");
@@ -671,9 +684,9 @@ impl App {
         tracing::info!(task = %task_id, "the compaction of a full session waits for a person's possible draft");
     }
 
-    /// The hold of a compaction is over and nobody emptied the box: the task works again while
-    /// Yulius compacts it, if it still reads the hold's flag.
-    async fn end_compaction_hold(&self, task_id: &TaskId) {
+    /// The hold of a compaction is over: the task reads `next`, if it still reads the hold's
+    /// flag.
+    async fn end_compaction_hold(&self, task_id: &TaskId, next: Activity) {
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
         let store = &self.deps.store;
@@ -685,7 +698,7 @@ impl App {
         }
         let from = (Some(Activity::NeedsAttention), flagged);
         match store
-            .set_activity_from(task_id, from, Some(Activity::Working), self.now())
+            .set_activity_from(task_id, from, Some(next), self.now())
             .await
         {
             Ok(true) => self.publish_task(task_id).await,

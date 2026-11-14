@@ -906,6 +906,10 @@ impl PendingGoal {
     }
 }
 
+/// Why a task has no goal when a person typed before Yulius could type it.
+const GOAL_LEFT_TO_DRAFT: &str = "Someone typed in the terminal before Yulius set the task's \
+                                  goal, so their draft was left alone";
+
 /// How long the restart of a reattached run waits for the replay of its transcript.
 const REPLAY_WAIT: Duration = Duration::from_secs(30);
 
@@ -2747,12 +2751,7 @@ impl App {
         // A person typed before the goal: `/goal` would be appended to their draft and sent
         // with it. The draft is theirs; the task waits for them instead (#252).
         if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
-            app.goal_not_taken(
-                task_id,
-                "Someone typed in the terminal before Yulius set the task's goal, so their \
-                 draft was left alone",
-            )
-            .await;
+            app.goal_not_taken(task_id, GOAL_LEFT_TO_DRAFT).await;
             return true;
         }
         // One typist from the goal's line until Claude Code took it or the tries are over: a
@@ -2773,6 +2772,7 @@ impl App {
                 input.extend_from_slice(command.as_bytes());
             }
             if typing.is_none() {
+                crate::race::reached(crate::race::Point::LineReady, Path::new(task_id.as_str()));
                 typing = crate::task_message::Typing::wait(
                     &runtime.typing_message,
                     crate::task_message::TYPING_TURN_WAIT,
@@ -2781,6 +2781,10 @@ impl App {
             }
             // Asked again with the mark held: the wait for it gives a person time to type.
             if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                // Before anything was typed, the task has no goal: said, as above.
+                if attempt == 0 {
+                    app.goal_not_taken(task_id, GOAL_LEFT_TO_DRAFT).await;
+                }
                 return true;
             }
             if !input.is_empty()

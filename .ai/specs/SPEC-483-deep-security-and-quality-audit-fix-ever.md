@@ -830,8 +830,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   counts too). A prompt a person typed and sent is no draft: its submit emptied the box,
   and the session it filled is compacted. For `/compact <focus>` the compaction is held:
   the task reads Needs your action with the reason and what to do (send what was typed,
-  or clear it and send any prompt), and its terminal says so; a prompt sent from the box
-  ends the flag. The hold lasts at most `compact_hold_ms` (ten minutes); then the session
+  or clear it and send any prompt), and its terminal says so. When its person types, the
+  session is theirs as after any key since the refusal: the flag ends and the task waits
+  for them; the prompt they send then meets the full context and is compacted in its
+  turn. The hold lasts at most `compact_hold_ms` (ten minutes); then the session
   is compacted all the same, the flag ends and the task works on (a task nobody watches
   must not wait for good for a key that left nothing). The line that wakes a compacted
   session is not typed behind a draft at all: its person goes on. A person who types
@@ -842,7 +844,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   tries are over, since a submit the TUI dropped leaves the line in the box. A message
   that comes then is refused as while another message is being typed; a line of Yulius's
   own waits for the mark, at most 5 s, is typed then, and first asks again, with the mark
-  held, whether a person typed meanwhile. Not under the mark: a person's own keys, the
+  held, whether a person typed meanwhile (a goal kept out that way says so, as one kept
+  out by an earlier key does). Not under the mark: a person's own keys, the
   first message Yulius types (it has its own, which keeps keys and messages out), and the
   Enter of "Send anyway".
 
@@ -1348,13 +1351,22 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the refusal comes: the task reads Needs your action with "The session's context is
   full, and Yulius does not compact it yet: …" and "Send what you typed in the terminal,
   or clear it and send any prompt: …", the terminal says that Yulius holds the
-  compaction, and no compaction is typed. They send what they typed: the terminal says
-  the session is left to them and the flag ends; a later refused prompt is compacted.
+  compaction, and no compaction is typed. They type on: the terminal says the session is
+  left to them, the task reads Your turn and still nothing is typed. They send it: the
+  session is compacted.
 - **AC-121** With a hold of 3 s and a key that left no text, the task is flagged, nothing
   is typed at first, then the session is compacted and the flag is gone.
 - **AC-122** A reattached run that holds another person's servers and sits at a usage
   limit is restarted past the limit (a resume that continues the interrupted turn, no
   limit record left in a transcript).
+- **AC-123** A key of the task's person at the moment Yulius is about to type `/compact`
+  (quiet terminal, nobody typed, the typing mark not taken yet) keeps the command out:
+  the terminal says the session is left to them and the task reads Your turn. The same
+  key before a resumed session's `/goal` keeps the goal out, and the task reads Needs
+  your action with "Someone typed in the terminal before Yulius set the task's goal".
+- **AC-124** A key typed while the session is compacted (no prompt sent after it): the
+  session is compacted, the task reads Your turn, and the line that wakes a compacted
+  session is not typed.
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1583,7 +1595,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `first_message::nothing_is_typed_between_the_goal_and_its_enter` and
   `task_done::nothing_is_typed_while_a_typed_goal_is_not_taken` (AC-119, with pause
   points after the line and after the goal's Enter, `LineTyped` and `GoalEntered`);
-  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (AC-122).
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (AC-122);
+  `context_full::a_key_just_before_the_compaction_keeps_it_out` and
+  `first_message::a_key_just_before_the_goal_keeps_it_out_and_is_said` (AC-123, with a
+  pause point before the typing mark, `LineReady`);
+  `context_full::a_draft_typed_during_the_compaction_keeps_the_wake_up_out` (AC-124).
 
 ## Decisions
 
