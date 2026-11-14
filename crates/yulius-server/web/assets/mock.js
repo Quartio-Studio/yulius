@@ -514,6 +514,7 @@ function summary(task) {
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
+    merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
     goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
@@ -2738,6 +2739,8 @@ route('GET', `/api/sandboxes/${ID}/files/live`, ({ db, p, query }) => {
 });
 route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
+  // A test's access withdrawn mid-edit (SPEC-483 LVE-001): the server's answer to an edit then.
+  if (db.live.refuseEdits) fail(403, 'forbidden', 'you may no longer change this folder');
   db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op, save: Boolean(body.save), at: Date.now() });
   if (db.live.holdEdits) await new Promise((resolve) => db.live.held.push(resolve));
   const doc = liveDocOf(db, place, body.session);

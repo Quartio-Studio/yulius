@@ -179,16 +179,7 @@ impl App {
         let times = store.task_times(&task.id).await?;
         let not_started =
             task.status == TaskStatus::Closed && !store.has_attempts(&task.id).await?;
-        let awaits_start_onboarding = not_started
-            && task.origin == TaskOrigin::Onboarding
-            && store
-                .sandbox(&task.sandbox_id)
-                .await?
-                .is_some_and(|sandbox| {
-                    sandbox.onboarding_task_id.as_ref() == Some(&task.id)
-                        && crate::onboarding::OnboardingState::parse(&sandbox.onboarding_state)
-                            == Some(crate::onboarding::OnboardingState::Pending)
-                });
+        let awaits_start_onboarding = not_started && self.is_awaited_onboarding(task).await?;
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -260,6 +251,9 @@ impl App {
             yulius_wait: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
+            merge_armed: task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && self.merge_is_armed(&task.id),
             goal_unfinished: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.goal_unfinished(&task.id),
@@ -602,6 +596,24 @@ impl App {
             cli_moves_to,
             cli_moves_stopped,
         })
+    }
+
+    /// Whether `task` is the onboarding task its pending sandbox waits for: it starts with Start
+    /// onboarding (SPEC-153 OLC-006), so it is in line, not ended. The caller knows it never ran.
+    pub(crate) async fn is_awaited_onboarding(&self, task: &TaskRecord) -> AppResult<bool> {
+        if task.status != TaskStatus::Closed || task.origin != TaskOrigin::Onboarding {
+            return Ok(false);
+        }
+        Ok(self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .is_some_and(|sandbox| {
+                sandbox.onboarding_task_id.as_ref() == Some(&task.id)
+                    && crate::onboarding::OnboardingState::parse(&sandbox.onboarding_state)
+                        == Some(crate::onboarding::OnboardingState::Pending)
+            }))
     }
 
     /// Archives a resting task (UI-006), or a finished one (TSK-014): Done (`task_is_done`: the

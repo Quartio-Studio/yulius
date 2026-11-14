@@ -3274,6 +3274,10 @@ impl App {
         {
             return false;
         }
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        if self.merge_is_armed(&task.id) {
+            return false;
+        }
         if task.activity == Some(Activity::Done) {
             return true;
         }
@@ -3302,6 +3306,10 @@ impl App {
         let turn_ended = (running && task.activity.is_some_and(Activity::is_idle))
             || task.status == TaskStatus::Closed;
         if !turn_ended || (running && self.background_shells_of(&task.id).unwrap_or(0) > 0) {
+            return false;
+        }
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        if running && self.merge_is_armed(&task.id) {
             return false;
         }
         if running && task.activity == Some(Activity::Done) {

@@ -54,9 +54,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
       (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
-      (merged, #1276);
+      (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
+      (merged, #1279);
   14. documents and shipped texts against the code (P1-P14, QB9);
-  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
+  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24;
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
@@ -468,6 +469,47 @@ no code path reaches; documents, texts shown to agents and people, and code that
   export shows as "Closed" and the project list as `closed_at_ms`; a repeated close moved
   it. A task created without a start but chained or prepared (no caller does so today)
   got one too.
+
+### Slice 23: one rule for a task's group, and an edit refused for lack of access
+
+- **W2 (medium).** The sidebar's rule (`status.js`) and the server's (`AttentionFacts::group`,
+  which Home's cards, the project tabs and the page title count) disagreed twice. A run paused
+  by a person or by an update is Paused under Working in the sidebar whatever it waited for
+  (SPEC-191: "It counts in the Working group"); the server had no pause fact, so a paused task
+  that had a permission prompt, "Your turn", a held prompt or a browser request was counted as
+  needing you. And the onboarding task of a `pending` sandbox, listed in the sidebar's Working
+  group as "Waits for Start onboarding", was a closed task to the server and counted nowhere.
+  The mock counts with the sidebar's rule, so no e2e test could see it.
+- **D8 (medium), the case left.** SPEC-487 CHN-001 (#1270) made a merge that is armed keep an
+  idle task out of Done, through `yulius_wait`; an achieved goal (`activity: done`) still
+  came first, in the server's rule, in both "is it done" functions of `delivery.rs` and in the
+  sidebar. An agent whose goal was judged achieved after it armed its merge was Done: a task
+  chained after it started before the merge, and archiving it closed it, which ends the armed
+  merge (slice 15) with a reason typed to nobody.
+- **W3 (medium).** `livedoc.js` answered a refused edit (403: the person may no longer change
+  the folder, such as a worktree whose owner changed) by setting `readOnly` and keeping the
+  edit: the file read Unsaved for good, the page asked before every unload, more typing
+  piled up unsent, a close waited its full 10 s and dropped it, and `readOnly`, never reset,
+  had no reader.
+
+### Slice 24: what nothing reaches
+
+- **E5 (low).** ADR-15 removed the browser panel's frames: previews open in their own window
+  (`browser.js`, `window.open(…, 'noopener')`), and no Yulius page has a `message` listener.
+  The preview proxy still appended a bridge script to every proxied HTML document (which
+  posted the page's address to a parent that does not exist), and for that fetched every
+  document uncompressed (`Accept-Encoding` removed) and dropped its `Content-Length`; it
+  removed the app's `X-Frame-Options` and `frame-ancestors` and allowed the Yulius origin to
+  frame previews. The landing page told of "cookies in frames".
+- **D7 (low).** `webhook_secret` was copied from the App manifest's answer into the stored App
+  configuration and into `AppCredentials`; Yulius has no webhook route and reads it nowhere.
+- **W7 (low).** `linkify` and `URL_RE` (`dom.js`), `kindLabel` (`stages.js`) and the style
+  rules `.card-head`, `.card-body`, `.space-bottom`, `.input-priority`, `.group-needs
+  .tl-what`, `.release-list` (and its `ul`), `.release-head`, the phone rule of `.hbar` and
+  `.term-tab-add` had no user (`.st-blocked` and `.tone-stopped-abnormal`, also reported, are
+  built from a status and a tone, so they stay).
+- **W8 (low, review of slice 23).** A live document whose rejoin is refused for lack of access
+  tried again every second for as long as the file stayed open.
 
 ## Requirements
 
@@ -889,8 +931,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `reloading`) or cannot say. Systemd is asked only of such a silent report, each time;
   once it says the service ended, the report is read again (a helper writes its last
   report before its service ends, so one that ended between the two reads is ended, not
-  lost). While running, no update or restart starts and nothing continues the move; once lost, a
-  move can be continued or aborted as before.
+  lost). While running, no update or restart starts and nothing continues the move; once
+  lost, a move can be continued or aborted as before.
 - **MOV-002** A move's mark that exists is a mark, whatever its bytes: the first start
   that finds it queues the lost tasks and removes it.
 - **CLT-001** A task's `closed_at` is the time of the close the task is in: set when it is
@@ -898,6 +940,33 @@ no code path reaches; documents, texts shown to agents and people, and code that
   takes it out of `closed`.
 - **CLT-002** Migration 0058 (schema version 58) clears `closed_at` of every task that is
   not closed.
+- **GRP-001** A run paused by a person or by an update (the pause the task's view shows) is
+  in the Working group whatever it waits for: permission prompt, "Your turn", held prompt,
+  browser request, failing checks. A stop asked for still makes it Ended.
+- **GRP-002** The onboarding task a `pending` sandbox waits for (closed, never run) is in
+  the Working group and counted in line (`counts.queued`), by the server and the sidebar.
+- **GRP-003** A finished turn whose merge is armed is in the Working group, an achieved
+  goal's too: the task's view says `merge_armed`, the list reads "Waiting for checks or
+  merge", a task chained after it waits, a supertask waits for it, and archiving it is
+  refused (the merge stays armed). This narrows SPEC-487 CHN-003 ("an achieved goal is Done
+  as before") by the armed merge alone.
+- **LVE-001** An edit the server refuses as `forbidden` (403) gives the typing up: the tab's
+  text is the document's as it had it, nothing of the tab's waits (not saved, not busy, the
+  tab not marked modified, a close ends at once), typing is not kept, teammates' steps since
+  are caught up once (a refused catch-up asks nothing more), the Editor makes the file
+  read-only and says "Read-only: you can no longer change this folder". Only a successful join
+  (the file opened again) makes it writable again. A 403 for a stale session token
+  (`csrf_invalid`) is not a refusal of access: the edit is sent again.
+- **PRV-001** A proxied response reaches the browser with its body, `Content-Length` and
+  `Content-Encoding` as the app sent them (the browser's `Accept-Encoding` reaches the app);
+  the app's `X-Frame-Options` and CSP are kept (loopback sources mapped) and
+  `frame-ancestors 'self'` is added; `/__yulius/bridge.js` is gone (404); the proxy's own
+  pages carry no script and the same framing rule.
+- **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
+  secret; a stored configuration that still names one parses as before.
+- **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
+  the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
+  waiting, until the file is opened again.
 
 ## Plan
 
@@ -925,7 +994,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
-- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing
+- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
+- [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
+- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles
 
 ## Acceptance criteria
 
@@ -1444,6 +1515,38 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-130** A running task closed at 200, closed again at 300, continued at 400, queued
   at 450 and closed at 500 has the close times 200, 200, none, none, 500; a version-57
   database's running and chained tasks lose their close time, a closed one keeps it.
+- **AC-131** A running task with a permission prompt counts 1 needing you; paused by its
+  owner it counts 1 working and none needing you; resumed, 1 needing you again. In the
+  sidebar's rule a paused task with a permission prompt or a held prompt reads Paused,
+  counted working.
+- **AC-132** A `pending` sandbox with its onboarding task waiting for Start onboarding and a
+  task chained after it counts 2 in line, none working, none needing you; the sidebar's
+  counter says the same of the onboarding task.
+- **AC-133** An armed, green pull request whose task's goal is then achieved: the chained
+  task stays chained, the task's view says `merge_armed: true`, the project counts it
+  working, archiving it answers 409 and it stays running with the merge armed. The sidebar
+  reads "Waiting for checks or merge" with and without the pull request; an achieved goal
+  without an armed merge is still "Done · PR #7". A supertask created then is held by it.
+- **AC-134** A live document whose edit is refused with 403 has the server's text back, is
+  read-only, saved and not busy; typing more sends nothing; close ends within a second; a new
+  join clears the read-only state. A refusal as `csrf_invalid` sends the edit again and the
+  document stays writable. When the catch-up is refused too, the text is the document's, the
+  document is read-only and not busy, and after 1.5 s nothing more was asked (one join, one
+  catch-up). In the Editor the status says "Read-only: you can no longer change this folder",
+  the editor is read-only, the text is the file's and the tab reads `notes.txt×` (not marked
+  modified).
+- **AC-135** A proxied document arrives byte for byte with its length; the app's
+  `X-Frame-Options: DENY` and its CSP (with `frame-ancestors 'none'`, the WebSocket source
+  mapped) are kept beside `frame-ancestors 'self'`; `/__yulius/bridge.js` answers 404; a
+  gzip document keeps `Content-Encoding: gzip` and its length, and the app saw the
+  browser's `Accept-Encoding: gzip, br`.
+- **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
+  document is read-only and not busy, the text is the document's, and after 2.5 s it asked
+  for no second rejoin. The same when the edit itself meets an ended document (409), its
+  catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
+  one edit, two joins, and a close ends within a second. The proxy's refusal page (the
+  landing's) has the CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors
+  'self'` and no script.
 
 ## Test plan
 
@@ -1687,6 +1790,24 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-128, a fake `systemctl`), `host_move::a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes`
   (AC-129); `yulius-store` `tasks::tests::a_close_time_is_the_close_the_task_is_in` and
   `tests::a_task_that_is_not_closed_loses_its_old_close_time` (AC-130).
+- Slice 23: `yulius-domain` `task::tests::group_follows_the_sidebar_rule` (GRP-001 to
+  GRP-003, every activity and pull request case); `yulius`
+  `task_pause::a_paused_task_is_counted_working_whatever_it_waited_for` (AC-131),
+  `import_server` (the onboarding test's counts, AC-132),
+  `merge_train::an_achieved_goal_with_an_armed_merge_is_not_done` (AC-133); e2e
+  `task-done.e2e.ts` "a paused task, a waiting onboarding task and an armed merge are counted
+  as the server counts them" (the sidebar's rule in the page), `live-editor.e2e.ts` "an edit
+  refused for lack of access gives the text back and leaves nothing waiting" (the document
+  against a scripted server) and "… makes the file read-only in the Editor and says so" (the
+  mock refuses edits on a switch).
+- Slice 24: `yulius`
+  `preview::responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin` (AC-135,
+  a compressed document added to the fixture app; the test was named for the frames it no
+  longer allows), the handshake test's landing page (AC-136, the proxy's own pages) and the
+  preview proxy's unit test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended`
+  and `gone` cases); the
+  configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
+  parse); the gate's lint and e2e for the deleted web code.
 
 ## Decisions
 
@@ -1750,6 +1871,31 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 24 (no decision record: ADR-15 decided that nothing frames a preview; this slice
+  removes what that left). A preview keeps `frame-ancestors 'self'` of Yulius's own rather
+  than only the app's policy: a dev server rarely sets one, and a page that holds a person's
+  preview grant should not be framed by another site; the app's stricter policy and its
+  `X-Frame-Options` are kept, so a stricter app stays stricter. `webhook_secret` is removed
+  rather than kept for a future webhook: a webhook route would need its own secret, set up
+  with it. The deleted web code has no history to keep (it is in Git).
+- Slice 23 (no decision record: SPEC-191, SPEC-153 and SPEC-487 already decided each case;
+  the slice makes the second rule say what the first said). The pause wins over everything
+  but an end, as the sidebar always had it: a paused run cannot answer a prompt or a person
+  until it is resumed, so "Needs you" asked for something that could not be done. The
+  onboarding task is counted in line rather than working, as the sidebar lists it beside the
+  prepared tasks; the sidebar's counter changed, not its group. An armed merge is its own
+  fact (`merge_armed`) rather than "news due" (`yulius_wait`) applied to achieved goals:
+  CHN-003 keeps an achieved goal Done once nothing but news is left, and only the armed merge
+  is work still to come. Archiving such a task is refused by the existing rule for live tasks
+  ("stop the task before archiving it") instead of a new message. A refused edit gives the
+  text back rather than keeping it for a later retry: the refusal is about access, which does
+  not come back by retrying, and the person still sees their file; a new join asks again.
+  The typing is given up in the tab itself (the text it had from the document), not by a
+  catch-up: a person who lost all access to the project gets no catch-up either, and a
+  rejoin loop would make the file writable again for each try (review of slice 23). The
+  awaited onboarding task is now also one of the tasks "after all current tasks" names
+  (`manage.rs`); it counts as done once onboarding stops holding tasks, which they wait for
+  anyway.
 - Slice 22 (no decision record: each fix makes a reading agree with what the code
   already said). A silent report is lost on systemd's word, not on a longer timeout: the
   copy may block the report's write for any time, and a longer wait would only delay a
@@ -2104,7 +2250,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
-| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | fixed (slice 23; the case left after SPEC-487 CHN-001: an achieved goal) |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
@@ -2113,17 +2259,18 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | fixed (slice 21) |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 22 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 22 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 22 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 13 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | fixed (slice 22) |
+| E7 | move | An unreadable move mark does nothing and stays | low | fixed (slice 22) |
+| QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
 | P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
 | QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
 | P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 15 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |
+| W7 | web UI | Dead exports and CSS rules | low | slice 24 |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 24 |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 24 |
+| W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | slice 24 |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 15 |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
 | QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
@@ -2240,7 +2387,8 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 
 ### Slice 22 (2026-11-14)
 
-- **Tests failing before the fix** (the six new tests, run against a stub that answered
+- **Tests failing before the fix** (the five new tests and the changed `installed` test,
+  run against a stub that answered
   nothing for the helper's service): a silent helper whose service still ran read
   `lost`; `FileMoveHelper` asked nothing of systemd and could not name the service; a
   mark of bytes that are not text left the task `stopped (server lost)`; a second close
@@ -2269,3 +2417,94 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** A real systemd (the tests answer as `systemctl show` does, with a fake
   `systemctl`); a real copy that holds the helper's report back for a minute.
+- **Review, round 2** (the same session, head `e417e1c6c`): approve; two nits in the spec
+  ("the diff adds five tests", and a line of MOV-001 over the wrap), answered in slice 23.
+- **Delivery.** Pull request #1277 merged into `dev` at `fb9f12a60`, the approved head
+  `e417e1c6c` squashed, whose own Yulius CI run passed.
+
+### Slice 23 (2026-11-14)
+
+- **Tests failing before the fix**: the domain rule found a paused task with a permission
+  prompt NeedsYou; the sidebar's counter counted the awaited onboarding task working and
+  showed an armed achieved goal "Done"; with the server's group fixed, a task chained after
+  an armed achieved goal was still started (`task_is_done`, a second copy of the Done rule);
+  the live document after a 403 kept "abcd", busy and unsaved, a close waited, and a new
+  join stayed read-only; the Editor never said the refusal.
+- **Tests failing without their fix** (`target/audit/slice23/mutate.py`; `mutations.log`,
+  `mutations-local.log`, after the review `mutations-r1.log` and `mutations-r1-join.log`;
+  each case failed its test): the pause, the awaited onboarding task and the armed merge
+  taken out of the rule and, each, out of what the server reads; the armed merge out of
+  both Done functions (the local one is what a supertask's wait asks: its test was added
+  when this case survived) and out of the task's view; the sidebar's three changes; and in
+  the live document, the refusal keeping the typing, any 403 taken for lost access, the
+  tab's text left as typed, the tab strip not told, typing after a refusal kept, a join not
+  clearing the refusal, a join clearing it before it is answered (its test was added when
+  this case survived), the Editor not saying it.
+- **Gate.** `scripts/dev ci` at `969a33a91`: one failure,
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (a queued task the
+  queue started before the test's bulk stop, under load; 6 of 6 alone; filed as #1278: a
+  race in that test, which this slice does not touch); rerun at the same head: exit 0,
+  `4371 tests run: 4371 passed (1 slow), 17 skipped` (`target/audit/slice23/gate2.log`).
+- **Review, round 1** (a fresh session, head `969a33a91`): request changes. One major in own
+  code: "After a refused edit the tab strip keeps the unsaved mark", and the Editor test's
+  "status does not contain Unsaved" could not fail (the status says read-only instead).
+  Two minor: "Any 403 is taken as lost write access, but the server also answers 403 for
+  csrf_invalid"; and a refused catch-up after the refusal rejoins every second, with
+  `readOnly` false during each attempt. All three answered: the typing is given up in the tab
+  (its text the document's as it had it, the tab strip told), only `forbidden` is a refusal
+  of access, a refused catch-up asks no more, and only a successful join clears read-only
+  (LVE-001, AC-134; the Editor test asserts the tab `notes.txt×`). Nits answered: the mock's
+  summary carries `merge_armed`; the counts read the pause without building its view
+  (`App::is_paused`); `docs/api.md` says a run paused by a person or an update never needs
+  you; doc lines rewrapped; GRP-003 names how it narrows SPEC-487 CHN-003; the observation
+  that "after all current tasks" now names the awaited onboarding task is in the Decisions.
+- **Gate after it.** `scripts/dev ci` at `d72d28945`: exit 0; `4371 tests run: 4371 passed
+  (1 slow), 17 skipped` (`target/audit/slice23/gate3.log`). e2e `live-editor.e2e.ts`,
+  `editor.e2e.ts` and `task-done.e2e.ts` at the same head: 71 passed
+  (`target/audit/slice23/e2e.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real server refusing an edit after a worktree's owner changed (the mock
+  refuses on a switch; the server's 403 for that case is `forbidden`, as the mock's); the
+  counts with a real update's hold (the domain test and a person's pause cover the fact).
+- **Review, round 2** (the same session, head `f9c68ec17`): approve; two nits, answered in
+  slice 24: a doc line of the group rule over the wrap, and a refused rejoin retried every
+  second (pre-existing, W8).
+- **Delivery.** Pull request #1279 merged into `dev` at `d6fe5d400`, the approved head
+  `f9c68ec17` squashed, whose own Yulius CI run passed.
+
+### Slice 24 (2026-11-14)
+
+- **Tests failing before the fix**: the proxied document came back without the app's
+  `X-Frame-Options`, with the bridge script appended and no length, and the app saw no
+  `Accept-Encoding` for a document; a refused rejoin was asked again every second (three joins
+  in 2.5 s instead of two). After the review: a 409 edit whose rejoin was refused left the
+  tab busy, unsaved, with "abcd" and a close that waited.
+- **Tests failing without their fix** (`target/audit/slice24/mutate.py`, `mutations.log`, then
+  `mutations-r1.log`; each case failed its test): documents fetched uncompressed again; the
+  app's `X-Frame-Options` removed again; no `frame-ancestors` of Yulius's own; the app's
+  `frame-ancestors` dropped again; a refused rejoin retried every second; after the review,
+  a script or the Yulius origin back on the proxy's own pages, and a forbidden rejoin that
+  only marks the document read-only.
+- **Gate.** `scripts/dev ci` at `91f197b4e`: exit 0; `4371 tests run: 4371 passed (1 slow),
+  17 skipped` (`target/audit/slice24/gate.log`). The whole e2e suite at the same head: `84
+  passed | 1 skipped` files, `1026 passed | 1 skipped` tests (`target/audit/slice24/e2e-all.log`;
+  it covers the deleted web code: nothing imported it).
+- **Review, round 1** (a fresh session, head `91f197b4e`): request changes. One major in own
+  code: a rejoin refused as `forbidden` "sets only `readOnly = true; onState()`, leaving this
+  tab's unconfirmed typing (`outstanding`/`buffer`), its timers and its text in place", the
+  W3 state again behind a read-only banner, which the `ended` case could not reach. Two
+  minor: PRV-001's "the proxy's own pages carry no script and the same framing rule" had no
+  test; SPEC-002 (ADR-14's framing and bridge paragraphs) and SPEC-001 AC-BRW-7 still
+  described the old proxy. Nits: `docs/operations.md` justified same-site preview origins by
+  "the panel's frames" and the web README suggested `frame-src` for previews (pre-existing);
+  two lines over the wrap; the preview test's name. All answered in `92c51654d`: the
+  forbidden rejoin calls `refused()` (the `gone` case), the landing's page is asserted, the
+  two specs, operations and the README say what the proxy does now, the lines are rewrapped
+  and the test renamed.
+- **Gate after it.** `scripts/dev ci` at `92c51654d`: exit 0; `4371 tests run: 4371 passed
+  (1 slow), 17 skipped` (`target/audit/slice24/gate2.log`); e2e `live-editor.e2e.ts` and
+  `editor.e2e.ts` at the same head: 49 passed (`target/audit/slice24/e2e-r1.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real browser on a real preview (the proxy is tested over HTTP with a
+  fixture app; framing and compression are header and body checks); a real GitHub manifest
+  answer (the fake answers the field, as GitHub does, and it parses).

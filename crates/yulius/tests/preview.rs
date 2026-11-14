@@ -85,6 +85,25 @@ fn fixture_app(port: u16, tag: String) -> Router {
             }),
         )
         .route(
+            // A compressed document, as dev servers answer one when the browser accepts gzip.
+            "/zipped",
+            get(|headers: HeaderMap| async move {
+                let accepts = headers
+                    .get(header::ACCEPT_ENCODING)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned();
+                (
+                    [
+                        (header::CONTENT_TYPE, "text/html".to_owned()),
+                        (header::CONTENT_ENCODING, "gzip".to_owned()),
+                        (header::HeaderName::from_static("x-accepted"), accepts),
+                    ],
+                    vec![0x1f_u8, 0x8b, 8, 0, 0, 0, 0, 0],
+                )
+            }),
+        )
+        .route(
             "/headers",
             get(|headers: HeaderMap| async move {
                 let pick = |name: &str| {
@@ -438,6 +457,13 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
         StatusCode::FORBIDDEN,
         "a blocked cookie is reported, not looped"
     );
+    // SPEC-483 PRV-001: the proxy's own pages carry no script and are framed by nothing else.
+    assert_eq!(
+        lost.header("content-security-policy").as_deref(),
+        Some("default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
+    );
+    assert!(!lost.body.contains("<script"), "{}", lost.body);
+    assert!(lost.body.contains("Allow cookies for it"), "{}", lost.body);
     let page = fetch(&f.h, &host, "/", &[("cookie", &grant)]).await?;
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.body.contains("Fixture app"), "{}", page.body);
@@ -466,8 +492,12 @@ async fn a_preview_opens_after_a_single_use_handshake() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 PRV-001 (finding E5): nothing frames a preview since ADR-15 (the browser panel opens
+/// it in its own window), so a document reaches the browser as the app sent it: its framing
+/// headers kept and only framed by the preview itself, its body byte for byte, its length and
+/// its encoding (the browser's `Accept-Encoding` reaches the app); no script is appended.
 #[tokio::test]
-async fn responses_are_rewritten_to_work_inside_the_yulius_page() -> TestResult {
+async fn responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin() -> TestResult {
     let f = fixture().await?;
     let host = f.host(f.port);
     let grant = grant(&f, f.port, &f.alice).await?;
@@ -484,19 +514,19 @@ async fn responses_are_rewritten_to_work_inside_the_yulius_page() -> TestResult 
     .await?;
     assert_eq!(page.status, StatusCode::OK);
     assert_eq!(
-        page.header("x-frame-options"),
-        None,
-        "the app's X-Frame-Options is removed"
+        page.header("x-frame-options").as_deref(),
+        Some("DENY"),
+        "the app's X-Frame-Options is kept"
     );
     assert_eq!(page.header("strict-transport-security"), None);
     let csp = page.all("content-security-policy");
     assert_eq!(
         csp,
         [
-            format!("default-src 'self'; connect-src wss://{host}"),
-            format!("frame-ancestors 'self' {YULIUS}"),
+            format!("default-src 'self'; frame-ancestors 'none'; connect-src wss://{host}"),
+            "frame-ancestors 'self'".to_owned(),
         ],
-        "frame-ancestors is Yulius's; loopback sources point at the preview"
+        "the app's policy, its loopback sources pointed at the preview; framed by nothing else"
     );
     assert_eq!(
         page.all("set-cookie"),
@@ -506,27 +536,29 @@ async fn responses_are_rewritten_to_work_inside_the_yulius_page() -> TestResult 
         page.header("x-yulius").as_deref(),
         Some(f.h.app.instance_tag.as_str())
     );
-    // Documents get the bridge script (address, title, back and forward for the panel).
-    assert!(
-        page.body
-            .ends_with("<script src=\"/__yulius/bridge.js\" async></script>\n"),
-        "{}",
-        page.body
-    );
-    assert_eq!(page.header("content-length"), None);
+    // The document as the app sent it, with its length.
+    let sent = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/app.css\"></head><body><h1>Fixture app</h1></body></html>";
+    assert_eq!(page.body, sent);
+    assert_eq!(page.header("content-length"), Some(sent.len().to_string()));
     let bridge = fetch(&f.h, &host, "/__yulius/bridge.js", &[]).await?;
-    assert!(
-        bridge
-            .body
-            .contains(&format!("const YULIUS = \"{YULIUS}\"")),
-        "{}",
-        bridge.body
-    );
-    assert!(
-        bridge
-            .header("content-type")
-            .is_some_and(|v| v.starts_with("text/javascript"))
-    );
+    assert_eq!(bridge.status, StatusCode::NOT_FOUND, "no bridge script");
+    // A compressed document keeps its encoding: the browser's Accept-Encoding reached the app.
+    let zipped = fetch(
+        &f.h,
+        &host,
+        "/zipped",
+        &[
+            ("cookie", &grant),
+            ("sec-fetch-mode", "navigate"),
+            ("sec-fetch-dest", "document"),
+            ("accept-encoding", "gzip, br"),
+        ],
+    )
+    .await?;
+    assert_eq!(zipped.status, StatusCode::OK);
+    assert_eq!(zipped.header("content-encoding").as_deref(), Some("gzip"));
+    assert_eq!(zipped.header("x-accepted").as_deref(), Some("gzip, br"));
+    assert_eq!(zipped.header("content-length").as_deref(), Some("8"));
     // Subresources are not touched.
     let css = fetch(
         &f.h,

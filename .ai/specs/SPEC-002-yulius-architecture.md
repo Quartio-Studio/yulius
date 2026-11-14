@@ -123,10 +123,11 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
 
 **Real-world issues and how C handles them.**
 
-- *X-Frame-Options and CSP `frame-ancestors`* (dev servers and frameworks send them):
-  - the proxy removes `X-Frame-Options` and every `frame-ancestors` directive;
-  - it then adds its own `Content-Security-Policy: frame-ancestors 'self' <Yulius origin>`;
-  - only Yulius (and the app itself, for its own nested frames) can frame a preview.
+- *X-Frame-Options and CSP `frame-ancestors`* (dev servers and frameworks send them): kept as
+  the app sent them, and the proxy adds `Content-Security-Policy: frame-ancestors 'self'`, so
+  only the app itself (for its own nested frames) can frame a preview. Narrowed by SPEC-483
+  slice 24: since ADR-15 nothing in Yulius frames a preview, so the Yulius origin is no longer
+  allowed and the app's own policy is no longer removed.
 - *Root-relative URLs* (`/assets/app.js`, `/api`): a path-prefix proxy (`/preview/20001/…`)
   would break them, as well as service workers, cookies with `Path=/` and client routers. So
   each app gets an **origin of its own**, `<port>-<key>.<host>`, and its paths are untouched.
@@ -151,10 +152,8 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
     `Secure` over HTTPS.
 - *WebSockets, HMR and streaming*:
   - upgrades are spliced through (bounded, re-checked every 60 s);
-  - bodies stream both ways without buffering, so large uploads, server-sent events and
-    streamed HTML work;
-  - only HTML documents get one `<script>` tag appended (the bridge, below); they are requested
-    without compression.
+  - bodies stream both ways without buffering and unchanged (compression and length included,
+    SPEC-483 slice 24), so large uploads, server-sent events and streamed HTML work.
 - *Service workers*: they are scoped to their preview origin, so they cannot touch Yulius.
   Paths under `/__yulius/` are reserved on every preview origin.
 - *Auth*:
@@ -172,12 +171,11 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
   5. The grant cookie never reaches the app.
 - *Phones*: native.
 
-**Browser chrome (address bar, back, forward).** A cross-origin iframe hides its location and
-history from the parent. The proxy therefore appends a small bridge script to proxied
-documents. It posts the address, the title and `navigation.canGoBack/canGoForward` to the
-Yulius origin only, and takes back, forward (Navigation API, so traversal stays inside the
-frame) and reload, but only from the Yulius window that frames it. The panel shows addresses as
-`localhost:<port>/…`. "Open in a new window" opens the preview origin top-level.
+**Browser chrome (address bar, back, forward).** Since ADR-15 a preview opens top-level in its
+own window ("Open live in a new window"), where the browser's own address bar and history
+serve. The bridge script the proxy once appended to proxied documents for a framed panel (it
+posted the address, title and history to Yulius) was removed by SPEC-483 slice 24, together
+with the uncompressed fetch of documents it needed: documents pass as the app sent them.
 
 **Isolation between the preview origins and Yulius (security).** Every `*.sslip.io` host on the
 internet, and every preview, is same-site with Yulius, so `SameSite` never protects anything

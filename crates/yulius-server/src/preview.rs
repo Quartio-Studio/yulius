@@ -5,8 +5,8 @@
 //! preview host never reaches the Yulius UI or API, and everything else never reaches the
 //! proxy. A preview request is then, in order:
 //!
-//! 1. one of the proxy's own paths under `/__yulius/` (handshake, landing, bridge script,
-//!    reachability ping, refusal page), or
+//! 1. one of the proxy's own paths under `/__yulius/` (handshake, landing, reachability ping,
+//!    refusal page), or
 //! 2. resolved to its sandbox and port (only the sandbox's range, never Yulius's own ports),
 //! 3. checked for cross-site use (fetch metadata and `Origin`: only this preview and the same
 //!    sandbox's other previews may make credentialed requests or open WebSockets),
@@ -14,10 +14,10 @@
 //!    one (`/api/previews/authorize`, then the handshake), anything else gets 401,
 //! 5. forwarded to `127.0.0.1:<port>` over a fresh HTTP/1.1 connection, so that the app believes
 //!    it is served at `http://localhost:<port>` (`Host`, `Origin` and `Referer` rewritten), with
-//!    the response rewritten so that it works inside the Yulius page: `X-Frame-Options` and CSP
-//!    `frame-ancestors` replaced by "this preview and Yulius", `localhost` redirects and CORS
-//!    origins pointed at the preview origins, cookie `Domain` removed, and a small bridge script
-//!    appended to HTML documents (address, title, back and forward for the browser panel).
+//!    the response rewritten so that it works at the preview origin: `localhost` redirects, CSP
+//!    sources and CORS origins pointed at the preview origins, cookie `Domain` removed, and a
+//!    CSP `frame-ancestors 'self'` added (nothing but the preview itself frames it; the browser
+//!    panel opens previews in their own window since ADR-15). Bodies are passed as they come.
 //!
 //! WebSockets (hot reload) are spliced through and re-checked every 60 s. Bodies stream both
 //! ways without buffering. Bounds: 5 s to connect, 120 s for the response head (first compiles
@@ -33,7 +33,6 @@ use axum::http::request::Parts;
 use axum::http::{Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use futures::StreamExt as _;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
 use yulius_app::preview::{GRANT_TTL_MS, PreviewAccess, PreviewRefusal, PreviewTarget};
@@ -57,9 +56,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Grant re-check interval of open WebSockets.
 const RECHECK: Duration = Duration::from_secs(60);
-/// Appended to proxied HTML documents.
-const BRIDGE_TAG: &str = "\n<script src=\"/__yulius/bridge.js\" async></script>\n";
-
 static PENDING: AtomicUsize = AtomicUsize::new(0);
 static UPGRADED: AtomicUsize = AtomicUsize::new(0);
 
@@ -171,7 +167,7 @@ fn is_navigation(parts: &Parts) -> bool {
     }
 }
 
-/// Whether the response to this request is a document (the bridge script may be appended).
+/// Whether the response to this request is a document: an error is then answered with a page.
 fn wants_document(parts: &Parts) -> bool {
     if parts.method != Method::GET {
         return false;
@@ -206,7 +202,7 @@ fn isolation_allows(parts: &Parts, target: &PreviewTarget) -> bool {
 }
 
 /// A small HTML page on the preview origin (refusals, errors, waiting for a dev server).
-fn page(app: &AppState, status: StatusCode, title: &str, text: &str, refresh: bool) -> Response {
+fn page(status: StatusCode, title: &str, text: &str, refresh: bool) -> Response {
     let escape = |text: &str| {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -224,7 +220,7 @@ fn page(app: &AppState, status: StatusCode, title: &str, text: &str, refresh: bo
 <style>:root{{color-scheme:light dark}}body{{margin:0;min-height:100vh;display:grid;place-items:center;\
 font:15px/1.5 system-ui,sans-serif;background:Canvas;color:CanvasText}}main{{max-width:34rem;padding:2rem}}\
 h1{{font-size:1.1rem}}p{{opacity:.8}}</style></head><body><main><h1>{title}</h1><p>{text}</p></main>\
-<script src=\"/__yulius/bridge.js\" async></script></body></html>",
+</body></html>",
         title = escape(title),
         text = escape(text),
     );
@@ -235,28 +231,22 @@ h1{{font-size:1.1rem}}p{{opacity:.8}}</style></head><body><main><h1>{title}</h1>
         HeaderValue::from_static("text/html; charset=utf-8"),
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    if let Ok(csp) = HeaderValue::from_str(&format!(
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; frame-ancestors 'self' {}",
-        app.config.public_url
-    )) {
-        headers.insert(header::CONTENT_SECURITY_POLICY, csp);
-    }
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+        ),
+    );
     response
 }
 
-fn refusal_page(app: &AppState, refusal: &PreviewRefusal) -> Response {
+fn refusal_page(refusal: &PreviewRefusal) -> Response {
     let status = match refusal {
         PreviewRefusal::Disabled | PreviewRefusal::UnknownHost => StatusCode::NOT_FOUND,
         PreviewRefusal::OutsideRange { .. } | PreviewRefusal::Yulius => StatusCode::FORBIDDEN,
     };
     let message = refusal.message();
-    page(
-        app,
-        status,
-        "This preview is not available",
-        &message,
-        false,
-    )
+    page(status, "This preview is not available", &message, false)
 }
 
 async fn handle(app: &AppState, host: &str, request: Request) -> Response {
@@ -266,12 +256,11 @@ async fn handle(app: &AppState, host: &str, request: Request) -> Response {
     }
     let target = match app.preview_target(host).await {
         Ok(target) => target,
-        Err(refusal) => return refusal_page(app, &refusal),
+        Err(refusal) => return refusal_page(&refusal),
     };
     let (mut parts, body) = request.into_parts();
     if !isolation_allows(&parts, &target) {
         return page(
-            app,
             StatusCode::FORBIDDEN,
             "Cross-site request refused",
             "Only this preview and the same sandbox's other previews may call it.",
@@ -362,7 +351,6 @@ async fn own_path(app: &AppState, host: &str, path: &str, request: Request) -> R
             [(header::CACHE_CONTROL, "no-store")],
         )
             .into_response(),
-        "bridge.js" => bridge(app),
         "handshake" => handshake(app, host, &query),
         "landing" => landing(app, host, request.headers(), &query).await,
         "denied" => {
@@ -371,13 +359,7 @@ async fn own_path(app: &AppState, host: &str, path: &str, request: Request) -> R
             } else {
                 "You need write access to this sandbox to open its previews."
             };
-            page(
-                app,
-                StatusCode::FORBIDDEN,
-                "Preview not available",
-                text,
-                false,
-            )
+            page(StatusCode::FORBIDDEN, "Preview not available", text, false)
         }
         _ => StatusCode::NOT_FOUND.into_response(),
     }
@@ -389,7 +371,6 @@ fn handshake(app: &AppState, host: &str, query: &ReturnQuery) -> Response {
         Ok(grant) => grant,
         Err(err) => {
             return page(
-                app,
                 StatusCode::FORBIDDEN,
                 "This preview link expired",
                 &err.public_message(),
@@ -416,7 +397,7 @@ fn handshake(app: &AppState, host: &str, query: &ReturnQuery) -> Response {
 }
 
 /// After the handshake: on to the page when the browser kept the cookie; otherwise say so
-/// (cookies of frames blocked) instead of looping through Yulius forever.
+/// (its cookies blocked) instead of looping through Yulius forever.
 async fn landing(app: &AppState, host: &str, headers: &HeaderMap, query: &ReturnQuery) -> Response {
     let to = yulius_app::preview::safe_return_path(&query.to);
     let cookie = access_cookie(app);
@@ -433,68 +414,12 @@ async fn landing(app: &AppState, host: &str, headers: &HeaderMap, query: &Return
         return redirect(StatusCode::SEE_OTHER, &to);
     }
     page(
-        app,
         StatusCode::FORBIDDEN,
         "The preview could not sign in",
-        "This browser did not keep the preview's cookie (cookies in frames may be blocked). \
-         Open the preview in its own window from the browser panel.",
+        "This browser did not keep the preview's cookie (it may block cookies of this site). \
+         Allow cookies for it, then open the preview again from the browser panel.",
         false,
     )
-}
-
-/// The bridge script appended to proxied documents: tells the browser panel the page's address
-/// and title and takes back, forward and reload from it — only between the preview and the
-/// Yulius page that frames it.
-fn bridge(app: &AppState) -> Response {
-    let origin = serde_json::to_string(&app.config.public_url).unwrap_or_else(|_| "\"\"".into());
-    let script = format!(
-        r"(() => {{
-  'use strict';
-  const YULIUS = {origin};
-  if (window.parent === window || window.parent !== window.top || window.__yuliusBridge) return;
-  window.__yuliusBridge = true;
-  const nav = window.navigation;
-  let sent = '';
-  const report = () => {{
-    const state = {{ source: 'yulius-preview', type: 'location', href: location.href, title: String(document.title || '').slice(0, 300),
-      back: nav ? Boolean(nav.canGoBack) : null, forward: nav ? Boolean(nav.canGoForward) : null }};
-    const key = JSON.stringify(state);
-    if (key === sent) return;
-    sent = key;
-    try {{ window.parent.postMessage(state, YULIUS); }} catch (_) {{}}
-  }};
-  window.addEventListener('message', (event) => {{
-    if (event.origin !== YULIUS || event.source !== window.parent) return;
-    const data = event.data;
-    if (!data || data.source !== 'yulius') return;
-    if (data.type === 'back' && nav && nav.canGoBack) nav.back();
-    else if (data.type === 'forward' && nav && nav.canGoForward) nav.forward();
-    else if (data.type === 'reload') location.reload();
-    else if (data.type === 'hello') {{ sent = ''; report(); }}
-  }});
-  // F6 leaves the page for the next region of Yulius, as everywhere else in the app.
-  window.addEventListener('keydown', (event) => {{
-    if (event.key !== 'F6' || event.altKey || event.metaKey || event.ctrlKey) return;
-    event.preventDefault();
-    try {{ window.parent.postMessage({{ source: 'yulius-preview', type: 'f6', shift: event.shiftKey }}, YULIUS); }} catch (_) {{}}
-  }}, true);
-  if (nav) nav.addEventListener('currententrychange', () => setTimeout(report, 0));
-  window.addEventListener('popstate', report);
-  window.addEventListener('hashchange', report);
-  window.addEventListener('pageshow', report);
-  setInterval(report, 1000);
-  report();
-}})();
-"
-    );
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        script,
-    )
-        .into_response()
 }
 
 /// Removes hop-by-hop headers and every header named in `Connection`.
@@ -611,7 +536,6 @@ fn upstream_headers(
     source: &HeaderMap,
     target: &PreviewTarget,
     drop_cookies: &[&str],
-    document: bool,
     upgrade: bool,
 ) -> HeaderMap {
     let mut headers = source.clone();
@@ -648,10 +572,6 @@ fn upstream_headers(
                 headers.remove(name);
             }
         }
-    }
-    if document {
-        // Documents come back unencoded so the bridge script can be appended.
-        headers.remove(header::ACCEPT_ENCODING);
     }
     if upgrade && let Some(value) = upgrade_value {
         headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
@@ -690,31 +610,20 @@ fn rewrite_set_cookie(value: &str, secure: bool, reserved: &[&str]) -> Option<St
     Some(out.join("; "))
 }
 
-/// A CSP of the app without `frame-ancestors` (Yulius sets its own) and with its loopback
-/// sources pointed at the preview origins; `None` when nothing is left.
+/// A CSP of the app with its loopback sources pointed at the preview origins; `None` when
+/// nothing is left.
 fn rewrite_csp(value: &str, secure: bool, origin_of: OriginOf<'_>) -> Option<String> {
     let kept: Vec<String> = value
         .split(';')
         .map(str::trim)
-        .filter(|directive| {
-            !directive.is_empty()
-                && !directive
-                    .split_ascii_whitespace()
-                    .next()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
-        })
+        .filter(|directive| !directive.is_empty())
         .map(|directive| rewrite_loopback_urls(directive, secure, origin_of))
         .collect();
     (!kept.is_empty()).then(|| kept.join("; "))
 }
 
 /// Response headers for the user's browser.
-fn client_headers(
-    source: &HeaderMap,
-    target: &PreviewTarget,
-    app: &AppState,
-    switching: bool,
-) -> HeaderMap {
+fn client_headers(source: &HeaderMap, target: &PreviewTarget, switching: bool) -> HeaderMap {
     let secure = target.config.secure();
     let origin_of = |port: u16| target.origin_of(port);
     let mut headers = source.clone();
@@ -725,7 +634,6 @@ fn client_headers(
         headers.insert(header::UPGRADE, value);
     }
     for name in [
-        header::X_FRAME_OPTIONS,
         header::STRICT_TRANSPORT_SECURITY,
         HeaderName::from_static("alt-svc"),
         HeaderName::from_static(MARKER_HEADER),
@@ -770,11 +678,12 @@ fn client_headers(
             headers.append(&name, value);
         }
     }
-    if let Ok(value) =
-        HeaderValue::from_str(&format!("frame-ancestors 'self' {}", app.config.public_url))
-    {
-        headers.append(header::CONTENT_SECURITY_POLICY, value);
-    }
+    // Nothing but the preview itself frames it: a person's grant is never clicked through in a
+    // frame of another site. The app's own policy and `X-Frame-Options` are kept as well.
+    headers.append(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'self'"),
+    );
     let reserved = [
         ACCESS_COOKIE,
         ACCESS_COOKIE_SECURE,
@@ -795,15 +704,9 @@ fn client_headers(
     headers
 }
 
-fn upstream_error(
-    app: &AppState,
-    target: &PreviewTarget,
-    document: bool,
-    detail: &str,
-) -> Response {
+fn upstream_error(target: &PreviewTarget, document: bool, detail: &str) -> Response {
     if document {
         return page(
-            app,
             StatusCode::BAD_GATEWAY,
             &format!("Nothing is answering on localhost:{}", target.port),
             &format!(
@@ -851,14 +754,14 @@ async fn forward(
     .await
     {
         Ok(Ok(stream)) => stream,
-        Ok(Err(err)) => return upstream_error(app, target, document, &err.to_string()),
-        Err(_) => return upstream_error(app, target, document, "connection timed out"),
+        Ok(Err(err)) => return upstream_error(target, document, &err.to_string()),
+        Err(_) => return upstream_error(target, document, "connection timed out"),
     };
     let _ = stream.set_nodelay(true);
     let (mut sender, connection) =
         match hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream)).await {
             Ok(pair) => pair,
-            Err(err) => return upstream_error(app, target, document, &err.to_string()),
+            Err(err) => return upstream_error(target, document, &err.to_string()),
         };
     tokio::spawn(async move {
         if let Err(err) = connection.with_upgrades().await {
@@ -881,18 +784,17 @@ async fn forward(
     let mut request = hyper::Request::new(if upgrade { Body::empty() } else { body });
     *request.method_mut() = parts.method.clone();
     *request.uri_mut() = path;
-    *request.headers_mut() = upstream_headers(&parts.headers, target, &reserved, document, upgrade);
+    *request.headers_mut() = upstream_headers(&parts.headers, target, &reserved, upgrade);
     let mut response =
         match tokio::time::timeout(RESPONSE_TIMEOUT, sender.send_request(request)).await {
             Ok(Ok(response)) => response,
-            Ok(Err(err)) => return upstream_error(app, target, document, &err.to_string()),
-            Err(_) => return upstream_error(app, target, document, "no answer in time"),
+            Ok(Err(err)) => return upstream_error(target, document, &err.to_string()),
+            Err(_) => return upstream_error(target, document, "no answer in time"),
         };
     drop(pending);
     if header_str(response.headers(), MARKER_HEADER) == Some(app.instance_tag.as_str()) {
         tracing::info!(port = target.port, "refused a preview of Yulius itself");
         return page(
-            app,
             StatusCode::LOOP_DETECTED,
             "Yulius cannot be opened inside itself",
             "This port leads back to this Yulius server. Open Yulius in a tab of your own browser instead.",
@@ -917,33 +819,12 @@ async fn forward(
         ));
         let mut out = Response::new(Body::empty());
         *out.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-        *out.headers_mut() = client_headers(response.headers(), target, app, true);
+        *out.headers_mut() = client_headers(response.headers(), target, true);
         return out;
     }
     let status = response.status();
-    let mut headers = client_headers(response.headers(), target, app, false);
-    let html = header_str(&headers, "content-type")
-        .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"));
-    let encoded = header_str(&headers, "content-encoding")
-        .is_some_and(|v| !v.trim().eq_ignore_ascii_case("identity"));
-    let inject = document
-        && html
-        && !encoded
-        && !matches!(
-            status,
-            StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED | StatusCode::RESET_CONTENT
-        );
-    let body = Body::new(response.into_body());
-    let body = if inject {
-        headers.remove(header::CONTENT_LENGTH);
-        let tail = futures::stream::once(async {
-            Ok::<_, axum::Error>(axum::body::Bytes::from_static(BRIDGE_TAG.as_bytes()))
-        });
-        Body::from_stream(body.into_data_stream().chain(tail))
-    } else {
-        body
-    };
-    let mut out = Response::new(body);
+    let headers = client_headers(response.headers(), target, false);
+    let mut out = Response::new(Body::new(response.into_body()));
     *out.status_mut() = status;
     *out.headers_mut() = headers;
     out
@@ -1064,7 +945,8 @@ mod tests {
     }
 
     #[test]
-    fn csp_loses_frame_ancestors_only() -> Result<(), Box<dyn std::error::Error>> {
+    fn csp_keeps_the_apps_directives_with_loopback_sources_mapped()
+    -> Result<(), Box<dyn std::error::Error>> {
         let config = config()?;
         let origin_of = origin_of(&config);
         assert_eq!(
@@ -1074,12 +956,12 @@ mod tests {
                 &origin_of
             )
             .as_deref(),
-            Some("default-src 'self'; script-src https://20001-0123456789ab.yulius.example.com")
+            Some(
+                "default-src 'self'; frame-ancestors 'none'; \
+                 script-src https://20001-0123456789ab.yulius.example.com"
+            )
         );
-        assert_eq!(
-            rewrite_csp("FRAME-ANCESTORS 'self'", true, &origin_of),
-            None
-        );
+        assert_eq!(rewrite_csp(" ; ", true, &origin_of), None, "nothing left");
         Ok(())
     }
 

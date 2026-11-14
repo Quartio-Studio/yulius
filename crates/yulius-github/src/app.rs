@@ -368,7 +368,6 @@ impl GitHubClient {
             client_secret: Secret::new(wire.client_secret),
             private_key_pem: Secret::new(wire.pem),
             slug: wire.slug,
-            webhook_secret: wire.webhook_secret.map(Secret::new),
         })
     }
 

@@ -78,6 +78,12 @@ impl App {
         self.current_person_pause(task).await.is_some()
     }
 
+    /// Whether `task` has the pause its summary shows ([`Self::pause_view`]), without building it.
+    pub(crate) async fn is_paused(&self, task: &TaskRecord) -> bool {
+        matches!(task.status, TaskStatus::Running | TaskStatus::Switching)
+            && (self.held_for_update(&task.id) || self.is_paused_by_person(&task.id).await)
+    }
+
     /// Whether a person's pause of `task` took hold: frozen, or, paused at its turn boundary, its
     /// hook held lately or its agent idle (it makes no hook call until someone types, which the
     /// hold catches), as an update's pause point.
