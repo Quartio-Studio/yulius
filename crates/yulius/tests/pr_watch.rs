@@ -290,6 +290,79 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
     Ok(())
 }
 
+/// SPEC-491 DON-003: a pull request that conflicts with the integration branch is not tested,
+/// so its task is not Done, and its agent hears of the conflict also where no run exists at its
+/// head (a project without Yulius CI): the branch's own head is asked. Told once per head.
+#[test]
+fn a_conflict_is_told_without_a_run_at_the_head() -> TestResult {
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let seed_dir = data.join("seed");
+        git(&seed_dir, &["push", "-q", "origin", "main:dev"])?;
+        let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
+        git(&repo, &["fetch", "-q", "origin"])?;
+        let id = new_task(&app, &sandbox, &user, "Watched").await?;
+        wait_for("the first answer", Duration::from_secs(30), || {
+            let shown = screen(&app, &id);
+            async move { shown.contains("ECHO: Watched: answer with an echo") }
+        })
+        .await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let worktree = task.worktree_path.clone().ok_or("no worktree")?;
+        let worktree = Path::new(&worktree);
+        std::fs::write(worktree.join("README.md"), "# the task's line\n")?;
+        git(worktree, &["commit", "-q", "-am", "task"])?;
+        let head = git(worktree, &["rev-parse", "HEAD"])?;
+        let open = DeliveryRecord {
+            task_id: id.clone(),
+            stage: DeliveryStage::PrOpen,
+            pr_number: Some(7),
+            updated_at: app.now(),
+        };
+        app.deps
+            .store
+            .transition_delivery(&DeliveryStage::None, &open)
+            .await?;
+        let bounds = WatchBounds::default();
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "no run and no conflict: nothing to say"
+        );
+
+        // `dev` moves in a way that conflicts; no run ever comes.
+        std::fs::write(seed_dir.join("README.md"), "# dev's line\n")?;
+        git(&seed_dir, &["commit", "-q", "-am", "dev"])?;
+        git(&seed_dir, &["push", "-q", "origin", "HEAD:dev"])?;
+        git(&repo, &["fetch", "-q", "origin"])?;
+        let typed = typed_within(&app, &bounds, &id)
+            .await?
+            .ok_or("the conflict was not typed")?;
+        assert!(
+            typed.contains(&format!(
+                "Its head {} conflicts with `dev` as Yulius last fetched it",
+                &head[..9]
+            )) && typed.contains("git merge origin/dev"),
+            "{typed}"
+        );
+        echoed(&app, &id, "Never rebase or force-push").await?;
+        assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// One watch pass: what it typed into `id`'s session.
 async fn watch(
     app: &std::sync::Arc<yulius_app::context::App>,

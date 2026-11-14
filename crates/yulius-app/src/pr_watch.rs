@@ -5,7 +5,8 @@
 //! [`WATCH_EVERY`], this watch looks at each running task whose delivery has an open pull
 //! request, from Yulius's own records and clone, and types what needs the task into its session
 //! with the next step (PRN-001..PRN-006): a red run at its head or of a merge candidate holding
-//! it, a conflict with the integration branch, how its armed merge ended, its merge, and why a
+//! it, a conflict with the integration branch (of the run's head, or the branch's own where no
+//! run exists), how its armed merge ended, its merge, and why a
 //! green head is not merging, with "Hands off" while a candidate holds it. Each event is typed
 //! once, by key, kept in [`PR_NOTICES_FILE`] (PRN-007). A session quiet for
 //! [`CHECK_IN_AFTER_MS`] gets a check-in (PRN-008), and a pull request with no progress for
@@ -957,7 +958,14 @@ impl App {
             }
         }
         let head = own.map(|run| run.sha.clone());
-        if let Some(head) = &head
+        // Without a run at its head (a project without Yulius CI) the branch's own head is
+        // asked: a conflicting pull request is not tested (SPEC-491 DON-003), so its agent has
+        // to hear of it there too.
+        let conflict_head = match &head {
+            Some(head) => Some(head.clone()),
+            None => self.branch_head(task).await,
+        };
+        if let Some(head) = &conflict_head
             && hold == Hold::Free
             && self.conflicts(task, &sandbox, head).await
         {
@@ -1052,6 +1060,17 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pr, text.clone()));
         Some(text)
+    }
+
+    /// The head of the task's branch in its worktree, when it can be read.
+    async fn branch_head(&self, task: &TaskRecord) -> Option<String> {
+        let worktree = task.worktree_path.as_deref().map(std::path::Path::new)?;
+        self.deps
+            .git
+            .resolve_commit(worktree, "HEAD")
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Whether `head` conflicts with the integration branch as Yulius's clone last fetched it,
