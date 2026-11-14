@@ -1344,6 +1344,17 @@ impl App {
                 "give the session `id` from sessions_search or a `task_number`".into(),
             ));
         };
+        // The end of the session instead of a place in it (SPEC-487 QST-003).
+        let tail = match args.get("tail") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(tail)) => *tail,
+            Some(_) => return Err(AppError::Invalid("`tail` must be true or false".into())),
+        };
+        if tail && args.get("from").is_some_and(|from| !from.is_null()) {
+            return Err(AppError::Invalid(
+                "give `tail` or `from`, not both: tail reads the session's end".into(),
+            ));
+        }
         let from = args.get("from").and_then(Value::as_u64).unwrap_or(0);
         let limit = args
             .get("limit")
@@ -1361,7 +1372,13 @@ impl App {
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             transcripts::open(&anchor, &path)
-                .and_then(|file| transcripts::read_page(file, from, limit, max_chars * 2))
+                .and_then(|file| {
+                    if tail {
+                        transcripts::read_tail(file, limit, max_chars)
+                    } else {
+                        transcripts::read_page(file, from, limit, max_chars * 2)
+                    }
+                })
                 .map_err(|err| {
                     if transcripts::unreadable(&err) {
                         AppError::Invalid("this session's transcript is not on the server".into())
@@ -1371,19 +1388,46 @@ impl App {
                 })
         })
         .await?;
-        let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
         let tasks = self.sandbox_tasks(sandbox).await?;
         let view = self.doc_view(&doc, &tasks, &mut HashMap::new(), None).await;
-        Ok(json!({
+        let mut answer = json!({
             "id": view.id,
             "kind": view.kind,
             "title": view.title,
             "task_number": view.task.as_ref().map(|t| t.number),
             "author": view.author.as_ref().map(|a| a.login.clone()),
-            "from": from,
-            "next_from": cut_at.or(page.next),
-            "text": if text.is_empty() { "(nothing to show in this range)".to_owned() } else { text },
-        }))
+        });
+        let text = if tail {
+            // The bound keeps the end: entries are left out at the front until the text fits
+            // (the last one is shown whatever its size, cut at its own end).
+            let mut entries = page.entries.as_slice();
+            let mut earlier = page.earlier;
+            let (text, cut_at) = loop {
+                let (text, cut_at) = transcripts::render_text(entries, max_chars);
+                if cut_at.is_none() || entries.len() <= 1 {
+                    break (text, cut_at);
+                }
+                entries = &entries[1..];
+                earlier = true;
+            };
+            answer["from"] = json!(entries.first().map_or(page.end, |entry| entry.line));
+            answer["earlier"] = json!(earlier);
+            // Where a later read goes on: after the last line read, for what came since.
+            answer["next_from"] = json!(cut_at.unwrap_or(page.end));
+            answer["tail"] = json!(true);
+            text
+        } else {
+            let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
+            answer["from"] = json!(from);
+            answer["next_from"] = json!(cut_at.or(page.next));
+            text
+        };
+        answer["text"] = json!(if text.is_empty() {
+            "(nothing to show in this range)".to_owned()
+        } else {
+            text
+        });
+        Ok(answer)
     }
 }
 

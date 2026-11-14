@@ -1679,8 +1679,10 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_delivery",
             "task_edit",
             "task_get",
+            "task_held_prompt",
             "task_message",
             "task_pause",
+            "task_question_dismiss",
             "task_restart",
             "task_start_now",
             "task_stop",
@@ -5771,6 +5773,337 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         entries.iter().any(|detail| detail["tool"] == "task_close"
             && detail["task"] == json!(run1.number)
             && detail["ok"] == false),
+        "{entries:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-487 QST-001, QST-002, QST-004, QST-005 (wall 7): the Superagent sees which tasks wait
+/// for a person and why (the agent's own request, the reason of a flag, a prompt Yulius held,
+/// a pause), in one list, without the person pasting it. Asked to, it dismisses a request and
+/// decides a held prompt for its person, as they would on the task's page; another person's
+/// stay theirs. A task's agent reads the same and decides nothing.
+#[tokio::test]
+async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() -> TestResult {
+    use yulius_app::attention::AttentionRecord;
+    use yulius_app::intake::{HoldRecord, hold_state};
+    use yulius_app::needs_you::NeedsYouRecord;
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_app::ports::store_ext::{IntakeStore, NeedsYouStore};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::{Activity, TaskStatus};
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+    let store = &f.h.store;
+    let now = f.h.app.now();
+    let mut seeded = Vec::new();
+    for (id, owner) in [
+        ("t-ask", "u-alice"),
+        ("t-flag", "u-alice"),
+        ("t-held", "u-alice"),
+        ("t-work", "u-alice"),
+        ("t-carol", "u-carol"),
+    ] {
+        let task = support::seed_task(&f.h, id, "s1", owner, TaskStatus::Running, None).await?;
+        support::seed_live_attempt(&f.h, id, &format!("tok-{id}")).await?;
+        store
+            .transition_task(
+                &task.id,
+                None,
+                TaskStatus::Running,
+                Some(Activity::Working),
+                now,
+            )
+            .await?;
+        seeded.push(task);
+    }
+    let [ask, flag, held, work, carols] = &seeded[..] else {
+        return Err("five tasks".into());
+    };
+    let asked = |action: &str| NeedsYouRecord {
+        action: action.into(),
+        happened: Some("The deploy needs a budget".into()),
+        problem: Some("Nothing is deployed until then".into()),
+        decision: true,
+        link: None,
+        at: now.0,
+    };
+    store
+        .set_task_needs_you(
+            &ask.id,
+            Some(&asked("Approve spending on DigitalOcean")),
+            now,
+        )
+        .await?;
+    store
+        .set_task_needs_you(&carols.id, Some(&asked("Pick a region")), now)
+        .await?;
+    let reason = AttentionRecord::yulius("The gate gave up after 5 tries.", "Type a prompt.");
+    assert!(
+        store
+            .flag_attention(&flag.id, None, Some(&reason), now)
+            .await?
+    );
+    store
+        .insert_hold(&HoldRecord {
+            id: "h-1".into(),
+            task_id: held.id.clone(),
+            class: yulius_domain::intake::PromptClass::NewScope,
+            prompt: "Also rewrite the billing page".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 91,
+            typed_by: Some(UserId::parse("u-alice")?),
+            state: hold_state::PENDING.into(),
+            created_at: now,
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        })
+        .await?;
+    let numbers = |list: &Value| -> Vec<u64> {
+        let mut numbers: Vec<u64> = list["tasks"]
+            .as_array()
+            .map(|tasks| tasks.iter().filter_map(|t| t["number"].as_u64()).collect())
+            .unwrap_or_default();
+        numbers.sort_unstable();
+        numbers
+    };
+    let n = |task: &yulius_app::model::TaskRecord| u64::from(task.number);
+    let of = |list: &Value, number: u64| -> Value {
+        list["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["number"] == number).cloned())
+            .unwrap_or(Value::Null)
+    };
+
+    // What waits for a person, and why.
+    let (open, is_error) =
+        cockpit_tool(&f, &token, "tasks_list", json!({"scope": "needs_you"})).await?;
+    assert!(!is_error, "{open}");
+    let mut waiting = vec![n(ask), n(flag), n(held), n(carols)];
+    waiting.sort_unstable();
+    assert_eq!(numbers(&open), waiting, "{open}");
+    let brief = of(&open, n(ask));
+    assert_eq!(brief["shows"], "needs_you", "{brief}");
+    assert_eq!(
+        brief["needs_you"]["action"], "Approve spending on DigitalOcean",
+        "{brief}"
+    );
+    assert_eq!(brief["needs_you"]["decision"], true, "{brief}");
+    assert_eq!(
+        brief["needs_you"]["problem"], "Nothing is deployed until then",
+        "{brief}"
+    );
+    let brief = of(&open, n(flag));
+    assert_eq!(brief["attention"]["kind"], "yulius", "{brief}");
+    assert_eq!(
+        brief["attention"]["problem"], "The gate gave up after 5 tries.",
+        "{brief}"
+    );
+    assert_eq!(brief["attention"]["action"], "Type a prompt.", "{brief}");
+    let brief = of(&open, n(held));
+    assert_eq!(
+        brief["held_prompt"]["excerpt"], "Also rewrite the billing page",
+        "{brief}"
+    );
+    assert_eq!(brief["held_prompt"]["class"], "new_scope", "{brief}");
+    // The same in the text a model reads.
+    let listed = mcp(
+        &f,
+        &token,
+        "tools/call",
+        json!({"name": "tasks_list", "arguments": {"scope": "needs_you"}}),
+    )
+    .await?;
+    let shown = listed["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    for line in [
+        "asks its person to decide: Approve spending on DigitalOcean",
+        "flagged by Yulius: The gate gave up after 5 tries. Type a prompt.",
+        "holds a typed prompt (new_scope): \"Also rewrite the billing page\"",
+    ] {
+        assert!(shown.contains(line), "`{line}` is not in:\n{shown}");
+    }
+    // A task that works says so and names no reason; a paused one says who paused it.
+    let (working, _) = cockpit_tool(&f, &token, "task_get", json!({"number": work.number})).await?;
+    assert_eq!(working["shows"], "working", "{working}");
+    for key in ["needs_you", "attention", "held_prompt", "pause"] {
+        assert!(working.get(key).is_none(), "{key}: {working}");
+    }
+    cockpit_tool(&f, &token, "task_pause", json!({"number": work.number})).await?;
+    let (paused, _) = cockpit_tool(&f, &token, "task_get", json!({"number": work.number})).await?;
+    assert_eq!(paused["pause"]["by"], "person", "{paused}");
+    assert_eq!(paused["pause"]["user"]["login"], "alice", "{paused}");
+    cockpit_tool(&f, &token, "task_unpause", json!({"number": work.number})).await?;
+
+    // A task's agent reads the same list and decides nothing.
+    let agents = support::mcp_tool(
+        &f.h,
+        "tok-t-work",
+        "tasks_list",
+        json!({"scope": "needs_you"}),
+    )
+    .await?;
+    let text = agents["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        agents["isError"] != true && text.contains("Approve spending on DigitalOcean"),
+        "{agents}"
+    );
+    // What a person typed and Yulius held reached no agent: a task's agent learns only that
+    // a prompt is held.
+    assert!(
+        text.contains("holds a typed prompt (new_scope) for its person's decision")
+            && !text.contains("billing"),
+        "{agents}"
+    );
+    for tool in ["task_question_dismiss", "task_held_prompt"] {
+        let result =
+            support::mcp_tool(&f.h, "tok-t-work", tool, json!({"number": ask.number})).await?;
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            result["isError"] == true && text.contains("unknown tool"),
+            "{tool}: {result}"
+        );
+    }
+
+    // Dismissing a request: the owner's Superagent, once; another person's stays.
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": carols.number}),
+    )
+    .await?;
+    assert!(is_error && said(&refused).contains("@carol"), "{refused}");
+    assert!(store.task_needs_you(&carols.id).await?.is_some());
+    let (dismissed, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": ask.number}),
+    )
+    .await?;
+    assert!(!is_error, "{dismissed}");
+    assert_eq!(
+        dismissed["dismissed"], "Approve spending on DigitalOcean",
+        "{dismissed}"
+    );
+    assert!(store.task_needs_you(&ask.id).await?.is_none());
+    assert_eq!(
+        store
+            .audit_details(ask.id.as_str(), "task.needs_you.dismissed", 10)
+            .await?
+            .len(),
+        1
+    );
+    let (again, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": ask.number}),
+    )
+    .await?;
+    assert!(is_error && said(&again).contains("asks nothing"), "{again}");
+    // A flag is not a request: it says what ends it.
+    let (flagged, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_question_dismiss",
+        json!({"number": flag.number}),
+    )
+    .await?;
+    assert!(
+        is_error && said(&flagged).contains("Type a prompt."),
+        "{flagged}"
+    );
+
+    // A held prompt is decided as on its card: only the actions an agent may take, by the
+    // owner, once.
+    for (args, why) in [
+        (
+            json!({"number": held.number, "action": "revert"}),
+            "send, dismiss, parallel or after",
+        ),
+        (
+            json!({"number": held.number}),
+            "send, dismiss, parallel or after",
+        ),
+        (
+            json!({"number": work.number, "action": "dismiss"}),
+            "holds no prompt",
+        ),
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "task_held_prompt", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+    assert_eq!(
+        store.hold("h-1").await?.ok_or("hold")?.state,
+        hold_state::PENDING
+    );
+    let (decided, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_held_prompt",
+        json!({"number": held.number, "action": "dismiss"}),
+    )
+    .await?;
+    assert!(!is_error, "{decided}");
+    assert!(
+        decided["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("Dismissed")),
+        "{decided}"
+    );
+    assert_eq!(
+        store.hold("h-1").await?.ok_or("hold")?.state,
+        hold_state::DISMISSED
+    );
+    let (open, _) = cockpit_tool(&f, &token, "tasks_list", json!({"scope": "needs_you"})).await?;
+    let mut left = vec![n(flag), n(carols)];
+    left.sort_unstable();
+    assert_eq!(numbers(&open), left, "{open}");
+
+    // The audit names the task and the decision, never the request's or the prompt's words.
+    let entries: Vec<Value> = store
+        .audit_details("s1", "superagent.tool", 200)
+        .await?
+        .iter()
+        .rev()
+        .filter_map(|detail| serde_json::from_str(detail).ok())
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .any(|detail| detail["tool"] == "task_question_dismiss"
+                && detail["task"] == json!(ask.number)
+                && detail["ok"] == true),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|detail| detail["tool"] == "task_held_prompt"
+                && detail["task"] == json!(held.number)
+                && detail["do"] == "dismiss"
+                && detail["ok"] == true),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|detail| !detail.to_string().contains("DigitalOcean")
+                && !detail.to_string().contains("billing")),
         "{entries:?}"
     );
     Ok(())

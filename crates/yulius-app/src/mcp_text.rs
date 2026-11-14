@@ -832,6 +832,8 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(blocked) = text(task, "start_blocked") {
         parts.push(format!("will not start by itself: {blocked}"));
     }
+    // Why it waits for a person or is held (SPEC-487 QST-001), in its page's words.
+    parts.extend(waits_why(task));
     if let Some(spec) = text(task, "spec_path") {
         parts.push(format!("spec {spec}"));
     }
@@ -843,6 +845,79 @@ fn task_line(task: &Value) -> Option<String> {
         parts.push(format!("updated {updated}"));
     }
     Some(parts.join(" · "))
+}
+
+/// Why a task waits for a person or is held, one part each: its agent's request, the reason
+/// of its flag, a prompt Yulius held, a pause. The words after each colon are the agent's or
+/// Claude Code's own.
+fn waits_why(task: &Value) -> Vec<String> {
+    let mut parts = Vec::new();
+    if text(task, "shows") == Some("needs_you") {
+        parts.push("NEEDS ITS PERSON".to_owned());
+    }
+    if let Some(asked) = task.get("needs_you").filter(|v| v.is_object()) {
+        let verb = if asked.get("decision").and_then(Value::as_bool) == Some(true) {
+            "decide"
+        } else {
+            "do"
+        };
+        let mut part = format!(
+            "asks its person to {verb}: {}",
+            text(asked, "action").unwrap_or("?")
+        );
+        for (label, key) in [
+            ("what happened", "happened"),
+            ("problem", "problem"),
+            ("where", "link"),
+        ] {
+            if let Some(said) = text(asked, key) {
+                part.push_str(&format!(" ({label}: {said})"));
+            }
+        }
+        if let Some(at) = text(asked, "at") {
+            part.push_str(&format!(" (asked {at})"));
+        }
+        parts.push(part);
+    }
+    if let Some(flag) = task.get("attention").filter(|v| v.is_object()) {
+        let by = match text(flag, "kind") {
+            Some("terminal") => "Claude Code asks in its terminal",
+            _ => "flagged by Yulius",
+        };
+        let said = [
+            text(flag, "problem"),
+            text(flag, "action"),
+            text(flag, "link"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        parts.push(if said.is_empty() {
+            by.to_owned()
+        } else {
+            format!("{by}: {said}")
+        });
+    }
+    if let Some(held) = task.get("held_prompt").filter(|v| v.is_object()) {
+        let class = text(held, "class").unwrap_or("?");
+        parts.push(match text(held, "excerpt") {
+            Some(excerpt) => format!("holds a typed prompt ({class}): \"{excerpt}\""),
+            None => format!("holds a typed prompt ({class}) for its person's decision"),
+        });
+    }
+    if let Some(pause) = task.get("pause").filter(|v| v.is_object()) {
+        let by = match (
+            text(pause, "by"),
+            pause.get("user").and_then(|u| text(u, "login")),
+        ) {
+            (Some("person"), Some(login)) => format!("paused by @{login}"),
+            (Some("update"), _) => "held for an update of Yulius".to_owned(),
+            _ => "paused".to_owned(),
+        };
+        parts.push(by);
+    }
+    parts
 }
 
 /// `tasks_list`: one line per task, the caller's own first. Tasks are named by number in every
@@ -906,9 +981,21 @@ fn session_read(value: &Value) -> Option<String> {
         ", from line {}",
         value.get("from").and_then(Value::as_u64).unwrap_or(0)
     ));
-    match value.get("next_from").and_then(Value::as_u64) {
-        Some(next) => head.push_str(&format!("; continue with from: {next}.")),
-        None => head.push_str("; this is the end of the session."),
+    let next = value.get("next_from").and_then(Value::as_u64);
+    if value.get("tail").and_then(Value::as_bool) == Some(true) {
+        // The session's end (SPEC-487 QST-003).
+        head.push_str(" to its end so far");
+        if value.get("earlier").and_then(Value::as_bool) == Some(true) {
+            head.push_str(" (earlier lines left out)");
+        }
+        if let Some(next) = next {
+            head.push_str(&format!("; what comes later: from: {next}."));
+        }
+    } else {
+        match next {
+            Some(next) => head.push_str(&format!("; continue with from: {next}.")),
+            None => head.push_str("; this is the end of the session."),
+        }
     }
     Some(format!("{head}\n{}", body.trim_end()))
 }

@@ -102,8 +102,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Send a message past text the person left unsent in a task's prompt box | yes, for the task's owner (slice 3) | no | SPEC-480: the text is the person's; they decide that it goes out with the message |
 | Discard text a person left unsent in a task's prompt box | no | no | Yulius sees keys, not the box, and the keys that clear it (Esc, Ctrl+C) also interrupt a turn or end the session; the owner's message goes past it instead |
 | Message a task | yes (had) | no | ADR-0178 |
-| List open questions, see why a task needs attention | yes (slice 4) | yes, read only (slice 4) | A task that sees another's question does not ask it again |
-| Answer or dismiss a task's question for the person | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
+| List open questions, see why a task needs attention | yes (slice 4) | yes, read only, without a held prompt's words (slice 4) | A task that sees another's question does not ask it again; a prompt Yulius held reached no agent |
+| Answer or dismiss a task's question for the person; decide a held prompt (send, dismiss, a new task now or after) | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
+| Decide a held prompt by skipping steps or reverting the task | no: the person, on the task's page | no | Reverting discards the task's work and asks for the person's own confirmation there (TSK-013) |
+| Answer a question Claude Code asks in a task's terminal (a permission menu, a choice) | not yet (decided with slice 10, which shows a task's screen) | no | Yulius cannot tell an agent what the menu shows; keys typed blind would take its default |
 | The end of a session (`session_read` tail) | yes (slice 4) | yes (slice 4) | Sessions are docs for both (SPEC-001 SES) |
 | CI: read runs and logs, run again | yes (slice 2) | yes (had) | A task needs its own checks |
 | CI: cancel, order, hold | yes (slices 2, 5) | no | They change other tasks' runs |
@@ -142,6 +144,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 | TCT-005 | `tasks_bulk {do, numbers \| all}` does one action (stop, pause, unpause, message) to several tasks in one call. Each task gets what the single tool does, with its checks and its audit; one task's refusal does not stop the others, and the answer names the tasks done and the tasks refused with the reason. `all` is every task of the person's own that the action applies to (stop: not ended; pause: running and not paused; unpause: paused by a person; message: running or not started); other people's tasks are left alone and counted. A stop takes the waiting tasks before the running ones, so no session it frees starts a task it is about to stop. An unpause of a task nobody paused is refused, not listed as done. At most 100 tasks a call; what `all` did not reach is said. The call runs to its last task and its audit when the client goes away, from the Superagent and through the remote MCP. | the same test; `task_edit::tests::all_takes_the_tasks_an_action_applies_to`, `a_bulk_stop_takes_the_waiting_tasks_first`; `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely`, `a_bulk_call_whose_client_went_away_still_reaches_every_task`; `cockpit::a_bulk_call_reaches_a_hundred_tasks_and_says_what_is_left` |
 | TCT-006 | `task_message {with_draft: true}`: the task's owner, and only they, has a message sent past text they left unsent in the task's prompt box (SPEC-480 held every message until they went to the terminal). The message is typed behind that text, after a blank line, and both are submitted as one prompt; that submit ends the draft as a prompt sent from the box does, also a draft known only from its mark after a restart of the server; never within a minute of their last key, and not while a prompt Yulius held for a decision (TSK-013) is back in the box. The refusal for a draft names the argument. | `task_message::the_owner_sends_a_message_past_their_own_draft` (a live session: at the keyboard, without the argument, another owner, a held prompt, then sent as one prompt and the next plain message typed), `a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft` |
 | TCT-007 | The four tools are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; each call from the Superagent leaves one `superagent.tool` entry naming the task, or the tasks (numbers, or `all`) and the action, never a title, a request or a message. None is pre-allowed. | the two Superagent tests (audit), `cockpit::a_tasks_agent_does_not_steer_other_tasks`, `manage_tools::the_cockpit_asks_before_every_changing_tool`, `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
+| QST-001 | `tasks_list` and `task_get` say, for each task, where the task list shows it (`shows`: needs_you, working, queued, done, ended, by the list's own rule) and, only when there is one, why it waits for a person or is held, as its page does: `needs_you` (what its agent asked), `attention` (the reason of its flag: Claude Code asks in its terminal, or Yulius's reason and what to do), `held_prompt` (a typed prompt Yulius held), `pause` (who paused it). The text a model reads says the same. A task's agent reads it too, without a held prompt's words: what a person typed and Yulius held reached no agent and no transcript. | `cockpit::the_superagent_sees_why_tasks_need_its_person_and_answers_for_them` (the record, the text, a working and a paused task, a task's agent) |
+| QST-002 | `tasks_list {scope: "needs_you"}` lists the tasks the list shows under Needs you, other people's included (they are read by everyone who sees the project), and no other. | the same test (four of five tasks; after a dismissal and a decision, two) |
+| QST-003 | `session_read {tail: true}` returns a session's end: the last `limit` entries that fit `max_chars`, leaving entries out at the front and never at the end, redacted as every read; it says where the text begins (`from`), whether lines before it were left out (`earlier`) and where a later read goes on (`next_from`). `tail` with `from` is refused. | `sessions::agents_search_and_read_only_their_own_sandbox_sessions` (three of five entries, the whole session, a bound of 1000 characters, a file read before the tail still redacted, both arguments) |
+| QST-004 | The person's answer to a task's question is passed on with `task_message`: a message that is sent ends the agent's request. The tool's description and the instructions say so. | `task_message::a_remote_message_names_the_persons_own_agent` (unchanged: the request ends with the message); `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
+| QST-005 | Two more of the person's project tools (SAR-001, SAR-002; never a task's agent's): `task_question_dismiss` ends the agent's request for the task's owner without a word to the agent, only while it still asks what was read, and answers what was asked (audited `task.needs_you.dismissed`); with nothing asked it is refused, naming the flag's reason when the task is flagged. `task_held_prompt {action}` decides the task's held prompt with the function its card calls: send, dismiss, parallel or after; skipping steps and reverting the task stay on the page. The `superagent.tool` entry names the task and the decision, never the request's or the prompt's words. | the same Superagent test (another person's request, a second dismissal, a flag, the four actions and the two refused, the hold's state, the audit); `person_tools::tests::a_calls_subject_is_its_task_run_or_environment` |
 
 ## Plan
 
@@ -203,6 +210,22 @@ the function the web UI's route calls, with the person's rights checked at the c
   and a plain message is typed after it.
 - AC-TCT-5: a live, idle task is closed by `close_task_for_person` and ends `closed`; a
   working, waiting or ended one is refused with what to do.
+- AC-QST-1: with a task whose agent asked a decision, one flagged by Yulius, one with a held
+  prompt, one working and another person's with a request, `tasks_list {scope: needs_you}`
+  through a Superagent's token lists the four that wait, each with its reason in the record
+  and in the text; `task_get` of the working one says `working` and names no reason, and
+  once it is paused, who paused it.
+- AC-QST-2: a task's agent gets the same list, with "holds a typed prompt (new_scope) for its
+  person's decision" and without the prompt's words, and "unknown tool" for the two deciding
+  tools.
+- AC-QST-3: `task_question_dismiss` on the person's task ends its request and answers what
+  was asked; on another person's task it is refused with the owner's name and the request
+  stays; a second call and a call on a flagged task are refused with what is the case.
+- AC-QST-4: `task_held_prompt` with `dismiss` moves the hold to dismissed; `revert`, no
+  action and a task without a hold are refused and change nothing.
+- AC-QST-5: `session_read {tail: true, limit: 3}` of a five-entry session starts at its third
+  entry, says `earlier: true` and `next_from: 5`, and shows a value read from a dotenv file
+  before the tail redacted.
 - Every gate of the repository passes on the pull request head.
 
 ## Test plan
@@ -229,6 +252,9 @@ the function the web UI's route calls, with the person's rights checked at the c
   live sessions of the fake agent for the draft and the close (`tests/task_message.rs`); the
   store's two conditional writes (`yulius-store` `tests/store.rs`); unit tests of the title,
   the list of numbers, what `all` takes, the stop order and the kept attachments.
+- Slice 4, integration over the MCP endpoint (`tests/cockpit.rs`: a Superagent's token and a
+  task's token against seeded requests, a flag and a hold; `tests/sessions.rs`: the tail of
+  a transcript on disk); unit tests of the audit's subject and the instructions.
 - Unit: the news rule's every branch and its bound (`pr_watch::tests::news_is_due_until_the_agent_heard_it`,
   `typed_news_is_due_until_its_turn`).
 - Mutation: twelve mutants of the rule and its uses, each failed by a named test
@@ -337,6 +363,36 @@ the function the web UI's route calls, with the person's rights checked at the c
   a turn or end the session. So the owner decides the one thing that is safe: their text goes
   out with the message as one prompt, which empties the box and lets Yulius's own messages
   through again. Discarding stays with the person at the terminal, and the table says why.
+- **Slice 4: the reasons are the page's, read where the list is read** (QST-001). A task's
+  brief now carries what `TaskSummary` shows a person, by the same functions, so the two
+  cannot say different things. A tool of its own for questions was rejected: the Superagent
+  already reads `tasks_list`, and one more list to remember is one more "I can't see that".
+  The group is the list's rule (`AttentionFacts::group`), not a second one.
+- **A task's agent reads other tasks' questions, not held prompts' words** (QST-001). An
+  agent that sees "#12 asked its person for a DigitalOcean budget" does not ask again. A
+  held prompt is different: a person typed it, Yulius kept it from the agent it was typed
+  to, and it is in no transcript; its words go to the person's own callers only.
+- **The texts are data.** A request's and a flag's words are an agent's or Claude Code's
+  own; they are stored as bounded single lines, the tools' descriptions say they are data,
+  and the instructions' rule on text that is read covers them.
+- **Dismissing ends the request, nothing else** (QST-005): no word to the agent and no
+  change of its activity. The answer is `task_message`'s job, which ends the request too. A
+  flag has no dismissal: each flag says what ends it (a prompt, a secret answered, a
+  session stopped), and clearing it without that would hide a task that is stuck.
+- **A held prompt is decided by the card's function**, with four of its six actions. `revert`
+  discards the task's work and takes the person's explicit confirmation on the page;
+  `skip_after` names steps to skip. Both stay there, and the table says so.
+- **A question in a task's terminal is left for slice 10.** A permission menu or a choice
+  Claude Code shows is answered with keys. Yulius knows that it is asked (the flag's reason
+  carries Claude Code's words) but cannot yet show an agent the menu; typing keys blind
+  would take a default nobody chose. Slice 10 adds a task's screen; the decision is taken
+  with it.
+- **The tail keeps the end** (QST-003). `render_text` cuts at the end when a bound is
+  reached, which for a tail would drop what was asked for: entries are left out at the
+  front until the text fits.
+- **The instructions shrank to take the new tools** (3963 of 4096 characters): the proxy's
+  mechanics and two examples moved out (the tools' descriptions have them). Tool names
+  whose absence caused "wrong I can't" (`secret_request_hosts` among them) stay named.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 

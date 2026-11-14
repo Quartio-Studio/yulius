@@ -593,6 +593,8 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "task_close",
         "tasks_reorder",
         "tasks_bulk",
+        "task_question_dismiss",
+        "task_held_prompt",
         "ci_rerun",
         "ci_cancel",
         "cd_deploy",

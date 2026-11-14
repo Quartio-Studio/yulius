@@ -891,6 +891,76 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     )
     .await?;
     assert!(text(&bounded["text"]).len() <= 1100);
+    // The end of a session without guessing an offset (SPEC-487 QST-003): `tail` reads the
+    // last entries, says where they begin and whether more came before, and where a later
+    // read goes on. What a file read before the tail gave away is still redacted in it.
+    let (tail, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "limit": 3}),
+    )
+    .await?;
+    assert!(!err, "{tail}");
+    let body = text(&tail["text"]);
+    assert!(body.starts_with("[line 2] user"), "{body}");
+    assert!(body.contains("[line 4] assistant"), "{body}");
+    assert!(body.contains("WEBHOOK_SIGNING=[REDACTED:"), "{body}");
+    assert!(
+        !body.contains("whsec_plain") && !body.contains(AGENT_VALUE),
+        "{body}"
+    );
+    assert_eq!(
+        (&tail["from"], &tail["earlier"], &tail["next_from"]),
+        (&json!(2), &json!(true), &json!(5)),
+        "{tail}"
+    );
+    let (all, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true}),
+    )
+    .await?;
+    assert!(text(&all["text"]).starts_with("[line 0] user"), "{all}");
+    assert_eq!(
+        (&all["from"], &all["earlier"]),
+        (&json!(0), &json!(false)),
+        "{all}"
+    );
+    // A bound keeps the end, not the beginning.
+    let (short, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "max_chars": 1000, "limit": 200}),
+    )
+    .await?;
+    let body = text(&short["text"]);
+    assert!(
+        body.contains("[line 4] assistant") && body.len() <= 1100,
+        "{body}"
+    );
+    // The end, or a place: not both.
+    let (both, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "from": 2}),
+    )
+    .await?;
+    assert!(
+        err && both.to_string().contains("`tail` or `from`"),
+        "{both}"
+    );
+    let (odd, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": "yes"}),
+    )
+    .await?;
+    assert!(err, "{odd}");
     let (foreign, err) =
         mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s2"})).await?;
     assert!(err, "{foreign}");
