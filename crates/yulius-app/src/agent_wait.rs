@@ -507,6 +507,14 @@ impl App {
         (armed, outcome.map(|o| (o.head, o.text)))
     }
 
+    /// `task`'s armed merge as it is now, and whether Yulius is deciding one (SPEC-487 MRG-001):
+    /// while a decision runs, its merge is out of the slot.
+    pub(crate) fn armed_merge_view(&self, task: &TaskId) -> (Option<ArmedMerge>, bool) {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        (slot.merge.clone(), slot.deciding > 0)
+    }
+
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
         lock_slot(&self.runtime(&task.id)).outcome = None;

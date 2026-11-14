@@ -483,6 +483,10 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<Vec<crate::ci::CiRunRecord>>;
     /// Queued and running runs of every sandbox, oldest first.
     async fn active_ci_runs(&self) -> AppResult<Vec<crate::ci::CiRunRecord>>;
+    /// Puts queued run `id` before the other queued runs of its sandbox (SPEC-487 MRG-004): its
+    /// place becomes a millisecond before the earliest of theirs. `false`, and nothing changed,
+    /// when it is not queued or no queued run of its sandbox comes before it.
+    async fn ci_run_to_front(&self, id: &str) -> AppResult<bool>;
     /// Compare-and-set of a run's state with `update`; `false` when it was in none of
     /// `from`. `Conflict` when another run of the sandbox is already running.
     async fn transition_ci_run(

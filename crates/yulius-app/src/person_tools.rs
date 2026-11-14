@@ -40,10 +40,13 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("tasks_bulk", Action::Work),
     ("task_question_dismiss", Action::Work),
     ("task_held_prompt", Action::Work),
+    ("task_merge", Action::Work),
+    ("merge_queue", Action::View),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
     ("ci_cancel", Action::Work),
+    ("ci_prioritize", Action::Work),
     ("cd_status", Action::View),
     ("cd_deploy", Action::Work),
     ("variables_list", Action::View),
@@ -127,7 +130,8 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
         | "task_edit"
         | "task_close"
         | "task_question_dismiss"
-        | "task_held_prompt" => {
+        | "task_held_prompt"
+        | "task_merge" => {
             if let Some(number) = args.get("number").and_then(Value::as_u64) {
                 about.insert("task".into(), json!(number));
             } else if let Some(task) = id("task_id") {
@@ -163,7 +167,7 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
                 about.insert("do".into(), json!(action.as_str()));
             }
         }
-        "ci_rerun" | "ci_cancel" => {
+        "ci_rerun" | "ci_cancel" | "ci_prioritize" => {
             if let Some(run) = id("run_id") {
                 about.insert("run".into(), json!(run));
             }
@@ -231,7 +235,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         tool(
             "task_delivery",
-            "A task's delivery, as its page shows it: its pull request, the checks at its head, the delivery stage, what comes next (next_actions), what is refused now and why (blocked), and notes, among them where an armed merge stands once Yulius has looked at it. It does not say whether a merge is armed while the checks still run.",
+            "A task's delivery, as its page shows it: its pull request, the checks at its head, the delivery stage, what comes next (next_actions), what is refused now and why (blocked), and notes; and merge: whether a merge is armed, its head and since when, whether Yulius is deciding it now, why it has not merged yet (where: its place in a merge train, or what its last check found, such as a branch behind its base or an agent still working) and how the last armed merge ended (last). task_merge merges it for the task's owner.",
             task_ref.clone(),
             &[],
         ),
@@ -311,6 +315,18 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             &["action"],
         ),
         tool(
+            "task_merge",
+            "Merge a task's pull request for its owner, when the person says so (\"merge #12\"), as Merge on the task's page does: at once when the checks at its head passed; while they still run, or while the branch is behind its base, the merge of the branch's head is armed and Yulius merges that exact head as soon as its checks pass (bringing it up to date first when it can); asked again for an armed head, it keeps its place. A new commit on the branch drops an armed merge: ask again then. Refused, with the reason, when the checks at the head failed (nothing merges on red), without an open pull request, or for a pull request into another branch than the integration branch. The task's owner only; a task's agent delivers its own work with delivery_merge.",
+            task_ref.clone(),
+            &[],
+        ),
+        tool(
+            "merge_queue",
+            "The project's merge queue: every armed merge in the order a merge train takes them (when it was armed), each with its task, owner, pull request, the head that is to merge and why it has not merged yet (where), and the merge train under test (its CI run, its members in merge order, whether it passed and is merging, the pull requests left out of it for conflicts). For one task, task_delivery's merge says the same and how its last armed merge ended.",
+            json!({}),
+            &[],
+        ),
+        tool(
             "ci_runs",
             "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch, pull request or merge train, commit, state, jobs).",
             json!({}),
@@ -331,6 +347,12 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         tool(
             "ci_cancel",
             "Cancel a queued or running CI run.",
+            run.clone(),
+            &["run_id"],
+        ),
+        tool(
+            "ci_prioritize",
+            "Put a queued CI run first in the project's queue (\"run #12's checks before the others\"): it goes before the project's other queued runs, and the project's next free lane starts it; other projects' queues are not touched. Refused for a run that is not queued or is first already. Holding the queue is not a tool: cancel a run (ci_cancel) and run it again later (ci_rerun).",
             run,
             &["run_id"],
         ),
@@ -373,7 +395,19 @@ impl App {
         match name {
             "task_delivery" => {
                 let task = self.agent_task_ref(project, args).await?;
-                record(&self.task_delivery(ctx, task.id.as_str()).await?)
+                let mut delivery = record(&self.task_delivery(ctx, task.id.as_str()).await?)?;
+                // Where its merge stands, and why it has not merged yet (SPEC-487 MRG-001).
+                delivery["merge"] = self.merge_state(&task);
+                Ok(delivery)
+            }
+            "task_merge" => {
+                let task = self.agent_task_ref(project, args).await?;
+                self.merge_for_person(ctx, task.id.as_str()).await
+            }
+            "merge_queue" => self.merge_queue_for_person(ctx, &sandbox.id).await,
+            "ci_prioritize" => {
+                self.ci_run_first(ctx, &sandbox.id, str_arg(args, "run_id")?)
+                    .await
             }
             "task_restart" | "task_pause" | "task_unpause" | "task_start_now" => {
                 let task = self.agent_task_ref(project, args).await?;
@@ -658,6 +692,16 @@ mod tests {
             subject("tasks_bulk", &json!({"do": "stop", "numbers": [7]})),
             json!({"tasks": [7], "do": "stop"})
         );
+        // A merge names its task, a CI order its run; the merge queue nothing.
+        assert_eq!(
+            subject("task_merge", &json!({"number": 6})),
+            json!({"task": 6})
+        );
+        assert_eq!(
+            subject("ci_prioritize", &json!({"run_id": "r-1"})),
+            json!({"run": "r-1"})
+        );
+        assert_eq!(subject("merge_queue", &json!({"run_id": "r-1"})), json!({}));
         // A decision on a held prompt names the task and the decision, when it is one.
         assert_eq!(
             subject("task_held_prompt", &json!({"number": 5, "action": "after"})),

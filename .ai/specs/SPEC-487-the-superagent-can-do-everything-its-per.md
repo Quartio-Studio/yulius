@@ -108,9 +108,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Answer a question Claude Code asks in a task's terminal (a permission menu, a choice) | not yet (decided with slice 10, which shows a task's screen) | no | Yulius cannot tell an agent what the menu shows; keys typed blind would take its default |
 | The end of a session (`session_read` tail) | yes (slice 4) | yes (slice 4) | Sessions are docs for both (SPEC-001 SES) |
 | CI: read runs and logs, run again | yes (slice 2) | yes (had) | A task needs its own checks |
-| CI: cancel, order, hold | yes (slices 2, 5) | no | They change other tasks' runs |
+| CI: cancel, order | yes (slices 2, 5) | no | They change other tasks' runs |
+| CI: hold the queue | no: no page holds it either; cancel a run and run it again later | no | A held queue would hold every task's checks and merges; asked for in no case where cancel and run again did not do |
 | A task's delivery, the merge queue, why a pull request is not merging | yes (slices 2, 5) | its own (had) | A task delivers its own work |
-| Arm or re-arm a task's merge | yes, for the person (slice 5) | its own (had) | The reviewed head is the task's to name; the person may merge what they own |
+| Arm or re-arm a task's merge; merge a task's pull request | yes, for the task's owner (slice 5) | its own, after an independent review (had) | The person decides what of theirs merges, as the page's Merge does; an agent delivers its own reviewed work |
 | Dev deploy, CD status | yes (slice 2) | yes, when its task asks (had) | SPEC-134 |
 | Production deploy, promotion to `main` | behind one confirmation in the panel (slice 8) | no | ADR-0110: a person decides; the Superagent prepares and asks |
 | A task's subscription: see, move; model and effort | yes (slice 6) | no | Tasks are subscription-agnostic (SPEC-001 ROT-007) |
@@ -149,6 +150,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 | QST-003 | `session_read {tail: true}` returns a session's end: the last `limit` entries whose shown text fits `max_chars` (a tool's long result counts as the few lines shown of it; a note that shows nothing neither takes the place of the last entry that does nor counts toward `limit`), leaving entries out at the front and never at the end, redacted as every read; it says where the text begins (`from`), whether lines before it were left out (`earlier`) and where a later read goes on (`next_from`). `tail` with `from` is refused. | `sessions::agents_search_and_read_only_their_own_sandbox_sessions` (three of five entries, the whole session, a bound of 1000 characters, a file read before the tail still redacted, both arguments) |
 | QST-004 | The person's answer to a task's question is passed on with `task_message`: a message that is sent ends the agent's request. The tool's description and the instructions say so. | `task_message::a_remote_message_names_the_persons_own_agent` (unchanged: the request ends with the message); `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 | QST-005 | Two more of the person's project tools (SAR-001, SAR-002; never a task's agent's): `task_question_dismiss` ends the request of a task that has not ended (its agent's, or one Yulius opened for it; an ended task waits for nobody and shows none) for the task's owner without a word to the agent, only while it still asks what was read, and answers what was asked (audited `task.needs_you.dismissed`); with nothing asked it is refused, naming the flag's reason when the task is flagged. `task_held_prompt {action}` decides the task's held prompt with the function its card calls: send, dismiss, parallel or after; skipping steps and reverting the task stay on the page. The `superagent.tool` entry names the task and the decision, never the request's or the prompt's words. | the same Superagent test (another person's request, a second dismissal, a flag, the four actions and the two refused, the hold's state, the audit); `person_tools::tests::a_calls_subject_is_its_task_run_or_environment` |
+| MRG-001 | `task_delivery` adds `merge`: whether a merge of the task is armed, the head that is to merge and since when, whether Yulius decides it now, why it has not merged yet (its merge train's sentence, or what its last check found: a branch behind its base, an agent still working, checks still running) and how the last armed merge ended. | `merge_train::a_person_merges_their_tasks_pull_request_when_its_checks_pass` (before, while armed, after the merge); `cockpit::the_superagent_reads_the_merge_queue_and_orders_ci` (through the tool) |
+| MRG-002 | `merge_queue` lists the project's armed merges in the order a merge train takes them (when they were armed), each with its task, owner, pull request, head and why it has not merged, and the merge train under test (its run, its members in merge order, whether it passed and is merging, those left out for conflicts). Read with view access. | the same two tests |
+| MRG-003 | `task_merge` merges a task's pull request for its owner as the page's Merge does when the checks at its head passed and the branch is up to date; otherwise it arms the merge of the branch's head for them, which Yulius merges once those checks pass (bringing the branch up to date first when it can), keeps in its place when asked again and drops at a new commit. Refused, with the reason, when the checks failed, without an open pull request, for a pull request into another branch, and for another person's task. Audited under the person's name. | the merge-train test (armed, kept in place, merged by the pass, a failed head refused, the audit); the Superagent test (another person's task, no pull request) |
+| MRG-004 | `ci_prioritize` puts a queued CI run before its project's other queued runs, and the project's next free lane starts it; other projects' queues are not touched (each project has its own lanes). Refused for a run that is not queued, is first already or belongs to another project. Audited. | the Superagent test (three runs of the project, one of another, a running run, an unknown one, the audit) |
+| MRG-005 | The three are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; `merge_queue` is pre-allowed, the two that change something are not. | the Superagent test ("unknown tool" for a task's agent); `manage_tools::the_cockpit_asks_before_every_changing_tool`; `yulius-harness` `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `person_tools::tests` |
 
 ## Plan
 
@@ -159,7 +165,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
 - [x] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
 - [x] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
-- [ ] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
+- [x] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
 - [ ] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
 - [ ] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [ ] Slice 8: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, production behind one confirmation, another sandbox's task list)
@@ -226,6 +232,15 @@ the function the web UI's route calls, with the person's rights checked at the c
 - AC-QST-5: `session_read {tail: true, limit: 3}` of a five-entry session starts at its third
   entry, says `earlier: true` and `next_from: 5`, and shows a value read from a dotenv file
   before the tail redacted.
+- AC-MRG-1: a person's task with an open pull request whose checks have not run: its merge
+  state reads not armed and the queue is empty; `merge_for_person` arms it at the branch's
+  head, the state and the queue show it with its owner, asking again keeps its place; once
+  its run passed, the armed-merge pass merges it and the state says how it ended. A head
+  whose run failed is refused with the reason.
+- AC-MRG-2: through its token the Superagent reads `merge` in a task's delivery and an empty
+  queue, is refused another person's task and a task without a pull request, puts the third
+  of three queued runs first (another project's run keeps its place) and is refused a running,
+  a first, another project's and an unknown run; a task's agent gets "unknown tool".
 - Every gate of the repository passes on the pull request head.
 
 ## Test plan
@@ -393,6 +408,20 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **The instructions shrank to take the new tools** (3963 of 4096 characters): the proxy's
   mechanics and two examples moved out (the tools' descriptions have them). Tool names
   whose absence caused "wrong I can't" (`secret_request_hosts` among them) stay named.
+- **Slice 5: the person's merge is the page's Merge, and the armed merge for a wait** (MRG-003).
+  On green it is `merge_task_pr`, the button's function. While the checks run it arms the
+  worktree's head for the person through the same armed-merge machinery an agent's
+  `delivery_merge` uses, so the queue, the trains, a restart and a dropped arm behave the
+  same. No independent review is asked for: that is an agent's discipline before it delivers
+  its own work; the person decides about what is theirs, as the page lets them.
+- **Why a pull request is not merging is the armed slot's own words** (MRG-001): the train's
+  sentence or the last decision's note, which `yulius wait` already shows the agent. No new
+  reasoning about checks or GitHub: one source for the agent, the page and the Superagent.
+- **CI order moves one run; holding the queue is left out** (MRG-004). Each project has lanes
+  of its own and starts its queued runs oldest first, so a place a millisecond before the
+  project's earliest queued run is "first" without touching another run or project. A hold
+  would stop every task's checks and merges; no case in the read conversations needed more
+  than cancel and run again, and no page holds it either. The table says so.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 

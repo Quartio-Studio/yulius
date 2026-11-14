@@ -2039,6 +2039,122 @@ async fn an_achieved_goal_with_an_armed_merge_is_not_done() -> TestResult {
     Ok(())
 }
 
+/// The owner of task `t<n>` (alice), as the functions of the pages take a person.
+async fn owner_ctx(f: &Fixture, n: u32) -> BoxResult<yulius_app::auth::AuthContext> {
+    let record = TaskStore::task(&f.h.store, &TaskId::parse(&format!("t{n}"))?)
+        .await?
+        .ok_or("task")?;
+    let user = UserStore::user(&f.h.store, &record.owner)
+        .await?
+        .ok_or("owner")?;
+    Ok(yulius_app::auth::AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// SPEC-487 MRG-001 to MRG-003 (wall 4: "arm/re-arm merge, why a green PR is not merging"): a
+/// person merges their task's pull request through their agent as the page's Merge does; while
+/// its checks run, the merge is armed for them at the branch's head and merges once they pass.
+/// Meanwhile the task's delivery and the project's merge queue say where it stands; afterwards,
+/// how it ended. A head whose checks failed is refused with that reason.
+#[tokio::test]
+async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    let ctx = owner_ctx(&f, 1).await?;
+
+    // Nothing armed yet.
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    assert_eq!(queue["armed"], json!([]), "{queue}");
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(state["armed"], false, "{state}");
+
+    // Its checks have not run: armed for the person, at the branch's head.
+    let armed = app.merge_for_person(&ctx, "t1").await?;
+    assert_eq!(
+        (&armed["merged"], &armed["armed"]),
+        (&json!(false), &json!(true)),
+        "{armed}"
+    );
+    assert_eq!(armed["head"], head, "{armed}");
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(
+        (&state["armed"], &state["head"]),
+        (&json!(true), &json!(head)),
+        "{state}"
+    );
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    let listed = queue["armed"].as_array().ok_or("armed")?;
+    assert_eq!(listed.len(), 1, "{queue}");
+    assert_eq!(
+        (
+            &listed[0]["number"],
+            &listed[0]["head"],
+            &listed[0]["owner"]
+        ),
+        (&json!(1), &json!(head), &json!("alice")),
+        "{queue}"
+    );
+    // Asked again, it keeps its place.
+    let again = app.merge_for_person(&ctx, "t1").await?;
+    assert!(
+        again["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("keeps its place")),
+        "{again}"
+    );
+    // Audited under the person's name.
+    assert_eq!(
+        yulius_app::ports::store::AuditStore::audit_details(
+            &f.h.store,
+            "t1",
+            "delivery.person.merge_armed",
+            10
+        )
+        .await?
+        .len(),
+        1
+    );
+
+    // Its checks pass: Yulius merges it, and its delivery says so.
+    f.record_passed(&app, 1, &head).await?;
+    f.decide_until(&app, || async { f.merged(&app, 1).await })
+        .await?;
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(state["armed"], false, "{state}");
+    assert!(
+        state["last"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("merged")),
+        "{state}"
+    );
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    assert_eq!(queue["armed"], json!([]), "{queue}");
+
+    // A head whose checks failed is not armed: the reason is said.
+    let second = f.task(2, &[("b.txt", "y\n")]).await?;
+    let failed = git(&second, &["rev-parse", "HEAD"])?;
+    f.record_run(&app, 2, &failed, RunState::Failed).await?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 2).await?, "t2")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why)) if why.contains("failed")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t2").await?["armed"],
+        false
+    );
+    Ok(())
+}
+
 /// A task chained after `t1`, created by Alice (who has a Claude account connected, SPEC-246).
 async fn chained_after_t1(f: &Fixture) -> BoxResult<TaskId> {
     use yulius_app::model::{AccountRecord, AccountStatus};
