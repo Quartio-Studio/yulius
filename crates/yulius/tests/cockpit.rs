@@ -6328,7 +6328,8 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         run("run-b", "s1", base + 10, RunState::Queued),
         run("run-c", "s1", base + 20, RunState::Queued),
         run("run-run", "s1", base - 50, RunState::Running),
-        run("run-x", "s2", base + 5, RunState::Queued),
+        // Another project's run waits longer than all of them.
+        run("run-x", "s2", base - 100, RunState::Queued),
     ] {
         f.h.store.insert_ci_run(&record, &[]).await?;
     }
@@ -6354,10 +6355,14 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-c"})).await?;
     assert!(!is_error, "{first}");
     assert_eq!(order().await?, ["run-c", "run-a", "run-b"]);
-    // Another project's queue is left as it was.
+    // A millisecond before the project's earliest; another project's queue is left as it was.
+    assert_eq!(
+        f.h.store.ci_run("run-c").await?.ok_or("run")?.queued_at,
+        Timestamp(base - 1)
+    );
     assert_eq!(
         f.h.store.ci_run("run-x").await?.ok_or("run")?.queued_at,
-        Timestamp(base + 5)
+        Timestamp(base - 100)
     );
     for (run_id, why) in [
         ("run-c", "first"),

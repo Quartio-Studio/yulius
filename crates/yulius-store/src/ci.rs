@@ -267,7 +267,7 @@ impl CiStore for SqliteStore {
                        WHERE r.sandbox_id = ci_runs.sandbox_id AND r.state = 'queued') \
                      WHERE id = ?1 AND state = 'queued' AND EXISTS ( \
                        SELECT 1 FROM ci_runs r WHERE r.sandbox_id = ci_runs.sandbox_id \
-                       AND r.state = 'queued' AND r.id != ci_runs.id \
+                       AND r.state = 'queued' \
                        AND (r.queued_at < ci_runs.queued_at \
                          OR (r.queued_at = ci_runs.queued_at AND r.rowid < ci_runs.rowid)))",
                     [id],
