@@ -101,6 +101,7 @@ mod supertask;
 pub mod supervisor;
 pub mod sweep;
 pub mod task_control;
+pub mod task_edit;
 pub mod task_message;
 pub mod task_prompt;
 pub mod tasks;

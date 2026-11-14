@@ -1880,7 +1880,13 @@ one `superagent.tool` audit entry for a tool that changes something, which names
 or environment and is written even when the client went away) and the remote MCP (with
 `project`, its token's scope and `remote.tool`), which the Global Superagent calls too (without
 what it is withheld). Every text served to a client (instructions, tool descriptions) stays
-within the 4096 characters Claude Code reads (`CLIENT_TEXT_MAX`). A task's agent is served none of them; it keeps the tools about its own work
+within the 4096 characters Claude Code reads (`CLIENT_TEXT_MAX`). Task control that has no page yet is in the same list
+(`task_edit.rs`: `App::edit_task` renames a task and replaces the request of one that has not
+started by one conditional update, `TaskStore::replace_unstarted_prompt`, keeping its attached
+files; `App::reorder_queue` swaps the places the person's queued tasks hold,
+`TaskStore::reorder_queued`; `App::close_task_for_person` closes an idle running task;
+`App::bulk_tasks` does a stop, pause, resume or message to several tasks through the single
+functions, waiting tasks first for a stop). A task's agent is served none of them; it keeps the tools about its own work
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
@@ -1891,7 +1897,8 @@ Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a 
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
 while a person's draft may sit in its prompt box (they typed since the box was last empty,
-however long ago) or they typed in the last minute (`App::box_held`, `policy::box_held`;
+however long ago; the task's owner alone sends past their own with `with_draft`,
+`Sender::OwnerPastDraft`, SPEC-487) or they typed in the last minute (`App::box_held`, `policy::box_held`;
 [SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
 [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged

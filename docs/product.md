@@ -174,7 +174,13 @@ watching, steering and unblocking.
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the
   CI runs and a run's failing output, runs a run again or cancels it, reads the deployments and
-  deploys a dev-stage environment. It no longer hands such a job back as steps to click or
+  deploys a dev-stage environment. It renames a task, rewrites the request of one that has
+  not started (the files attached to it stay attached; never by deleting the task and
+  creating it again), puts the person's queued tasks in the order they ask for, closes out an
+  idle task they call finished, and pauses, resumes, stops or messages several tasks, or all
+  of the person's, in one call. Told to send past text its person left unsent in a task's
+  prompt box, it does (the text goes to the agent with the message); nobody else's message
+  does. It no longer hands such a job back as steps to click or
   uses a finished task as hands; an ability it lacks it names
   (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
   After an update

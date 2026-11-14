@@ -339,7 +339,9 @@ impl TaskStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
         self.tasks_query(
-            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at)"),
+            // Tasks that share a place (queued in one pass, as after a restart) keep the order
+            // they were created in: the queue's order is one order, whoever reads it.
+            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await
@@ -931,6 +933,110 @@ impl TaskStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn replace_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        expected: &str,
+        prompt: &str,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, expected, prompt) = (
+            id.as_str().to_owned(),
+            expected.to_owned(),
+            prompt.to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET prompt = ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6, ?7) AND prompt = ?8 \
+                     AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
+                     AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3)",
+                    params![
+                        prompt,
+                        at.0,
+                        id,
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Chained.as_str(),
+                        TaskStatus::WaitingCapacity.as_str(),
+                        TaskStatus::Prepared.as_str(),
+                        expected
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool> {
+        let order: Vec<String> = order.iter().map(|id| id.as_str().to_owned()).collect();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            // The whole queue as it is read (`tasks_with_status`): each task with its place.
+            let mut queue: Vec<(String, i64)> = Vec::new();
+            {
+                let mut read = tx
+                    .prepare(
+                        "SELECT id, COALESCE(queued_at, created_at) FROM tasks \
+                         WHERE status = 'queued' ORDER BY COALESCE(queued_at, created_at), rowid",
+                    )
+                    .map_err(db)?;
+                let rows = read
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(db)?;
+                for row in rows {
+                    queue.push(row.map_err(db)?);
+                }
+            }
+            // The slots the named tasks hold, earliest first; each must be in the queue.
+            let mut slots = Vec::with_capacity(order.len());
+            for id in &order {
+                let Some(slot) = queue.iter().position(|(queued, _)| queued == id) else {
+                    return Ok(false);
+                };
+                slots.push(slot);
+            }
+            slots.sort_unstable();
+            // The queue asked for: the named tasks in their slots in the order given, every
+            // other task where it was.
+            let mut wanted: Vec<&str> = queue.iter().map(|(id, _)| id.as_str()).collect();
+            for (slot, id) in slots.iter().zip(&order) {
+                wanted[*slot] = id;
+            }
+            // Each slot keeps its place, moved after the one before it where two shared a
+            // millisecond or the creation order would decide otherwise: places are told apart
+            // by time alone, so the order written is the order read. Without ties only the
+            // named tasks change.
+            let mut last = i64::MIN;
+            for (slot, id) in wanted.iter().enumerate() {
+                let place = queue[slot].1.max(last.saturating_add(1));
+                last = place;
+                let held = queue
+                    .iter()
+                    .find(|(queued, _)| queued == id)
+                    .map(|(_, place)| *place);
+                if held == Some(place) {
+                    continue;
+                }
+                // The stored start is the task's while its `at` is its place (`queued_start`):
+                // it moves with the place. The right-hand sides read the row as it was.
+                tx.execute(
+                    "UPDATE tasks SET queued_at = ?2, updated_at = ?3, \
+                       queued_start = CASE WHEN json_valid(queued_start) \
+                         AND json_extract(queued_start, '$.at') = queued_at \
+                         THEN json_set(queued_start, '$.at', ?2) ELSE queued_start END \
+                     WHERE id = ?1 AND status = 'queued'",
+                    params![id, place, at.0],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }

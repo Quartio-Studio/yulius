@@ -41,6 +41,12 @@ which abilities were withheld on purpose.
   Superagent are served the same tools by the same code. The remote MCP adds the `project`
   argument, its token's scope and its own audit; the Global Superagent keeps what ADR-0271
   withholds from it (it reads across sandboxes and has no person at each step).
+- **A tool for what no page does yet is a person's function all the same.** Where the web UI
+  has no such function (renaming a task, replacing the request of one that has not started,
+  the order of the queue, closing out an idle task, one action on several tasks: slice 3), the
+  tool's function is written as a page's would be, in the application layer with the
+  person's `AuthContext`, their write access checked at the call and a task changed by its
+  owner only. A page can call it later; nothing is done in a tool that a person could not do.
 - **A confirmation is one confirmation, in the panel.** Where a person's own act is required
   (a production deploy and a promotion to `main`, ADR-0110; an action in another sandbox,
   ADR-0227), the Superagent prepares the request and the person confirms it once in the

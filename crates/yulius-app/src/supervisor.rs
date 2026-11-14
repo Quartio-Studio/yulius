@@ -180,6 +180,10 @@ pub struct TaskRuntime {
     /// This server saw a person type into the run. Until it did, a draft is known from its
     /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
     pub(crate) typed_seen: AtomicBool,
+    /// The task's owner had a message typed behind their possible draft and Yulius is about to
+    /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
+    /// draft to the agent, also one this server knows from its mark alone.
+    pub(crate) sent_past_draft: AtomicBool,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
     /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
@@ -474,6 +478,7 @@ impl TaskRuntime {
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
         self.draft_marked.store(false, Ordering::SeqCst);
         self.typed_seen.store(false, Ordering::SeqCst);
+        self.sent_past_draft.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
         self.queue_unread.store(false, Ordering::SeqCst);
@@ -556,6 +561,7 @@ impl TaskRuntime {
             draft_told_ms: AtomicI64::new(0),
             draft_marked: AtomicBool::new(false),
             typed_seen: AtomicBool::new(false),
+            sent_past_draft: AtomicBool::new(false),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),

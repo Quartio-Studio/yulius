@@ -1673,9 +1673,11 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "session_read",
             "sessions_search",
             "task_archive",
+            "task_close",
             "task_create",
             "task_delete",
             "task_delivery",
+            "task_edit",
             "task_get",
             "task_message",
             "task_pause",
@@ -1684,7 +1686,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_stop",
             "task_unpause",
             "task_update",
+            "tasks_bulk",
             "tasks_list",
+            "tasks_reorder",
             "variables_list",
             "workflows_list",
         ]
@@ -5097,6 +5101,10 @@ async fn a_tasks_agent_does_not_steer_other_tasks() -> TestResult {
         ("ci_cancel", json!({"run_id": "nope"})),
         ("ci_runs", json!({})),
         ("variables_list", json!({})),
+        ("task_edit", json!({"number": other.number, "title": "x"})),
+        ("task_close", json!({"number": other.number})),
+        ("tasks_reorder", json!({"numbers": [other.number, 2]})),
+        ("tasks_bulk", json!({"do": "stop", "all": true})),
     ] {
         let result = support::mcp_tool(&f.h, "tok-agent", tool, args).await?;
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
@@ -5104,6 +5112,722 @@ async fn a_tasks_agent_does_not_steer_other_tasks() -> TestResult {
             result["isError"] == true && text.contains("unknown tool"),
             "{tool}: {result}"
         );
+    }
+    Ok(())
+}
+
+/// SPEC-487 TCT-001 to TCT-003 (wall 2): the Superagent renames a task, replaces the request
+/// of one that has not started (the files attached to it stay attached, the text it replaced
+/// comes back), and puts its person's queued tasks in the order they ask for. Another person's
+/// task, a task that started and a title or request that is no title or request are refused
+/// and change nothing.
+#[tokio::test]
+async fn the_superagent_renames_edits_and_orders_its_persons_tasks() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::TaskStatus;
+    use yulius_domain::time::Timestamp;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+    let request = "Fix the header as in @'/att/shot one.png' please";
+    let waiting = support::seed_task_with_prompt(
+        &f.h,
+        "t-q1",
+        "s1",
+        "u-alice",
+        TaskStatus::Queued,
+        None,
+        request,
+    )
+    .await?;
+    let second =
+        support::seed_task(&f.h, "t-q2", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let third = support::seed_task(&f.h, "t-q3", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let carols =
+        support::seed_task(&f.h, "t-carol", "s1", "u-carol", TaskStatus::Queued, None).await?;
+    let running =
+        support::seed_task(&f.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t-run", "tok-run").await?;
+    // Their places in the queue, a second apart.
+    let base = f.h.app.now().0;
+    for (i, task) in [&waiting, &second, &third, &carols].into_iter().enumerate() {
+        let at = Timestamp(base + i64::try_from(i)? * 1000);
+        f.h.store
+            .transition_task(
+                &task.id,
+                Some(TaskStatus::Queued),
+                TaskStatus::Queued,
+                None,
+                at,
+            )
+            .await?;
+    }
+    let stored = |id: yulius_domain::ids::TaskId| {
+        let f = &f;
+        async move { Ok::<_, Box<dyn std::error::Error>>(f.h.store.task(&id).await?.ok_or("task")?) }
+    };
+
+    // Rename: the title, trimmed; the task's branch stays.
+    let (renamed, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_edit",
+        json!({"number": running.number, "title": "  Footer fix  "}),
+    )
+    .await?;
+    assert!(!is_error, "{renamed}");
+    assert_eq!(renamed["task"]["title"], "Footer fix", "{renamed}");
+    let now = stored(running.id.clone()).await?;
+    assert_eq!(
+        (now.title.as_str(), now.branch),
+        ("Footer fix", running.branch.clone())
+    );
+    for (title, why) in [
+        (json!(""), "title"),
+        (json!("x".repeat(121)), "120"),
+        (json!("two\nlines"), "one line"),
+        (json!(7), "title"),
+    ] {
+        let (refused, is_error) = cockpit_tool(
+            &f,
+            &token,
+            "task_edit",
+            json!({"number": running.number, "title": title}),
+        )
+        .await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{title}: {refused}"
+        );
+    }
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_edit", json!({"number": running.number})).await?;
+    assert!(
+        is_error && said(&refused).contains("`title` or `prompt`"),
+        "{refused}"
+    );
+    assert_eq!(stored(running.id.clone()).await?.title, "Footer fix");
+
+    // The request of a task that has not started is replaced; the file attached to the old
+    // one stays attached, and the text that was replaced comes back.
+    let (edited, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_edit",
+        json!({"number": waiting.number, "prompt": "Fix the footer instead"}),
+    )
+    .await?;
+    assert!(!is_error, "{edited}");
+    assert_eq!(edited["previous_prompt"], request, "{edited}");
+    assert_eq!(
+        stored(waiting.id.clone()).await?.prompt,
+        "Fix the footer instead\n\n@'/att/shot one.png'"
+    );
+    assert_eq!(stored(waiting.id.clone()).await?.title, waiting.title);
+    // A new request that names the file where it wants it gets no second mention.
+    let placed = "Look at @'/att/shot one.png' and fix the footer";
+    let (edited, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_edit",
+        json!({"number": waiting.number, "prompt": placed, "title": "Footer"}),
+    )
+    .await?;
+    assert!(!is_error, "{edited}");
+    let now = stored(waiting.id.clone()).await?;
+    assert_eq!(
+        (now.prompt.as_str(), now.title.as_str()),
+        (placed, "Footer")
+    );
+    for (prompt, why) in [
+        (json!("  "), "1 byte to 64 KiB"),
+        (json!("x".repeat(64 * 1024 + 1)), "64 KiB"),
+    ] {
+        let (refused, is_error) = cockpit_tool(
+            &f,
+            &token,
+            "task_edit",
+            json!({"number": waiting.number, "prompt": prompt}),
+        )
+        .await?;
+        assert!(is_error && said(&refused).contains(why), "{refused}");
+    }
+    // A task that started keeps its request: it is told with a message. Nothing of the call
+    // is applied, the title neither.
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_edit",
+        json!({"number": running.number, "prompt": "Other work", "title": "Other"}),
+    )
+    .await?;
+    assert!(
+        is_error
+            && said(&refused).contains("has started")
+            && said(&refused).contains("task_message"),
+        "{refused}"
+    );
+    let now = stored(running.id.clone()).await?;
+    assert_eq!(
+        (now.prompt.as_str(), now.title.as_str()),
+        ("do things", "Footer fix")
+    );
+    // Another person's task is theirs.
+    for args in [
+        json!({"number": carols.number, "title": "Mine now"}),
+        json!({"number": carols.number, "prompt": "Mine now"}),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "task_edit", args).await?;
+        assert!(is_error && said(&refused).contains("@carol"), "{refused}");
+    }
+    let theirs = stored(carols.id.clone()).await?;
+    assert_eq!(
+        (theirs.title, theirs.prompt),
+        (carols.title.clone(), carols.prompt.clone())
+    );
+
+    // The queue: #3 before #1; the task between them, and carol's, keep their places.
+    let queue = || {
+        let f = &f;
+        async move {
+            Ok::<_, Box<dyn std::error::Error>>(
+                f.h.store
+                    .tasks_with_status(&[TaskStatus::Queued])
+                    .await?
+                    .into_iter()
+                    .map(|task| task.number)
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    let before = vec![waiting.number, second.number, third.number, carols.number];
+    assert_eq!(queue().await?, before);
+    let (ordered, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_reorder",
+        json!({"numbers": [third.number, waiting.number]}),
+    )
+    .await?;
+    assert!(!is_error, "{ordered}");
+    let after = vec![third.number, second.number, waiting.number, carols.number];
+    assert_eq!(queue().await?, after);
+    assert_eq!(
+        ordered["queue"]
+            .as_array()
+            .ok_or("queue")?
+            .iter()
+            .filter_map(|task| task["number"].as_u64())
+            .collect::<Vec<_>>(),
+        after.iter().map(|n| u64::from(*n)).collect::<Vec<_>>(),
+        "{ordered}"
+    );
+    for (numbers, why) in [
+        (json!([third.number, carols.number]), "@carol"),
+        (json!([third.number, running.number]), "is not queued"),
+        (json!([third.number, third.number]), "twice"),
+        (json!([third.number]), "at least two"),
+        (json!([third.number, 9999]), "9999"),
+        (json!("all"), "numbers"),
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "tasks_reorder", json!({"numbers": numbers})).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{numbers}: {refused}"
+        );
+    }
+    assert_eq!(queue().await?, after, "a refused order changes nothing");
+
+    // What the person's log says: each change under their name, each call under the
+    // Superagent's with the task it was about.
+    for (task, action, times) in [
+        (&running, "task.renamed", 1),
+        (&waiting, "task.renamed", 1),
+        (&waiting, "task.request_replaced", 2),
+        (&carols, "task.renamed", 0),
+        (&carols, "task.request_replaced", 0),
+    ] {
+        assert_eq!(
+            f.h.store
+                .audit_details(task.id.as_str(), action, 10)
+                .await?
+                .len(),
+            times,
+            "{action} of #{}",
+            task.number
+        );
+    }
+    let entries: Vec<Value> =
+        f.h.store
+            .audit_details("s1", "superagent.tool", 200)
+            .await?
+            .iter()
+            .rev()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
+            .collect();
+    assert_eq!(entries[0]["tool"], "task_edit", "{entries:?}");
+    assert_eq!(entries[0]["task"], json!(running.number), "{entries:?}");
+    assert_eq!(entries[0]["ok"], true, "{entries:?}");
+    let reorders: Vec<&Value> = entries
+        .iter()
+        .filter(|detail| detail["tool"] == "tasks_reorder")
+        .collect();
+    assert_eq!(reorders.len(), 7, "{entries:?}");
+    assert_eq!(
+        reorders[0]["tasks"],
+        json!([third.number, waiting.number]),
+        "{entries:?}"
+    );
+    assert_eq!(reorders[0]["ok"], true);
+    assert!(reorders[1..].iter().all(|detail| detail["ok"] == false));
+    // Text of the caller's choosing (a title, a request) is in no entry.
+    assert!(
+        entries
+            .iter()
+            .all(|detail| !detail.to_string().contains("ooter")),
+        "{entries:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-487 TCT-004, TCT-005 (wall 2): one call pauses, resumes, messages or stops several
+/// tasks ("pause all tasks" was 19 messages, "kill all tasks" 24 calls), each as the single
+/// tool does it, and says for each task what happened. `all` is the person's own tasks that
+/// the action applies to; another person's are left alone and counted. Closing out is for a
+/// running task whose agent is idle.
+#[tokio::test]
+async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::{Activity, StopReason, TaskStatus};
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+    let mut tasks = Vec::new();
+    for (id, owner, status) in [
+        ("t-run1", "u-alice", TaskStatus::Running),
+        ("t-run2", "u-alice", TaskStatus::Running),
+        ("t-q", "u-alice", TaskStatus::Queued),
+        ("t-prep", "u-alice", TaskStatus::Prepared),
+        (
+            "t-done",
+            "u-alice",
+            TaskStatus::Stopped(StopReason::Cancelled),
+        ),
+        ("t-carol-run", "u-carol", TaskStatus::Running),
+        ("t-carol-q", "u-carol", TaskStatus::Queued),
+    ] {
+        let task = support::seed_task(&f.h, id, "s1", owner, status, None).await?;
+        if status == TaskStatus::Running {
+            support::seed_live_attempt(&f.h, id, &format!("tok-{id}")).await?;
+        }
+        tasks.push(task);
+    }
+    let [run1, run2, queued, prepared, done, carol_run, carol_q] = &tasks[..] else {
+        return Err("seven tasks".into());
+    };
+    let numbers = |list: &Value| -> Vec<u64> {
+        let mut numbers: Vec<u64> = list
+            .as_array()
+            .map(|tasks| tasks.iter().filter_map(|t| t["number"].as_u64()).collect())
+            .unwrap_or_default();
+        numbers.sort_unstable();
+        numbers
+    };
+    let n = |task: &yulius_app::model::TaskRecord| u64::from(task.number);
+    let paused = |task: yulius_domain::ids::TaskId| {
+        let f = &f;
+        async move {
+            let record = f.h.store.task(&task).await?.ok_or("task")?;
+            let summary = serde_json::to_value(f.h.app.task_summary(&record).await?)?;
+            Ok::<_, Box<dyn std::error::Error>>(!summary["pause"].is_null())
+        }
+    };
+
+    // Pause all: the person's running tasks, each paused as Pause does; carol's is hers.
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "pause", "all": true}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(numbers(&answer["done"]), vec![n(run1), n(run2)], "{answer}");
+    assert_eq!(answer["refused"], json!([]), "{answer}");
+    assert_eq!(answer["others_left_alone"], 1, "{answer}");
+    assert!(paused(run1.id.clone()).await? && paused(run2.id.clone()).await?);
+    assert!(!paused(carol_run.id.clone()).await?);
+    // Resume one by number, then all that are still paused.
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "unpause", "numbers": [run1.number]}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert!(!paused(run1.id.clone()).await? && paused(run2.id.clone()).await?);
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "unpause", "all": true}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(numbers(&answer["done"]), vec![n(run2)], "{answer}");
+    assert!(!paused(run2.id.clone()).await?);
+
+    // By number, each task gets the single tool's answer: what cannot be paused says why,
+    // another person's task names its owner, and the rest is still done.
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "pause", "numbers": [run1.number, queued.number, carol_run.number, 9999]}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(numbers(&answer["done"]), vec![n(run1)], "{answer}");
+    let refused = answer["refused"].as_array().ok_or("refused")?;
+    assert_eq!(refused.len(), 3, "{answer}");
+    let why = |number: u64| {
+        refused
+            .iter()
+            .find(|task| task["number"] == number)
+            .and_then(|task| task["why"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(
+        why(n(queued)).contains("Only a running task can be paused"),
+        "{answer}"
+    );
+    assert!(why(n(carol_run)).contains("@carol"), "{answer}");
+    assert!(why(9999).contains("no task #9999"), "{answer}");
+    assert!(!paused(carol_run.id.clone()).await?);
+    cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "unpause", "all": true}),
+    )
+    .await?;
+    // A task nobody paused is not reported as resumed (review round 1, F4).
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "unpause", "numbers": [run1.number, queued.number, done.number]}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(answer["done"], json!([]), "{answer}");
+    let refused = answer["refused"].as_array().ok_or("refused")?;
+    assert_eq!(refused.len(), 3, "{answer}");
+    assert!(
+        refused.iter().all(|task| task["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("is not paused"))),
+        "{answer}"
+    );
+
+    // One message to all: a task that has not started reads it in its request; one whose
+    // session cannot take it now is named with the reason.
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "message", "all": true, "text": "Freeze: no merges until Monday"}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(
+        numbers(&answer["done"]),
+        vec![n(queued), n(prepared)],
+        "{answer}"
+    );
+    assert_eq!(
+        numbers(&answer["refused"]),
+        vec![n(run1), n(run2)],
+        "{answer}"
+    );
+    for task in [queued, prepared] {
+        assert!(
+            f.h.store
+                .task(&task.id)
+                .await?
+                .ok_or("task")?
+                .prompt
+                .contains("Freeze: no merges until Monday"),
+            "#{}",
+            task.number
+        );
+    }
+    for task in [carol_q, done] {
+        assert_eq!(
+            f.h.store.task(&task.id).await?.ok_or("task")?.prompt,
+            "do things"
+        );
+    }
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "message", "all": true}),
+    )
+    .await?;
+    assert!(is_error && said(&refused).contains("`text`"), "{refused}");
+
+    // Closing out: a task that works is not closed (in its first turn, before any activity
+    // is known, neither), nor one that is not running.
+    for working in [None, Some(Activity::Working)] {
+        f.h.store
+            .transition_task(&run1.id, None, TaskStatus::Running, working, f.h.app.now())
+            .await?;
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "task_close", json!({"number": run1.number})).await?;
+        assert!(
+            is_error
+                && said(&refused).contains("is working")
+                && said(&refused).contains("task_stop"),
+            "{working:?}: {refused}"
+        );
+    }
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_close", json!({"number": queued.number})).await?;
+    assert!(
+        is_error && said(&refused).contains("has not started"),
+        "{refused}"
+    );
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_close", json!({"number": done.number})).await?;
+    assert!(
+        is_error && said(&refused).contains("has ended"),
+        "{refused}"
+    );
+    // A task held at a usage limit with its session alive has started: it is not told that
+    // it has not, nor that stopping it would only cancel it (review round 1, F2).
+    let held = support::seed_task(
+        &f.h,
+        "t-held",
+        "s1",
+        "u-alice",
+        TaskStatus::WaitingCapacity,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-held", "tok-held").await?;
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_close", json!({"number": held.number})).await?;
+    assert!(
+        is_error
+            && said(&refused).contains("goes on by itself")
+            && !said(&refused).contains("has not started"),
+        "{refused}"
+    );
+    f.h.store
+        .transition_task(
+            &held.id,
+            None,
+            TaskStatus::Stopped(StopReason::Cancelled),
+            None,
+            f.h.app.now(),
+        )
+        .await?;
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_close",
+        json!({"number": carol_run.number}),
+    )
+    .await?;
+    assert!(is_error && said(&refused).contains("@carol"), "{refused}");
+
+    // The arguments: one action, and either numbers or all.
+    for (args, why) in [
+        (json!({"do": "delete", "all": true}), "`do`"),
+        (json!({"do": "stop"}), "`numbers` or `all`"),
+        (
+            json!({"do": "stop", "all": true, "numbers": [1]}),
+            "`numbers` or `all`",
+        ),
+        (json!({"do": "stop", "numbers": []}), "`numbers`"),
+        (json!({"do": "stop", "all": false}), "`numbers` or `all`"),
+        (
+            json!({"do": "stop", "numbers": (1..=101).collect::<Vec<u32>>()}),
+            "100",
+        ),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "tasks_bulk", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+
+    // Stop all ("kill all tasks"): every task of the person that has not ended, waiting ones
+    // too (they are cancelled); carol's two go on.
+    let (answer, is_error) =
+        cockpit_tool(&f, &token, "tasks_bulk", json!({"do": "stop", "all": true})).await?;
+    assert!(!is_error, "{answer}");
+    let mut touched = numbers(&answer["done"]);
+    touched.extend(numbers(&answer["refused"]));
+    touched.sort_unstable();
+    assert_eq!(
+        touched,
+        vec![n(run1), n(run2), n(queued), n(prepared)],
+        "{answer}"
+    );
+    assert_eq!(answer["others_left_alone"], 2, "{answer}");
+    // The waiting tasks were cancelled before the running ones were stopped.
+    let stopped: Vec<u64> = answer["done"]
+        .as_array()
+        .ok_or("done")?
+        .iter()
+        .filter_map(|task| task["number"].as_u64())
+        .collect();
+    assert_eq!(
+        stopped,
+        vec![n(queued), n(prepared), n(run1), n(run2)],
+        "{answer}"
+    );
+    for task in [queued, prepared] {
+        assert!(
+            f.h.store
+                .task(&task.id)
+                .await?
+                .ok_or("task")?
+                .status
+                .is_resting(),
+            "#{} was cancelled",
+            task.number
+        );
+    }
+    assert_eq!(
+        f.h.store.task(&carol_run.id).await?.ok_or("task")?.status,
+        TaskStatus::Running
+    );
+    // Her queued task was not cancelled (a session got free, so it may have left the queue).
+    assert!(!matches!(
+        f.h.store.task(&carol_q.id).await?.ok_or("task")?.status,
+        TaskStatus::Stopped(_)
+    ));
+    for task in [carol_run, carol_q] {
+        assert!(
+            f.h.store
+                .audit_details(task.id.as_str(), "task.stopped", 10)
+                .await?
+                .is_empty(),
+            "#{}",
+            task.number
+        );
+    }
+    for task in [queued, prepared] {
+        assert_eq!(
+            f.h.store
+                .audit_details(task.id.as_str(), "task.stopped", 10)
+                .await?
+                .len(),
+            1,
+            "#{}: stopped once, audited as task_stop audits",
+            task.number
+        );
+    }
+
+    // The audit names the action and the tasks, never the message.
+    let entries: Vec<Value> =
+        f.h.store
+            .audit_details("s1", "superagent.tool", 200)
+            .await?
+            .iter()
+            .rev()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
+            .collect();
+    assert_eq!(entries[0]["tool"], "tasks_bulk", "{entries:?}");
+    assert_eq!(entries[0]["do"], "pause", "{entries:?}");
+    assert_eq!(entries[0]["tasks"], "all", "{entries:?}");
+    assert_eq!(entries[1]["tasks"], json!([run1.number]), "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .all(|detail| !detail.to_string().contains("Freeze")),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|detail| detail["tool"] == "task_close"
+            && detail["task"] == json!(run1.number)
+            && detail["ok"] == false),
+        "{entries:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-487 TCT-005 (review round 1, F5): one call reaches at most 100 tasks. With 101 that
+/// `all` applies to, the first hundred by number get the message, the last one does not, and
+/// the answer says that one was not reached.
+#[tokio::test]
+async fn a_bulk_call_reaches_a_hundred_tasks_and_says_what_is_left() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::TaskStatus;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let mut tasks = Vec::new();
+    for i in 0..101 {
+        let id = format!("t-{i}");
+        tasks.push(
+            support::seed_task(&f.h, &id, "s1", "u-alice", TaskStatus::Prepared, None).await?,
+        );
+    }
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "message", "all": true, "text": "Freeze"}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(
+        answer["done"].as_array().map(Vec::len),
+        Some(100),
+        "{answer}"
+    );
+    assert_eq!(answer["not_reached"], 1, "{answer}");
+    assert!(
+        answer["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("call again")),
+        "{answer}"
+    );
+    let last = tasks.iter().max_by_key(|task| task.number).ok_or("tasks")?;
+    for task in &tasks {
+        let reached =
+            f.h.store
+                .task(&task.id)
+                .await?
+                .ok_or("task")?
+                .prompt
+                .contains("Freeze");
+        assert_eq!(reached, task.id != last.id, "#{}", task.number);
     }
     Ok(())
 }
