@@ -2952,3 +2952,17 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   armed at the approved head; R3-1 is fixed in slice 28, the first change after it, and R3-2
   stays as the decision's known limit.
 - **Not tested.** An agent following the rewritten instructions (the check reads the wording).
+
+### Slice 28 (2026-11-14)
+
+- **Tests failing without their fix** (`target/audit/slice28/mutate.py`, `mutations.log`, 12
+  cases): Back and Forward not guarded, Back moving before it asks, a navigation by code not
+  guarded, Leave going nowhere, a link not guarded (`places.e2e.ts`), the old "checks failed",
+  unknown checks without why, a merged chip saying its checks, sizes over a gibibyte in
+  megabytes, "unknown" for no commit, headings, tables and fences joined: each failed its test.
+  "A fence's lines join" survived (no case had two lines inside a fence that read as a refusal
+  only together); a case was added and it fails now (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `9e4e1e5d9`: exit 0; `4374 tests run: 4374 passed (1 slow), 17
+  skipped` (`target/audit/slice28/gate.log`); e2e of the editors, places, navigation, pull
+  requests, Git, file drops, CD, CI and the instance page: 12 files, 148 passed (`e2e.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
