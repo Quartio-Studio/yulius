@@ -42,9 +42,12 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   turn's), for at most two minutes (`NEWS_TURN_WAIT_MS`: a paste Claude Code swallowed must
   not hold a chain for ever). News
   typed while a turn runs is queued by Claude Code (its prompt hook comes at the Enter and
-  starts nothing) and handed on after that turn. Once its entry was read in Claude Code's
-  queue, the queue says how long it waits (`Queue::hands_on`, SPEC-471 and SPEC-479), however
-  long the running turn takes; until that record is read, the two minutes apply.
+  starts nothing) and handed on after that turn. Once Claude Code's queue shows it, the queue
+  says how long it waits (`Queue::hands_on`, SPEC-471 and SPEC-479), however long the running
+  turn takes and whichever entry gets its turn first (a notification or a slash command is
+  handed on alone, the news at the next turn's end): no turn's start ends it, and an idle
+  session waits two minutes for a hand-over whose turn never shows. Until the queue showed
+  it, the two minutes from the typing apply.
 - **One reading per decision.** `task_is_done` and `task_is_done_locally` read the task's
   delivery once and ask the news rule about that reading; a merge GitHub reports before the
   record says so is news like any other merge.
@@ -52,10 +55,10 @@ such a rule as "runs after" its first task, so nobody could see what the task wa
   hooks and chain passes, and runs the watch, before it put the saved armed merges back;
   until it did, their file answers (`App::merge_is_armed`), for the news rule and for what
   the watch types.
-- **Only a person's pause mutes news.** Nothing is typed into a task a person paused, and
-  that pause may never end, so no news is due to it, except an armed merge, which Yulius
-  makes whatever the agent does. An update's hold and a pause for capacity end by
-  themselves and the watch types right after: news stays due through them.
+- **Only a person's pause mutes news.** A task a person paused is frozen: what is typed into
+  it waits with it, and that pause may never end, so no news is due to it, except an armed
+  merge, which Yulius makes whatever the agent does. An update's hold and a pause for
+  capacity end by themselves and the watch types right after: news stays due through them.
 - **Such a task is not Done and not a person's turn.** `task_is_done` and
   `task_is_done_locally` answer no, and the task's `yulius_wait` fact is true, so the list
   reads "Waiting for checks or merge", as it does for an agent that waits in `yulius wait`.

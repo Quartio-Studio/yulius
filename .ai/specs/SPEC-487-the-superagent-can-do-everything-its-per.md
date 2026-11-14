@@ -118,7 +118,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | CHN-001 | A running task whose merge is armed or being decided is not Done, whatever its pull request's checks say: Yulius will merge it and tell its agent. A task chained after it, or waiting on a rule that names it `done`, keeps waiting, and the task list reads "Waiting for checks or merge", not Done and not a person's turn. A server that started again knows the armed merges before it put them back. | `merge_train::a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge`, `merge_train::a_restarted_server_keeps_a_chained_task_waiting_for_an_armed_merge` |
-| CHN-002 | A running task whose pull request is merged is Done only once the pull request watch, when it saw that pull request open, has told its agent of the merge and the turn that news starts has ended. While the news is typed and that turn has not begun, it still is not Done: typed into an idle session, until the task goes from idle to Working, for at most two minutes; typed while a turn runs (Claude Code queues it), as long as Claude Code's queue says it waits for its turn, and for two minutes while its queue record is not read yet. The same holds for an armed merge that ended without merging until the watch said how, and for a merge GitHub reports before the record says so. One decision reads the task's delivery once. A task the watch tells nothing is Done as before: a playground's, one whose pull request it never saw open, and one a person paused. An update's hold or a pause for capacity changes nothing: the news is typed right after. A supertask's wait and Home's counts follow the same rule. | `task_done::a_chained_task_waits_until_its_predecessor_heard_of_its_merge` (real hooks, the prompt hook held at its check), `task_done::news_typed_while_a_turn_runs_is_due_until_its_own_turn` (a held turn, Claude Code's queue, a held hand-over), `merge_train::a_task_chained_after_a_dropped_armed_merge_waits_for_its_news`, `supertask::a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge`, `supertask::a_merge_during_an_updates_hold_is_still_news_due`, `pr_watch::tests::news_is_due_until_the_agent_heard_it`, `pr_watch::tests::typed_news_is_due_until_its_turn` |
+| CHN-002 | A running task whose pull request is merged is Done only once the pull request watch, when it saw that pull request open, has told its agent of the merge and the turn that news starts has ended. While the news is typed and that turn has not begun, it still is not Done: typed into an idle session, until the task goes from idle to Working, for at most two minutes; typed while a turn runs (Claude Code queues it), as long as Claude Code's queue says it waits for its turn, whichever entry gets its turn first, for at most two minutes of an idle session, and for two minutes from the typing while the queue has not shown it yet. The same holds for an armed merge that ended without merging until the watch said how, and for a merge GitHub reports before the record says so. One decision reads the task's delivery once. A task the watch tells nothing is Done as before: a playground's, one whose pull request it never saw open, and one a person paused. An update's hold or a pause for capacity changes nothing: the news is typed right after. A supertask's wait and Home's counts follow the same rule. | `task_done::a_chained_task_waits_until_its_predecessor_heard_of_its_merge` (real hooks, the prompt hook held at its check), `task_done::news_typed_while_a_turn_runs_is_due_until_its_own_turn` (a held turn, Claude Code's queue, a held hand-over), `task_done::queued_news_stays_due_while_another_entry_gets_its_turn_first`, `merge_train::a_merge_github_reports_first_is_news_too`, `merge_train::a_task_chained_after_a_dropped_armed_merge_waits_for_its_news`, `supertask::a_supertask_waits_for_a_task_that_has_not_heard_of_its_merge`, `supertask::a_merge_during_an_updates_hold_is_still_news_due`, `pr_watch::tests::news_is_due_until_the_agent_heard_it`, `pr_watch::tests::typed_news_is_due_until_its_turn` |
 | CHN-003 | An achieved goal is Done as before, and so are a closed task and a task with no pull request news left: CHN-001 and CHN-002 remove no Done state that was final. | the tests of TSK-012 and TSK-014 unchanged (`intake::chained_tasks_start_on_done_and_wait_for_a_person_otherwise`, `task_done::a_chain_starts_when_its_predecessor_achieves_its_goal`) |
 | CHN-004 | `tasks_list`, `task_get`, `task_create` and `task_update` answer how a waiting task starts as it is stored: `start_rule` with the whole rule for a task waiting on a rule, `runs_after` only for a task chained after one task, and `start_blocked` with the reason when it needs a person. Their text shows the rule in full. A task that has started answers neither `start_rule` nor `start_blocked`. | `manage_tools::a_start_rule_reads_back_whole`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `mcp_text::tests::a_waiting_tasks_rule_reads_whole` |
 | CHN-005 | `task_create` and `task_update` take `after_all_tasks: true`, alone among the start choices (a blank text is no choice): the task waits for every task of the project with work still coming to be done, stored as the rule that names them, so it reads back like any rule. Left out: tasks that ended or are stopping, tasks the list shows under Done (done or "Answered"), prepared tasks, and the task whose start changes with the tasks waiting on it, directly or through others. A rule names at most 64 tasks in at most 1400 characters; more tasks are refused with what to do. With no such task it starts now and the answer says so. The caller's person is checked before anything is counted. | `manage_tools::after_all_tasks_names_every_task_that_has_not_ended`, `manage_tools::after_all_tasks_with_nothing_left_starts_now`, `manage_tools::task_update_after_all_tasks_with_nothing_left_starts_now`, `manage_tools::after_all_tasks_counts_nothing_for_a_person_without_access`, `rule::tests::the_limits_are_enforced` |
@@ -163,11 +163,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 - Unit: the rule's bounds (`yulius-domain`), the tools' texts (`mcp_text`), the descriptions.
 - Unit: the news rule's every branch and its bound (`pr_watch::tests::news_is_due_until_the_agent_heard_it`,
   `typed_news_is_due_until_its_turn`).
-- Mutation: ten mutants of the rule and its uses, each failed by a named test
+- Mutation: twelve mutants of the rule and its uses, each failed by a named test
   (`target/evidence/mutants.py`).
-- Load: the two session tests 96 times each beside 96 busy loops (`target/evidence/r2-stress.log`).
-- Not exercised by a test: the watch telling a merge to a run reattached after a restart, and
-  a merge GitHub reports before the delivery record says so.
+- Load: the three session tests 64 times each beside 96 busy loops (`target/evidence/r3-stress.log`).
+- Not exercised by a test: the watch telling a merge to a run reattached after a restart.
 
 ## Decisions
 
@@ -190,15 +189,16 @@ the function the web UI's route calls, with the person's rights checked at the c
   becomes `done` by itself: the rule would never be true, and closing that session would make
   it false. So the tool asks the list's own rule (`AttentionFacts::group`) and leaves Done
   and ended tasks out.
-- **Only a person's pause mutes news** (review rounds 1 and 2). Nothing is typed into a task
-  a person paused, and that pause may never end: waiting for it would hold a chain and keep a
-  merged task from being archived, so such a task reads as before this change (an armed merge
-  excepted). An update's hold ends by itself and the watch types right after, so a merge that
-  lands during an update is still news due.
-- **News typed while a turn runs is followed through Claude Code's queue** (review round 2),
-  which Yulius already reads for moves of a session (SPEC-471, SPEC-479), not by a second
-  clock: the running turn may take any time. Time decides only until the queue's record of it
-  was read.
+- **Only a person's pause mutes news** (review rounds 1 to 3). A task a person paused is
+  frozen: what the watch types into it waits with it, and that pause may never end. Waiting
+  for it would hold a chain and keep a merged task from being archived, so such a task reads
+  as before this change (an armed merge excepted). An update's hold ends by itself and the
+  watch types right after, so a merge that lands during an update is still news due.
+- **News typed while a turn runs is followed through Claude Code's queue** (review rounds 2
+  and 3), which Yulius already reads for moves of a session (SPEC-471, SPEC-479), not by a
+  second clock: the running turn may take any time, and another entry (a notification, a
+  slash command) may get its turn first. No turn's start ends such news; the queue does, or
+  two minutes of an idle session. Time alone decides only until the queue showed it.
 - **The person's decisions (asked 2026-11-13, answered "ok").** For the later slices:
   production deploy, rollback and promotion to `main` stay behind one confirmation the person
   gives in the Superagent's panel (the typed project slug; stored, amendable, still there when
