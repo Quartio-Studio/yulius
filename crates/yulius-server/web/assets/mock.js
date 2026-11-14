@@ -2738,6 +2738,8 @@ route('GET', `/api/sandboxes/${ID}/files/live`, ({ db, p, query }) => {
 });
 route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
+  // A test's access withdrawn mid-edit (SPEC-483 LVE-001): the server's answer to an edit then.
+  if (db.live.refuseEdits) fail(403, 'forbidden', 'you may no longer change this folder');
   db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op, save: Boolean(body.save), at: Date.now() });
   if (db.live.holdEdits) await new Promise((resolve) => db.live.held.push(resolve));
   const doc = liveDocOf(db, place, body.session);

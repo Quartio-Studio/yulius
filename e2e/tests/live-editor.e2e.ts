@@ -10,6 +10,7 @@ failOnPageErrors();
 type Who = 'me' | 'bob';
 type LiveHub = {
   holdEdits: boolean;
+  refuseEdits?: boolean;
   holdSaves: boolean;
   edits: { path: string; client: string; save: boolean; at: number }[];
   holdJoins: boolean;
@@ -387,6 +388,67 @@ test('a whole-text catch-up keeps unsent typing, and a refused old edit is not a
     return out;
   });
   expect(result).toEqual({ kept: 'Xabc!e', once: 'Tabcd', edits: 1 });
+});
+
+// SPEC-483 LVE-001 (finding W3): an edit the server refuses with 403 (the person may no longer
+// change the folder) left the typing unsent for good: the file read Unsaved, the page asked
+// before every unload, more typing piled up unsent, and a close waited its full 10 s. Now the
+// document takes the server's text back, nothing of this tab's waits, typing is not kept, and it
+// says it is read-only until it is joined again.
+test('an edit refused for lack of access gives the text back and leaves nothing waiting', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const { createLiveDoc, SEND_GAP_MS } = await import('/assets/livedoc.js' as string) as { createLiveDoc(o: unknown): Record<string, any>; SEND_GAP_MS: number };
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const until = async (test: () => boolean) => { for (let i = 0; i < 200 && !test(); i += 1) await wait(10); return test(); };
+    let text = 'abc';
+    let edits = 0;
+    let states = 0;
+    let joins = 0;
+    const api = {
+      post: async (url: string) => {
+        if (url.endsWith('/files/live')) { joins += 1; return { session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }; }
+        if (url.endsWith('/edit')) { edits += 1; throw Object.assign(new Error('forbidden'), { status: 403 }); }
+        return { session: 's1', revision: 0, sha256: 'x', saved: true, disk_sha256: null };
+      },
+      get: async () => ({ session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null }),
+    };
+    const doc = createLiveDoc({ api, sid: 'sb', root: 'task:t1', path: 'a', client: 'page', user: 'u', canWrite: () => true, getText: () => text, onRemote() {}, onReset: (t: string) => { text = t; }, onState() { states += 1; }, onSynced() {} });
+    await doc.join();
+    text = 'abcd'; doc.local([3, 'd']);
+    await until(() => doc.readOnly && text === 'abc');
+    const refused = { text, readOnly: doc.readOnly, busy: doc.busy, saved: doc.saved, told: states > 0 };
+    // More typing is not kept to be sent later.
+    text = 'abcX'; doc.local([3, 'X']);
+    await wait(SEND_GAP_MS * 3);
+    const after = { edits, busy: doc.busy, saved: doc.saved };
+    const started = Date.now();
+    await doc.close();
+    const closedFast = Date.now() - started < 1000;
+    // Joined again (the file opened again): its access is asked again.
+    await doc.join();
+    const rejoined = { joins, readOnly: doc.readOnly };
+    doc.destroy();
+    return { refused, after, closedFast, rejoined };
+  });
+  expect(result).toEqual({
+    refused: { text: 'abc', readOnly: true, busy: false, saved: true, told: true },
+    after: { edits: 1, busy: false, saved: true },
+    closedFast: true,
+    rejoined: { joins: 2, readOnly: false },
+  });
+});
+
+// SPEC-483 LVE-001 in the Editor: once an edit is refused for lack of access, the file is
+// read-only and says so, shows the server's text, and reads nothing as unsaved.
+test('an edit refused for lack of access makes the file read-only in the Editor and says so', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.refuseEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'X');
+  await expect.poll(() => statusOf(browser, 'me')).toContain('Read-only: you can no longer change this folder');
+  await expect.poll(() => textOf(browser, 'me')).toBe(ON_DISK);
+  expect(await inWindow<boolean>(browser, 'me', 'return ed.getOption(w.monaco.editor.EditorOption.readOnly)')).toBe(true);
+  expect(await statusOf(browser, 'me')).not.toContain('Unsaved');
 });
 
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).
