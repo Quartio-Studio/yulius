@@ -886,8 +886,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   while it is at most 60 s old; an older one is lost only when systemd says the helper's
   service (`<server unit stem>-migrate.service`) is `inactive` or `failed`, and is
   running while systemd says it still runs (`activating`, `active`, `deactivating`,
-  `reloading`) or cannot say. Systemd is asked only of such a silent report, each time.
-  While running, no update or restart starts and nothing continues the move; once lost, a
+  `reloading`) or cannot say. Systemd is asked only of such a silent report, each time;
+  once it says the service ended, the report is read again (a helper writes its last
+  report before its service ends, so one that ended between the two reads is ended, not
+  lost). While running, no update or restart starts and nothing continues the move; once lost, a
   move can be continued or aborted as before.
 - **MOV-002** A move's mark that exists is a mark, whatever its bytes: the first start
   that finds it queues the lost tasks and removes it.
@@ -923,7 +925,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
-- [ ] Slice 22: a move's report, a move's mark and a task's close time each mean one thing
+- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing
 
 ## Acceptance criteria
 
@@ -1431,7 +1433,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   60 001 ms, with the helper's service still running or systemd silent, it reads running,
   the card offers only Abort, a move is refused as running, and Update now and Restart are
   refused with "is being moved to another host"; once systemd says the service ended it
-  reads lost, Plan, Move and Abort are offered and an update starts.
+  reads lost, Plan, Move and Abort are offered and an update starts. A helper that writes
+  its last report (ended well) and ends just as systemd is asked reads ended, and Move is
+  not offered.
 - **AC-128** Systemd's `ActiveState` of the helper's service: `activating`, `active`,
   `deactivating` and `reloading` are running, `inactive` and `failed` ended, anything else
   or no answer unknown; outside a unit there is no helper to run.
@@ -2131,7 +2135,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 
 The evidence of slices 1 to 20, all merged, is in
 [evidence/SPEC-483-slices-1-20.md](evidence/SPEC-483-slices-1-20.md), word for word as it
-stood here (this file is bounded at 256 KiB); the slice in hand follows.
+stood here (this file is bounded at 256 KiB); the later slices follow.
 
 ### Slice 21 (2026-11-14)
 
@@ -2233,3 +2237,35 @@ stood here (this file is bounded at 256 KiB); the slice in hand follows.
 - **Delivery.** Pull request #1276 merged into `dev` at `6c8663268` (the approved head
   with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
   passed.
+
+### Slice 22 (2026-11-14)
+
+- **Tests failing before the fix** (the six new tests, run against a stub that answered
+  nothing for the helper's service): a silent helper whose service still ran read
+  `lost`; `FileMoveHelper` asked nothing of systemd and could not name the service; a
+  mark of bytes that are not text left the task `stopped (server lost)`; a second close
+  moved the close time from 200 to 300; a version-57 database stayed at 57.
+- **Tests failing without their fix** (`target/audit/slice22/mutate.py`,
+  `mutations-r1.log`, 12 cases, each failed its test): a silent report lost whatever
+  systemd says; systemd's silence taken for an ended service; a silent report never
+  lost; systemd asked of every report; a lost move that cannot be continued; an
+  `activating` oneshot taken for ended; a `failed` one for unknown; the path unit asked
+  instead of the service; a report that ended between the two reads read lost; a mark
+  that is not text taken for no mark; a continued task that keeps its close time; a
+  repeated close that moves it.
+- **Gate.** `scripts/dev ci` at `3f22df324`: exit 0; `4369 tests run: 4369 passed (1
+  slow), 17 skipped` (`target/audit/slice22/gate.log`); doctor, repository check, lint,
+  the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
+- **Review, round 1** (a fresh session, head `3f22df324`): approve, with four nits in own
+  code, answered in `0011416f5`: a test's doc comment had moved above the new test (back
+  in place); "the report is read before systemd is asked", so a helper that writes its
+  last report and ends between the two reads read lost for one read (read again once
+  systemd says ended; the test's new case fails without it); a line of
+  `docs/operations.md` over the wrap and its logs paragraph still saying "after a
+  minute" (both said as MOV-001 says). The fourth, "the create-time branch … has no
+  test", is left: no caller creates a task chained or prepared without a start.
+- **Gate after it.** `scripts/dev ci` at `0011416f5`: exit 0; `4369 tests run: 4369
+  passed (1 slow), 17 skipped` (`target/audit/slice22/gate2.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real systemd (the tests answer as `systemctl show` does, with a fake
+  `systemctl`); a real copy that holds the helper's report back for a minute.
