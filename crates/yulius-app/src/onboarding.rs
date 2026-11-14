@@ -1112,7 +1112,10 @@ impl App {
             }
             return Ok(false);
         };
-        // A task someone else created meanwhile is theirs to start.
+        // Starting onboarding starts its task, with the hand-over added to its request: that is
+        // control of the task (SPEC-490 OWN-004). One that exists (an earlier start that failed,
+        // or another person's start that created it a moment ago) is its owner's to start, and
+        // anyone else asks for control on its page; the one created just now is the starter's.
         if let Some(ctx) = starter {
             self.require_control(ctx, &task).await?;
         }
@@ -1467,15 +1470,6 @@ impl App {
                     record.onboarding_state
                 )));
             }
-        }
-        // Starting onboarding starts its task, with the hand-over added to its request: that is
-        // control of the task (SPEC-490 OWN-004). A task that exists is its owner's to start,
-        // and anyone else asks for control on its page; a sandbox without one gets it created
-        // for the person who starts onboarding. Checked before anything is prepared.
-        if let Some(task) = &record.onboarding_task_id
-            && let Some(task) = self.deps.store.task(task).await?
-        {
-            self.require_control(ctx, &task).await?;
         }
         let actor = self.login_of(&ctx.user.id).await;
         crate::race::reached(

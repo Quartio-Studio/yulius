@@ -1885,7 +1885,7 @@ async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResul
 // that exists is started by its owner alone, and anyone else is told to ask for control; a
 // sandbox without one gets it created for the person who starts onboarding, so it never acts on
 // GitHub as someone who did not start it.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
@@ -1946,6 +1946,47 @@ async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> T
     let task = w.h.store.task(&task).await?.ok_or("task")?;
     assert_eq!(task.owner, bob_user.id, "the starter's");
     assert_eq!(task.created_by, bob_user.id);
+
+    // Two people start onboarding at once: Alice's start creates the task after Bob's start
+    // read that there is none. The task is Alice's, so Bob's start is refused and starts
+    // nothing.
+    w.remote(OWNER, "wiki", &[("README.md", "# Wiki\n")], &[])?;
+    w.grant("alice", "wiki", "admin");
+    w.grant("bob", "wiki", "push");
+    let wiki = import(&w, &alice, "Quartio-Studio/wiki").await?;
+    let wiki_id = SandboxId::parse(text(&wiki.body["id"]))?;
+    unstarted(&w, &wiki_id).await?;
+    let mut alices = before.clone();
+    alices.id = yulius_domain::ids::TaskId::parse("t-wiki-onboarding")?;
+    alices.sandbox_id = wiki_id.clone();
+    {
+        let (store, sid, task) = (w.h.store.clone(), wiki_id.clone(), alices.clone());
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            yulius_app::race::Point::OnboardingApproved,
+            std::path::Path::new(wiki_id.as_str()),
+            move || {
+                let created = tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        store.insert_task(&task).await?;
+                        store.set_onboarding(&sid, "pending", Some(&task.id)).await
+                    })
+                });
+                assert!(created.is_ok(), "{created:?}");
+            },
+        );
+    }
+    let approve = format!("/api/sandboxes/{wiki_id}/onboarding/approve");
+    let refused = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(
+        text(&refused.body["error"]["message"]).contains("@alice"),
+        "{:?}",
+        refused.body
+    );
+    let record = w.h.store.sandbox(&wiki_id).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "pending");
+    assert_eq!(w.h.store.task(&alices.id).await?.ok_or("task")?, alices);
     Ok(())
 }
 
