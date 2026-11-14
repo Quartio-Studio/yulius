@@ -20,9 +20,7 @@ use tracing::Instrument as _;
 use yulius_contracts::api::sandboxes::CreateSandbox;
 use yulius_contracts::api::secrets::{AgentSecretPatch, AgentSecretView, HostRequestAnswer};
 use yulius_contracts::api::variables::ProjectVariableInput;
-use yulius_contracts::mcp::{
-    RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
-};
+use yulius_contracts::mcp::{RpcRequest, RpcResponse, ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{Action, TokenScope};
 
@@ -30,8 +28,9 @@ use crate::auth::{AuthContext, count_client_attempt};
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::manage::TaskChange;
-use crate::mcp::{STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors};
+use crate::mcp::{
+    PROJECT_TOOLS, STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors, initialize_result,
+};
 use crate::model::SandboxRecord;
 use crate::person_tools::{record, str_arg, tool};
 use crate::vault::{Holder, Revealed, SecretUser};
@@ -135,29 +134,6 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
 /// Tools that run in a task of their own, to their end and their audit, even when the caller goes
 /// away.
 const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge", "tasks_bulk"];
-
-/// The Superagent's tools the remote MCP serves as they are, with `project` added.
-const SHARED_TOOLS: &[&str] = &[
-    "tasks_list",
-    "task_get",
-    "task_create",
-    "task_message",
-    "task_stop",
-    "task_archive",
-    "task_delete",
-    "task_update",
-    "attachments_trash",
-    "sessions_search",
-    "session_read",
-    "automations_list",
-    "automation_create",
-    "automation_update",
-    "automation_delete",
-    "automation_run_now",
-    "automation_template_enable",
-    "workflows_list",
-    "secrets_list",
-];
 
 fn remote_tool(name: &str) -> Option<(Reach, Action)> {
     REMOTE_TOOLS
@@ -394,7 +370,8 @@ pub(crate) fn project_descriptors(names: &[&str]) -> Vec<ToolDescriptor> {
 /// The tools a token of `scope` is served by `tools/list` (RMT-011).
 #[must_use]
 pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
-    let shared = project_descriptors(SHARED_TOOLS);
+    // The Superagent's tools the remote MCP serves as they are, with `project` added.
+    let shared = project_descriptors(&[PROJECT_TOOLS, &["task_message"]].concat());
     let mut tools: Vec<ToolDescriptor> = own_descriptors().into_iter().chain(shared).collect();
     tools.retain(|t| remote_tool(&t.name).is_some_and(|(_, action)| scope.allows(action)));
     tools.sort_by_key(|t| {
@@ -442,28 +419,18 @@ impl App {
         let id = request.id.clone()?;
         let result = match request.method.as_str() {
             "initialize" => {
-                let requested = request
-                    .params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let version = SUPPORTED_PROTOCOL_VERSIONS
-                    .iter()
-                    .find(|v| **v == requested)
-                    .copied()
-                    .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
-                json!({
-                    "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": if caller.superagent.is_some() {
+                let mut result = initialize_result(
+                    &request.params,
+                    if caller.superagent.is_some() {
                         crate::global_superagent::GLOBAL_INSTRUCTIONS
                     } else {
                         REMOTE_INSTRUCTIONS
                     },
-                    // Who the token acts for, for `yulius remote status`.
-                    "_meta": {"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()},
-                })
+                );
+                // Who the token acts for, for `yulius remote status`.
+                result["_meta"] =
+                    json!({"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()});
+                result
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools": if caller.superagent.is_some() {
@@ -758,40 +725,8 @@ impl App {
         let sid = sandbox.id.as_str();
         match name {
             // The Superagent's own tools (RMT-013).
-            "tasks_list" => self.tool_tasks_list(project, args).await,
-            "task_get" => self.tool_task_get(project, args).await,
-            "task_create" => self.tool_task_create(project, args).await,
+            name if PROJECT_TOOLS.contains(&name) => self.project_tool(project, name, args).await,
             "task_message" => self.tool_task_message(project, args).await,
-            "task_stop" => self.tool_task_change(project, args, TaskChange::Stop).await,
-            "task_archive" => {
-                let archived = match args.get("archived") {
-                    None | Some(Value::Null) => true,
-                    Some(Value::Bool(archived)) => *archived,
-                    Some(_) => {
-                        return Err(AppError::Invalid("`archived` must be true or false".into()));
-                    }
-                };
-                self.tool_task_change(project, args, TaskChange::Archive(archived))
-                    .await
-            }
-            "task_delete" => {
-                self.tool_task_change(project, args, TaskChange::Delete)
-                    .await
-            }
-            "task_update" => self.tool_task_update(project, args).await,
-            "attachments_trash" => self.tool_attachments_trash(project, args).await,
-            "sessions_search" => self.tool_sessions_search(project, args).await,
-            "session_read" => self.tool_session_read(project, args).await,
-            "automations_list" => self.tool_automations_list(project).await,
-            "automation_create" => self.tool_automation_create(project, args).await,
-            "automation_update" => self.tool_automation_update(project, args).await,
-            "automation_delete" => self.tool_automation_delete(project, args).await,
-            "automation_run_now" => self.tool_automation_run_now(project, args).await,
-            "automation_template_enable" => {
-                self.tool_automation_template_enable(project, args).await
-            }
-            "workflows_list" => self.tool_workflows_list(project).await,
-            "secrets_list" => self.tool_secrets_list(project).await,
             // What the web UI's routes do, for the person (RMT-020..027).
             "project_get" => {
                 let view = self.get_sandbox(ctx, sid).await?;

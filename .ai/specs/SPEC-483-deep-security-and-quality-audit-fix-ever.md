@@ -63,7 +63,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
-      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32;
+      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33;
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -683,6 +683,21 @@ went; two of the auditors' items had gained a user since and stay.
   out the import reader's change; a test case was refused by the length check before the padding
   it names; the formatter's doc claimed a round trip for every year.
 
+### Slice 33: one dispatch of the Superagent's tools
+
+- **QB7 (low).** The Yulius MCP (`mcp.rs` `mcp_call`, for a task's agent and the Superagent) and
+  the remote MCP (`remote.rs` `remote_project_tool`) each held the arms of the same 18 project
+  tools and the parsing of `task_archive`'s `archived`, and each answered `initialize` with its
+  own copy of the version negotiation; the remote MCP kept a third list of the names
+  (`SHARED_TOOLS`). A tool added to one dispatch and not the other is listed by `tools/list` and
+  answers "unknown tool". `sandbox_task_create` re-typed `task_create`'s arguments by hand and
+  lost the descriptions of `model` and `effort`.
+- **Slice 32's review nits.** The two "unpadded" timestamp cases are refused by the separator
+  check (said in the test now); the Evidence's "a sequential test cannot reach" the
+  consumed-grant check was too strong (a test store could); and, pre-existing, the device
+  sign-in's `DeviceStart` and `DevicePollRequest` printed the polling code, which fetches the
+  token until it expires, in their derived `Debug`.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1205,6 +1220,10 @@ went; two of the auditors' items had gained a user since and stay.
 - **ONE-007** The device sign-in's start and poll have one contract, which the server sends and
   the CLI reads: the poll's state is `pending`, `approved`, `denied` or `expired` (a consumed
   grant, or a state the CLI does not know, is `expired`), and its `Debug` hides the token.
+- **ONE-008** Every MCP of Yulius dispatches the shared project tools (`PROJECT_TOOLS`) by one
+  function and answers `initialize` by one; every tool the remote MCP lists is dispatched; a
+  task asked for in another sandbox takes `model` and `effort` as `task_create` describes them.
+  The device sign-in's `Debug` hides the polling code as it hides the token.
 
 ## Plan
 
@@ -1242,7 +1261,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out (merged, #1290)
 - [x] Slice 30: a cancelled waiting task starts the queue only when it was a supertask (merged, #1295)
 - [x] Slice 31: one reader of RFC 3339 time, the calendar from the domain (merged, #1296)
-- [ ] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read
+- [x] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read (merged, #1297)
+- [ ] Slice 33: one dispatch of the shared project tools and one handshake for every MCP
 
 ## Acceptance criteria
 
@@ -1869,6 +1889,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   lowercase word the CLI reads (`{"status":"denied","token":null}`); the CLI's device tests and
   the server's sign-in tests pass on the one contract (ONE-007).
 
+- **AC-153** Called with only its project, every tool the remote MCP lists for a person's token
+  answers, none with "unknown tool" (the Global Superagent's browser tools, which this dispatch
+  does not hold, are not called: they would open a browser); `sandbox_task_create`'s `model` and `effort` equal `task_create`'s, each with a
+  description; `DeviceStart` and `DevicePollRequest` show no polling code in `Debug` (ONE-008).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2129,6 +2154,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
+  `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says` and
+  `initialize_speaks_the_asked_version_or_the_newest`,
+  `yulius-contracts` `import::tests::device_poll_wire_and_redaction` (AC-153); the existing
+  MCP, remote MCP and Superagent tests for unchanged behaviour.
 - Slice 32: `yulius-app` `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`, the
   `yulius` sign-in tests (`http_auth`) and the CLI's `import::device` tests (AC-152).
 - Slice 31: `yulius-domain` `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
@@ -2235,6 +2265,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 33 (no decision record: a refactor). The shared tools live in `mcp.rs` beside the
+  descriptors they share; each dispatch keeps its own order of precedence (the Superagent's
+  person tools come before them, the remote MCP's own tools after), which this slice does not
+  change. `task_message` stays out of the shared set: a task's agent has none, and the
+  Superagent's goes through its caller. `sandbox_task_create` keeps its own wording for the
+  arguments that name the other sandbox's tasks; only `model` and `effort`, which say the same
+  in both, are one definition.
 - Slice 32 (no decision record: a refactor). The CLI's definitions are kept (an enum and a
   `Debug` that hides the token) and `api::auth` names them, rather than the server's: a state the
   CLI cannot read is the failure this slice removes. A stored state the CLI does not know reads
@@ -2706,8 +2743,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
-| QB2, QB7 | duplication | Three loopback HTTP clients, the Superagent's tools dispatched twice | low | open (item 16 of the Context) |
-| QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | slice 32 |
+| QB2 | duplication | Three loopback HTTP clients | low | open (item 16 of the Context) |
+| QB7 | duplication | The Superagent's tools dispatched twice, the handshake twice | low | slice 33 |
+| QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | fixed (slice 32) |
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
@@ -2839,3 +2877,32 @@ slices follow.
   the same wait before its menu; with a 2.5 s delay the file passes 9 of 9 twice
   (`probe-2500-after.log`), without it 9 of 9 twice (`no-probe-after.log`). Every other
   `touchTask` of the file waits on something the change shows before acting.
+- **Review, round 3** (the same session, head `2b6e73abd`): approve.
+- **Merged.** Pull request #1297 was merged into `dev` at `2b6e73abd`, its own Yulius CI run
+  passed. Nits answered in slice 33.
+
+### Slice 33 (2026-11-14)
+
+- **Tests failing before the change**: the `model` and `effort` test failed on the old schema
+  (`sandbox_task_create`'s were bare strings); the redaction test failed on the derived `Debug`
+  of `DeviceStart`, then of `DevicePollRequest`; the dispatch test passes before and after (it
+  guards the next change).
+- **Tests failing without their fix** (`target/audit/slice33/mutate.py`, `mutations.log`): a
+  shared tool missing from the dispatch, `task_message` not dispatched remotely, the model
+  re-typed, either polling code shown: each failed its test. A version negotiation that ignores
+  what the client asked survived: nothing tested the handshake (on `dev` neither); a test was
+  added and the mutation fails (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `d7d01ba5e`: exit 0; `4408 tests run: 4408 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `efceecb23`): request changes. One minor, own code:
+  the new items were inserted between the Superagent instructions' doc comment and
+  `COCKPIT_INSTRUCTIONS`, so the const lost its doc (the rule that its text has no room to
+  grow) and `model_property` carried it. Nits: the new tests sat between the test module's
+  `use` lines; the dispatch test covers a person's token, not the Global Superagent's browser
+  tools. The reviewer found every name keeps its arm for every caller, `initialize` the same
+  answer, the remote `tools/list` the same set for each scope and `task_create`'s schema the
+  same byte for byte. All answered: the doc is back on its const, the tests follow the `use`
+  lines, AC-153 and the test's doc say a person's token.
+- **Gate after it.** `scripts/dev ci` at `96612dc2b`: exit 0; `4408 tests run: 4408 passed (1
+  slow), 17 skipped` (`gate2.log`).

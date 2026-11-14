@@ -112,6 +112,63 @@ pub const COCKPIT_TOOLS: [&str; 70] = [
 /// SPEC-487 SAR-004). What is past it is never read, so every such text stays within it.
 pub const CLIENT_TEXT_MAX: usize = 4096;
 
+/// `task_create`'s and `sandbox_task_create`'s `model` argument, one definition for both.
+fn model_property() -> Value {
+    json!({"type": "string", "description": format!("Model override (default {DEFAULT_CLAUDE_MODEL})")})
+}
+
+/// `task_create`'s and `sandbox_task_create`'s `effort` argument, one definition for both.
+fn effort_property() -> Value {
+    json!({"type": "string", "description": format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")})
+}
+
+/// What the Yulius MCP tells a task's agent at `initialize`.
+const AGENT_INSTRUCTIONS: &str = "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps that holds all the work you know of and whose progress arrives steadily.";
+
+/// The project tools every MCP of Yulius serves the same way ([`App::project_tool`]): a task's
+/// agent's, the Superagent's and the remote MCP's.
+pub(crate) const PROJECT_TOOLS: &[&str] = &[
+    "tasks_list",
+    "task_get",
+    "task_create",
+    "task_stop",
+    "task_archive",
+    "task_delete",
+    "task_update",
+    "attachments_trash",
+    "sessions_search",
+    "session_read",
+    "automations_list",
+    "automation_create",
+    "automation_update",
+    "automation_delete",
+    "automation_run_now",
+    "automation_template_enable",
+    "workflows_list",
+    "secrets_list",
+];
+
+/// The answer to `initialize` of every MCP of Yulius: the protocol version the client asked
+/// for when Yulius speaks it (else the newest), the tools capability, the server and
+/// `instructions`.
+pub(crate) fn initialize_result(params: &Value, instructions: &str) -> Value {
+    let requested = params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let version = SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .find(|v| **v == requested)
+        .copied()
+        .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
+    json!({
+        "protocolVersion": version,
+        "capabilities": {"tools": {"listChanged": false}},
+        "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
+        "instructions": instructions,
+    })
+}
+
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007, SPEC-487 SAR-004): the rule
 /// and what no tool's own description can say. Per-tool guidance belongs in the descriptions:
 /// this text has no room to grow ([`CLIENT_TEXT_MAX`]).
@@ -192,8 +249,8 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
                 "supertask": {"type": "boolean", "description": "Run alone in that sandbox; only when the person asks"},
                 "prepared": {"type": "boolean", "description": "Prepare it without starting, only when the person asks for that: by default it is queued and starts by itself (sandbox_task_update starts a prepared one later)"},
                 "start_at": {"type": "string", "description": "Prepare it and start it at this RFC 3339 time"},
-                "model": {"type": "string"},
-                "effort": {"type": "string"}
+                "model": model_property(),
+                "effort": effort_property()
             }), &["sandbox", "prompt"]),
         },
         ToolDescriptor {
@@ -323,8 +380,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "supertask": {"type": "boolean", "description": "Run alone in the project: wait for the running tasks, and every other task waits for this one (not with after_task or start_rule)"},
                 "prepared": {"type": "boolean", "description": "Prepare it without starting: it waits until the person presses Start now (not with after_task, start_rule or supertask)"},
                 "start_at": {"type": "string", "description": "Prepare it and start it by itself at this RFC 3339 time, e.g. \"2026-10-15T09:00:00+02:00\" (at most 366 days ahead)"},
-                "model": {"type": "string", "description": format!("Model override (default {DEFAULT_CLAUDE_MODEL})")},
-                "effort": {"type": "string", "description": format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")}
+                "model": model_property(),
+                "effort": effort_property()
             }), &["prompt"]),
         },
         ToolDescriptor {
@@ -733,27 +790,13 @@ impl App {
             self.note_mcp_contact(&agent.task.id, &id);
         }
         let result: AppResult<Value> = match request.method.as_str() {
-            "initialize" => {
-                let requested = request
-                    .params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let version = SUPPORTED_PROTOCOL_VERSIONS
-                    .iter()
-                    .find(|v| **v == requested)
-                    .copied()
-                    .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
-                Ok(json!({
-                    "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": match caller {
-                        McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps that holds all the work you know of and whose progress arrives steadily.",
-                        McpCaller::Cockpit(_) => COCKPIT_INSTRUCTIONS,
-                    },
-                }))
-            }
+            "initialize" => Ok(initialize_result(
+                &request.params,
+                match caller {
+                    McpCaller::Agent(_) => AGENT_INSTRUCTIONS,
+                    McpCaller::Cockpit(_) => COCKPIT_INSTRUCTIONS,
+                },
+            )),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": match caller {
                 McpCaller::Agent(_) => tool_descriptors(),
@@ -772,6 +815,55 @@ impl App {
             Ok(value) => RpcResponse::ok(id, value),
             Err(err) => RpcResponse::err(id, -32603, err.public_message()),
         })
+    }
+
+    /// The project tools a task's agent, the Superagent and the remote MCP share, one way for
+    /// all (SPEC-483 slice 33): [`PROJECT_TOOLS`] names them.
+    ///
+    /// # Errors
+    /// The tool's own errors; `Invalid` for a name [`PROJECT_TOOLS`] does not hold.
+    pub(crate) async fn project_tool(
+        self: &Arc<Self>,
+        project: &ProjectCaller,
+        name: &str,
+        args: &Value,
+    ) -> AppResult<Value> {
+        match name {
+            "tasks_list" => self.tool_tasks_list(project, args).await,
+            "task_get" => self.tool_task_get(project, args).await,
+            "task_create" => self.tool_task_create(project, args).await,
+            "task_stop" => self.tool_task_change(project, args, TaskChange::Stop).await,
+            "task_archive" => {
+                let archived = match args.get("archived") {
+                    None | Some(Value::Null) => true,
+                    Some(Value::Bool(archived)) => *archived,
+                    Some(_) => {
+                        return Err(AppError::Invalid("`archived` must be true or false".into()));
+                    }
+                };
+                self.tool_task_change(project, args, TaskChange::Archive(archived))
+                    .await
+            }
+            "task_delete" => {
+                self.tool_task_change(project, args, TaskChange::Delete)
+                    .await
+            }
+            "task_update" => self.tool_task_update(project, args).await,
+            "attachments_trash" => self.tool_attachments_trash(project, args).await,
+            "sessions_search" => self.tool_sessions_search(project, args).await,
+            "session_read" => self.tool_session_read(project, args).await,
+            "automation_create" => self.tool_automation_create(project, args).await,
+            "automations_list" => self.tool_automations_list(project).await,
+            "automation_update" => self.tool_automation_update(project, args).await,
+            "automation_delete" => self.tool_automation_delete(project, args).await,
+            "automation_run_now" => self.tool_automation_run_now(project, args).await,
+            "automation_template_enable" => {
+                self.tool_automation_template_enable(project, args).await
+            }
+            "workflows_list" => self.tool_workflows_list(project).await,
+            "secrets_list" => self.tool_secrets_list(project).await,
+            _ => Err(AppError::Invalid(format!("unknown tool: {name}"))),
+        }
     }
 
     async fn mcp_call(
@@ -804,42 +896,7 @@ impl App {
             {
                 self.cockpit_person_tool(&project, name, &args).await
             }
-            "tasks_list" => self.tool_tasks_list(&project, &args).await,
-            "task_get" => self.tool_task_get(&project, &args).await,
-            "task_create" => self.tool_task_create(&project, &args).await,
-            "task_stop" => {
-                self.tool_task_change(&project, &args, TaskChange::Stop)
-                    .await
-            }
-            "task_archive" => match args.get("archived") {
-                None | Some(Value::Null) => {
-                    self.tool_task_change(&project, &args, TaskChange::Archive(true))
-                        .await
-                }
-                Some(Value::Bool(archived)) => {
-                    self.tool_task_change(&project, &args, TaskChange::Archive(*archived))
-                        .await
-                }
-                Some(_) => Err(AppError::Invalid("`archived` must be true or false".into())),
-            },
-            "task_delete" => {
-                self.tool_task_change(&project, &args, TaskChange::Delete)
-                    .await
-            }
-            "task_update" => self.tool_task_update(&project, &args).await,
-            "attachments_trash" => self.tool_attachments_trash(&project, &args).await,
-            "sessions_search" => self.tool_sessions_search(&project, &args).await,
-            "session_read" => self.tool_session_read(&project, &args).await,
-            "automation_create" => self.tool_automation_create(&project, &args).await,
-            "automations_list" => self.tool_automations_list(&project).await,
-            "automation_update" => self.tool_automation_update(&project, &args).await,
-            "automation_delete" => self.tool_automation_delete(&project, &args).await,
-            "automation_run_now" => self.tool_automation_run_now(&project, &args).await,
-            "automation_template_enable" => {
-                self.tool_automation_template_enable(&project, &args).await
-            }
-            "workflows_list" => self.tool_workflows_list(&project).await,
-            "secrets_list" => self.tool_secrets_list(&project).await,
+            _ if PROJECT_TOOLS.contains(&name) => self.project_tool(&project, name, &args).await,
             _ => match caller {
                 McpCaller::Cockpit(caller) if name == "task_message" => {
                     self.tool_task_message(caller, &args).await
@@ -1141,6 +1198,7 @@ mod tests {
         COCKPIT_TOOLS, CrossAction, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL,
         cockpit_tool_descriptors, cross_action, tool_descriptors,
     };
+
     use yulius_domain::briefing::YULIUS_TOOLS;
 
     #[test]
@@ -1155,6 +1213,51 @@ mod tests {
         }
     }
 
+    /// SPEC-483 slice 33: every MCP of Yulius answers `initialize` the one way: the version the
+    /// client asked for when Yulius speaks it, else the newest, and the caller's instructions.
+    #[test]
+    fn initialize_speaks_the_asked_version_or_the_newest() {
+        use yulius_contracts::mcp::SUPPORTED_PROTOCOL_VERSIONS;
+        let older = SUPPORTED_PROTOCOL_VERSIONS[1];
+        let asked = super::initialize_result(&serde_json::json!({"protocolVersion": older}), "hi");
+        assert_eq!(asked["protocolVersion"], older);
+        assert_eq!(asked["instructions"], "hi");
+        assert_eq!(asked["capabilities"]["tools"]["listChanged"], false);
+        for params in [
+            serde_json::json!({"protocolVersion": "1999-01-01"}),
+            serde_json::json!({}),
+        ] {
+            let newest = super::initialize_result(&params, "hi");
+            assert_eq!(
+                newest["protocolVersion"], SUPPORTED_PROTOCOL_VERSIONS[0],
+                "{params}"
+            );
+        }
+    }
+
+    /// SPEC-483 slice 33 (QB7): a task asked for in another sandbox takes `model` and `effort` as
+    /// `task_create` describes them, not a bare string re-typed by hand.
+    #[test]
+    fn a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says() {
+        let schema_of = |name: &str| {
+            cockpit_tool_descriptors()
+                .into_iter()
+                .find(|t| t.name == name)
+                .map(|t| t.input_schema)
+                .unwrap_or_default()
+        };
+        let (here, there) = (schema_of("task_create"), schema_of("sandbox_task_create"));
+        for field in ["model", "effort"] {
+            assert!(
+                here["properties"][field]["description"].is_string(),
+                "{field}"
+            );
+            assert_eq!(
+                here["properties"][field], there["properties"][field],
+                "{field}"
+            );
+        }
+    }
     /// SPEC-335 AC-XSR-5: only the Superagent reaches other sandboxes; a task's agent is served
     /// neither tool.
     #[test]
