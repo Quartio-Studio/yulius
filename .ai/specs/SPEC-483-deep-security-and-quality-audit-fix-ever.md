@@ -1823,7 +1823,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 
 - **AC-150** A bulk stop of two waiting tasks in a world with free sessions stops both, also with
   a 300 ms pause after each stop of the bulk loop (before the fix: 3 of 3 failed, the second
-  started and its stop refused); a stopped waiting supertask still lets the tasks it held start
+  started and its stop refused); stopping one of two waiting tasks, neither a supertask, leaves
+  the other waiting for a second; a stopped waiting supertask still lets the tasks it held start
   (QUE-001).
 
 ## Test plan
@@ -2086,9 +2087,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
-- Slice 30: `yulius` `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (with
-  the probe, and `--stress-count 50` beside a busy loop) and
-  `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held` (AC-150).
+- Slice 30: `yulius` `supertask::stopping_a_waiting_task_that_is_no_supertask_starts_no_other`
+  (the regression test), `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely`
+  (with the probe) and `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held`
+  (AC-150).
 - Slice 29: `yulius-server` `auth::tests::one_bearer_reader_takes_the_trimmed_token_of_a_bearer_header_only`
   and the routes' tests (AC-148), `yulius` `leftovers::the_loopback_routes_need_the_server_s_key`
   (a padded key is taken) and `browser::another_authorization_scheme_beside_a_session_cookie_is_refused`; `yulius` `browser::the_welcome_page_names_the_sandbox_and_links_its_listening_ports`,
@@ -2188,9 +2190,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 30 (no decision record: SUP-005 decided it). The pass follows what frees a session or
   a hold, as the delete path already did, rather than the test seeding its tasks differently:
-  the pass was not needed, and a test world with free sessions is a fair one. A committed test
-  that a cancel starts no pass would race the pass it looks for; the probe reproduces it, and
-  the test that flaked is the regression test.
+  the pass was not needed, and a test world with free sessions is a fair one. The regression
+  test checks for a bounded second that the other task stays waiting: an absence can only be
+  checked for a while, and the check can only miss a pass, never fail without one (the test
+  harness runs no background tick). The test that flaked does not guard the fix: without it, it
+  passes unless the host is loaded (review of slice 30).
 - Slice 29 (no decision record: refactors). The bearer reader trims, as four of the five did:
   the leftovers key, compared as it came, now takes a key with a stray space as the others
   take a token. The scheme stays `Bearer` as written (RFC 9110 makes it case-insensitive; no
@@ -2699,3 +2703,13 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `8fbd91be5`: exit 0; `4383 tests run: 4383 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `8731beaaa`): request changes. One major, own code:
+  no test failed without the fix: the flaky test passes 50 of 50 with the old line unless the
+  host is loaded or the probe is in, so "Stress: 50 of 50" proved nothing about the fix, and the
+  Decisions' reason for committing no test was wrong (the harness has no background tick, so a
+  bounded absence check cannot fail falsely). The reviewer confirmed the narrowed condition for
+  every case (no slot freed, no hold changed, a capacity pause closed by `end_pause`, chained
+  successors started by `release_chained`, every event that frees a slot runs its own pass) and
+  the corrected claim on #1278. Answered: `supertask::stopping_a_waiting_task_that_is_no_supertask_starts_no_other`
+  fails 10 of 10 with the old line and passes 10 of 10 with the fix (`--stress-count 10`,
+  `test-old-line.log`, `test-fixed.log`).
