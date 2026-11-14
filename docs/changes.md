@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
+  30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
+  bulk stop start its next waiting task in the tests before stopping it.
 - Anyone who may work in a project stops, archives, restores and deletes any of its tasks;
   steering a task stays its owner's (SPEC-490, ADR-0331, task #473; amends ADR-0060). Stop,
   Archive and Delete are enabled on other people's tasks in the task menu, the sidebar and the
