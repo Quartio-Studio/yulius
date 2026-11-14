@@ -2805,3 +2805,18 @@ slices follow.
   caller comes near).
 - **Merged.** Pull request #1296 was squash-merged into `dev` (`98eb2af79`) after its merge
   train passed.
+
+### Slice 32 (2026-11-14)
+
+- **Test failing before the change**: `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`
+  did not compile (the server's poll had no state type and no mapping).
+- **Tests failing without their fix** (`target/audit/slice32/mutate.py`, `mutations.log`): an
+  unknown state said as pending, `denied` said as expired, an approved token not given: each
+  failed its test. Two survived: the check that a consumed grant gives no token again guards two
+  concurrent polls, code this slice moved but did not change, which a sequential test cannot
+  reach (a second poll reads the `consumed` state anyway); and dropping the separators at
+  positions 7 and 16 of a timestamp, which no case had a wrong character at: four cases with a
+  wrong separator were added and the mutation now fails (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `e36541b04`: exit 0; `4405 tests run: 4405 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
