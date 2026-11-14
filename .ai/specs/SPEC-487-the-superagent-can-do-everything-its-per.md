@@ -802,3 +802,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   is the Superagent's only (no remote MCP: a long-lived token's agent, which the person's
   decision did not cover); the audit entry names the action; the superadmin's path is tested
   through the tool with the flag in the store; the API row names `GET /api/update`.
+  Eight mutants now (`mutants-slice7.log`: `survived=0`); the Global Superagent's withholding
+  of `instance_update` went, since no remote tool serves it any more (its test still holds).
+- **Gate, round 1:** `scripts/dev ci` passed on `1acba6b10` (4382 tests;
+  `target/evidence/gate-slice7-r1.log`); the commit after it changes this specification only.
