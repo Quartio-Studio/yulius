@@ -701,3 +701,11 @@ the function the web UI's route calls, with the person's rights checked at the c
     refused (read from GitHub, not a local ref, which Yulius's push does not move); the branch
     policy is checked before arming; the merge on green and its cleared arm are tested.
   - F7: one being decided is first in the queue; a task without a runtime is skipped.
+  Sixteen mutants now (`mutants-slice5.log`: `survived=0`); the queue's order became a
+  tested rule when its mutant survived.
+- **Gate, round 1:** `scripts/dev ci` passed on `8c0a45a8b` (4378 tests, 17 skipped;
+  `target/evidence/gate-slice5-r1.log`). Its first run there failed one test outside this
+  change, `task_done::a_stop_settles_a_run_no_server_holds` ("the run's host still runs"), the
+  open flake of issue #1190: it passes alone ten times in a row and failed once in four beside
+  48 busy loops; the issue has this occurrence. The run before that stopped at clippy (a
+  vector in a test). The commit after it changes this specification only.
