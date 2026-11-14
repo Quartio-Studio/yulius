@@ -2820,3 +2820,16 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `e36541b04`: exit 0; `4405 tests run: 4405 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `f3095f36c`): approve, three nits (two own: the two
+  "unpadded" cases are refused by the separator check the new separator cases cover; "a
+  sequential test cannot reach" the consumed-grant check is too strong, a test store could;
+  one pre-existing: `DeviceStart`'s derived `Debug` prints the device code). The merge was armed.
+- **CI at `f3095f36c`** (run `ca58bbe9`): `e2e` failed in `ownership.e2e.ts` "Archive all leaves
+  other people's Done tasks", a test added by #1292 the same day, which this slice does not
+  touch: the toast said "Archived 2 Done tasks.", the other person's task archived too. "Archive
+  all" and a row's menu act on the task the page holds; the test changed the task's owner
+  through the mock and pressed the button before the page had the change. A 500 ms delay of the
+  mock's change (`touchTask`) made it fail 2 of 2 and the menu test of the same file fail too;
+  waiting until the row shows its owner's mark before pressing, the file passes 9 of 9 with
+  the delay and without it (`target/audit/slice32/flake/`). No open pull request touched the
+  file; the fix is its own commit (`6287e8220`).
