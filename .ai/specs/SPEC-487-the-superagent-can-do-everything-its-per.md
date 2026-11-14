@@ -734,8 +734,13 @@ the function the web UI's route calls, with the person's rights checked at the c
   notes of its approving review are this slice's first commit: `ci_prioritize` says when a
   run is not first, and who armed a merge is tested across a save.
 - **Tests and code:** the Superagent test (`the_superagent_reads_subscriptions_and_sets_a_tasks_model`)
-  was written before the code, which it calls through tool names the server did not serve,
-  so it failed with "unknown tool"; it passes with it. Unit tests: the shapes of a model and an
+  was written before the code (it calls tools the server did not serve yet); it was first run
+  after it. That it fails without each behaviour is shown by ten one-line mutants (the owner
+  of a move and of a model change, nothing asked, a shape not taken, `default`, a shared name
+  guessed, a name's case, the note for a running task, the brief's subscription, the pool),
+  each failed by a named test (`target/evidence/mutants-slice6.py`, `mutants-slice6.log`:
+  `survived=0`); one survived at first (the owner check before a name is read), and the test
+  has that case now. Unit tests: the shapes of a model and an
   effort, the audit's subject of the three tools, the instructions (3 more tools named, within
   the bound at 4071 characters after two sentences were shortened).
 - **The shared code keeps its other callers:** every test of `yulius`, `yulius-app`,

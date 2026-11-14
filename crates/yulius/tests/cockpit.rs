@@ -6643,6 +6643,18 @@ async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResu
             "{args}: {refused}"
         );
     }
+    // Whose task it is comes first: another person's task is refused before any name is read.
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_switch",
+        json!({"number": carols.number, "subscription": "Nope"}),
+    )
+    .await?;
+    assert!(
+        is_error && said(&refused).contains("@carol") && !said(&refused).contains("Team Max"),
+        "{refused}"
+    );
 
     // A task's agent is served none of it.
     for (tool, args) in [
