@@ -842,8 +842,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   ends with the hold however it ends (its person types, the command is typed, the run
   ends, the terminal never goes quiet), and a hold cut by a restart of Yulius is taken up
   again by the new server. The Enter of a line Yulius typed empties the box, whatever was
-  in it (Claude Code runs no prompt hook for a command), so a key from before it keeps
-  nothing out afterwards. The line that wakes a compacted session is not typed behind a
+  in it (Claude Code may run no prompt hook for a command: 2.1.292 ran none for
+  `/compact`), so a key from before it keeps nothing out afterwards. The line that wakes a compacted session is not typed behind a
   draft (a key typed while the session was compacted): the terminal says that the
   session was not told to carry on and what to do, and the task waits for its person. A
   person who types after the refusal owns the session as before ("Yulius leaves the full
@@ -1702,8 +1702,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   nothing, going to a fresh session without trying loses the conversation also when the
   box was empty, and clearing the box first (Ctrl-U) clears one line of it. The flag is
   the hold's: it ends with it on every way out, and a restart of Yulius does not turn a
-  hold into "gave up". Yulius's own Enter empties the box in what Yulius knows, since no
-  hook says so for a command; without that the very key the hold was for kept the
+  hold into "gave up". Yulius's own Enter empties the box in what Yulius knows, since a
+  hook may not say so for a command; without that the very key the hold was for kept the
   wake-up out after the compaction. The rule is not the message's rule (`box_held`: a person's keys, and a
   minute after their last one): a line for a full session also stays behind a message of
   Yulius's own whose Enter failed, and does not wait for a person who is only near.

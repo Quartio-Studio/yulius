@@ -613,6 +613,56 @@ fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult 
     Ok(())
 }
 
+/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key (here
+/// the text in it is sent by an Enter nobody typed at the terminal, as "Send anyway" or a held
+/// prompt that goes on does). The hold is over: when Yulius types its command the task does
+/// not read the hold's flag any more.
+#[test]
+fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
+        let (id, ctx, attach) = refused_soon(&app, &data).await?;
+        app.terminal_input(&ctx, &attach, b"and then", false)
+            .await?;
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        let read = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, key, id, read) = (app.clone(), id.clone(), id.clone(), read.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineTyped,
+                Path::new(key.as_str()),
+                move || {
+                    let now = tokio::task::block_in_place(|| handle.block_on(task(&app, &id)));
+                    if let (Ok(mut slot), Ok(now)) = (read.lock(), now) {
+                        *slot = Some(now.activity);
+                    }
+                },
+            );
+        }
+        app.send_input(&id, b"\r").await?;
+        wait_for("the compaction", Duration::from_secs(60), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        let read = *read.lock().map_err(|_| "poisoned")?;
+        let read = read.ok_or("the command was never typed")?;
+        assert_ne!(read, Some(Activity::NeedsAttention));
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-483 TYP-001: Yulius restarts while a compaction is held. The hold did not give the
 /// recovery up: the new server ends the old flag and starts the recovery over, hold and all,
 /// and the task goes on (here in a fresh session: real text sits in the box).

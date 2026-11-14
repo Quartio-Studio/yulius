@@ -681,11 +681,15 @@ impl App {
         if !self.context_is(task_id, wanted) || !self.attempt_live(task_id, attempt).await {
             return false;
         }
-        if behind_draft {
-            // Nobody emptied the box: the task works again while Yulius goes on, and a refusal
-            // of what is sent now is the compaction's failure.
+        if *held {
+            // The hold is over, because it ran out or because the box was emptied without a
+            // key (a held prompt went on): the task works again while Yulius goes on.
             self.end_compaction_hold(task_id, Activity::Working).await;
             *held = false;
+        }
+        if behind_draft {
+            // Nobody emptied the box: a refusal of what is sent now is the compaction's
+            // failure.
             if let Ok(mut episode) = runtime.context.lock()
                 && let ContextEpisode::Compacting { behind_draft, .. } = &mut *episode
             {
@@ -709,9 +713,11 @@ impl App {
             tracing::warn!(task = %task_id, error = %err, "could not submit into a full session");
             return false;
         }
-        // The Enter sent whatever was in the box, so it is empty from here. Claude Code runs
-        // no prompt hook for a command, so nothing else would say so, and a key from hours ago
-        // would keep the wake-up out after the very compaction it was held for.
+        // The Enter sent whatever was in the box, so it is empty from here. Claude Code may
+        // run no prompt hook for a command (2.1.292 ran none for `/compact`, SPEC-480), so
+        // nothing else may say so, and a key from hours ago would keep the wake-up out after
+        // the very compaction it was held for. An Enter the TUI dropped leaves the line in
+        // the box all the same: not known here, and rare at an idle session.
         runtime
             .box_emptied_ms
             .fetch_max(self.now().0, Ordering::SeqCst);
