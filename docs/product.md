@@ -168,9 +168,13 @@ watching, steering and unblocking.
   person with a link; the Browser page shows its cursor as "alice's Superagent" (SPEC-437). Asked for work in
   another of the person's sandboxes ("make a task in the website repo for that"), it asks the
   person: the request shows above its session with the target, the whole prompt and its start
-  options, and nothing reaches that sandbox until the person presses Create task there; Decline,
-  no answer in 4 minutes or interrupting the Superagent creates nothing, and no API token can
-  approve (SPEC-335). What its person does on the project's pages it does for them when they
+  options, and nothing reaches that sandbox until the person presses Create task there; Decline
+  creates nothing, and no API token can approve (SPEC-335). The request stays there until the
+  person answers it, also when they are away for hours or Yulius restarts; the Superagent reads
+  how it ended, changes its text in place or withdraws it instead of asking again, lists another
+  sandbox's tasks without asking, and leaves a decision only the person makes on the same panel
+  as a question answered Yes or No (SPEC-487, [decision
+  0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)). What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the

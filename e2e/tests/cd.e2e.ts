@@ -857,7 +857,8 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
     ['Problem', 'The free plan has 2 runners'],
     ['Decide', 'Choose the paid plan or the free one'],
   ]);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+  // The sidebar may still read "Loading tasks…" here (#1175): wait for its row, never read once.
+  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
     .some((a) => a.getAttribute('title')?.includes('Needs your decision: Choose the paid plan or the free one: The free plan has 2 runners')))).toBe(true);
 
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {

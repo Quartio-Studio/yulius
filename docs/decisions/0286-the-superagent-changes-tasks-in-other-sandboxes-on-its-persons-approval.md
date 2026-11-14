@@ -4,7 +4,8 @@
 
 Accepted. Specified in [SPEC-442](../../.ai/specs/SPEC-442-a-session-can-manage-the-tasks-it-asks-f.md);
 task #424. Extends [0227](0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
-whose "cross-sandbox messaging, stopping and reading" alternative it builds.
+whose "cross-sandbox messaging, stopping and reading" alternative it builds. Amended by [0333](0333-the-superagents-requests-to-its-person-last-until-answered.md)
+(SPEC-487): a request lasts until answered or withdrawn, past its call and a restart.
 
 ## Context
 

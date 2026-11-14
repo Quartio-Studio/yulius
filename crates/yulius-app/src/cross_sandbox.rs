@@ -1,9 +1,13 @@
 //! Tasks the Superagent starts in its person's other sandboxes (SPEC-335, ADR-0227):
 //!
 //! - `sandboxes_list` names the other live sandboxes the person can work in (XSR-001);
-//! - `sandbox_task_create` asks the person: the request waits in memory, at most
-//!   [`MAX_WAITING`] per person and sandbox, for at most [`CROSS_REQUEST_WAIT`], and ends with the
-//!   call (answered, unanswered, or dropped) (XSR-002..004);
+//! - `sandbox_task_create` asks the person: the request waits on the panel, at most
+//!   [`MAX_WAITING`] per person and sandbox; the call waits for the answer at most
+//!   [`CROSS_REQUEST_WAIT`], and the request stays after it until the person answers it, the
+//!   Superagent withdraws it or its client cancels the call (SPEC-487 XRQ-001); requests and
+//!   their outcomes are kept in [`SUPERAGENT_REQUESTS_FILE`], so a restart keeps them
+//!   (XSR-002..004, XRQ-002); a waiting request is amended in place (XRQ-003);
+//! - `person_ask` leaves a decision of the Superagent's own on the same panel (XRQ-005);
 //! - only that person, from a browser session, approves or declines it; an approval creates the
 //!   task as `task_create` would in the target, exactly as shown (XSR-005, XSR-006);
 //! - the same requests start, re-chain, message and stop a task of another sandbox
@@ -12,11 +16,11 @@
 //! - `sandbox_task_get` only reads, without asking (XST-001);
 //! - every answer is audited in both sandboxes (XST-005).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use yulius_contracts::events::UiEvent;
@@ -43,6 +47,14 @@ pub const MAX_WAITING: usize = 3;
 /// How long a waiting call still waits once its person answered (the task is being created).
 /// Short enough that the wait and the grace stay below those 300 s.
 pub const ANSWER_GRACE: Duration = Duration::from_secs(50);
+
+/// The file beside the database that keeps the waiting requests and the recent outcomes
+/// (SPEC-487 XRQ-002), written whole at every change.
+pub const SUPERAGENT_REQUESTS_FILE: &str = "superagent-requests.json";
+/// The outcomes kept for the Superagents to read (`sandbox_requests`), the newest.
+pub const MAX_ANSWERED: usize = 200;
+/// The longest question of `person_ask`, in bytes.
+pub const MAX_QUESTION_BYTES: usize = 4096;
 
 /// What `sandbox_task_create` takes: the target and `task_create`'s arguments.
 #[derive(Deserialize)]
@@ -99,6 +111,19 @@ struct CrossMessageArgs {
     text: String,
 }
 
+/// What `person_ask` takes: the question for the person.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskArgs {
+    question: String,
+}
+
+/// What `sandbox_request_amend` and `sandbox_request_withdraw` name: a waiting request.
+#[derive(Deserialize)]
+struct RequestRef {
+    request: String,
+}
+
 /// What a request asks for in another sandbox (SPEC-442 XST-004): there is no delete, archive
 /// or restore, so none can be asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +136,9 @@ pub enum CrossAction {
     Message,
     /// `sandbox_task_stop`.
     Stop,
+    /// `person_ask`: a decision the Superagent leaves for its person, in its own sandbox
+    /// (SPEC-487 XRQ-005); approved is yes, declined is no, and nothing runs.
+    Ask,
 }
 
 impl CrossAction {
@@ -120,7 +148,19 @@ impl CrossAction {
             Self::Update => "update",
             Self::Message => "message",
             Self::Stop => "stop",
+            Self::Ask => "ask",
         }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "create" => Self::Create,
+            "update" => Self::Update,
+            "message" => Self::Message,
+            "stop" => Self::Stop,
+            "ask" => Self::Ask,
+            _ => return None,
+        })
     }
 
     /// The tool that does it in the caller's own sandbox.
@@ -130,6 +170,7 @@ impl CrossAction {
             Self::Update => "task_update",
             Self::Message => "task_message",
             Self::Stop => "task_stop",
+            Self::Ask => "person_ask",
         }
     }
 
@@ -140,6 +181,7 @@ impl CrossAction {
             Self::Update => "the task was not changed",
             Self::Message => "nothing was sent",
             Self::Stop => "the task was not stopped",
+            Self::Ask => "the person said no",
         }
     }
 
@@ -148,7 +190,7 @@ impl CrossAction {
         match self {
             Self::Create => &OPTIONS,
             Self::Update => &UPDATE_OPTIONS,
-            Self::Message | Self::Stop => &[],
+            Self::Message | Self::Stop | Self::Ask => &[],
         }
     }
 }
@@ -163,21 +205,21 @@ const UPDATE_OPTIONS: [&str; 5] = [
 ];
 
 /// The task a request is about, as its card names it.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Named {
-    id: TaskId,
+    id: String,
     number: u32,
     title: String,
-    status: &'static str,
+    status: String,
 }
 
 impl Named {
     fn of(task: &TaskRecord) -> Self {
         Self {
-            id: task.id.clone(),
+            id: task.id.as_str().to_owned(),
             number: task.number,
             title: task.title.clone(),
-            status: task.status.as_str(),
+            status: task.status.as_str().to_owned(),
         }
     }
 }
@@ -197,6 +239,7 @@ const OPTIONS: [&str; 9] = [
 
 /// One request waiting for its person.
 struct Waiting {
+    id: String,
     user: UserId,
     source: SandboxId,
     target: SandboxRecord,
@@ -209,11 +252,81 @@ struct Waiting {
     args: Value,
     actor: String,
     detail: Value,
-    ends_at: Timestamp,
+    /// When it was asked: the panel lists requests in this order.
+    asked_at: Timestamp,
+    /// How many times its Superagent amended it: the person's answer names the revision its
+    /// card showed (review of slice 8a, F1).
+    revision: u32,
     /// The MCP call that waits for it (its Superagent's shell and JSON-RPC id), which a
     /// `notifications/cancelled` names.
     call: Option<String>,
-    answer: oneshot::Sender<AppResult<Value>>,
+    /// Where its answer goes while that call still waits; none once the call ended (the
+    /// request stays, and `sandbox_requests` tells the outcome, SPEC-487 XRQ-001).
+    answer: Option<oneshot::Sender<AppResult<Value>>>,
+}
+
+impl Waiting {
+    /// Its call ended: no answer goes there, and a later `notifications/cancelled` naming that
+    /// call (the id reused, a client started again) withdraws nothing (review of slice 8a, F2).
+    fn stop_waiting(&mut self) {
+        self.answer = None;
+        self.call = None;
+    }
+
+    /// How it ended, kept for its Superagent (XRQ-004).
+    fn ended(&self, outcome: Value, at: Timestamp) -> Answered {
+        Answered {
+            id: self.id.clone(),
+            user: self.user.as_str().to_owned(),
+            source: self.source.as_str().to_owned(),
+            target: self.target.slug.clone(),
+            action: self.action.as_str().to_owned(),
+            task: self.task.as_ref().map(|task| task.number),
+            outcome,
+            at: at.0,
+        }
+    }
+}
+
+/// How a request ended, for its Superagent to read later (SPEC-487 XRQ-004).
+#[derive(Clone, Serialize, Deserialize)]
+struct Answered {
+    id: String,
+    user: String,
+    source: String,
+    target: String,
+    action: String,
+    task: Option<u32>,
+    outcome: Value,
+    at: i64,
+}
+
+/// A waiting request as [`SUPERAGENT_REQUESTS_FILE`] keeps it (no answer channel: a restart
+/// ended every call).
+#[derive(Serialize, Deserialize)]
+struct SavedRequest {
+    id: String,
+    user: String,
+    source: String,
+    target: String,
+    action: String,
+    task: Option<Named>,
+    starts_now: bool,
+    args: Value,
+    actor: String,
+    detail: Value,
+    asked_at: i64,
+    #[serde(default)]
+    revision: u32,
+}
+
+/// [`SUPERAGENT_REQUESTS_FILE`]'s content.
+#[derive(Default, Serialize, Deserialize)]
+struct SavedRequests {
+    #[serde(default)]
+    waiting: Vec<SavedRequest>,
+    #[serde(default)]
+    answered: Vec<Answered>,
 }
 
 /// The key of a Superagent's MCP call: its shell (from its caller's audit detail) and its
@@ -223,30 +336,44 @@ pub(crate) fn call_key(caller: &ProjectCaller, rpc_id: &Value) -> Option<String>
     Some(format!("{shell}#{rpc_id}"))
 }
 
-/// The waiting requests by id (bounded by [`MAX_WAITING`] per person and sandbox).
+/// The waiting requests by id (bounded by [`MAX_WAITING`] per person and sandbox) and the
+/// recent outcomes, newest last.
 #[derive(Default)]
-pub struct CrossRequests(Mutex<HashMap<String, Waiting>>);
+pub struct CrossRequests {
+    waiting: Mutex<HashMap<String, Waiting>>,
+    answered: Mutex<VecDeque<Answered>>,
+    /// Serializes the writes of [`SUPERAGENT_REQUESTS_FILE`].
+    file: Mutex<()>,
+    /// Set from the start until the saved requests are back: no write may replace the file
+    /// before it was read (review of slice 8a, F7).
+    restoring: std::sync::atomic::AtomicBool,
+}
 
 impl CrossRequests {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Waiting>> {
-        self.0
+        self.waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn answered(&self) -> std::sync::MutexGuard<'_, VecDeque<Answered>> {
+        self.answered
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
-/// Removes its request when the call ends however it ends (a dropped call included, XSR-004).
+/// When the call ends however it ends (a dropped call included), its request stops waiting
+/// for it and stays on the panel (SPEC-487 XRQ-001).
 struct Ends<'a> {
     app: &'a App,
     id: String,
-    user: UserId,
-    source: SandboxId,
 }
 
 impl Drop for Ends<'_> {
     fn drop(&mut self) {
-        if self.app.cross_requests.lock().remove(&self.id).is_some() {
-            self.app.announce_cross_requests(&self.user, &self.source);
+        if let Some(request) = self.app.cross_requests.lock().get_mut(&self.id) {
+            request.stop_waiting();
         }
     }
 }
@@ -300,19 +427,20 @@ enum Settled {
     Lost,
 }
 
-/// Waits for the answer, at most `wait`; then `withdraw` takes the request back, unless its
-/// person is answering it (it is no longer waiting), whose outcome is awaited for `grace` more
-/// rather than said to be unanswered while the task is being created.
+/// Waits for the answer, at most `wait`; then `stop_waiting` leaves the request on the panel
+/// without the call, unless its person is answering it (it is no longer waiting), whose outcome
+/// is awaited for `grace` more rather than said to be unanswered while the task is being
+/// created.
 async fn settle(
     mut rx: oneshot::Receiver<AppResult<Value>>,
     wait: Duration,
     grace: Duration,
-    withdraw: impl FnOnce() -> bool,
+    stop_waiting: impl FnOnce() -> bool,
 ) -> Settled {
     match tokio::time::timeout(wait, &mut rx).await {
         Ok(Ok(answer)) => return Settled::Answered(answer),
         Ok(Err(_)) => return Settled::Lost,
-        Err(_) if withdraw() => return Settled::Unanswered,
+        Err(_) if stop_waiting() => return Settled::Unanswered,
         Err(_) => {}
     }
     match tokio::time::timeout(grace, rx).await {
@@ -506,14 +634,37 @@ impl App {
                 parsed.sandbox
             }
             CrossAction::Stop => parse::<CrossTaskRef>(args)?.sandbox,
+            CrossAction::Ask => {
+                let parsed: AskArgs = parse(args)?;
+                if parsed.question.trim().is_empty() {
+                    return Err(AppError::Invalid("the question is empty".into()));
+                }
+                if parsed.question.len() > MAX_QUESTION_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "the question is longer than {MAX_QUESTION_BYTES} bytes"
+                    )));
+                }
+                String::new()
+            }
         };
         check_visible(args)?;
-        let (user, target) = self
-            .cross_target(caller, &reference, action.own_tool())
-            .await?;
+        let (user, target) = if action == CrossAction::Ask {
+            // A decision of the Superagent's own: on its own panel, about its own sandbox.
+            let user = self.manage_authority(caller).await?;
+            let own = self
+                .deps
+                .store
+                .sandbox(&caller.sandbox)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            (user, own)
+        } else {
+            self.cross_target(caller, &reference, action.own_tool())
+                .await?
+        };
         let mut task_args = without_sandbox(args);
         let mut starts_now = false;
-        let task = if action == CrossAction::Create {
+        let task = if matches!(action, CrossAction::Create | CrossAction::Ask) {
             None
         } else {
             let there = pinned(caller, &target);
@@ -539,12 +690,15 @@ impl App {
                 .count();
             if mine >= MAX_WAITING {
                 return Err(AppError::Capacity(format!(
-                    "{MAX_WAITING} requests already wait for the person's answer: wait for them"
+                    "{MAX_WAITING} requests already wait for the person's answer: wait for \
+                     them, amend one (sandbox_request_amend) or withdraw one \
+                     (sandbox_request_withdraw); sandbox_requests lists them"
                 )));
             }
             waiting.insert(
                 id.clone(),
                 Waiting {
+                    id: id.clone(),
                     user: user.id.clone(),
                     source: caller.sandbox.clone(),
                     target: target.clone(),
@@ -554,33 +708,37 @@ impl App {
                     args: task_args,
                     actor: caller.actor.clone(),
                     detail: caller.detail.clone(),
-                    ends_at: self
-                        .now()
-                        .plus_millis(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)),
+                    asked_at: self.now(),
+                    revision: 0,
                     call,
-                    answer: tx,
+                    answer: Some(tx),
                 },
             );
         }
+        self.save_cross_requests();
         let _ends = Ends {
             app: self,
             id: id.clone(),
-            user: user.id.clone(),
-            source: caller.sandbox.clone(),
         };
         self.announce_cross_requests(&user.id, &caller.sandbox);
-        let withdraw = || self.cross_requests.lock().remove(&id).is_some();
-        match settle(rx, wait, ANSWER_GRACE, withdraw).await {
-            Settled::Answered(answer) => answer,
-            Settled::Unanswered => {
-                self.announce_cross_requests(&user.id, &caller.sandbox);
-                self.audit_cross(caller, &target, action, task.as_ref(), "expired")
-                    .await;
-                Ok(json!({
-                    "outcome": "unanswered",
-                    "note": format!("Nobody answered in time: {}. Ask again when the person is here.", action.nothing()),
-                }))
+        // The call stops waiting; the request stays on the panel (XRQ-001).
+        let stop_waiting = || match self.cross_requests.lock().get_mut(&id) {
+            Some(request) => {
+                request.stop_waiting();
+                true
             }
+            None => false,
+        };
+        match settle(rx, wait, ANSWER_GRACE, stop_waiting).await {
+            Settled::Answered(answer) => answer,
+            Settled::Unanswered => Ok(json!({
+                "outcome": "waiting",
+                "request": id,
+                "note": "The person has not answered yet. The request stays on the panel above \
+                         this session until they answer it: tell them it waits there, and read \
+                         its outcome later with sandbox_requests. To change what it asks, amend \
+                         it (sandbox_request_amend) instead of asking again.",
+            })),
             Settled::Lost => Err(unreported(&target)),
         }
     }
@@ -603,7 +761,7 @@ impl App {
                 .iter()
                 .filter(|(_, w)| w.user == ctx.user.id && w.source.as_str() == sid)
                 .collect();
-            mine.sort_by_key(|(id, w)| (w.ends_at, (*id).clone()));
+            mine.sort_by_key(|(id, w)| (w.asked_at, (*id).clone()));
             mine.into_iter()
                 .map(|(id, w)| {
                     let options: serde_json::Map<String, Value> = w
@@ -617,9 +775,10 @@ impl App {
                                 .map(|v| ((*key).to_owned(), v.clone()))
                         })
                         .collect();
-                    // A message's text is read as a prompt is (XST-006).
+                    // A message's text, and a question, are read as a prompt is (XST-006).
                     let text = match w.action {
                         CrossAction::Message => w.args.get("text"),
+                        CrossAction::Ask => w.args.get("question"),
                         _ => w.args.get("prompt"),
                     };
                     let view = json!({
@@ -631,7 +790,8 @@ impl App {
                         "title": w.args.get("title"),
                         "prompt": text,
                         "options": options,
-                        "ends_at": rfc3339(w.ends_at),
+                        "revision": w.revision,
+                        "asked_at": rfc3339(w.asked_at),
                     });
                     (view, w.task.clone())
                 })
@@ -641,10 +801,13 @@ impl App {
         for (mut view, named) in listed {
             if let Some(named) = named {
                 // Up to 4 minutes may have passed: the card names the task as it is now.
-                let now = self.deps.store.task(&named.id).await?;
+                let now = match TaskId::parse(&named.id) {
+                    Ok(id) => self.deps.store.task(&id).await?,
+                    Err(_) => None,
+                };
                 let (title, status) = now
                     .as_ref()
-                    .map_or((named.title.as_str(), named.status), |t| {
+                    .map_or((named.title.as_str(), named.status.as_str()), |t| {
                         (t.title.as_str(), t.status.as_str())
                     });
                 view["task"] = json!({"number": named.number, "title": title, "status": status});
@@ -666,6 +829,7 @@ impl App {
         sid: &str,
         id: &str,
         approve: bool,
+        revision: Option<u32>,
     ) -> AppResult<Value> {
         if !ctx.is_browser() {
             return Err(AppError::Forbidden(
@@ -675,11 +839,24 @@ impl App {
         let request = {
             let mut waiting = self.cross_requests.lock();
             match waiting.get(id) {
-                Some(w) if w.user == ctx.user.id && w.source.as_str() == sid => waiting.remove(id),
+                Some(w) if w.user == ctx.user.id && w.source.as_str() == sid => {
+                    // Amended since the card was drawn: the person has not read what would run.
+                    if revision.unwrap_or(0) != w.revision {
+                        return Err(AppError::Conflict(
+                            "the Superagent changed this request since you read it: read it \
+                             again"
+                                .into(),
+                        ));
+                    }
+                    waiting.remove(id)
+                }
                 _ => None,
             }
         }
         .ok_or(AppError::NotFound)?;
+        // Taken: a restart from here on neither shows it again nor loses it unanswered (its
+        // outcome is kept when it ends; review of slice 8a, F4).
+        self.save_cross_requests();
         // Taken, it is answered to the end even if this request is cancelled (the person's page
         // went away): the waiting call gets the outcome either way.
         let app = Arc::clone(self);
@@ -706,6 +883,15 @@ impl App {
             let done = self.run_approved(&caller, &request).await;
             let audited = if done.is_ok() { "approved" } else { "failed" };
             (audited, done)
+        } else if request.action == CrossAction::Ask {
+            (
+                "declined",
+                Ok(json!({
+                    "outcome": "declined",
+                    "answer": "no",
+                    "note": "The person answered no.",
+                })),
+            )
         } else {
             (
                 "declined",
@@ -715,6 +901,12 @@ impl App {
                 })),
             )
         };
+        // Kept for its Superagent to read later (XRQ-004), the call gone or not.
+        let kept = match &answer {
+            Ok(value) => value.clone(),
+            Err(err) => json!({"outcome": "failed", "error": err.public_message()}),
+        };
+        self.keep_outcome(request.ended(kept, self.now()));
         self.audit_cross(
             &source,
             &request.target,
@@ -724,7 +916,9 @@ impl App {
         )
         .await;
         // The call may have ended meanwhile; the person still gets the answer.
-        let _ = request.answer.send(answer.clone());
+        if let Some(waiting) = request.answer {
+            let _ = waiting.send(answer.clone());
+        }
         answer
     }
 
@@ -810,6 +1004,13 @@ impl App {
                     .await?,
                 format!("The person approved: the task was stopped in {slug}."),
             ),
+            CrossAction::Ask => {
+                return Ok(json!({
+                    "outcome": "approved",
+                    "answer": "yes",
+                    "note": "The person answered yes.",
+                }));
+            }
         };
         let mut outcome = json!({
             "outcome": "approved",
@@ -853,10 +1054,14 @@ impl App {
             "cancelled",
         )
         .await;
-        let _ = request.answer.send(Ok(json!({
+        let outcome = json!({
             "outcome": "cancelled",
             "note": format!("The call was cancelled: {}.", request.action.nothing()),
-        })));
+        });
+        self.keep_outcome(request.ended(outcome.clone(), self.now()));
+        if let Some(waiting) = request.answer {
+            let _ = waiting.send(Ok(outcome));
+        }
     }
 
     fn announce_cross_requests(&self, user: &UserId, source: &SandboxId) {
@@ -886,7 +1091,13 @@ impl App {
             (target.id.as_str(), "from_sandbox", source.sandbox.as_str()),
             (source.sandbox.as_str(), "to_sandbox", target.id.as_str()),
         ];
-        for (sandbox, side, other) in sides {
+        // A question to the person is asked in its own sandbox: one row (review of slice 8a, F6).
+        let sides = if target.id == source.sandbox {
+            &sides[1..]
+        } else {
+            &sides[..]
+        };
+        for &(sandbox, side, other) in sides {
             let mut extra = about.clone();
             extra[side] = json!(other);
             if let Err(err) = self
@@ -904,6 +1115,354 @@ impl App {
                 tracing::warn!(error = %err, "cross-sandbox request audit failed");
             }
         }
+    }
+}
+
+impl App {
+    /// Keeps how a request ended for its Superagent (XRQ-004), the newest [`MAX_ANSWERED`].
+    fn keep_outcome(&self, answered: Answered) {
+        {
+            let mut kept = self.cross_requests.answered();
+            kept.push_back(answered);
+            while kept.len() > MAX_ANSWERED {
+                kept.pop_front();
+            }
+        }
+        self.save_cross_requests();
+    }
+
+    /// Writes [`SUPERAGENT_REQUESTS_FILE`] whole, then renames it into place (XRQ-002).
+    /// Failures are logged: the requests stay in memory.
+    fn save_cross_requests(&self) {
+        if self
+            .cross_requests
+            .restoring
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // The restore writes them all, these with the saved ones.
+            return;
+        }
+        let _guard = self
+            .cross_requests
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let saved = SavedRequests {
+            waiting: self
+                .cross_requests
+                .lock()
+                .values()
+                .map(|w| SavedRequest {
+                    id: w.id.clone(),
+                    user: w.user.as_str().to_owned(),
+                    source: w.source.as_str().to_owned(),
+                    target: w.target.id.as_str().to_owned(),
+                    action: w.action.as_str().to_owned(),
+                    task: w.task.clone(),
+                    starts_now: w.starts_now,
+                    args: w.args.clone(),
+                    actor: w.actor.clone(),
+                    detail: w.detail.clone(),
+                    asked_at: w.asked_at.0,
+                    revision: w.revision,
+                })
+                .collect(),
+            answered: self.cross_requests.answered().iter().cloned().collect(),
+        };
+        let path = self.config.data_dir.join(SUPERAGENT_REQUESTS_FILE);
+        let tmp = path.with_extension("json.tmp");
+        let written = serde_json::to_vec(&saved)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&tmp, bytes))
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(err) = written {
+            tracing::warn!(error = %err, "the Superagents' requests were not saved");
+        }
+    }
+
+    /// At a start: puts back the requests that waited and the recent outcomes (XRQ-002). A
+    /// request whose sandbox is gone is dropped. No call waits for them any more.
+    pub async fn restore_cross_requests(&self) {
+        self.restore_saved_requests().await;
+        self.cross_requests
+            .restoring
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.save_cross_requests();
+    }
+
+    /// At the start, before the server takes calls: until [`App::restore_cross_requests`] has
+    /// read the saved requests, none is written, so a request asked meanwhile loses none.
+    pub fn begin_cross_restore(&self) {
+        self.cross_requests
+            .restoring
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn restore_saved_requests(&self) {
+        let path = self.config.data_dir.join(SUPERAGENT_REQUESTS_FILE);
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        let saved: SavedRequests = match serde_json::from_slice(&bytes) {
+            Ok(saved) => saved,
+            Err(err) => {
+                tracing::warn!(error = %err, "the Superagents' requests could not be read");
+                return;
+            }
+        };
+        let mut restored = Vec::new();
+        for entry in saved.waiting {
+            let Some(action) = CrossAction::parse(&entry.action) else {
+                continue;
+            };
+            let (Ok(user), Ok(source), Ok(target_id)) = (
+                UserId::parse(&entry.user),
+                SandboxId::parse(&entry.source),
+                SandboxId::parse(&entry.target),
+            ) else {
+                continue;
+            };
+            let Ok(Some(target)) = self.deps.store.sandbox(&target_id).await else {
+                continue;
+            };
+            if target.removed_at.is_some() {
+                continue;
+            }
+            restored.push(Waiting {
+                id: entry.id,
+                user,
+                source,
+                target,
+                action,
+                task: entry.task,
+                starts_now: entry.starts_now,
+                args: entry.args,
+                actor: entry.actor,
+                detail: entry.detail,
+                asked_at: Timestamp(entry.asked_at),
+                revision: entry.revision,
+                call: None,
+                answer: None,
+            });
+        }
+        {
+            let mut waiting = self.cross_requests.lock();
+            for request in restored {
+                waiting.entry(request.id.clone()).or_insert(request);
+            }
+        }
+        {
+            // The saved outcomes are older than any kept since the start.
+            let mut kept = self.cross_requests.answered();
+            let mut merged: VecDeque<Answered> = saved.answered.into();
+            merged.extend(kept.drain(..));
+            while merged.len() > MAX_ANSWERED {
+                merged.pop_front();
+            }
+            *kept = merged;
+        }
+    }
+
+    /// `sandbox_requests` (XRQ-004): the Superagent's requests that wait for its person, and
+    /// how its recent ones ended, newest first.
+    ///
+    /// # Errors
+    /// `Forbidden` for anyone but a Superagent.
+    pub async fn tool_sandbox_requests(&self, caller: &ProjectCaller) -> AppResult<Value> {
+        if caller.channel != Channel::Superagent || caller.task.is_some() {
+            return Err(AppError::Forbidden(
+                "only a Superagent asks for this".into(),
+            ));
+        }
+        let mut waiting: Vec<(i64, Value)> = self
+            .cross_requests
+            .lock()
+            .values()
+            .filter(|w| w.user == caller.user && w.source == caller.sandbox)
+            .map(|w| {
+                (
+                    w.asked_at.0,
+                    json!({
+                        "request": w.id,
+                        "action": w.action.as_str(),
+                        "sandbox": w.target.slug,
+                        "task": w.task.as_ref().map(|task| task.number),
+                        "asked_at": rfc3339(w.asked_at),
+                    }),
+                )
+            })
+            .collect();
+        waiting.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        let answered: Vec<Value> = self
+            .cross_requests
+            .answered()
+            .iter()
+            .rev()
+            .filter(|a| a.user == caller.user.as_str() && a.source == caller.sandbox.as_str())
+            .take(20)
+            .map(|a| {
+                json!({
+                    "request": a.id,
+                    "action": a.action,
+                    "sandbox": a.target,
+                    "task": a.task,
+                    "outcome": a.outcome,
+                    "answered_at": rfc3339(Timestamp(a.at)),
+                })
+            })
+            .collect();
+        Ok(json!({
+            "waiting": waiting.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+            "answered": answered,
+        }))
+    }
+
+    /// `sandbox_request_amend` (XRQ-003): replaces what a waiting request asks (a new task's
+    /// prompt and options, a message's text, a question), checked as a new request is; it keeps
+    /// its place and its id. A change of a task's start, or a stop, is withdrawn and asked again.
+    ///
+    /// # Errors
+    /// `NotFound` for a request that is not the Superagent's or no longer waits; `Invalid` for
+    /// arguments a new request would refuse.
+    pub async fn tool_sandbox_request_amend(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let id = parse::<RequestRef>(&json!({"request": args.get("request")}))?.request;
+        let (action, slug, task_id) = {
+            let waiting = self.cross_requests.lock();
+            let w = waiting
+                .get(&id)
+                .filter(|w| w.user == caller.user && w.source == caller.sandbox)
+                .ok_or(AppError::NotFound)?;
+            (
+                w.action,
+                w.target.slug.clone(),
+                w.args.get("task_id").cloned(),
+            )
+        };
+        let mut new_args = args.clone();
+        if let Some(map) = new_args.as_object_mut() {
+            map.remove("request");
+        }
+        match action {
+            CrossAction::Create => {
+                let mut checked = new_args.clone();
+                checked["sandbox"] = json!(slug);
+                let parsed: CrossTaskArgs = parse(&checked)?;
+                if parsed.prompt.trim().is_empty() || parsed.prompt.len() > MAX_PROMPT_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "the prompt must be 1 byte to {MAX_PROMPT_BYTES} bytes"
+                    )));
+                }
+            }
+            CrossAction::Message => {
+                let text = new_args.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.trim().is_empty() || text.len() > MAX_MESSAGE_BYTES {
+                    return Err(AppError::Invalid(
+                        "the message must be 1 byte to 64 KiB".into(),
+                    ));
+                }
+                new_args = json!({"text": text, "task_id": task_id});
+            }
+            CrossAction::Ask => {
+                let parsed: AskArgs = parse(&new_args)?;
+                if parsed.question.trim().is_empty() || parsed.question.len() > MAX_QUESTION_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "the question must be 1 byte to {MAX_QUESTION_BYTES} bytes"
+                    )));
+                }
+            }
+            CrossAction::Update | CrossAction::Stop => {
+                return Err(AppError::Invalid(
+                    "a change of a task's start or a stop is not amended: withdraw it \
+                     (sandbox_request_withdraw) and ask again"
+                        .into(),
+                ));
+            }
+        }
+        check_visible(&new_args)?;
+        let (user, target, action, task) = {
+            let mut waiting = self.cross_requests.lock();
+            let w = waiting
+                .get_mut(&id)
+                .filter(|w| w.user == caller.user && w.source == caller.sandbox)
+                .ok_or(AppError::NotFound)?;
+            w.args = new_args;
+            w.revision += 1;
+            (w.user.clone(), w.target.clone(), w.action, w.task.clone())
+        };
+        self.save_cross_requests();
+        self.announce_cross_requests(&user, &caller.sandbox);
+        // Audited without its text, as an answer is (review of slice 8a, F6).
+        self.audit_cross(caller, &target, action, task.as_ref(), "amended")
+            .await;
+        Ok(json!({
+            "request": id,
+            "note": "Amended: the panel shows the new text; it keeps its place.",
+        }))
+    }
+
+    /// `sandbox_request_withdraw` (XRQ-003): takes back a waiting request; nothing of it runs.
+    ///
+    /// # Errors
+    /// `NotFound` for a request that is not the Superagent's or no longer waits.
+    pub async fn tool_sandbox_request_withdraw(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let id = parse::<RequestRef>(&json!({"request": args.get("request")}))?.request;
+        let request = {
+            let mut waiting = self.cross_requests.lock();
+            match waiting.get(&id) {
+                Some(w) if w.user == caller.user && w.source == caller.sandbox => {
+                    waiting.remove(&id)
+                }
+                _ => None,
+            }
+        }
+        .ok_or(AppError::NotFound)?;
+        self.save_cross_requests();
+        self.announce_cross_requests(&request.user, &request.source);
+        self.audit_cross(
+            caller,
+            &request.target,
+            request.action,
+            request.task.as_ref(),
+            "withdrawn",
+        )
+        .await;
+        let outcome = json!({
+            "outcome": "withdrawn",
+            "note": format!("Withdrawn: {}.", request.action.nothing()),
+        });
+        self.keep_outcome(request.ended(outcome.clone(), self.now()));
+        if let Some(waiting) = request.answer {
+            let _ = waiting.send(Ok(outcome));
+        }
+        Ok(json!({"request": id, "note": format!("Withdrawn: {}.", request.action.nothing())}))
+    }
+
+    /// `sandbox_tasks_list` (XRQ-006): `tasks_list` of another sandbox its person can work in.
+    /// It only reads: nobody is asked.
+    ///
+    /// # Errors
+    /// `Invalid` arguments or its own sandbox, `NotFound` for a sandbox the person cannot work
+    /// in.
+    pub async fn tool_sandbox_tasks_list(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let reference = args
+            .get("sandbox")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::Invalid("missing string argument `sandbox`".into()))?;
+        let (_, target) = self.cross_target(caller, reference, "tasks_list").await?;
+        let there = pinned(caller, &target);
+        self.tool_tasks_list(&there, &without_sandbox(args)).await
     }
 }
 
