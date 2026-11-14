@@ -106,14 +106,7 @@ impl App {
             }
             armed.push(entry);
         }
-        // One being decided now is first: its decision is under way.
-        armed.sort_by_key(|entry| {
-            if entry["deciding"] == true {
-                i64::MIN
-            } else {
-                entry["armed_at"].as_i64().unwrap_or(i64::MAX)
-            }
-        });
+        armed.sort_by_key(queue_place);
         let train = self.train_summary(sandbox).map(|mut train| {
             // Members and those left out by task number, as every tool names tasks.
             for key in ["members", "left_out"] {
@@ -391,5 +384,40 @@ impl App {
             "run": run_id,
             "queue": queued.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
         }))
+    }
+}
+
+/// Where an entry of the merge queue stands (MRG-002): one being decided now first (its
+/// decision is under way, and its merge is out of its slot, so its time is not known), then by
+/// when it was armed, an entry without that time last.
+fn queue_place(entry: &Value) -> i64 {
+    if entry["deciding"] == true {
+        i64::MIN
+    } else {
+        entry["armed_at"].as_i64().unwrap_or(i64::MAX)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::queue_place;
+    use serde_json::json;
+
+    /// SPEC-487 MRG-002 (review of slice 5, F7): the queue lists one being decided first, then
+    /// in the order the merges were armed.
+    #[test]
+    fn the_queue_lists_one_being_decided_first_then_by_when_armed() {
+        let mut entries = vec![
+            json!({"number": 1, "armed_at": 300}),
+            json!({"number": 2}),
+            json!({"number": 3, "deciding": true}),
+            json!({"number": 4, "armed_at": 100}),
+        ];
+        entries.sort_by_key(queue_place);
+        let order: Vec<u64> = entries
+            .iter()
+            .filter_map(|entry| entry["number"].as_u64())
+            .collect();
+        assert_eq!(order, [3, 4, 1, 2]);
     }
 }
