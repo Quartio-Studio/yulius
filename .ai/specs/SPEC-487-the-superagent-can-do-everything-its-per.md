@@ -136,7 +136,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Tools read a start rule back as stored and take "after all current tasks" (CHN-004 to CHN-006)
 - [x] Slice 1's documents: product, architecture, API, the decision and the changes log
 - [x] Slice 1's independent review answered test-first
-- [ ] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
+- [x] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
 - [ ] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
 - [ ] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
 - [ ] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
@@ -287,3 +287,22 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Not tested:** the watch telling a merge to a run reattached after a restart of the
   server; real Claude Code's queue records (the fake agent's follow the records seen with the
   real tool for SPEC-471 and SPEC-479).
+
+### Slice 2 (2026-11-14)
+
+- **Slice 1 is merged:** pull request #1270 into `dev` at `28b0f9687`, whose Yulius CI run
+  passed (squash `a89c3c60a`). The note left by its review (D-1: the idle time that bounds
+  queued news) is the first commit of this slice, with `pr_watch::tests::a_session_is_idle_since_its_last_turns_end_only`.
+- **Tests first:** `cockpit::the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd`
+  failed with "unknown tool: task_restart" and `cockpit::a_cockpit_manages_the_project_for_its_owner`
+  on the list of served tools, against the code before the change (`target/evidence/s2-red.log`);
+  both pass with it.
+- **The shared code keeps its other callers:** the remote MCP's, the Global Superagent's, the
+  cross-sandbox, browser and management test files pass unchanged (158 tests), and so do the
+  unit tests of `yulius-app` and `yulius-harness`.
+- **Gate:** `scripts/dev ci` on the head given to the review; its result is in the review's
+  summary and Yulius CI's run on the pull request.
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** a real Claude Code session calling the new tools (the MCP endpoint is called
+  with a Superagent's own token); the restart of an open Superagent that the changed tool
+  list causes at the update (the launch digest's existing rule).
