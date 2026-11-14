@@ -3162,7 +3162,7 @@ fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> Test
             );
         }
         {
-            // The session leaves once the switch gave it up; the kill is tried (and refused)
+            // The agent dies once the switch gave its run up; the kill is tried (and refused)
             // once the run's recorder has taken the intent.
             let (app, key, id) = (app.clone(), id.clone(), id.clone());
             let handle = tokio::runtime::Handle::current();
@@ -3170,11 +3170,20 @@ fn a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task() -> Test
                 yulius_app::race::Point::SwitchEndsRun,
                 Path::new(key.as_str()),
                 move || {
-                    let sent = wait_in_hook(&handle, app.send_input(&id, b"/exit\r"));
+                    // The agent dies (nothing is typed: the task still reads finished).
+                    let died = wait_in_hook(&handle, async {
+                        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+                        let agent = run.child_pid.ok_or("no agent pid")?;
+                        nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(i32::try_from(agent)?),
+                            nix::sys::signal::Signal::SIGKILL,
+                        )?;
+                        Ok::<(), BoxError>(())
+                    });
                     let seen = tokio::task::block_in_place(|| {
                         end_taken.recv_timeout(Duration::from_secs(30))
                     });
-                    if sent.is_err() || seen.is_err() {
+                    if died.is_err() || seen.is_err() {
                         eprintln!("the run's end was not taken");
                     }
                 },

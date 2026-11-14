@@ -1148,8 +1148,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the switch claims the run's end: the task is `closed` with its one run `exited`, the
   switch ends with "the task was closed during the switch", and nothing says a session
   did not end in time.
-- **AC-102** A run of a finished (`Done`) task whose exit is being recorded (its recorder
-  holds the given-up intent) when the kill is refused and the task is put back to
+- **AC-102** A run of a finished (`Done`) task whose agent died and whose end is being
+  recorded (its recorder holds the given-up intent) when the kill is refused and the task is put back to
   `running`: the switch waits for the record; the task is `stopped_switch_timeout` (not
   closed: the same label as from `switching`), its run ended `switch_timeout`, and nothing
   says a session could not be ended.
