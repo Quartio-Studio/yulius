@@ -93,7 +93,9 @@ after a bound the person is told.
   anyone, or a new run ends the hold (CCF-010's knowledge): the watches' next pass types.
   The flag of DRF-006 ends with it, also when that prompt starts no turn (`/compact`, which
   leaves the task's activity alone): only that flag, and only while the task still reads it.
-  Yulius never clears or sends a person's text.
+  Yulius never clears or sends a person's text by itself. (SPEC-487 TCT-006: the task's owner
+  may have a message of their own sent past it; that submit ends the hold as a prompt from
+  the box does, also for a draft known from its mark alone.)
 - DRF-008 (documents). SPEC-230 TMS-004, ADR-0178, `docs/operations.md`, `docs/architecture.md`,
   `docs/product.md` and the `task_message` tool description say when a message waits for a
   person's draft.

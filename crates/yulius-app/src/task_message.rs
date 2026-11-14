@@ -73,9 +73,21 @@ fn through(channel: Channel) -> &'static str {
 /// paste of its label and text. Enter is sent separately.
 #[must_use]
 pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
+    paste(login, channel, text, "")
+}
+
+/// [`message_paste`] for a message typed behind a person's possible draft (SPEC-487 TCT-006):
+/// a blank line first, so their text and the label are not glued into one line.
+#[must_use]
+pub fn message_paste_behind_draft(login: &str, channel: Channel, text: &str) -> Vec<u8> {
+    paste(login, channel, text, "\n\n")
+}
+
+fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
     let login = clean_message(login);
     let through = through(channel);
-    format!("\x1b[200~Message from {login} (through {through}):\n\n{text}\x1b[201~").into_bytes()
+    format!("\x1b[200~{before}Message from {login} (through {through}):\n\n{text}\x1b[201~")
+        .into_bytes()
 }
 
 /// What Yulius types into a session ([`App::type_into_session`]).
@@ -210,6 +222,15 @@ impl App {
                 self.login_of(&task.owner).await
             )));
         }
+        // A prompt Yulius held for the person's decision (TSK-013) is back in the prompt box
+        // and reads as a draft: it is decided on its card, never carried on by a message.
+        if with_draft && self.deps.store.pending_hold(&task.id).await?.is_some() {
+            return Err(AppError::Conflict(format!(
+                "task #{} has a prompt that Yulius held for its person's decision, and it is \
+                 back in the prompt box: they decide about it on the task's page first",
+                task.number
+            )));
+        }
         let delivered = if task.status == TaskStatus::Running {
             let login = self.login_of(&caller.user).await;
             let from = if with_draft {
@@ -287,7 +308,11 @@ impl App {
         text: &str,
         from: Sender,
     ) -> AppResult<()> {
-        let paste = message_paste(login, channel, text);
+        let paste = if from == Sender::OwnerPastDraft {
+            message_paste_behind_draft(login, channel, text)
+        } else {
+            message_paste(login, channel, text)
+        };
         self.type_into_session(task, &paste, Typed::Prompt, from)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
@@ -418,8 +443,19 @@ impl App {
             return Err(err);
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
+        // The submit below carries the owner's draft to the agent with the message: the
+        // prompt hook reads this to know the draft ended (also one known from its mark alone,
+        // after a restart of the server). Set before the Enter: the hook runs some 30 ms
+        // after it.
+        let past_draft = from == Sender::OwnerPastDraft && what == Typed::Prompt;
+        if past_draft {
+            runtime.sent_past_draft.store(true, Ordering::SeqCst);
+        }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         self.send_input(&task.id, b"\r").await.map_err(|err| {
+            if past_draft {
+                runtime.sent_past_draft.store(false, Ordering::SeqCst);
+            }
             AppError::Conflict(format!(
                 "the message was pasted into task #{}'s session but not submitted ({}): it may \
                  still be in its prompt box, so look before sending it again",

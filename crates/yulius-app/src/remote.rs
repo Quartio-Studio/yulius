@@ -125,7 +125,7 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
 
 /// Tools that run in a task of their own, to their end and their audit, even when the caller goes
 /// away.
-const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge"];
+const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge", "tasks_bulk"];
 
 /// The Superagent's tools the remote MCP serves as they are, with `project` added.
 const SHARED_TOOLS: &[&str] = &[
@@ -801,6 +801,40 @@ impl App {
                 record(&self.approve_onboarding(ctx, sid, notes).await?)
             }
             "onboarding_skip" => record(&self.skip_onboarding(ctx, sid).await?),
+            // One call for many tasks takes long (a message is typed into each session): it
+            // runs to its last task and its audit even when the caller goes away, as the
+            // Superagent's does (SPEC-487 TCT-005).
+            "tasks_bulk" => {
+                let (app, owner, who, place, as_project, input, tool) = (
+                    Arc::clone(self),
+                    caller.clone(),
+                    ctx.clone(),
+                    sandbox.clone(),
+                    project.clone(),
+                    args.clone(),
+                    name.to_owned(),
+                );
+                let task = tokio::spawn(
+                    async move {
+                        let outcome = app
+                            .person_project_tool(&who, &as_project, &place, &tool, &input)
+                            .await;
+                        app.audit_remote(&owner, &tool, Some(&place.id), outcome.is_ok())
+                            .await;
+                        outcome
+                    }
+                    .in_current_span(),
+                );
+                match task.await {
+                    Ok(outcome) => outcome,
+                    // It panicked or was cancelled before its own audit: audit the failure here.
+                    Err(err) => {
+                        self.audit_remote(caller, name, Some(&sandbox.id), false)
+                            .await;
+                        Err(AppError::internal(err))
+                    }
+                }
+            }
             // What a person does on the project's pages, shared with their Superagent in the
             // sandbox (SPEC-487).
             name if crate::person_tools::action(name).is_some() => {

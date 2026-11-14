@@ -265,16 +265,23 @@ impl App {
             Ok(HookReply::Output(output))
                 if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
         );
+        if from_box && blocked {
+            // What was submitted is back in the box: nothing was sent past a draft.
+            runtime.sent_past_draft.store(false, Ordering::SeqCst);
+        }
         if from_box && !held && !blocked {
             let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
             let run_dir = Path::new(&ctx.attempt.run_dir);
+            // The owner's message typed behind their draft went on with it (SPEC-487
+            // TCT-006): this prompt is known to follow the draft, whatever this server saw.
+            let past_draft = runtime.sent_past_draft.swap(false, Ordering::SeqCst);
             // A draft this server knows from its mark alone (typed before it started, no key
             // seen since) may sit behind this very prompt: one held across the restart is
             // asked about again and reads as a new submit here. Such a draft stays one until
             // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
             // not from what recovery kept: this hook may be served before the run is
             // reattached.
-            let inherited = if runtime.typed_seen.load(Ordering::SeqCst) {
+            let inherited = if past_draft || runtime.typed_seen.load(Ordering::SeqCst) {
                 0
             } else {
                 crate::supervisor::person_typed_marked(run_dir).min(self.now().0)

@@ -273,9 +273,11 @@ impl App {
 
     /// Closes out a running task whose agent is idle (SPEC-487 TCT-004), for its owner: its
     /// session is shut down gracefully and the task ends `closed`, as Yulius closes a finished
-    /// task (TSK-014), whatever its plan or pull request say. A task that works is not closed
-    /// (Stop interrupts it); one that waits to start or has ended is told so. Audited under the
-    /// person's name.
+    /// task (TSK-014), whatever its plan or pull request say. Background shells it left
+    /// running end with the session. A task in a turn is not closed (Stop interrupts it), nor
+    /// one Yulius still has pull request news for (it goes on by itself, and tasks chained
+    /// after it wait for that, CHN-001); one that waits or has ended is told so
+    /// ([`close_refusal`]). Audited under the person's name.
     ///
     /// # Errors
     /// `Forbidden` for anyone but the owner; `Conflict` unless the task runs and is idle.
@@ -285,35 +287,22 @@ impl App {
         id: &str,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        let number = task.number;
-        let what = task.status.as_str();
-        match task.status {
-            // A running task without an activity yet is in its first turn, as the lists
-            // show it.
-            TaskStatus::Running if matches!(task.activity, Some(Activity::Working) | None) => {
-                return Err(AppError::Conflict(format!(
-                    "task #{number} is working: wait for its turn to end, or stop it (task_stop)"
-                )));
-            }
-            TaskStatus::Running => {}
-            status if status.is_resting() => {
-                return Err(AppError::Conflict(format!(
-                    "task #{number} has ended ({what}): nothing is left to close"
-                )));
-            }
-            TaskStatus::Queued
-            | TaskStatus::Chained
-            | TaskStatus::Prepared
-            | TaskStatus::WaitingCapacity => {
-                return Err(AppError::Conflict(format!(
-                    "task #{number} has not started ({what}): task_stop cancels it"
-                )));
-            }
-            _ => {
-                return Err(AppError::Conflict(format!(
-                    "task #{number} is {what}: try again once it runs"
-                )));
-            }
+        let running = task.status == TaskStatus::Running;
+        let facts = CloseFacts {
+            status: task.status,
+            activity: task.activity,
+            started: self.task_started(&task).await?,
+            // A flag can stand while a turn runs (a permission asked mid-turn): the turn
+            // decides, not the activity alone.
+            turn: running
+                && self
+                    .existing_runtime(&task.id)
+                    .is_some_and(|runtime| runtime.turn_in_progress()),
+            news: running
+                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(&task).await),
+        };
+        if let Some(why) = close_refusal(task.number, facts) {
+            return Err(AppError::Conflict(why));
         }
         self.close_task_now(&task.id).await?;
         let login = self.login_of(&ctx.user.id).await;
@@ -335,8 +324,8 @@ impl App {
     /// the change.
     ///
     /// # Errors
-    /// `Invalid` for fewer than two tasks; `NotFound` for a number that is no task; `Forbidden`
-    /// for another person's task; `Conflict` when one is not queued (nothing changes).
+    /// `Invalid` for fewer than two tasks or a number that is no task; `Forbidden` for another
+    /// person's task; `Conflict` when one is not queued (nothing changes).
     pub async fn reorder_queue(
         &self,
         ctx: &AuthContext,
@@ -436,7 +425,9 @@ impl App {
                 let mut targets = Vec::new();
                 for task in store.tasks(&caller.sandbox, false).await? {
                     let own = caller.task.as_ref().is_some_and(|own| own.id == task.id);
-                    let paused = self.is_paused_by_person(&task.id).await;
+                    // A person's pause is of a live run: a task that ended has none.
+                    let paused =
+                        !task.status.is_resting() && self.is_paused_by_person(&task.id).await;
                     if own || !action.applies(task.status, paused) {
                         continue;
                     }
@@ -447,18 +438,21 @@ impl App {
                     }
                 }
                 targets.sort_by_key(|task| task.as_ref().map_or(0, |task| task.number));
-                beyond = targets.len().saturating_sub(TASKS_MAX);
-                targets.truncate(TASKS_MAX);
                 targets
             }
         };
-        let targets = if action == BulkAction::Stop {
+        // A stop takes the waiting tasks first, and the bound cuts what comes last.
+        let mut targets = if action == BulkAction::Stop {
             waiting_first(targets, |target| {
                 target.as_ref().ok().map(|task| task.status)
             })
         } else {
             targets
         };
+        if numbers.is_none() {
+            beyond = targets.len().saturating_sub(TASKS_MAX);
+            targets.truncate(TASKS_MAX);
+        }
         let (mut done, mut refused) = (Vec::new(), Vec::new());
         for target in targets {
             let task = match target {
@@ -479,6 +473,11 @@ impl App {
                     .await
                     .map(|_| json!({})),
                 BulkAction::Pause => self.pause_task_for_person(ctx, id).await.map(|_| json!({})),
+                // Resume answers a task nobody paused as it is: said here, so the answer
+                // does not list as resumed what was never paused.
+                BulkAction::Unpause if !self.is_paused_by_person(&task.id).await => Err(
+                    AppError::Conflict(format!("task #{} is not paused by a person", task.number)),
+                ),
                 BulkAction::Unpause => self
                     .resume_task_for_person(ctx, id)
                     .await
@@ -536,6 +535,62 @@ fn waiting_first<T>(mut targets: Vec<T>, status: impl Fn(&T) -> Option<TaskStatu
     targets
 }
 
+/// What a task is doing when its person asks to close it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseFacts {
+    /// Its status.
+    pub status: TaskStatus,
+    /// Its agent's activity.
+    pub activity: Option<Activity>,
+    /// It has had a run or a session (a task held for capacity at a turn's end has).
+    pub started: bool,
+    /// A turn of its session is known to be in progress.
+    pub turn: bool,
+    /// Yulius has pull request news for it still to come, or its agent waits for some.
+    pub news: bool,
+}
+
+/// Why task #`number` is not closed out, when it is not: only a running task whose agent is
+/// idle and that Yulius has no pull request news for is (SPEC-487 TCT-004).
+#[must_use]
+pub fn close_refusal(number: u32, facts: CloseFacts) -> Option<String> {
+    let what = facts.status.as_str();
+    match facts.status {
+        // A running task without an activity yet is in its first turn, as the lists show it.
+        TaskStatus::Running
+            if facts.turn || matches!(facts.activity, Some(Activity::Working) | None) =>
+        {
+            Some(format!(
+                "task #{number} is working: wait for its turn to end, or stop it (task_stop)"
+            ))
+        }
+        TaskStatus::Running if facts.news => Some(format!(
+            "Yulius still has news of its pull request for task #{number} (a merge is armed, or \
+             its merge is not told yet): it goes on by itself, and tasks chained after it wait \
+             for that. Stop it (task_stop) to end it anyway"
+        )),
+        TaskStatus::Running => None,
+        status if status.is_resting() => Some(format!(
+            "task #{number} has ended ({what}): nothing is left to close"
+        )),
+        TaskStatus::Queued
+        | TaskStatus::Chained
+        | TaskStatus::Prepared
+        | TaskStatus::WaitingCapacity
+            if !facts.started =>
+        {
+            Some(format!(
+                "task #{number} has not started ({what}): task_stop cancels it"
+            ))
+        }
+        TaskStatus::Queued | TaskStatus::WaitingCapacity => Some(format!(
+            "task #{number} is {what} and goes on by itself: it has no idle session to close; \
+             task_stop stops it"
+        )),
+        _ => Some(format!("task #{number} is {what}: try again once it runs")),
+    }
+}
+
 /// What a task that is not queued answers to a place in the queue.
 fn not_queued(task: &TaskRecord) -> AppError {
     AppError::Conflict(format!(
@@ -548,8 +603,11 @@ fn not_queued(task: &TaskRecord) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::{BulkAction, TASKS_MAX, TITLE_MAX_CHARS, clean_title, numbers_arg};
+    use super::{
+        BulkAction, CloseFacts, TASKS_MAX, TITLE_MAX_CHARS, clean_title, close_refusal, numbers_arg,
+    };
     use serde_json::json;
+    use yulius_domain::task::Activity;
     use yulius_domain::task::{StopReason, TaskStatus};
 
     /// SPEC-487 TCT-001: a title is one line of 1 to 120 characters, trimmed.
@@ -611,6 +669,87 @@ mod tests {
         }
         for status in [Starting, Switching, Stopping] {
             assert!(!BulkAction::Message.applies(status, false), "{status:?}");
+        }
+    }
+
+    /// SPEC-487 TCT-004 (review round 1, F2 and F3): only a running task whose agent is idle
+    /// is closed out. A turn in progress counts whatever the activity reads (a flag can stand
+    /// mid-turn); a task Yulius has pull request news for goes on by itself; a task held for
+    /// capacity that has started is not told it has not.
+    #[test]
+    fn only_an_idle_running_task_is_closed_out() {
+        let facts = |status, activity| CloseFacts {
+            status,
+            activity,
+            started: true,
+            turn: false,
+            news: false,
+        };
+        let running = |activity| facts(TaskStatus::Running, activity);
+        for idle in [Activity::Waiting, Activity::Done, Activity::NeedsAttention] {
+            assert_eq!(close_refusal(7, running(Some(idle))), None, "{idle:?}");
+            // Mid-turn, whatever the activity reads.
+            let turn = CloseFacts {
+                turn: true,
+                ..running(Some(idle))
+            };
+            let said = close_refusal(7, turn).unwrap_or_default();
+            assert!(
+                said.contains("is working") && said.contains("task_stop"),
+                "{said}"
+            );
+            // News of its pull request still to come.
+            let news = CloseFacts {
+                news: true,
+                ..running(Some(idle))
+            };
+            let said = close_refusal(7, news).unwrap_or_default();
+            assert!(
+                said.contains("goes on by itself") && said.contains("chained after it wait"),
+                "{said}"
+            );
+        }
+        for working in [Some(Activity::Working), None] {
+            let said = close_refusal(7, running(working)).unwrap_or_default();
+            assert!(said.contains("is working"), "{working:?}: {said}");
+        }
+        for ended in [
+            TaskStatus::Closed,
+            TaskStatus::Stopped(StopReason::Cancelled),
+        ] {
+            let said = close_refusal(7, facts(ended, None)).unwrap_or_default();
+            assert!(said.contains("has ended"), "{said}");
+        }
+        for waiting in [
+            TaskStatus::Queued,
+            TaskStatus::Chained,
+            TaskStatus::Prepared,
+            TaskStatus::WaitingCapacity,
+        ] {
+            let never = CloseFacts {
+                started: false,
+                ..facts(waiting, None)
+            };
+            let said = close_refusal(7, never).unwrap_or_default();
+            assert!(
+                said.contains("has not started") && said.contains("task_stop cancels it"),
+                "{said}"
+            );
+        }
+        for held in [TaskStatus::Queued, TaskStatus::WaitingCapacity] {
+            let said = close_refusal(7, facts(held, None)).unwrap_or_default();
+            assert!(
+                said.contains("goes on by itself") && !said.contains("has not started"),
+                "{said}"
+            );
+        }
+        for between in [
+            TaskStatus::Starting,
+            TaskStatus::Switching,
+            TaskStatus::Stopping,
+        ] {
+            let said = close_refusal(7, facts(between, None)).unwrap_or_default();
+            assert!(said.contains("try again once it runs"), "{said}");
         }
     }
 

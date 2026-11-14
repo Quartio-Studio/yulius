@@ -339,7 +339,9 @@ impl TaskStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
         self.tasks_query(
-            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at)"),
+            // Tasks that share a place (queued in one pass, as after a restart) keep the order
+            // they were created in: the queue's order is one order, whoever reads it.
+            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await
@@ -975,32 +977,52 @@ impl TaskStore for SqliteStore {
         let order: Vec<String> = order.iter().map(|id| id.as_str().to_owned()).collect();
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
-            // The places they hold: where the queue reads each (`tasks_with_status`).
-            let mut places = Vec::with_capacity(order.len());
-            for id in &order {
-                let place: Option<i64> = tx
-                    .query_row(
-                        "SELECT COALESCE(queued_at, created_at) FROM tasks \
-                         WHERE id = ?1 AND status = 'queued'",
-                        [id],
-                        |row| row.get(0),
+            // The whole queue as it is read (`tasks_with_status`): each task with its place.
+            let mut queue: Vec<(String, i64)> = Vec::new();
+            {
+                let mut read = tx
+                    .prepare(
+                        "SELECT id, COALESCE(queued_at, created_at) FROM tasks \
+                         WHERE status = 'queued' ORDER BY COALESCE(queued_at, created_at), rowid",
                     )
-                    .optional()
                     .map_err(db)?;
-                let Some(place) = place else {
-                    return Ok(false);
-                };
-                places.push(place);
-            }
-            places.sort_unstable();
-            // Two that share a millisecond would have no order between them: each place is
-            // after the one before it.
-            for i in 1..places.len() {
-                if places[i] <= places[i - 1] {
-                    places[i] = places[i - 1] + 1;
+                let rows = read
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(db)?;
+                for row in rows {
+                    queue.push(row.map_err(db)?);
                 }
             }
-            for (id, place) in order.iter().zip(&places) {
+            // The slots the named tasks hold, earliest first; each must be in the queue.
+            let mut slots = Vec::with_capacity(order.len());
+            for id in &order {
+                let Some(slot) = queue.iter().position(|(queued, _)| queued == id) else {
+                    return Ok(false);
+                };
+                slots.push(slot);
+            }
+            slots.sort_unstable();
+            // The queue asked for: the named tasks in their slots in the order given, every
+            // other task where it was.
+            let mut wanted: Vec<&str> = queue.iter().map(|(id, _)| id.as_str()).collect();
+            for (slot, id) in slots.iter().zip(&order) {
+                wanted[*slot] = id;
+            }
+            // Each slot keeps its place, moved after the one before it where two shared a
+            // millisecond or the creation order would decide otherwise: places are told apart
+            // by time alone, so the order written is the order read. Without ties only the
+            // named tasks change.
+            let mut last = i64::MIN;
+            for (slot, id) in wanted.iter().enumerate() {
+                let place = queue[slot].1.max(last.saturating_add(1));
+                last = place;
+                let held = queue
+                    .iter()
+                    .find(|(queued, _)| queued == id)
+                    .map(|(_, place)| *place);
+                if held == Some(place) {
+                    continue;
+                }
                 // The stored start is the task's while its `at` is its place (`queued_start`):
                 // it moves with the place. The right-hand sides read the row as it was.
                 tx.execute(

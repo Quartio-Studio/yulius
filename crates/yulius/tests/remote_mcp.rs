@@ -704,6 +704,76 @@ async fn a_persons_agent_edits_orders_and_stops_tasks_remotely() -> TestResult {
     Ok(())
 }
 
+/// SPEC-487 TCT-005 (review round 1, F7): a bulk call a person's agent made goes on to its
+/// last task and its audit entry when the client goes away meanwhile (a client timeout during
+/// a long call), as the Superagent's does. The request is dropped as soon as the first task
+/// has the message; every task still gets it, and `remote.tool` records the call.
+#[tokio::test]
+async fn a_bulk_call_whose_client_went_away_still_reaches_every_task() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::task::TaskStatus;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let mut tasks = Vec::new();
+    for i in 0..12 {
+        let id = format!("t-{i}");
+        tasks.push(
+            support::seed_task(&w.h, &id, "s1", "u-alice", TaskStatus::Prepared, None).await?,
+        );
+    }
+    let told = |task: yulius_domain::ids::TaskId| {
+        let w = &w;
+        async move {
+            w.h.store
+                .task(&task)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|task| task.prompt.contains("Freeze"))
+        }
+    };
+    let mut request = Box::pin(remote(
+        &w,
+        &alice,
+        "tasks_bulk",
+        json!({"project": "acme/shop", "do": "message", "all": true, "text": "Freeze"}),
+    ));
+    loop {
+        // Each poll lets the call go on a step; the store is read between polls.
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let (error, said, _) = answer?;
+            assert!(!error, "{said}");
+            break;
+        }
+        if told(tasks[0].id.clone()).await {
+            drop(request);
+            break;
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let mut all = true;
+        for task in &tasks {
+            all &= told(task.id.clone()).await;
+        }
+        let audited = audits(&w, "s1")
+            .await?
+            .iter()
+            .any(|(action, _, detail)| action == "remote.tool" && detail.contains("tasks_bulk"));
+        if all && audited {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped call stopped: every task told = {all}, audited = {audited}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
 /// RMT-022, RMT-023: tasks are restarted, paused and followed, and CI and CD are read and run,
 /// through the functions of the web UI for the person.
 #[tokio::test]

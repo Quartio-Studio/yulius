@@ -5526,6 +5526,24 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         json!({"do": "unpause", "all": true}),
     )
     .await?;
+    // A task nobody paused is not reported as resumed (review round 1, F4).
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "unpause", "numbers": [run1.number, queued.number, done.number]}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(answer["done"], json!([]), "{answer}");
+    let refused = answer["refused"].as_array().ok_or("refused")?;
+    assert_eq!(refused.len(), 3, "{answer}");
+    assert!(
+        refused.iter().all(|task| task["why"]
+            .as_str()
+            .is_some_and(|why| why.contains("is not paused"))),
+        "{answer}"
+    );
 
     // One message to all: a task that has not started reads it in its request; one whose
     // session cannot take it now is named with the reason.
@@ -5601,6 +5619,35 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
         is_error && said(&refused).contains("has ended"),
         "{refused}"
     );
+    // A task held at a usage limit with its session alive has started: it is not told that
+    // it has not, nor that stopping it would only cancel it (review round 1, F2).
+    let held = support::seed_task(
+        &f.h,
+        "t-held",
+        "s1",
+        "u-alice",
+        TaskStatus::WaitingCapacity,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-held", "tok-held").await?;
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_close", json!({"number": held.number})).await?;
+    assert!(
+        is_error
+            && said(&refused).contains("goes on by itself")
+            && !said(&refused).contains("has not started"),
+        "{refused}"
+    );
+    f.h.store
+        .transition_task(
+            &held.id,
+            None,
+            TaskStatus::Stopped(StopReason::Cancelled),
+            None,
+            f.h.app.now(),
+        )
+        .await?;
     let (refused, is_error) = cockpit_tool(
         &f,
         &token,
@@ -5726,6 +5773,62 @@ async fn the_superagent_acts_on_several_of_its_persons_tasks_in_one_call() -> Te
             && detail["ok"] == false),
         "{entries:?}"
     );
+    Ok(())
+}
+
+/// SPEC-487 TCT-005 (review round 1, F5): one call reaches at most 100 tasks. With 101 that
+/// `all` applies to, the first hundred by number get the message, the last one does not, and
+/// the answer says that one was not reached.
+#[tokio::test]
+async fn a_bulk_call_reaches_a_hundred_tasks_and_says_what_is_left() -> TestResult {
+    use yulius_app::ports::store::TaskStore;
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::TaskStatus;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let mut tasks = Vec::new();
+    for i in 0..101 {
+        let id = format!("t-{i}");
+        tasks.push(
+            support::seed_task(&f.h, &id, "s1", "u-alice", TaskStatus::Prepared, None).await?,
+        );
+    }
+    let (answer, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "tasks_bulk",
+        json!({"do": "message", "all": true, "text": "Freeze"}),
+    )
+    .await?;
+    assert!(!is_error, "{answer}");
+    assert_eq!(
+        answer["done"].as_array().map(Vec::len),
+        Some(100),
+        "{answer}"
+    );
+    assert_eq!(answer["not_reached"], 1, "{answer}");
+    assert!(
+        answer["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("call again")),
+        "{answer}"
+    );
+    let last = tasks.iter().max_by_key(|task| task.number).ok_or("tasks")?;
+    for task in &tasks {
+        let reached =
+            f.h.store
+                .task(&task.id)
+                .await?
+                .ok_or("task")?
+                .prompt
+                .contains("Freeze");
+        assert_eq!(reached, task.id != last.id, "#{}", task.number);
+    }
     Ok(())
 }
 

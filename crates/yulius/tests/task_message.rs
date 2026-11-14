@@ -642,6 +642,48 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
             Err(AppError::Invalid(_))
         ));
 
+        // A prompt Yulius held for the person's decision is back in the box (TSK-013): it is
+        // theirs to decide on its card, and no message carries it to the agent (review round
+        // 1, F6).
+        let held = yulius_app::intake::HoldRecord {
+            id: "h-1".into(),
+            task_id: id.clone(),
+            class: yulius_domain::intake::PromptClass::NewScope,
+            prompt: "half a thought".into(),
+            prompt_sha256: "0".repeat(64),
+            percent: 90,
+            typed_by: Some(caller.user.clone()),
+            state: yulius_app::intake::hold_state::PENDING.into(),
+            created_at: app.now(),
+            resolved_by: None,
+            resolved_at: None,
+            new_task_id: None,
+        };
+        {
+            use yulius_app::ports::store_ext::IntakeStore;
+            store.insert_hold(&held).await?;
+            let refused = app.tool_task_message(&caller, &past).await.err();
+            assert!(
+                matches!(&refused, Some(AppError::Conflict(why)) if why.contains("held")),
+                "{refused:?}"
+            );
+            assert!(
+                store
+                    .resolve_hold(
+                        "h-1",
+                        yulius_app::intake::hold_state::PENDING,
+                        yulius_app::intake::hold_state::DISMISSED,
+                        "user:admin",
+                        app.now(),
+                        None,
+                    )
+                    .await?
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!screen(&app, &id).contains("ECHO: half a thought"));
+        assert!(audited(&data, &id)?.is_empty());
+
         // The owner's: typed behind their text, one prompt.
         let answer = app.tool_task_message(&caller, &past).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
@@ -651,12 +693,25 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
                 .is_some_and(|note| note.contains("prompt box")),
             "{answer}"
         );
+        // One prompt: their text, a blank line, the labelled message (review round 1, F9: the
+        // two used to be glued, "half a thoughtMessage from admin").
         wait_for(
             "the draft and the message",
             Duration::from_secs(30),
-            || async { screen(&app, &id).contains("ECHO: half a thoughtMessage from admin") },
+            || async {
+                let shown = screen(&app, &id);
+                let mut lines = shown.lines().map(str::trim);
+                lines.any(|line| line == "ECHO: half a thought")
+                    && lines.next() == Some("")
+                    && lines.next() == Some("Message from admin (through their Superagent):")
+            },
         )
         .await?;
+        assert!(
+            !screen(&app, &id).contains("ECHO: Message from admin"),
+            "the message went as a prompt of its own:\n{}",
+            screen(&app, &id)
+        );
         assert_eq!(audited(&data, &id)?.len(), 1);
         assert!(audited(&data, &id)?[0].1.contains("with_draft"));
         // The box is empty again: the next plain message is typed, a minute later.
@@ -670,6 +725,90 @@ fn the_owner_sends_a_message_past_their_own_draft() -> TestResult {
         assert_eq!(again["delivered"], "sent", "{again}");
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-487 TCT-006 (review round 1, F1): a draft typed before a restart of the server is
+/// known from its mark alone (SPEC-480 DRF-009), and a prompt Yulius types does not end such
+/// a draft. The owner's message sent past it does: it carried the text to the agent, so the
+/// mark leaves the run's folder and the next plain message is typed. It used to answer "the
+/// box is empty again" while every later message was refused for the same draft.
+#[test]
+fn a_message_sent_past_a_draft_from_before_a_restart_ends_that_draft() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        // The first server's clock is five minutes behind: the draft is that old afterwards.
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-5 * MINUTE)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start_on(&data, &fake, fake_agent(), 0, probe, clock, |_| {}).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        app.terminal_leave(&attach).await;
+        wait_for(
+            "the screen before the restart",
+            Duration::from_secs(60),
+            || async { screen(&app, &id).contains("half a thought") },
+        )
+        .await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(&data, &fake, fake_agent(), port, probe, |config| {
+            config.goal_ready_ms = 600_000;
+        })
+        .await?;
+        app.reconcile().await?;
+        wait_for("the reattached screen", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("half a thought")
+        })
+        .await?;
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let mark = Path::new(&run_dir).join("person-typed");
+        assert!(mark.exists(), "the draft's mark is kept across the restart");
+        let refused = send(&app, &caller, &id).await.err();
+        assert!(
+            matches!(&refused, Some(AppError::Conflict(why)) if why.contains("with_draft")),
+            "{refused:?}"
+        );
+        let past = json!({"task_id": id.as_str(), "text": "Go on", "with_draft": true});
+        let answer = app.tool_task_message(&caller, &past).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for(
+            "the draft and the message",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &id)
+                    .lines()
+                    .any(|line| line.trim() == "ECHO: half a thought")
+            },
+        )
+        .await?;
+        let ended = wait_for(
+            "the draft's mark to go",
+            Duration::from_secs(30),
+            || async { !mark.exists() },
+        )
+        .await;
+        let again = send(&app, &caller, &id).await;
+        stop(&app, &id).await?;
+        ended?;
+        assert_eq!(again?["delivered"], "sent");
+        Ok::<_, Error>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())

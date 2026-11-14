@@ -251,13 +251,13 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "task_close",
-            "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan or pull request say. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. A task that is working is not closed: wait for its turn's end or interrupt it with task_stop. The task's owner only.",
+            "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan says. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. Background shells it left running end with its session, and a task chained after it may start. Refused, with the reason, for a task in a turn (wait for its end, or interrupt it with task_stop), for one Yulius still has pull request news for (a merge armed or not told yet: it goes on by itself), and for one that waits or has ended. The task's owner only.",
             task_ref,
             &[],
         ),
         tool(
             "tasks_reorder",
-            "Put the person's queued tasks in the order they ask for (\"run #14 before #12\"): numbers lists them in the order they should start. They take the places they hold among themselves and every other task keeps its place, so nobody else's task moves. Only tasks that are queued (waiting for a free session) have a place; how a chained or prepared task starts is changed with task_update. Refused, and nothing changes, when one of them is not queued or is another person's. Answers the project's queue in order.",
+            "Put the person's queued tasks in the order they ask for (\"run #14 before #12\"): numbers lists them in the order they should start. They take the places they hold among themselves and every other task keeps its place in the queue, so nobody else's task moves. Only tasks that are queued (waiting for a free session) have a place; how a chained or prepared task starts is changed with task_update. Refused, and nothing changes, when one of them is not queued or is another person's. Answers the project's queue in order.",
             json!({"numbers": {"type": "array", "items": {"type": "integer"}, "description": "2 to 100 numbers of queued tasks, first to start first"}}),
             &["numbers"],
         ),
@@ -572,6 +572,72 @@ mod tests {
             subject("cd_deploy", &json!({"environment": "dev", "confirm": "x"})),
             json!({"environment": "dev"})
         );
+        // The tools that take several tasks: the numbers (a bounded list, each once) or
+        // `all`, and for a bulk call its action; never a title, a request or a message.
+        assert_eq!(
+            subject(
+                "task_edit",
+                &json!({"number": 3, "title": "T", "prompt": "P"})
+            ),
+            json!({"task": 3})
+        );
+        assert_eq!(
+            subject("task_close", &json!({"task_id": "t-9"})),
+            json!({"task": "t-9"})
+        );
+        assert_eq!(
+            subject("tasks_reorder", &json!({"numbers": [4, 2]})),
+            json!({"tasks": [4, 2]})
+        );
+        assert_eq!(
+            subject(
+                "tasks_bulk",
+                &json!({"do": "message", "all": true, "text": "Freeze"})
+            ),
+            json!({"tasks": "all", "do": "message"})
+        );
+        assert_eq!(
+            subject("tasks_bulk", &json!({"do": "stop", "numbers": [7]})),
+            json!({"tasks": [7], "do": "stop"})
+        );
+        let many: Vec<u32> = (1..=101).collect();
+        for (tool, args, about) in [
+            // An action that is none, a list past the bound or named twice, `all` that is
+            // not true, another tool's keys: left out.
+            (
+                "tasks_bulk",
+                json!({"do": "x".repeat(1 << 20), "all": true}),
+                json!({"tasks": "all"}),
+            ),
+            (
+                "tasks_bulk",
+                json!({"do": "stop", "numbers": many}),
+                json!({"do": "stop"}),
+            ),
+            (
+                "tasks_bulk",
+                json!({"do": "stop", "numbers": [1, 1]}),
+                json!({"do": "stop"}),
+            ),
+            (
+                "tasks_bulk",
+                json!({"do": "stop", "all": "yes"}),
+                json!({"do": "stop"}),
+            ),
+            (
+                "tasks_reorder",
+                json!({"numbers": [1, 2], "do": "stop", "all": true}),
+                json!({"tasks": [1, 2]}),
+            ),
+            ("tasks_reorder", json!({"all": true}), json!({})),
+            (
+                "task_pause",
+                json!({"number": 1, "numbers": [1, 2], "do": "stop"}),
+                json!({"task": 1}),
+            ),
+        ] {
+            assert_eq!(subject(tool, &args), about, "{tool}");
+        }
         // An argument that is not the tool's, or has not the shape of an id or a name, is
         // left out, however long it is.
         let long = "x".repeat(1 << 20);
