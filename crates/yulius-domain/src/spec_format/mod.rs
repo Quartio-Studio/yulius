@@ -172,6 +172,29 @@ impl SpecStatus {
         }
     }
 
+    /// Whether a spec with this status says that its task's work is not finished (SPEC-491
+    /// DON-004): everything but `done` (every Plan item ticked, Evidence present) and
+    /// `abandoned`. Such a task is not Done, however complete its plan reads.
+    #[must_use]
+    pub fn work_left(self) -> bool {
+        !matches!(self, Self::Done | Self::Abandoned)
+    }
+
+    /// What the agent is told when every step of its plan is finished and its spec has this
+    /// status (SPEC-491 DON-007): what keeps the task from Done, and the two ways on. `None`
+    /// for a status that says nothing is left.
+    #[must_use]
+    pub fn unfinished_note(self) -> Option<String> {
+        self.work_left().then(|| {
+            format!(
+                "Every step is finished and the spec says `status: {}`, so the task is not Done \
+                 and tasks waiting for it do not start. If work remains, add its steps \
+                 (`steps_set`); if none does, add the Evidence and set `status: done`.",
+                self.as_str()
+            )
+        })
+    }
+
     /// Parses the frontmatter spelling.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {

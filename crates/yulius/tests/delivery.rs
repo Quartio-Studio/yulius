@@ -3532,7 +3532,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -3636,7 +3636,7 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec")?;
     let opened = f
         .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
         .await?;
@@ -4901,9 +4901,15 @@ async fn a_task_of_several_slices_merges_each_with_the_rest_ahead() -> TestResul
         task.body
     );
 
-    // Every step finished on the merged head: the task is Done, and the one chained after it
-    // no longer waits.
+    // Every step finished on the merged head, and the spec still says in-progress: the task has
+    // not said that nothing is left (SPEC-491 DON-004), so the one chained after it waits.
     set_steps(&f, "t1", &["done", "done", "done", "skipped", "skipped"]).await?;
+    assert_eq!(successor().await?, "chained", "its spec says in-progress");
+    // Its spec says done, read at the turn's end: the task is Done, and the one chained after
+    // it no longer waits.
+    commit_file(&wt, SPEC_PATH, &finished_spec("t1"), "Spec: done")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
     assert_ne!(successor().await?, "chained");
     Ok(())
 }
@@ -5120,6 +5126,322 @@ async fn merged_task_with(
     let merged_head = git(&wt, &["rev-parse", "HEAD"])?;
     merge_on_github(&f, 1, &merged_head).await?;
     Ok((f, wt, merged_head))
+}
+
+/// A spec whose task says its work is finished: every Plan item ticked, Evidence, `status: done`.
+fn finished_spec(task: &str) -> String {
+    valid_spec(task)
+        .replace("status: in-progress", "status: done")
+        .replace("- [ ] Implement", "- [x] Implement")
+        + "\n## Evidence\n- `cargo test`: passed.\n"
+}
+
+/// `t1` with `spec` committed, its pull request #1 open and every step finished, and `t2`
+/// chained after it: the worktree of `t1` and its head.
+async fn delivered_with_a_successor(f: &Fixture, spec: &str) -> BoxResult<(PathBuf, String)> {
+    use yulius_app::ports::store_ext::IntakeStore;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", FEATURE, "Add feature")?;
+    commit_file(&wt, SPEC_PATH, spec, "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    set_steps(f, "t1", &["done", "done"]).await?;
+    f.add_task("t2", "Docs of the API", "feat/2-docs", "dev")
+        .await?;
+    let t2 = TaskId::parse("t2")?;
+    f.h.store
+        .transition_task(&t2, None, TaskStatus::Chained, None, Timestamp(5))
+        .await?;
+    f.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: t2,
+            after_task_id: Some(TaskId::parse("t1")?),
+            after_number: 1,
+            blocked_reason: None,
+            created_at: Timestamp(5),
+            rule: None,
+        })
+        .await?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    Ok((wt, head))
+}
+
+/// What the task chained after `t1` is once `t1`'s turn has ended (its agent idle) and the
+/// chains were looked at. A released task is started in the background, so it may already be
+/// past `queued`: the tests ask whether it is still `chained`.
+async fn successor_after_the_turn(f: &Fixture) -> BoxResult<String> {
+    let t1 = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &t1,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            Timestamp(6),
+        )
+        .await?;
+    f.h.app.advance_chains(&t1).await;
+    let task = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
+    Ok(task.body["status"].as_str().unwrap_or_default().to_owned())
+}
+
+/// SPEC-491 DON-002: "no check reported" is "none required" only where the project requires
+/// none. With a profile that requires checks, a pull request nothing reported on is not tested
+/// (as the Git overview reads it since #68), so its task is not Done and the task chained after
+/// it waits; once its checks pass it starts.
+#[tokio::test]
+async fn a_pull_request_nothing_reported_on_is_not_done_where_checks_are_required() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "nothing reported at its head"
+    );
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-002: a project whose profile requires no checks has "none required": a pull
+/// request without any is tested, as before.
+#[tokio::test]
+async fn a_pull_request_without_checks_is_done_where_none_are_required() -> TestResult {
+    let mut profile = DeliveryProfile::standard();
+    profile.require_checks = false;
+    let f = fixture(&profile).await?;
+    delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-001: where Yulius's clone cannot answer whether a pull request merges (this
+/// fixture's Git has no merge check), GitHub's flag decides: a pull request GitHub cannot merge
+/// is not tested, whatever its checks say. Its task is not Done and the task chained after it
+/// waits; it starts once the pull request can merge again. (Where the clone answers, it decides:
+/// `merge_train::github_s_flag_does_not_hold_a_pull_request_the_clone_merges`.)
+#[tokio::test]
+async fn a_green_pull_request_github_cannot_merge_is_not_done_where_the_clone_cannot_tell()
+-> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let (_wt, head) = delivered_with_a_successor(&f, &finished_spec("t1")).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let set_mergeable = |mergeable: bool| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.mergeable = Some(mergeable);
+        }
+    };
+    set_mergeable(false);
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "it cannot merge"
+    );
+    set_mergeable(true);
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-004, DON-005 (the way task #465 ran on 14 November 2026: its plan read 28/28
+/// between two slices, because it adds a slice's step when the slice before is merged, while
+/// its spec said `in-progress` and named twelve findings still to fix): a task whose spec does
+/// not say `done` has work left, however complete its plan reads and whatever its pull request
+/// says, tested or merged. The task chained after it waits, and the task is the person's turn,
+/// as with open steps; when the spec says `done` it is Done and the chained task starts.
+#[tokio::test]
+async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let unfinished = valid_spec("t1").replace("- [ ] Implement", "- [x] Implement");
+    let (wt, head) = delivered_with_a_successor(&f, &unfinished).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "tested, and its spec says in-progress"
+    );
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(merged.body["stage"], "merged_integration");
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "merged, and its spec says in-progress"
+    );
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], true, "{}", shown.body);
+    // Its agent is told what keeps it from Done (DON-007).
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let told = "Every step is finished and the spec says `status: in-progress`, so the task is \
+                not Done and tasks waiting for it do not start.";
+    let checked = agent_tool(&f, &agent, "spec_check", json!({})).await?;
+    assert!(
+        checked["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(told)),
+        "{checked}"
+    );
+    let sandbox = f
+        .req(Method::GET, "/api/sandboxes/s1", None, &f.bob)
+        .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 1,
+        "stopped with work left: the person's turn ({})",
+        sandbox.body
+    );
+
+    // The spec moves (still in-progress): found where it is now, and it still holds the task.
+    let moved = "docs/specs/2026-10-08-checkout-api.md";
+    git(&wt, &["mv", SPEC_PATH, moved])?;
+    git(&wt, &["commit", "--quiet", "-m", "Spec: moved"])?;
+    let t1 = TaskId::parse("t1")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    assert_eq!(
+        f.h.store
+            .task(&t1)
+            .await?
+            .and_then(|t| t.spec_path)
+            .as_deref(),
+        Some(moved),
+        "registered where it is now"
+    );
+    assert_eq!(
+        successor_after_the_turn(&f).await?,
+        "chained",
+        "moved, still in-progress"
+    );
+    // The moved spec says done, read at the turn's end (review of SPEC-491, m2).
+    commit_file(&wt, moved, &finished_spec("t1"), "Spec: done")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], false, "{}", shown.body);
+    let checked = agent_tool(&f, &agent, "spec_check", json!({})).await?;
+    assert!(
+        checked["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| !text.contains("the spec says")),
+        "{checked}"
+    );
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-005: a task closed with its pull request merged and every step finished, whose
+/// spec says its work is not finished, did not end Done: the task chained after it needs a
+/// person, as after a task closed with steps open. With a spec that says done it starts.
+#[tokio::test]
+async fn a_closed_task_whose_spec_says_in_progress_did_not_end_done() -> TestResult {
+    for (spec, starts) in [
+        (
+            valid_spec("t1").replace("- [ ] Implement", "- [x] Implement"),
+            false,
+        ),
+        (finished_spec("t1"), true),
+    ] {
+        let f = fixture(&DeliveryProfile::standard()).await?;
+        let (_wt, head) = delivered_with_a_successor(&f, &spec).await?;
+        f.h.github.set_checks(&head, ChecksState::Success);
+        let merged = f
+            .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+            .await?;
+        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        let t1 = TaskId::parse("t1")?;
+        f.h.store
+            .transition_task(&t1, None, TaskStatus::Closed, None, Timestamp(7))
+            .await?;
+        f.h.app.advance_chains(&t1).await;
+        let next = f.req(Method::GET, "/api/tasks/t2", None, &f.bob).await?;
+        if starts {
+            // Released: the queue may already be starting it in the background.
+            assert_ne!(next.body["status"], "chained", "{}", next.body);
+        } else {
+            assert_eq!(next.body["status"], "chained", "{}", next.body);
+            assert_eq!(
+                next.body["after"]["blocked"],
+                "#1 was closed before it was done. Start this task now or cancel it.",
+                "{}",
+                next.body
+            );
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-491 DON-004 (review of SPEC-491, m2): a task whose spec said in-progress and was then
+/// deleted (the task turned out to need none) has no spec left to say its work is unfinished:
+/// it is decided by its steps alone, Done with its tested pull request, and the chained task
+/// starts.
+#[tokio::test]
+async fn a_task_whose_spec_was_deleted_is_decided_by_its_steps() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let unfinished = valid_spec("t1").replace("- [ ] Implement", "- [x] Implement");
+    let (wt, head) = delivered_with_a_successor(&f, &unfinished).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    assert_eq!(successor_after_the_turn(&f).await?, "chained");
+    git(&wt, &["rm", "--quiet", SPEC_PATH])?;
+    git(&wt, &["commit", "--quiet", "-m", "No spec needed"])?;
+    let t1 = TaskId::parse("t1")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    assert_eq!(f.h.store.spec_status(&t1).await?, None);
+    let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
+    assert_eq!(shown.body["spec_unfinished"], false, "{}", shown.body);
+    // The pushed head is the pull request's: its checks passed.
+    let pushed = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&pushed, ChecksState::Success);
+    f.h.app.auto_open_pr(&t1).await;
+    assert_ne!(successor_after_the_turn(&f).await?, "chained", "released");
+    Ok(())
+}
+
+/// SPEC-491 DON-004 (review of SPEC-491, round 2): the live sync runs every few seconds, and
+/// every task is given a spec path at its start whether or not it ever writes one. With no
+/// status kept there is nothing a moved or deleted spec could leave stale, so the sync does not
+/// look through the specs folder for one: a spec written under another name is found by the
+/// next delivery call, as before, not by the sync.
+#[tokio::test]
+async fn the_sync_looks_for_a_moved_spec_only_while_a_status_is_kept() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    let t1 = TaskId::parse("t1")?;
+    let allocated = "docs/specs/2026-10-07-allocated.md";
+    f.h.store
+        .update_task(
+            &t1,
+            &yulius_app::ports::store::TaskFieldUpdate {
+                spec_path: Some(allocated.into()),
+                ..yulius_app::ports::store::TaskFieldUpdate::default()
+            },
+            Timestamp(3),
+        )
+        .await?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec under another name")?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert!(!f.h.app.sync_steps_from_spec(&task).await?);
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert_eq!(task.spec_path.as_deref(), Some(allocated), "not looked for");
+    assert_eq!(f.h.store.spec_status(&t1).await?, None);
+    // Once a status is kept, a spec missing at its path is looked for and followed.
+    f.h.store.set_spec_status(&t1, Some("draft")).await?;
+    f.h.app.sync_steps_from_spec(&task).await?;
+    let task = f.h.store.task(&t1).await?.ok_or("t1")?;
+    assert_eq!(task.spec_path.as_deref(), Some(SPEC_PATH));
+    assert_eq!(
+        f.h.store.spec_status(&t1).await?.as_deref(),
+        Some("in-progress")
+    );
+    Ok(())
 }
 
 /// Pull requests Yulius opened so far.

@@ -129,6 +129,34 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn set_spec_status(&self, task: &TaskId, status: Option<&str>) -> AppResult<bool> {
+        let (t, status) = (task.as_str().to_owned(), status.map(str::to_owned));
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE tasks SET spec_status = ?2 WHERE id = ?1 AND spec_status IS NOT ?2",
+                    params![t, status],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    async fn spec_status(&self, task: &TaskId) -> AppResult<Option<String>> {
+        let t = task.as_str().to_owned();
+        self.call(move |c| {
+            let status: Option<Option<String>> = c
+                .query_row("SELECT spec_status FROM tasks WHERE id = ?1", [t], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(db)?;
+            Ok(status.flatten())
+        })
+        .await
+    }
+
     async fn steps(&self, task: &TaskId) -> AppResult<Vec<StepRecord>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {
