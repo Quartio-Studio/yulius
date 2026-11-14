@@ -200,6 +200,19 @@ impl App {
     /// # Errors
     /// `Forbidden` for a disabled person, the access errors of [`App::require`].
     pub(crate) async fn manage_authority(&self, caller: &ProjectCaller) -> AppResult<UserRecord> {
+        self.person_authority(caller, Action::Work).await
+    }
+
+    /// The person a caller acts for, when they are enabled and `action` is theirs in its
+    /// project, as things are at this call (SPEC-487 SAR-002).
+    ///
+    /// # Errors
+    /// `Forbidden` for a disabled person, the access errors of [`App::require`].
+    pub(crate) async fn person_authority(
+        &self,
+        caller: &ProjectCaller,
+        action: Action,
+    ) -> AppResult<UserRecord> {
         let user = self
             .deps
             .store
@@ -209,7 +222,7 @@ impl App {
             .ok_or_else(|| {
                 AppError::Forbidden("the person this session acts for is disabled".into())
             })?;
-        self.require(&user, &caller.sandbox, Action::Work).await?;
+        self.require(&user, &caller.sandbox, action).await?;
         Ok(user)
     }
 
