@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268), QA2 slice 18;
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -770,7 +770,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
-- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds
+- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
 
 ## Acceptance criteria
 
@@ -1721,7 +1721,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 18 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
@@ -2925,3 +2925,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Web UI after it.** `cd e2e && npx e2e run` at `3f6edfc0f` (the head but for a lint in a
   Rust test): exit 0; `Test Files 84 passed | 1 skipped (85)`,
   `Tests 1023 passed | 1 skipped (1024)` (`target/audit/slice18/e2e-full2.log`).
+- **Review, round 2** (the same session, head `f5cd00867`): approve. Three nits, answered
+  in the commit after the merge: the dialog no longer asks for the subscriptions when a
+  sign-in failed; the mock's ended sign-in tells a later viewer its cause too; the mock
+  answers a reading of a subscription that needs a sign-in as the server does.
+- **Delivery.** Pull request #1271 merged into `dev` at `4f8ed0dd9` (the approved head
+  with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
+  passed.
