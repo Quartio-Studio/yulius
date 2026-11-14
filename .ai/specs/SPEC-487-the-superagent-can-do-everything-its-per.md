@@ -65,8 +65,9 @@ names. A task chained after another starts when that task has really finished.
 ### Slices
 
 One pull request each, in this order (the request: "chaining first, then task control, then CI
-/ delivery, then subscriptions and instance, then the rest"). The Plan below holds the slice
-under way; a slice is added to it when the one before is merged.
+/ delivery, then subscriptions and instance, then the rest"). The Plan below holds every
+slice (ADR-0325): a slice's step is done when its change is reviewed and approved, and its
+pull request delivers that part.
 
 | Slice | Delivers | Closes |
 | --- | --- | --- |
@@ -131,6 +132,16 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Tools read a start rule back as stored and take "after all current tasks" (CHN-004 to CHN-006)
 - [x] Slice 1's documents: product, architecture, API, the decision and the changes log
 - [x] Slice 1's independent review answered test-first
+- [ ] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
+- [ ] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
+- [ ] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
+- [ ] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
+- [ ] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
+- [ ] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
+- [ ] Slice 8: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, production behind one confirmation, another sandbox's task list)
+- [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
+- [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
+- [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
 ## Acceptance criteria
 

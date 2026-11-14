@@ -392,6 +392,20 @@ pub(crate) struct TypedNews {
     pub in_queue: bool,
 }
 
+/// Since when a session is idle, for the bound of queued news (ms): the last turn's end Yulius
+/// knows of (`ended_ms`: a Stop hook's, or a goal verdict's), while the task reads idle and no
+/// turn began after that end. Otherwise 0, not known: while the task works (a Stop that
+/// Yulius's gate blocked moves the turn's end, and the turn goes on); after a turn that ended
+/// without a Stop hook (a person's interrupt, an error), whose end is later than `ended_ms`
+/// says (review of SPEC-487 slice 1, D-1); and for a run without hooks.
+fn idle_since(idle: bool, began_ms: i64, ended_ms: i64) -> i64 {
+    if idle && ended_ms >= began_ms {
+        ended_ms
+    } else {
+        0
+    }
+}
+
 /// What [`App::pr_news_due`] reads about one running task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct NewsFacts {
@@ -409,10 +423,8 @@ pub(crate) struct NewsFacts {
     /// Claude Code's queue holds something a turn's end hands on, or handed it on to a turn
     /// not seen yet (SPEC-471, SPEC-479).
     pub prompt_waits: bool,
-    /// Since when the session is idle (ms): its last turn's end, while the task reads idle.
-    /// 0 while the task works (a Stop that Yulius's gate blocked moves the turn's end too,
-    /// and its turn goes on), and for a run without hooks, whose turn ends Yulius reads from
-    /// the transcript only: no bound applies then, and the queue alone decides.
+    /// Since when the session is idle ([`idle_since`], ms), or 0 when that is not known: no
+    /// bound applies then, and the queue alone decides.
     pub idle_since_ms: i64,
     /// Now (ms).
     pub now_ms: i64,
@@ -696,11 +708,11 @@ impl App {
             in_queue: news.in_queue,
             // Asked only for news that is known to be queued.
             prompt_waits: news.in_queue && runtime.queue_may_hand_on(),
-            idle_since_ms: if idle {
-                runtime.turn_end_ms.load(Ordering::SeqCst)
-            } else {
-                0
-            },
+            idle_since_ms: idle_since(
+                idle,
+                runtime.turn_began_ms.load(Ordering::SeqCst),
+                runtime.turn_end_ms.load(Ordering::SeqCst),
+            ),
             now_ms: self.now().0,
             ..NewsFacts::default()
         }
@@ -1508,6 +1520,21 @@ mod tests {
             ..NewsFacts::default()
         };
         assert!(news_due(&armed, &Told::default()));
+    }
+
+    /// SPEC-487 CHN-002 (review of slice 1, D-1): the idle time that bounds queued news counts
+    /// from a turn's end only when that end is the session's last word.
+    #[test]
+    fn a_session_is_idle_since_its_last_turns_end_only() {
+        // Idle after a Stop: since that Stop.
+        assert_eq!(idle_since(true, 100, 200), 200);
+        // The task works: a Stop Yulius's gate blocked moved the end, and the turn goes on.
+        assert_eq!(idle_since(false, 100, 200), 0);
+        // Idle after a turn that ended without a Stop hook (an interrupt): the last end known
+        // is an earlier turn's, so nothing is known, and no bound may run out at once.
+        assert_eq!(idle_since(true, 300, 200), 0);
+        // A run without hooks knows no end.
+        assert_eq!(idle_since(true, 0, 0), 0);
     }
 
     /// SPEC-487 CHN-002: news that was typed is due until its turn begins. Typed into an idle
