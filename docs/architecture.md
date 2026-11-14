@@ -1901,8 +1901,11 @@ and its terminal says so once the person's last key is ten minutes old; the key 
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run), while Claude Code's
 folder-trust dialog shows
-(`trust_prompt_shown`), while Yulius types the first message or while another
-message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
+(`trust_prompt_shown`), while Yulius types the first message or while anything else
+is typed (`TaskRuntime::typing_message`, held from a line to its Enter by every typist of
+Yulius: a message, `/compact` and the line that wakes a compacted session, the goal; those
+two lines of a full session also stay out while a draft may sit in the box, SPEC-483
+TYP-001, TYP-002); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 

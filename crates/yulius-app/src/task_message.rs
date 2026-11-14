@@ -130,9 +130,37 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
     Yulius types its message.";
 
-/// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
-/// dropped half-way.
-struct Typing<'a>(&'a AtomicBool);
+/// How long a line of Yulius's own waits for another typist to finish ([`Typing::wait`]).
+pub(crate) const TYPING_TURN_WAIT: Duration = Duration::from_secs(5);
+
+/// A run's "something is being typed" mark, held from the text to its Enter: one typist at a
+/// time, whatever Yulius types (a message, `/compact`, a goal), so that no other text lands
+/// between a line and its submit (SPEC-483 TYP-002). Cleared when the typing ends, even if the
+/// call is dropped half-way.
+pub(crate) struct Typing<'a>(&'a AtomicBool);
+
+impl<'a> Typing<'a> {
+    /// The mark, when nothing else is being typed.
+    pub(crate) fn take(mark: &'a AtomicBool) -> Option<Self> {
+        (!mark.swap(true, Ordering::SeqCst)).then_some(Self(mark))
+    }
+
+    /// The mark once the typing under way ended, at most `limit` later. `None` when it did
+    /// not: a line of Yulius's own is then typed all the same (the other typist holds the
+    /// mark for well under a second; a mark that stays set must not stop a recovery).
+    pub(crate) async fn wait(mark: &'a AtomicBool, limit: Duration) -> Option<Self> {
+        let asked = tokio::time::Instant::now();
+        loop {
+            if let Some(typing) = Self::take(mark) {
+                return Some(typing);
+            }
+            if asked.elapsed() >= limit {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
 
 impl Drop for Typing<'_> {
     fn drop(&mut self) {
@@ -346,13 +374,12 @@ impl App {
             }
             None => {}
         }
-        if runtime.typing_message.swap(true, Ordering::SeqCst) {
+        let Some(_typing) = Typing::take(&runtime.typing_message) else {
             return Err(AppError::Conflict(format!(
                 "another message to task #{} is being typed: try again in a moment",
                 task.number
             )));
-        }
-        let _typing = Typing(&runtime.typing_message);
+        };
         // From here a message is in the session's prompt box and not submitted, and a restart
         // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a

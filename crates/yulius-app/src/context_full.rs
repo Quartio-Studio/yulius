@@ -16,6 +16,7 @@ use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use crate::attention::AttentionRecord;
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskRecord};
+use crate::task_message::{TYPING_TURN_WAIT, Typing};
 
 /// Longest Yulius waits for the compaction it asked for before it counts as failed (CTX-004).
 pub const COMPACT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -512,8 +513,11 @@ impl App {
 
     /// Types one line into the attempt's TUI once it waits for input, then a separate Enter,
     /// while the episode is one `wanted` accepts; `false` when it was not typed (the attempt is
-    /// no longer live, the episode moved on, a person typed since `asked_ms` and owns the prompt
-    /// box, the terminal never went quiet, the input failed).
+    /// no longer live, the episode moved on, a person owns the prompt box, the terminal never
+    /// went quiet, the input failed). The box is a person's when they typed since `asked_ms`,
+    /// and when something typed before may still sit in it (SPEC-480 DRF-001: the line would be
+    /// appended to that draft and sent with it; SPEC-483 TYP-001). From the line to its Enter
+    /// nothing else is typed ([`Typing`], TYP-002).
     async fn type_line(
         &self,
         task_id: &TaskId,
@@ -538,8 +542,8 @@ impl App {
                 last = seq;
                 quiet_since = tokio::time::Instant::now();
             }
-            // A person who typed since: the prompt box (and any draft in it) is theirs.
-            if runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms {
+            // A person who typed since, or left a draft before: the prompt box is theirs.
+            if runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms || self.has_draft(task_id) {
                 tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
                 // Said only while the line is still wanted and the person has a full session.
                 if let Some(notice) = person_notice
@@ -558,10 +562,15 @@ impl App {
         if !self.context_is(task_id, &wanted) || !self.attempt_live(task_id, attempt).await {
             return false;
         }
+        let _typing = Typing::wait(&runtime.typing_message, TYPING_TURN_WAIT).await;
         if let Err(err) = self.send_input(task_id, line.as_bytes()).await {
             tracing::warn!(task = %task_id, error = %err, "could not type into a full session");
             return false;
         }
+        crate::race::reached(
+            crate::race::Point::LineTyped,
+            std::path::Path::new(task_id.as_str()),
+        );
         // A separate Enter, so the TUI sees typed text first and then a submit.
         tokio::time::sleep(Duration::from_millis(300)).await;
         if !self.attempt_live(task_id, attempt).await {

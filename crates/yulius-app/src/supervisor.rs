@@ -2767,18 +2767,26 @@ impl App {
                 }
                 input.extend_from_slice(command.as_bytes());
             }
+            // From the line to its Enter nothing else is typed (SPEC-483 TYP-002).
+            let typing = crate::task_message::Typing::wait(
+                &runtime.typing_message,
+                crate::task_message::TYPING_TURN_WAIT,
+            )
+            .await;
             if !input.is_empty()
                 && let Err(err) = app.send_input(task_id, &input).await
             {
                 tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
                 return false;
             }
+            crate::race::reached(crate::race::Point::LineTyped, Path::new(task_id.as_str()));
             // A separate Enter, so the TUI sees typed text first and then a submit.
             tokio::time::sleep(Duration::from_millis(300)).await;
             if let Err(err) = app.send_input(task_id, b"\r").await {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
+            drop(typing);
             let waited = tokio::time::Instant::now();
             while waited.elapsed() < *wait {
                 if runtime.goal_submitted.load(Ordering::SeqCst) {

@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Yulius no longer types `/compact` behind a person's unsent text (SPEC-483 slice 21, task
+  #465). A person who typed their next instruction while a turn ran, and whose session
+  then filled its context, had `/compact …` appended to that text and sent with it. The
+  full session is left to them now, as it is when they type after the refusal. And from
+  a line Yulius types to its Enter nothing else is typed into the session, whatever the
+  line is (a message, `/compact`, a goal).
 - A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
   20, task #465). A session started with its owner's personal MCP servers is still known
   as that after a restart, so a hand-over restarts it and the previous owner's credential

@@ -53,7 +53,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
-      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274);
+      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -431,6 +431,20 @@ no code path reaches; documents, texts shown to agents and people, and code that
   minutes later). A restart in that time left the reattached session with no goal, no
   typist and no word: a goal task idled as "your turn". The same gap for a goal given as
   the launch prompt was closed with a mark in the run directory (SPEC-146).
+
+### Slice 21: who may type into a session
+
+- **QA6 (medium).** "May Yulius type into the session now" had three rules. A message
+  (a person's, a pull request's news, the wake after an outage) is kept out while a
+  person's draft may sit in the prompt box, however old, and while another message is
+  being typed (SPEC-480, `type_into_session`). `/compact` and the line that wakes a
+  compacted session asked only whether a person typed since the refusal, and the goal's
+  typist only whether one typed since the run was attached; neither took the one-typist
+  mark. A person who typed their next instruction while the turn ran had a draft in the
+  box from before the refusal: `/compact …` was appended to it and Enter pressed, the
+  draft was submitted garbled (what DRF-001 forbids), refused again, and the episode
+  stayed "compacting" until it fell to a fresh session. And a message could land in the
+  300 ms between a typist's line and its Enter.
 
 ## Requirements
 
@@ -810,6 +824,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   back: its Stop ends it as it is, as before the restart, and the watch's time starts
   there, so the flag is not raised inside the turn and taken away by its end. A folder
   trust dialog still unanswered tells the person to type the goal after answering it.
+- **TYP-001** A line of Yulius's own for a full session (`/compact <focus>`, the line that
+  wakes a compacted session) is not typed while something typed before may still sit in
+  the prompt box (`has_draft`, the rule of SPEC-480 DRF-001), as it is not after a person
+  typed since the refusal: the terminal says that the session is left to the person and
+  the task waits for them.
+- **TYP-002** From a line Yulius types to its Enter, nothing else is typed into the
+  session: a message, `/compact` and its wake-up line, and the goal hold the run's one
+  typing mark for that time. A message that comes then is refused as while another
+  message is being typed; a line of Yulius's own waits for the mark, at most 5 s, and is
+  typed then.
 
 ## Plan
 
@@ -836,6 +860,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
+- [x] Slice 21: Yulius types into a session by one rule, whatever it types
 
 ## Acceptance criteria
 
@@ -1300,6 +1325,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   set this task's goal", and the mark is removed.
 - **AC-117** A reattached run whose `personal-mcp-of` names another person than the
   task's owner is restarted by the new server (a second run, a resume).
+- **AC-118** A person's keystroke before the prompt that the full context refuses, and no
+  prompt sent from the box since: the terminal says "Yulius leaves the full session to
+  you", the task reads Your turn, and no compaction was typed.
+- **AC-119** A message for the task that comes while `/compact` is in the prompt box and
+  its Enter not sent is refused with "is being typed", nothing of it reaches the session,
+  and the session is compacted.
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1520,6 +1551,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `pool_supervision::a_reattached_run_with_another_persons_servers_is_restarted`
   (AC-117); each restart is a second server on the same data that reattaches the first
   one's run.
+- Slice 21: `yulius` `context_full::a_full_session_with_a_persons_draft_is_left_to_them`
+  (AC-118) and `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter`
+  (AC-119, with a pause point between the line and its Enter, `LineTyped`).
 
 ## Decisions
 
@@ -1583,6 +1617,19 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 21 (no decision record: SPEC-480's rule applied to the two typists it did not
+  reach). A full session whose prompt box may hold a person's draft is left to that
+  person; the other way, typing `/compact` all the same, was what happened, and it sent
+  their unfinished text as part of a command. The cost is that a goal task whose person
+  once typed and never sent waits for them at a full context instead of compacting; that
+  is the price SPEC-480 already pays for every message, and a restart of the session,
+  the only other way out, would lose the draft (SPEC-468 CCF-010 refuses that too). The
+  goal's typist keeps its own question (did a person type since the run was attached):
+  a new process starts with an empty box, so it is the same question there. The one
+  typing mark is waited for by Yulius's own lines and never refuses them: a recovery must
+  not depend on a mark that someone forgot to clear. The three waits for a quiet terminal
+  (the goal, the first message, the full session) stay three loops: each asks other
+  things while it waits, and one helper would take five parameters.
 - Slice 20 (no decision record: two more marks of the kind the run directory already
   holds, `launch-goal-pending`, `session-started`, `person-typed`). The facts belong to
   one run and are needed only while it lives, so they are files beside it, not columns.
@@ -1895,7 +1942,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | fixed (slice 20) |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | fixed (slice 20) |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 21 |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
 | E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |

@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool_supervision::{
-    ScriptedUsage, build_with, echoed, new_task, runtime, screen, seed, stop, task, temp, wait_for,
+    ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
+    temp, wait_for,
 };
 use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
@@ -322,6 +323,125 @@ fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
         assert!(
             !screen(&app, &id).contains("COMPACT"),
             "Yulius typed nothing"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: a person typed their next instruction while the turn ran and has not sent
+/// it; then the context is full. Their draft is in the prompt box from before the refusal, so
+/// `/compact` typed now would be appended to it and sent with it. Yulius types nothing, says so,
+/// and the task waits for them, as it does for a person who types after the refusal.
+#[test]
+fn a_full_session_with_a_persons_draft_is_left_to_them() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(1, false),
+        )?;
+        let id = started(&app, &data).await?;
+        let person = task(&app, &id).await?.created_by;
+        let mut frames = app.runtime(&id).hub.watch();
+        // One keystroke, before the prompt that is refused: a draft nobody sent.
+        app.record_typing(&id, &person);
+        assert!(app.has_draft(&id));
+        app.send_input(&id, b"too much\r").await?;
+        let mut said = Vec::new();
+        heard(
+            &mut frames,
+            &mut said,
+            &[&["leaves the full session to you"]],
+        )
+        .await;
+        assert!(
+            said.iter()
+                .any(|n| n.contains("leaves the full session to you")),
+            "the terminal says it: {said:?}"
+        );
+        wait_for("Your turn", Duration::from_secs(10), || {
+            activity_is(&app, &id, Activity::Waiting)
+        })
+        .await?;
+        assert!(
+            !screen(&app, &id).contains("COMPACT"),
+            "Yulius typed nothing"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-002: while Yulius types `/compact` (the line is in the prompt box, its Enter not
+/// sent yet), nothing else is typed into the session: a message for the task is refused, as
+/// while another message is being typed, and the command is submitted as it was typed.
+#[test]
+fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        // A session without hooks counts as started half this time after its spawn: a message
+        // for it is not refused for a session that still starts.
+        let app = build_tuned(&data, &fake, agent(1, false), |config| {
+            config.goal_ready_ms = 200;
+        })?;
+        let id = started(&app, &data).await?;
+        let record = task(&app, &id).await?;
+        let refused = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let refused = refused.clone();
+            let caller = yulius_app::coordination::ProjectCaller {
+                sandbox: record.sandbox_id.clone(),
+                user: record.created_by.clone(),
+                task: None,
+                channel: yulius_app::coordination::Channel::Superagent,
+                actor: "cockpit:admin".into(),
+                detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+            };
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineTyped,
+                Path::new(key.as_str()),
+                move || {
+                    let answer = tokio::task::block_in_place(|| {
+                        handle.block_on(app.tool_task_message(
+                            &caller,
+                            &serde_json::json!({"task_id": id.as_str(), "text": "one more thing"}),
+                        ))
+                    });
+                    if let Ok(mut slot) = refused.lock() {
+                        *slot = Some(answer.map(|_| ()).map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        app.send_input(&id, b"too much\r").await?;
+        wait_for("the compaction", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        let answer = refused.lock().map_err(|_| "poisoned")?.clone();
+        let answer = answer.ok_or("no message was tried while the line waited for its Enter")?;
+        assert!(
+            matches!(&answer, Err(why) if why.contains("is being typed")),
+            "{answer:?}"
+        );
+        assert!(
+            !screen(&app, &id).contains("one more thing"),
+            "nothing of the message reached the session"
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
