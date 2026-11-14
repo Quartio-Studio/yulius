@@ -17,6 +17,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and `task_held_prompt` decides a held prompt as its card does; the answer to a question
   goes with `task_message`, as before.
 
+- A move whose helper has said nothing for a minute is no longer taken for a stopped move
+  while systemd says the helper still runs it (SPEC-483 slice 22, task #465). A copy that
+  kept the disk busy could hold the helper's report back: the card offered to continue the
+  move and an update or restart could stop the server in the middle of it. Now the move is
+  in flight until systemd says the helper's service ended. A move's mark that is not even
+  text queues the lost tasks and goes, rather than staying for every start. And a task's
+  close time is that of the close it is in: a task continued after a close no longer shows
+  its old close time in the analytics export and the project list (migration 0058 clears
+  what earlier versions left).
 - Yulius no longer types `/compact` at once behind a person's unsent text (SPEC-483 slice
   21, task #465). A person who typed their next instruction while a turn ran, and whose
   session then filled its context, had `/compact …` appended to that text and sent with

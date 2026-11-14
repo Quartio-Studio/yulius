@@ -2043,7 +2043,9 @@ on the old host; without it the card says so and names the command above.
 Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
 audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the
 values). While a move's request waits or its run is in flight, **Update now** and **Restart…**
-are refused, and nothing is asked of a move while an update or restart runs. A move started with
+are refused (a run whose helper has been silent for a minute is in flight until systemd says
+the helper's service ended; only then does the card say the helper stopped without a word),
+and nothing is asked of a move while an update or restart runs. A move started with
 the command on the host shows on the page as a recorded checklist; whether it still runs is known
 only for runs the page started. On the new instance the card shows the move that brought it
 there until the next move does, or until `/var/lib/yulius-migrate/arrived.json` is removed.
@@ -2642,8 +2644,9 @@ means the path unit is not enabled or could not start the service: `systemctl st
 yulius-migrate.path yulius-migrate.service`. The path unit starts the helper on a change of the
 request file; a request written in the moment the helper ends another run starts nothing, so the
 server writes an untaken request again from 5 s on while the page waits for it. A helper that
-stopped without a word (it was killed, the host restarted) is said on the page after a minute; the
-move is continued or aborted from there, or with the command.
+stopped without a word (it was killed, the host restarted) is said on the page once its report is
+a minute old and systemd says its service ended; the move is continued or aborted from there, or
+with the command.
 
 ### Notes for specific upgrades
 

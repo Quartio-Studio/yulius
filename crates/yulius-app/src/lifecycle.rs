@@ -175,6 +175,15 @@ impl App {
                 || title_from_prompt(&prompt),
                 |t| t.chars().take(120).collect(),
             );
+        let status = if after.is_some() {
+            TaskStatus::Chained
+        } else if prepared.is_some() {
+            TaskStatus::Prepared
+        } else if req.start {
+            TaskStatus::Queued
+        } else {
+            TaskStatus::Closed
+        };
         let record = TaskRecord {
             id: TaskId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: sandbox.id.clone(),
@@ -185,15 +194,7 @@ impl App {
             model: req.model.clone(),
             effort: req.effort.clone(),
             workflow_id: req.workflow_id.clone(),
-            status: if after.is_some() {
-                TaskStatus::Chained
-            } else if prepared.is_some() {
-                TaskStatus::Prepared
-            } else if req.start {
-                TaskStatus::Queued
-            } else {
-                TaskStatus::Closed
-            },
+            status,
             activity: None,
             branch: None,
             worktree_path: None,
@@ -204,7 +205,8 @@ impl App {
             owner: req.created_by.clone(),
             created_at: now,
             updated_at: now,
-            closed_at: (!req.start).then_some(now),
+            // The time of the close the task is in (SPEC-483 CLT-001).
+            closed_at: (status == TaskStatus::Closed).then_some(now),
             archived_at: (!req.start).then_some(now),
             queued_at: (req.start && after.is_none() && prepared.is_none()).then_some(now),
             gate_blocks: 0,
