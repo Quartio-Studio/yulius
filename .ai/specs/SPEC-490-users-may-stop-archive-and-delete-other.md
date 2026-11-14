@@ -120,7 +120,10 @@ are their creator's (reported as issue #1289, see Decisions).
   and no access answers 404. The same holds for `task_stop`, `task_archive`, `task_delete`,
   `task_close` and `tasks_bulk {action: "stop"}` with numbers, for the person the caller acts
   for, through the Superagent, the remote MCP and a task's agent; a caller's own task stays
-  refused.
+  refused. A playground's guest, who has write access to it (SPEC-410 GST-003), tidies only
+  their own tasks there: the maker's are refused with "Task #N is @maker's: a guest stops,
+  archives and deletes only their own tasks on this playground.", and the page does not offer
+  them (review round 1).
 - **OWN-003** "All" stays one's own. `tasks_bulk` with `all` and the sidebar's "Archive all"
   take the person's own tasks only (the tool says how many of other people it left, the
   button's title reads "Archive your Done tasks"); another person's task is tidied by naming
@@ -130,8 +133,11 @@ are their creator's (reported as issue #1289, see Decisions).
   with one message: "Task #N is @owner's and only they steer it: it acts on GitHub as them. Ask
   them for control on the task's page. You can still stop, archive or delete it." There is no
   exception for administrators or the superadmin. Start onboarding is control of the
-  onboarding task: one that exists is started by its owner; a sandbox without one gets it
-  created for the person who starts onboarding (never as a side effect of a refused start).
+  onboarding task. One that has run (it has a session on record) is started by its owner, and
+  anyone else is refused before anything is prepared, so a refusal pushes no first commit. One
+  Yulius created by itself that has never run is nobody's yet: whoever starts onboarding takes
+  it, as an audited hand-over (`task.control_passed`); a sandbox without one gets it created for
+  them (review round 1).
 - **OWN-005** The owner learns who tidied. A stop, close-out, archive, restore or deletion of a
   task by someone who does not own it is audited under that person's name with the owner's
   (`task.stopped`, `task.closed_by_person`, `task.archived`, `task.unarchived`,
@@ -181,7 +187,7 @@ are their creator's (reported as issue #1289, see Decisions).
 - [x] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
 - [x] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
 - [ ] Independent review of the first pull request (the rule and the UI), findings fixed
-- [ ] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
+- [x] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
 - [ ] The owner hears of a request anywhere, and control can be asked for from the task menu
 - [ ] The person who handed a task over takes it back (schema 59, the route, the UI)
 - [ ] Independent review of the second pull request (consent), findings fixed
@@ -213,8 +219,13 @@ are their creator's (reported as issue #1289, see Decisions).
   are enabled and Continue is disabled with the title of OWN-006; Stop asks naming the owner
   and stops the task; the sidebar row has its quick archive; the bar reads as OWN-007; the
   menu's Request control asks and turns into Withdraw request; "Archive all" leaves it.
-- **AC-12** (OWN-004) B starts onboarding of a sandbox without an onboarding task: the task
-  is B's. A start refused for want of a Claude account still creates nothing.
+- **AC-12** (OWN-004) B starts onboarding of a sandbox without an onboarding task, or with
+  A's that never ran (made when A created a task): the task is B's, the second audited as a
+  hand-over. With A's onboarding task that has run, in an empty repository, B is refused
+  naming A and the repository gets no first commit.
+- **AC-13** (OWN-002) A guest of A's playground is refused stop, archive and delete of A's task
+  (nothing changes) and stops their own; A stops the guest's task. The page offers the guest
+  neither Archive nor Delete on A's task, saying why. A start refused for want of a Claude account still creates nothing.
 - **AC-8** (OWN-008; e2e) A request for control on the owner's task, while they look at another
   page, adds a notification that opens the task, and the sidebar row says who asks.
 - **AC-9** (OWN-009) A hands over to B on B's request: `control_from` is A. A takes back: owner
@@ -268,12 +279,20 @@ are their creator's (reported as issue #1289, see Decisions).
   another person's running task unless it held their personal secrets. A message decides what
   the agent does next under its owner's name; the request names it ("sending it messages").
   The secrets check is gone with it: nobody but the owner gets that far.
-- **The onboarding task is the starter's.** Refusing everyone but the sandbox's creator would
-  leave a sandbox whose creator is away with no task to ask control of; creating the task for
-  the creator and then refusing would create it as a side effect of a refusal, which SPEC-246
-  forbids. A task that does not exist is nobody's, so it is created for the person who starts
-  onboarding and acts on GitHub as them; one that exists (a start that failed, a stopped
-  onboarding) is its owner's like any task.
+- **An onboarding task that never ran is the starter's.** Refusing everyone but the sandbox's
+  creator would leave a sandbox whose creator is away with no task to ask control of; creating
+  the task for the creator and then refusing would create it as a side effect of a refusal,
+  which SPEC-246 forbids. Yulius also creates it by itself, resting, when someone creates a task
+  in a pending sandbox (SPEC-097), for the sandbox's creator: nobody has given that task
+  anything yet, so whoever starts onboarding takes it. One that has run (a start that failed
+  after its session began, a stopped onboarding) is its owner's like any task, and the refusal
+  comes before the empty repository's first commit (review round 1).
+- **A playground's guest tidies only their own tasks.** A guest joined by a link (ADR-0260) and
+  works beside the maker for a while; "users of the instance" are its accounts, and a guest is
+  not one. Deleting the maker's tasks, which cannot be undone, is not what a guest link offers;
+  a guest stops their own, and the maker stops a guest's (review round 1).
+- **A stronger action keeps its check.** `load_task` with `Configure` or `Administer` (no
+  caller today) checks that action on the project, not `Work` (review round 1).
 - **The sandbox's browser is the project's, not a task's.** One Chromium per sandbox is
   shared by its people and its agents (BRW-002); a tab has no owner, and a request to act in
   the browser reaches everyone who may work there. Acting in it types nothing into a task's

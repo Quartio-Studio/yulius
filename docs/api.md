@@ -355,7 +355,10 @@ terminal. The terminal opens read-only (`can_write: false`) for anyone but the o
 API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with a
 `task_id` need the owner too; reading a worktree does not. `POST
 /api/sandboxes/{sid}/onboarding/approve` starts the onboarding task, so it needs that task's
-owner; a sandbox without one gets it created for the person who starts onboarding.
+owner once it has run (refused before the repository's first commit); one that never ran
+passes to the person who starts onboarding (audited `task.control_passed`), and a sandbox
+without one gets it created for them. A playground's guest tidies only their own tasks there
+(403 "… a guest stops, archives and deletes only their own tasks on this playground.").
 
 ```json
 TaskSummary = {

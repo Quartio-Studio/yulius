@@ -47,9 +47,14 @@ task's own page, and a hand-over could not be undone by the person who gave it.
   worktree, and the answer to a request for control. Three ways in that asked no owner now ask
   the rule: a Superagent's `task_message` to a running task (SPEC-230 allowed it unless the
   task held personal secrets), a restore of attachments into a task, and Start onboarding.
-- **An onboarding task is its starter's.** A sandbox whose onboarding nobody started has no
-  task; it is created for the person who starts onboarding and acts on GitHub as them. One
-  that exists is started by its owner, like any task.
+- **An onboarding task that never ran is its starter's.** A sandbox whose onboarding nobody
+  started has no task, or one Yulius made by itself and never ran; whoever starts onboarding
+  gets it (created for them, or passed to them as an audited hand-over) and it acts on GitHub as
+  them. One that has run is started by its owner, like any task, and anyone else is refused
+  before the repository's first commit is pushed.
+- **A playground's guest tidies only their own tasks.** A guest (ADR-0260) has write access to
+  the playground, not the standing of an account of the instance: the maker's tasks are not
+  theirs to stop, archive or delete.
 - **What is the project's is not a task's.** The sandbox's one browser, CI runs and the
   repository's cleanup are shared by everyone who may work in the project; using them steers
   no session and is not control of a task.
