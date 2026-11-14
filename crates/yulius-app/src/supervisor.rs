@@ -4577,10 +4577,12 @@ impl App {
                     .status
                     .after_loss(task.activity, StopReason::ServerLost)
                     .unwrap_or(TaskStatus::Stopped(StopReason::ServerLost));
-                let _ = store
+                let rested = store
                     .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
-                lost.push((task.id, task.status));
+                if matches!(rested, Ok(true)) {
+                    lost.push((task.id, task.status));
+                }
             }
         }
         self.drain_queue().await;

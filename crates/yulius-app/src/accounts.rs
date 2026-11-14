@@ -156,6 +156,9 @@ pub struct LoginSession {
     raw: Mutex<RawOutput>,
     writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     phase: Mutex<(LoginPhase, Option<i32>)>,
+    /// Why the sign-in failed, once it did: its viewers are told this, whatever the account's
+    /// own error says (a refused subscription keeps Claude's reason, SPEC-483 SGN-001).
+    failure: Mutex<Option<String>>,
     cancelled: AtomicBool,
     cancel: Notify,
     /// Notified once the sign-in has ended (its phase is final).
@@ -173,6 +176,10 @@ impl LoginSession {
 
     fn is_running(&self) -> bool {
         self.phase().0 == LoginPhase::Running
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.failure.lock().ok().and_then(|why| why.clone())
     }
 
     fn request_cancel(&self) {
@@ -230,7 +237,7 @@ impl LoginTerminal {
         (phase != LoginPhase::Running).then(|| TerminalServerMsg::Exit {
             status: phase.as_str().to_owned(),
             code,
-            cause: None,
+            cause: self.session.failure(),
         })
     }
 
@@ -1471,6 +1478,7 @@ impl App {
             raw: Mutex::new(RawOutput::default()),
             writer: tokio::sync::Mutex::new(Some(attached.writer)),
             phase: Mutex::new((LoginPhase::Running, None)),
+            failure: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             cancel: Notify::new(),
             ended: Notify::new(),
@@ -1747,6 +1755,7 @@ impl App {
                 _ => reason,
             })),
         };
+        let mut failure = None;
         let phase = match result {
             None => LoginPhase::Cancelled,
             Some(Ok(mut secret)) => {
@@ -1759,11 +1768,9 @@ impl App {
                     Err(AppError::NotFound) => LoginPhase::Cancelled,
                     Err(err) => {
                         tracing::error!(error = %err, "could not store an account credential");
-                        self.record_login_failure(
-                            &session.account_id,
-                            "the credential could not be stored",
-                        )
-                        .await;
+                        let reason = "the credential could not be stored";
+                        self.record_login_failure(&session.account_id, reason).await;
+                        failure = Some(reason.to_owned());
                         LoginPhase::Failed
                     }
                 }
@@ -1771,17 +1778,23 @@ impl App {
             Some(Err(reason)) => {
                 self.record_login_failure(&session.account_id, &reason)
                     .await;
+                failure = Some(reason);
                 LoginPhase::Failed
             }
         };
         let dir = session.dir.clone();
         let _ = tokio::task::spawn_blocking(move || secure_delete(&dir)).await;
+        if let Ok(mut why) = session.failure.lock() {
+            why.clone_from(&failure);
+        }
         if let Ok(mut p) = session.phase.lock() {
             *p = (phase, exit_code);
         }
         session.finished_at.store(self.now().0, Ordering::SeqCst);
         session.hub.state_changed();
-        session.hub.exit(phase.as_str(), exit_code);
+        session
+            .hub
+            .exit_at(phase.as_str(), exit_code, failure.as_deref());
         session.ended.notify_waiters();
         if phase != LoginPhase::Cancelled {
             let _ = self
@@ -1839,6 +1852,9 @@ impl App {
     /// that fails is an `error`.
     async fn record_login_failure(&self, account: &AccountId, reason: &str) {
         let store = &self.deps.store;
+        // Under the lock every write of a subscription's status takes: this one reads the
+        // status and writes it back, and would write `ok` over a refusal recorded in between.
+        let _writing = self.capacity.usage_writes.lock().await;
         let Ok(Some(record)) = store.account(account).await else {
             return;
         };

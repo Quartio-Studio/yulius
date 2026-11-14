@@ -7,16 +7,16 @@
 import { relLong, resetLabel } from './format.js';
 import { PROVIDERS, fallbackOf } from './models.js';
 
-/**
- * A reading older than this may be out of date: the background round reads an idle subscription
- * every 5 minutes, so an older one means the round is backing off or cannot read.
- */
 /** A subscription works while it reads `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
 export const works = (account) => account.status === 'ok' || account.status === 'limited';
 
 /** A subscription whose status says anything else needs a new sign-in (one without a status says nothing). */
 export const needsSignIn = (account) => Boolean(account.status) && !works(account);
 
+/**
+ * A reading older than this may be out of date: the background round reads an idle subscription
+ * every 5 minutes, so an older one means the round is backing off or cannot read.
+ */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 
 /** The model a task runs when it names none: the first one offered, as on the server. */

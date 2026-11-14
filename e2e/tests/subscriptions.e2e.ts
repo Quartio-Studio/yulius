@@ -1157,6 +1157,31 @@ test('a sign-in of a subscription whose email was typed does not say Claude conf
   await expect(browser.locator('main .account-card:has-text("Claude #3") .account-sub')).toHaveText('agent@example.com');
 });
 
+// SPEC-483 SGN-001: a subscription Claude refused keeps needing a sign-in, with Claude's reason,
+// when a new sign-in fails; the dialog says why that sign-in failed, not why Claude refused.
+test('a failed sign-in of a refused subscription says its own reason and leaves the refusal on the card (SPEC-483)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+  const again = browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")');
+  await again.click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await enterCode(browser, 'fail');
+  const outcome = dialog.getByRole('alert');
+  await expect(outcome).toContainText('Sign-in failed');
+  await expect(outcome).toContainText('The sign-in ended without producing a token');
+  await expect(outcome).not.toContainText('Your organization has disabled');
+  await dialog.getByRole('button', 'Close').last().click();
+  await expect(dialog).toBeHidden();
+  await expect(browser.locator('main .card:has-text("Claude #3")')).toContainText('Your organization has disabled Claude subscription access for Claude Code');
+  await expect(again).toBeVisible();
+  const account = await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    const found = db.accounts.find((a) => a.id === 'acc_c3');
+    return found ? found.status : null;
+  });
+  expect(account).toBe('relogin');
+});
+
 test('a failed Claude sign-in says why and Try again signs in in the same dialog (SPEC-243 LGN-004, LGN-005)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
   const dialog = await addSubscription(browser, screen, 'Claude #10');

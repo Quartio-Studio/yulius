@@ -51,7 +51,8 @@ pub enum HubFrame {
         status: String,
         /// Exit code.
         code: Option<i32>,
-        /// The limit the sandbox was at when the run ended (`pids`, `memory`; SPEC-268 PID-005).
+        /// Why it ended, where there is a reason to give: the limit the sandbox was at when a
+        /// run ended (`pids`, `memory`; SPEC-268 PID-005), or why a sign-in failed.
         cause: Option<String>,
     },
 }
@@ -205,7 +206,7 @@ impl Hub {
     }
 
     /// Signals the end of a run that ended while its sandbox was at `cause`, a limit (SPEC-268
-    /// PID-005).
+    /// PID-005), or of a sign-in that failed for `cause`.
     pub fn exit_at(&self, status: &str, code: Option<i32>, cause: Option<&str>) {
         let _ = self.tx.send(HubFrame::Exit {
             status: status.to_owned(),

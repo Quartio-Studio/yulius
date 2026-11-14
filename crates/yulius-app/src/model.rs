@@ -527,9 +527,9 @@ impl AccountStatus {
     }
 
     /// Whether the subscription works: `ok`, or `limited` until its limit resets. Tasks are
-    /// placed only on a healthy one, only a healthy one is asked for its usage, and a usage
-    /// reading changes the status of no other: every other status ends with a sign-in that
-    /// succeeds, and with nothing else (SPEC-483 SGN-002).
+    /// placed only on a healthy one, the background rounds ask only a healthy one for its
+    /// usage and its address, and a usage reading changes the status of no other: every other
+    /// status ends with a sign-in that succeeds, and with nothing else (SPEC-483 SGN-002).
     #[must_use]
     pub fn healthy(self) -> bool {
         matches!(self, Self::Ok | Self::Limited)

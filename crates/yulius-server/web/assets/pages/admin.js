@@ -250,7 +250,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     if (ended === 'running') { toast(`Sign-in of ${account.label} is still stopping; its card shows how it ended.`); return; }
     const now = await fresh();
     if (!now) return;
-    toast(['ok', 'limited'].includes(now.status)
+    toast(works(now)
       ? `Sign-in cancelled: ${account.label} keeps its current sign-in.`
       : `Sign-in cancelled: ${account.label} is not signed in. Sign it in again from its card when you are ready.`);
   }
@@ -269,12 +269,16 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     modal.setActions([{ label: 'Close' }, ...(retry ? [{ label: 'Try again', kind: 'primary', run: async () => { await again(); return false; } }] : [])]);
   }
 
-  async function failed() {
+  /**
+   * `why` is the sign-in's own reason, from its exit frame. The subscription's error is not
+   * asked: one Claude refused keeps saying why it is out, which is no reason of this sign-in.
+   */
+  async function failed(why) {
     phase = 'error';
     ended('Sign-in failed', '');
-    const now = await fresh();
+    await fresh();
     if (phase !== 'error' || closed) return;
-    const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
+    const reason = why ? sentence(why).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
     ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
   }
 
@@ -314,7 +318,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
         if (terminal !== view || phase !== 'running') return;
         if (exit.status === 'ok') succeeded();
         else if (exit.status === 'cancelled') cancelledElsewhere();
-        else failed();
+        else failed(exit.cause);
       },
       // The server refused the terminal for good: `not_found` (ended and expired) or
       // `unauthenticated` (signed out of Yulius).
@@ -432,8 +436,6 @@ export function mountAccountsPage(ctx, route) {
   let reading = 0;
   let readingAll = false;
   const NO_NEW_READING = 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.';
-  /** A subscription that works can be read; one that needs a sign-in offers that instead. */
-  const signedIn = works;
   /** Draws again what the card of `id` says about its reading (the card asks the queue). */
   const redraw = (id) => {
     const card = [...host.querySelectorAll('[data-account]')].find((el) => el.dataset.account === id);
@@ -511,7 +513,7 @@ export function mountAccountsPage(ctx, route) {
   async function refreshAll() {
     // Off (it runs already, or no card on the page can be read): a press does nothing.
     if (refreshAllButton.getAttribute('aria-disabled') === 'true') return;
-    const accounts = [...shown.values()].filter(signedIn);
+    const accounts = [...shown.values()].filter(works);
     readingAll = true;
     paintRefreshAll();
     const outcomes = await Promise.all(accounts.map((account) => read(account.id, true)));
@@ -564,12 +566,13 @@ export function mountAccountsPage(ctx, route) {
       // card asks the queue whether it is being read and what the last refresh came to, so
       // both survive a redraw of the list; an answer draws only what the card says about its
       // usage, so a name or an email being typed stays (SPEC-463, SPEC-473).
-      const refreshing = signedIn(account) ? { busy: () => reads.has(account.id), run: () => refreshOne(account) } : null;
+      // A subscription that works can be read; one that needs a sign-in offers that instead.
+      const refreshing = works(account) ? { busy: () => reads.has(account.id), run: () => refreshOne(account) } : null;
       // A reading that may be out of date, or none yet: the page reads it by itself, once per
       // visit, however often the list is drawn (RFR-015). Asked for before the card is drawn,
       // so the card says "Reading…" from its first look.
       const { stale } = limitsNow(account);
-      if (signedIn(account) && (stale || !(account.usage && account.usage.observed_at)) && !readByItself.has(account.id)) {
+      if (works(account) && (stale || !(account.usage && account.usage.observed_at)) && !readByItself.has(account.id)) {
         readByItself.add(account.id);
         read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }

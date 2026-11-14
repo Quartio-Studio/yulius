@@ -734,7 +734,10 @@ no code path reaches; documents, texts shown to agents and people, and code that
   one found with no run is.
 - **SGN-001** A failed sign-in leaves a subscription that needs a new one (`relogin`) as
   it is, with the reason it had. One that works keeps its status with a note (as before);
-  only a first sign-in that fails makes an `error`.
+  only a first sign-in that fails makes an `error`. Why a sign-in failed is told to its
+  viewers in its `exit` frame (`cause`), also to one who opens it after it ended, and the
+  sign-in's dialog shows that reason, never the subscription's own error. The write reads
+  the status and writes it back under the lock of every other status write.
 - **SGN-002** A subscription works while it is `ok` or `limited`
   (`AccountStatus::healthy`), and that is the one rule: tasks are placed only on one that
   works, only such a one is asked for its usage or its e-mail address by the background
@@ -1185,7 +1188,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   before); with the mark of a host move the task is queued again.
 - **AC-104** A subscription that signed in, was refused by Claude (`relogin` with
   Claude's words) and whose next sign-in fails: its status is `relogin` and its error
-  Claude's words; after a background usage round both are the same.
+  Claude's words; the ended sign-in's `exit` frame is `error`, the exit code and "the
+  sign-in ended without producing a token (exit code 2)" as `cause`.
 - **AC-105** A subscription with a credential that reads `error`, and one that reads
   `relogin`: a background usage round stores nothing for it; a reading an administrator
   asks for answers 200 with the status unchanged, stores the usage and keeps the reason.
@@ -1194,6 +1198,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   nothing about the two others.
 - **AC-107** On the Subscriptions page with every subscription but one in `error`,
   "Refresh all" says "Usage read again for 1 subscription." and one request was made.
+- **AC-108** On the Subscriptions page a sign-in of the refused subscription that fails
+  says "Sign-in failed" with "The sign-in ended without producing a token" and without
+  Claude's refusal; the card then still shows the refusal and "Sign in again", and the
+  subscription reads `relogin`.
 
 ## Test plan
 
@@ -1391,7 +1399,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105);
   `account_email::the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in`
   (AC-106); e2e `subscriptions.e2e.ts` "a subscription in error is asked for no usage
-  reading" (AC-107); the existing
+  reading" (AC-107) and "a failed sign-in of a refused subscription says its own reason
+  and leaves the refusal on the card" (AC-108); the existing
   `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
   keeps the two other cases of SGN-001.
 
@@ -1464,8 +1473,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   so until a sign-in succeeds; no migration turns them into `relogin`: they are out of
   the pool either way and the page offers the sign-in for both, so it would change a word
   and nothing else. A failed sign-in of a refused subscription keeps
-  Claude's reason and does not add its own: the sign-in's terminal has just shown the
-  person why it failed, and the card must go on saying why the subscription is out.
+  Claude's reason and does not add its own: the card must go on saying why the
+  subscription is out. The sign-in's own reason goes where it belongs, to the sign-in:
+  its `exit` frame carries it (the frame's `cause`, which a task's terminal uses for the
+  limit a run ended at), and the dialog reads it there. The first version of this slice
+  left the dialog reading the subscription's error, which would have named Claude's
+  refusal as the reason the sign-in failed (the review, finding 1).
 - Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
   where they were not). After a switch's wait the run that had to be killed ends the
   switch, and no new session starts. The other way was weighed: go on with the switch once

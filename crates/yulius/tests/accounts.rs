@@ -578,7 +578,8 @@ async fn failed_logins_record_errors_and_relogin_failures_keep_working_accounts(
 
 /// SPEC-483 SGN-001: Claude refused a subscription, so it needs a new sign-in. A sign-in that
 /// fails leaves it needing one, with the reason it had: it does not become an `error`, which a
-/// usage reading would turn into `ok` and the pool would place tasks on again.
+/// usage reading would turn into `ok` and the pool would place tasks on again. The sign-in's own
+/// reason is told to its viewers, in its exit frame.
 #[tokio::test]
 async fn a_failed_sign_in_leaves_a_refused_subscription_needing_one() -> TestResult {
     let s = setup().await?;
@@ -606,6 +607,7 @@ async fn a_failed_sign_in_leaves_a_refused_subscription_needing_one() -> TestRes
     s.host.push(Script {
         chunks: vec!["no token here\r\n".into()],
         exit: Some(2),
+        gated: true,
         ..Script::default()
     });
     let r = call(
@@ -617,17 +619,39 @@ async fn a_failed_sign_in_leaves_a_refused_subscription_needing_one() -> TestRes
     )
     .await?;
     assert_eq!(r.status, StatusCode::OK);
+    let login_id = r.body["login_id"].as_str().ok_or("login_id")?.to_owned();
+    // A viewer watches the sign-in end: its exit frame says why it failed.
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    let why = "the sign-in ended without producing a token (exit code 2)";
+    let seen = async {
+        loop {
+            if let HubFrame::Exit {
+                status,
+                code,
+                cause,
+            } = sub.rx.recv().await?
+            {
+                return Ok::<_, Box<dyn std::error::Error>>((status, code, cause));
+            }
+        }
+    };
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), seen).await??,
+        ("error".to_owned(), Some(2), Some(why.to_owned()))
+    );
     let failed = account_settled(&mut events, &account_id).await?;
     assert_eq!(
         (failed["status"].as_str(), failed["last_error"].as_str()),
         (Some("relogin"), Some(refused))
     );
-
-    // A usage reading (the background round asks every subscription it may) changes nothing.
-    s.h.app.refresh_usage_round(&mut HashMap::new()).await;
-    let record = s.h.store.account(&id).await?.ok_or("account")?;
-    assert_eq!(record.status, AccountStatus::Relogin);
-    assert_eq!(record.last_error.as_deref(), Some(refused));
+    // One who opens the ended sign-in is told the same, not why Claude refused.
+    assert_eq!(
+        serde_json::to_value(terminal.exit())?,
+        json!({"type": "exit", "status": "error", "code": 2, "cause": why})
+    );
     Ok(())
 }
 
