@@ -87,6 +87,9 @@ pub const WITHHELD_TOOLS: &[&str] = &[
     // Text it reads in one sandbox must not merge code into another (review round 2): pull
     // requests it opens are merged by a person or a task's delivery.
     "change_merge",
+    // Nor a task's merge for its owner (SPEC-487 MRG-005): the same reason, and no independent
+    // review covers what it merges.
+    "task_merge",
 ];
 
 /// The tools only the Global Superagent is served with `project`, not a person's own agent: the
@@ -467,6 +470,13 @@ mod tests {
             !global_tool_descriptors()
                 .iter()
                 .any(|t| t.name == "change_merge")
+        );
+        // Nor a task's merge for its owner (SPEC-487 MRG-005, review of slice 5, F3): text it
+        // reads in one sandbox must not merge code in another.
+        assert!(
+            !global_tool_descriptors()
+                .iter()
+                .any(|t| t.name == "task_merge")
         );
     }
 }

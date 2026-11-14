@@ -334,6 +334,23 @@ impl App {
         note_of(state.train.as_ref()?, task.id.as_str())
     }
 
+    /// `sandbox`'s merge train, for the person's merge queue (SPEC-487 MRG-002): its CI run, its
+    /// members in merge order (task id, pull request), whether it passed and is merging, and the
+    /// pull requests left out of it for conflicts.
+    pub(crate) fn train_summary(&self, sandbox: &SandboxId) -> Option<serde_json::Value> {
+        let train = self.read_trains(sandbox).train?;
+        Some(serde_json::json!({
+            "run": train.run,
+            "members": train.members.iter().map(|member| serde_json::json!({
+                "task": member.task, "pull_request": member.pr, "head": member.head,
+            })).collect::<Vec<_>>(),
+            "merging": train.merging,
+            "left_out": train.left_out.iter().map(|left| serde_json::json!({
+                "task": left.task, "pull_request": left.pr, "files": left.files,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
     /// Whether `sandbox` has a merge train whose run is still queued or running.
     pub(crate) fn train_running(&self, sandbox: &SandboxRecord) -> bool {
         self.read_trains(&sandbox.id)
@@ -913,14 +930,10 @@ impl App {
                     .map(|m| m.pr)
                     .filter(|n| *n != member.pr)
                     .collect();
+                let (actor, action, how) = armed.merge_audit(task.number);
                 let detail = format!(
-                    "merged at head {head} reviewed independently ({}); armed while the checks \
-                     ran; in merge train {} tested at {} (run {})",
-                    if armed.summary.is_empty() {
-                        "no summary"
-                    } else {
-                        armed.summary.as_str()
-                    },
+                    "merged at head {head} {how}; armed while the checks ran; in merge train {} \
+                     tested at {} (run {})",
                     listed(&numbers(&train.members)),
                     train.commit,
                     train.run
@@ -930,8 +943,8 @@ impl App {
                     .store
                     .audit(
                         self.now(),
-                        &format!("task:{}", task.number),
-                        "delivery.agent.merge",
+                        &actor,
+                        action,
                         Some(&format!("{}#{}", sandbox.slug, task.number)),
                         Some(&detail),
                     )
