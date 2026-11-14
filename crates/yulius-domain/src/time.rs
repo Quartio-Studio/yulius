@@ -147,6 +147,11 @@ mod tests {
             // Long enough for every position, one field unpadded.
             "2026-1-07T09:12:00.0Z",
             "2026-10-07T9:12:00.00Z",
+            // Every separator is where it belongs.
+            "2026x10-07T09:12:00Z",
+            "2026-10x07T09:12:00Z",
+            "2026-10-07T09x12:00Z",
+            "2026-10-07T09:12x00Z",
             "+026-10-07T09:12:00Z",
         ] {
             assert_eq!(parse_rfc3339(bad), None, "{bad}");
