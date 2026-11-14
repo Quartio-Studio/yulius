@@ -4089,8 +4089,8 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     Ok(())
 }
 
-/// SPEC-483 slice 33 (QB7): every tool the remote MCP lists is dispatched: called with only its
-/// project, each answers (often refusing the missing arguments) and none is an "unknown tool",
+/// SPEC-483 slice 33 (QB7): every tool the remote MCP lists for a person's token is dispatched:
+/// called with only its project, each answers (often refusing the missing arguments) and none is an "unknown tool",
 /// which a tool listed but missing from the shared dispatch would be.
 #[tokio::test]
 async fn every_tool_the_remote_mcp_lists_is_dispatched() -> TestResult {
