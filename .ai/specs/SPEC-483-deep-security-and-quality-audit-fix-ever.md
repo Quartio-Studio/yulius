@@ -2830,6 +2830,12 @@ slices follow.
   all" and a row's menu act on the task the page holds; the test changed the task's owner
   through the mock and pressed the button before the page had the change. A 500 ms delay of the
   mock's change (`touchTask`) made it fail 2 of 2 and the menu test of the same file fail too;
-  waiting until the row shows its owner's mark before pressing, the file passes 9 of 9 with
-  the delay and without it (`target/audit/slice32/flake/`). No open pull request touched the
-  file; the fix is its own commit (`6287e8220`).
+  waiting until the row shows its owner's mark before pressing, the file passed 9 of 9 with the
+  delay (`probe-file-after.log`; the run without it was not kept). No open pull request touched
+  the file; the fix is its own commit (`6287e8220`).
+- **Review, round 2** (the same session, head `593fd0e83`): request changes. At a 2.5 s delay a
+  third test of the file ("…archived from the sidebar and deleted from its menu") opened task
+  #4's menu before #4's owner change (the 500 ms probe hid it behind #13's archive). Answered:
+  the same wait before its menu; with a 2.5 s delay the file passes 9 of 9 twice
+  (`probe-2500-after.log`), without it 9 of 9 twice (`no-probe-after.log`). Every other
+  `touchTask` of the file waits on something the change shows before acting.
