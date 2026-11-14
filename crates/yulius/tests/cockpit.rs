@@ -5089,3 +5089,66 @@ async fn a_tasks_agent_does_not_steer_other_tasks() -> TestResult {
     }
     Ok(())
 }
+
+/// SPEC-487 SAR-002 (review of slice 2, R2-2): a Superagent's call that changes something runs
+/// to its end and leaves its audit entry also when its client goes away meanwhile (Esc in
+/// Claude Code during a slow call). The request is dropped as soon as the store shows the
+/// pause it asked for; its `superagent.tool` entry still comes.
+#[tokio::test]
+async fn a_superagents_call_whose_client_went_away_still_ends_with_its_audit() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::TaskStatus;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let running =
+        support::seed_task(&f.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t-run", "tok-run").await?;
+
+    let mut request = Box::pin(cockpit_tool(
+        &f,
+        &token,
+        "task_pause",
+        json!({"number": running.number}),
+    ));
+    loop {
+        // Each poll lets the call go on a step; the store is read between polls.
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let (paused, is_error) = answer?;
+            assert!(!is_error, "{paused}");
+            break;
+        }
+        if f.h.store.person_pause(&running.id).await?.is_some() {
+            drop(request);
+            break;
+        }
+    }
+    let audited = || async {
+        f.h.store
+            .audit_details("s1", "superagent.tool", 10)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|detail| serde_json::from_str::<Value>(detail).ok())
+            .any(|detail| {
+                detail["tool"] == "task_pause"
+                    && detail["ok"] == true
+                    && detail["task"] == json!(running.number)
+            })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !audited().await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped call left no audit entry"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(f.h.store.person_pause(&running.id).await?.is_some());
+    Ok(())
+}
