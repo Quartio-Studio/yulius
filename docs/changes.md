@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Anyone who may work in a project stops, archives, restores and deletes any of its tasks;
+  steering a task stays its owner's (SPEC-490, ADR-0331, task #473; amends ADR-0060). Stop,
+  Archive and Delete are enabled on other people's tasks in the task menu, the sidebar and the
+  task's page, the confirmation names the owner, and the audit says who did it. Everything else
+  (typing, messages, answers, continue, start, pause, the subscription, delivery, files and
+  shells in the worktree) is refused to anyone but the owner by one rule
+  (`yulius_domain::task_access`), with a message that says how to ask for control. That rule
+  now also covers three ways in that it did not: a Superagent's `task_message` to another
+  person's running task, a restore of attachments into another person's task, and Start
+  onboarding of an onboarding task someone else owns (a sandbox without one gets it created
+  for whoever starts onboarding). Request control is in the task's menu too.
 - The web UI asks about unsaved work on every way out (SPEC-483 slice 28, task #465). The
   automation, MCP server, workflow and skill editors asked only when a link was clicked; Back,
   Forward and navigation by a button or the palette now ask too, through one guard in the

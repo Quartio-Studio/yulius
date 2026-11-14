@@ -1,11 +1,11 @@
 ---
 yulius-task: 42c13112-2302-432f-ab26-08ee3802b561
-status: draft
+status: in-progress
 ---
 
 # SPEC-490: anyone who may work in a project stops, archives and deletes its tasks; control passes only by the owner's consent
 
-Status: draft
+Status: in-progress
 Date: 2026-11-14
 Owner: Yulius task #473
 Scope authorization: the request of task #473 (by MrFishPL, 2026-11-14): "users should be able
@@ -56,6 +56,18 @@ rule decides both, in one place, and the UI says why control is refused and how 
   task page's bars. Today `write = allows(access, 'write') && !otherOwner(task, me)` for all.
 - **Stop and archive by a page are not audited**; by a tool they are (`task.stopped`,
   `task.archived`, `task.unarchived`). A deletion is audited either way (`task.deleted`).
+- **Three ways in did not ask the owner at all** (found by reading every route and every tool
+  down to its check, 2026-11-14):
+  1. `task_message` (the Superagent, the remote MCP, `tasks_bulk {do: "message"}`, an approved
+     `sandbox_task_message`): `App::tool_task_message` typed into another person's *running*
+     session and ended its `needs_you` request; it refused only a task holding its owner's
+     personal secrets or MCP servers (SPEC-230 allowed the rest on purpose). The web UI's
+     message route and the terminal refused the same person.
+  2. `attachments_trash {restore, into}`: files went into the attachment folder of any task
+     of the project, while `POST /api/tasks/{tid}/attachments` is the owner's.
+  3. `POST /api/sandboxes/{sid}/onboarding/approve` (and `onboarding_start`): anyone with write
+     access started the onboarding task, which is its sandbox creator's and acts on GitHub as
+     them, and added a hand-over text to its request. Continue on the same task was refused.
 
 ### Every way to change a task, and its class
 
@@ -66,23 +78,31 @@ the owner's.
 
 | What | Entry points | Class |
 | --- | --- | --- |
-| Stop a task, cancel one that waits to start | `POST /api/tasks/{tid}/stop`; `task_stop`; `tasks_bulk {action: stop, numbers}` | tidy |
+| Stop a task, cancel one that waits to start | `POST /api/tasks/{tid}/stop`; `task_stop`, `sandbox_task_stop`; `tasks_bulk {do: stop, numbers}` | tidy |
 | Close out an idle running task | `task_close` | tidy |
 | Archive, restore | `POST …/archive`, `…/restore`; `task_archive`; the sidebar's quick archive | tidy |
 | Delete | `DELETE /api/tasks/{tid}`; `task_delete` | tidy |
 | Type into the session, resize it | `WS /api/tasks/{tid}/terminal` | control |
-| Send or queue a message, decide a held prompt | `POST …/queued-messages`, `…/held-prompts/{hid}`; `task_message`, `task_held_prompt`, `tasks_bulk {action: message}` | control |
+| Send or queue a message, decide a held prompt | `POST …/queued-messages`, `…/held-prompts/{hid}`; `task_message`, `sandbox_task_message`, `task_held_prompt`, `tasks_bulk {do: message}` | control |
 | Answer or dismiss what the task asks (`needs_you`, a question) | `task_questions.rs`; `task_question_dismiss` | control |
 | Continue, restart, start now, schedule, change how it starts | `POST …/continue`, `…/start-now`, `PUT …/schedule`, `…/start`; `task_restart`, `task_start_now` | control |
-| Pause, resume | `POST …/pause`, `…/resume`; `task_pause`, `task_unpause`, `tasks_bulk {action: pause}` | control |
+| Pause, resume | `POST …/pause`, `…/resume`; `task_pause`, `task_unpause`, `tasks_bulk {do: pause}` | control |
 | Move to another subscription | `POST …/switch` | control |
 | Rename, replace the request, order in the queue | `task_edit`, `tasks_reorder` | control |
-| Attach a file | `POST …/attachments` | control |
+| Attach a file | `POST …/attachments`; `attachments_trash {restore, into}` | control |
+| Start its onboarding task | `POST /api/sandboxes/{sid}/onboarding/approve`; `onboarding_start` | control |
+| Change how it starts | `task_update`, `sandbox_task_update` | control |
 | Open or merge its pull request | `POST …/delivery/pr`, `…/delivery/merge` | control |
 | Write into its worktree (editor, upload) | `PUT /api/sandboxes/{sid}/files/*` with `root=task:<id>` | control |
 | A shell in its worktree | `POST /api/sandboxes/{sid}/shells` with a task, `WS /api/shells/{id}/terminal` | control |
 | Hand over, decline a request | `POST …/control-request/accept`, `DELETE …/control-request` | control |
 | Read: detail, prompt, transcript, delivery, changes, feedback | the `GET` routes, `POST …/feedback` | view |
+
+Not a task's, and so outside this rule (each is a decision below): the sandbox's one browser,
+CI runs (rerun, cancel) and the repository's cleanup, which are the project's; a shell in the
+sandbox repository, which reaches every worktree on disk (ADR-0060's known limit: containment
+separates sandboxes, not tasks); and automations, which any writer may change and whose tasks
+are their creator's (reported as an issue, see Decisions).
 
 ## Requirements
 
@@ -101,20 +121,24 @@ the owner's.
   `task_close` and `tasks_bulk {action: "stop"}` with numbers, for the person the caller acts
   for, through the Superagent, the remote MCP and a task's agent; a caller's own task stays
   refused.
-- **OWN-003** "All" stays one's own. `tasks_bulk` without numbers and the sidebar's "Archive
-  all" take the person's own tasks only and say how many of other people they left; another
-  person's task is tidied by naming it.
+- **OWN-003** "All" stays one's own. `tasks_bulk` with `all` and the sidebar's "Archive all"
+  take the person's own tasks only (the tool says how many of other people it left, the
+  button's title reads "Archive your Done tasks"); another person's task is tidied by naming
+  it.
 - **OWN-004** Control. Everything in the inventory's control rows is refused to anyone but the
   owner with 403, whatever the way in (page, API token, Superagent, remote MCP, task agent),
   with one message: "Task #N is @owner's and only they steer it: it acts on GitHub as them. Ask
   them for control on the task's page. You can still stop, archive or delete it." There is no
-  exception for administrators or the superadmin.
+  exception for administrators or the superadmin. Start onboarding is control of the
+  onboarding task: one that exists is started by its owner; a sandbox without one gets it
+  created for the person who starts onboarding (never as a side effect of a refused start).
 - **OWN-005** The owner learns who tidied. A stop, close-out, archive, restore or deletion of a
   task by someone who does not own it is audited under that person's name with the owner's
   (`task.stopped`, `task.closed_by_person`, `task.archived`, `task.unarchived`,
   `task.deleted`; detail `{"task", "owner"}`), and a stop or close-out says in the task's
-  terminal "Stopped by @login." The audit of an owner's own page action is unchanged (none for
-  stop and archive).
+  terminal "Stopped by @login." or "Closed by @login." The audit of an owner's own page action
+  is unchanged (none for stop and archive), and a tool's entry keeps its actor and gains the
+  owner when the task is not its person's.
 - **OWN-006** The web UI offers tidy on another person's task wherever it offers it on one's
   own: Stop or Cancel, Archive or Restore and Delete in the task menu (sidebar, lists, Home,
   task page), the sidebar's quick archive, and Cancel on the task page's waiting bars. Stopping
@@ -150,10 +174,10 @@ the owner's.
 
 ## Plan
 
-- [ ] The spec and ADR-0331 state the rule: tidy for anyone who may work, control by consent
-- [ ] One rule in the domain decides view, tidy and control, and every owner check goes through it
-- [ ] Stop, close-out, archive, restore and delete work on another person's task over the API and the tools
-- [ ] A tidy by someone else is audited with the owner and said in the task's terminal
+- [x] The spec and ADR-0331 state the rule: tidy for anyone who may work, control by consent
+- [x] One rule in the domain decides view, tidy and control, and every owner check goes through it
+- [x] Stop, close-out, archive, restore and delete work on another person's task over the API and the tools
+- [x] A tidy by someone else is audited with the owner and said in the task's terminal
 - [ ] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
 - [ ] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
 - [ ] Independent review of the first pull request (the rule and the UI), findings fixed
@@ -173,9 +197,10 @@ the owner's.
 - **AC-3** (OWN-004) B gets 403 with the message of OWN-004 for: continue, switch, pause,
   resume, start-now, schedule, change of start, a queued message, a held-prompt decision, an
   attachment, opening and merging the pull request, `task_edit`, `tasks_reorder`,
-  `tasks_bulk` with `pause` and `message`, a file write and a shell in A's worktree; terminal
-  input from B does not reach the run. A can do each. An instance administrator is refused the
-  same.
+  `tasks_bulk` with `pause` and `message`, `task_message`, a restore of attachments into A's
+  task, Start onboarding of A's onboarding task, a file write and a shell in A's worktree;
+  terminal input from B does not reach the run. A can do each. An instance administrator and
+  the superadmin are refused the same.
 - **AC-4** (OWN-001) The domain rule's table: each of the three actions against each access
   level, owning and not owning.
 - **AC-5** (OWN-003) `tasks_bulk {action: "stop"}` without numbers by B leaves A's tasks alone
@@ -186,7 +211,9 @@ the owner's.
 - **AC-7** (OWN-006, OWN-007; e2e) On another person's task the menu's Stop, Archive and Delete
   are enabled and Continue is disabled with the title of OWN-006; Stop asks naming the owner
   and stops the task; the sidebar row has its quick archive; the bar reads as OWN-007; the
-  menu's Request control asks and turns into Withdraw request.
+  menu's Request control asks and turns into Withdraw request; "Archive all" leaves it.
+- **AC-12** (OWN-004) B starts onboarding of a sandbox without an onboarding task: the task
+  is B's. A start refused for want of a Claude account still creates nothing.
 - **AC-8** (OWN-008; e2e) A request for control on the owner's task, while they look at another
   page, adds a notification that opens the task, and the sidebar row says who asks.
 - **AC-9** (OWN-009) A hands over to B on B's request: `control_from` is A. A takes back: owner
@@ -205,9 +232,9 @@ the owner's.
 - Integration (`crates/yulius/tests/task_ownership.rs`): AC-1 to AC-3, AC-5, AC-6, AC-9, AC-10
   through `App` and the HTTP router with two GitHub users and the Superagent's tools; the
   existing refusal tests for stop, archive and delete become the new permissions, each named in
-  the Evidence.
-- Web unit (`crates/yulius-server/web/tests`): `taskActions` for an owner, another writer and a
-  reader.
+  the Evidence. `secrets_scopes.rs`, `task_message.rs`, `pool_supervision.rs` (a message),
+  `attachment_trash.rs` (a restore), `projects.rs` (Start onboarding, AC-12), `cockpit.rs`
+  (`tasks_bulk`, `task_close`).
 - e2e (`e2e/tests/ownership.e2e.ts`): AC-7, AC-8, AC-11, with accessibility checks of the bar,
   the menu and the dialog.
 - Contract (`crates/yulius/tests/ui_contract.rs`): the new route is called by the UI and
@@ -236,6 +263,28 @@ the owner's.
 - **No time limit on a request, no administrator override.** Either would be control without
   consent. An owner who is away loses nothing but a task that others may now stop; an owner
   who is gone cannot consent to anything, and only then does a request pass control.
+- **A message is control, whatever the task holds.** SPEC-230 let a Superagent type into
+  another person's running task unless it held their personal secrets. A message decides what
+  the agent does next under its owner's name; the request names it ("sending it messages").
+  The secrets check is gone with it: nobody but the owner gets that far.
+- **The onboarding task is the starter's.** Refusing everyone but the sandbox's creator would
+  leave a sandbox whose creator is away with no task to ask control of; creating the task for
+  the creator and then refusing would create it as a side effect of a refusal, which SPEC-246
+  forbids. A task that does not exist is nobody's, so it is created for the person who starts
+  onboarding and acts on GitHub as them; one that exists (a start that failed, a stopped
+  onboarding) is its owner's like any task.
+- **The sandbox's browser is the project's, not a task's.** One Chromium per sandbox is
+  shared by its people and its agents (BRW-002); a tab has no owner, and a request to act in
+  the browser reaches everyone who may work there. Acting in it types nothing into a task's
+  session. Giving tabs owners is a design of its own; nothing here needs it.
+- **CI runs and cleanup are the project's.** A rerun or a cancel of a run, and the removal of
+  a clean worktree of a stopped task, change the project's shared state by rules of their own
+  (SPEC-171, the hygiene rules) and steer no session.
+- **Automations are reported, not changed here.** Any writer may change an automation's
+  prompt and run it, and its task is its creator's: a person's prompt can run under another
+  person's name. That is about who an automation runs as, with product choices of its own
+  (the editor becomes its owner, or only its creator changes it), not about a task someone
+  owns; it is filed as an issue with both options.
 - **No agent asks, grants or takes back.** Asking and consenting stay a person's own acts in
   the page or the API: a Superagent reads transcripts and web pages, and consent given on a
   sentence it read there is not the owner's.

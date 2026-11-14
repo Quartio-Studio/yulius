@@ -142,12 +142,13 @@ watching, steering and unblocking.
   bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it changes how a waiting task starts, stops, archives or
-  deletes tasks, runs or deletes automations and enables the ready-made ones (asking the person
+  deletes tasks (another person's too, when it is the one named), runs or deletes automations and enables the ready-made ones (asking the person
   before each change only on an uncontained server). A deleted task's attachments stay while
   another task's request or an automation's prompt names them and otherwise wait 7 days in a trash it restores them from
   (SPEC-396). Task agents
   can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
-  DO budget", the Superagent passes the message on (task agents cannot): a task that has not
+  DO budget", the Superagent passes the message on to a task of its person's (task agents cannot,
+  and another person's task takes messages from its owner only, SPEC-490): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from
   alice (through their Superagent)" (or "(through their own agent)" when the person's own agent
   sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
@@ -264,7 +265,11 @@ watching, steering and unblocking.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
-  and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
+  and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
+  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  can **stop, archive, restore and delete** any of its tasks, from the task's page, the lists
+  and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
+  the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
   stops where it is without being told (as an update pauses every task) and goes on from there; a
   paused task, and one an update holds, reads Paused in the lists and says why. A task that
   reads **Needs your action** says why in the bar over its terminal, whenever it is opened:
@@ -275,8 +280,10 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
-  the new owner.
+  in the view and in the sidebar, and can ask the owner for control, from the task's page or
+  its menu in a list; once handed over, it acts as the new owner. No administrator takes a task
+  without asking; only a task whose owner can no longer act (a disabled account, no write
+  access) passes to the first person who asks.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; switches and
   pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
