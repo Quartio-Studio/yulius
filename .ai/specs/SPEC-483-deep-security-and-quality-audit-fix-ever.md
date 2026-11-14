@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan;
+      of the Plan (merged, pull request #1268);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -742,7 +742,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
-- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end
+- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
 
 ## Acceptance criteria
 
@@ -1439,21 +1439,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   rests one with no run. The review went to a fourth look at that one change, against the
   rule of three rounds: the finding was a regression of this slice with its fix named by
   the reviewer, and a split would have delivered the regression or held back the rest.
-  Left as it is, by the review's own word harmless: when a run ends in the window before
-  the switch claims it and the switch reads the status before that end has settled, the
-  switch says "did not end in time" for a task that closed, and leaves its given-up mark
-  in the slot until the task's next launch clears it.
-  A finished (`Done`) task whose idle session is moved and has to be given up rests as
-  stopped, not closed: RBT-001 closes only a running task, and its domain test says why
-  for this very case ("a switch or a stop in flight was cut"); the review asked for
-  `Closed`, which would change that rule for every loss during a switch, not only this
-  one. (A task's activity is cleared when it becomes `switching`, so the question does
-  not even arise in the store: a mutation that asked RBT-001's rule at the exit of a
-  given-up run changed no outcome.)
-  The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
-  task's intent before it knows it is the first to record), is not changed: no path
-  records a run's end while its reader still serves it and then starts another run.
-  The test starter takes its two waits as a pair, not a struct: it has two callers.
+  Left as it is, a nit by the review's word (the mark it called harmless): when a run
+  ends in the window before the switch claims it and the switch reads the status before
+  that end has settled, the switch says "did not end in time" for a task that closed, and
+  leaves its given-up mark in the slot until the task's next launch clears it.
 - Slice 16 (no decision record): the loopback listener takes the public table as it is,
   422 for an invalid request included; nothing in the repository reads its 400 (the hook
   client takes any 5xx for "try again while held" and any other error for none, the
@@ -1658,9 +1647,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 17 |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 17 |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
 | E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
 | E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
 | QC8 | store | `tasks.closed_at` is never cleared | low | slice 13 |
@@ -2800,3 +2789,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   run as a session that left, and that task missing from the tasks a move brings back.
 - **Gate after it.** `scripts/dev ci` at `b41c5d11f`: exit 0;
   `4290 tests run: 4290 passed, 17 skipped` (`target/audit/slice17/gate4.log`).
+- **Review, fourth look** (the same session, head `5690bb786`): approve; "Nothing of
+  severity minor or above remains in own code." Two nits, answered in the commit after
+  the merge: the start lists a switching task as lost only when its change was made, and
+  Decisions give the review's word as it was.
+- **Delivery.** Pull request #1268 merged into `dev` at `5690bb786`, whose own Yulius CI
+  run passed.
