@@ -3950,7 +3950,7 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   return json(204);
 });
 // Reads the provider's usage windows again and asks about the limits stored for the account
-// (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
+// (SPEC-473); an account that does not work keeps its status and its reason. A test scripts what
 // Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
 // kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
 // as it is, `usage_read: false`), or `{ usage, status, at }` (what the reading and the answers

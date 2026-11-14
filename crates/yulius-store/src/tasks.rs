@@ -17,6 +17,46 @@ use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
+/// The status change of [`TaskStore::transition_task`], with its bookkeeping. A task that
+/// leaves the queue loses the start kept for its wait (SPEC-483 QST-001): a held prompt stays
+/// in the database no longer than a pause's continuation does. `release_scheduled`
+/// (intake.rs) repeats the bookkeeping for prepared → queued.
+fn transition(
+    c: &rusqlite::Connection,
+    id: &str,
+    expected: Option<TaskStatus>,
+    next: TaskStatus,
+    activity: Option<Activity>,
+    at: Timestamp,
+) -> AppResult<bool> {
+    let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
+    let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
+    let n = c
+        .execute(
+            "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
+             state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT ?2 THEN ?3 ELSE state_at END, \
+             working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
+               OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
+               WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
+             closed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE closed_at END, \
+             queued_at = CASE WHEN ?5 IS NOT NULL THEN ?5 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
+             queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
+             gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
+             WHERE id = ?6 AND (?7 IS NULL OR status = ?7)",
+            params![
+                next.as_str(),
+                activity.map(Activity::as_str),
+                at.0,
+                closed,
+                queued,
+                id,
+                expected.map(TaskStatus::as_str)
+            ],
+        )
+        .map_err(db)?;
+    Ok(n == 1)
+}
+
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
     updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
@@ -314,33 +354,38 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
-        // `release_scheduled` (intake.rs) repeats this bookkeeping for prepared → queued.
+        self.call(move |c| transition(c, &id, expected, next, activity, at))
+            .await
+    }
+
+    async fn queue_task(
+        &self,
+        id: &TaskId,
+        expected: TaskStatus,
+        start: &QueuedStart,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let start = start.clone();
         self.call(move |c| {
-            let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
-            let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
-            let n = c
-                .execute(
-                    "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
-                     state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT ?2 THEN ?3 ELSE state_at END, \
-                     working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
-                       OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
-                       WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
-                     closed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE closed_at END, \
-                     queued_at = CASE WHEN ?5 IS NOT NULL THEN ?5 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
-                     gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
-                     WHERE id = ?6 AND (?7 IS NULL OR status = ?7)",
-                    params![
-                        next.as_str(),
-                        activity.map(Activity::as_str),
-                        at.0,
-                        closed,
-                        queued,
-                        id,
-                        expected.map(TaskStatus::as_str)
-                    ],
-                )
-                .map_err(db)?;
-            Ok(n == 1)
+            // One transaction: a task is never queued without the start it was to make.
+            let tx = c.transaction().map_err(db)?;
+            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at)? {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
+                 'account', ?4, 'at', queued_at) WHERE id = ?1",
+                params![
+                    id,
+                    start.kind.as_str(),
+                    start.prompt,
+                    start.account_id.as_ref().map(AccountId::as_str)
+                ],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -459,27 +504,6 @@ impl TaskStore for SqliteStore {
                      AND state_at = ?2 AND attention IS NOT CASE WHEN ?3 IS NULL THEN NULL \
                        ELSE json_set(?3, '$.at', state_at) END",
                     params![id, flagged.0, reason, at.0],
-                )
-                .map_err(db)?;
-            Ok(n == 1)
-        })
-        .await
-    }
-
-    async fn set_queued_start(&self, id: &TaskId, start: &QueuedStart) -> AppResult<bool> {
-        let id = id.as_str().to_owned();
-        let start = start.clone();
-        self.call(move |c| {
-            let n = c
-                .execute(
-                    "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
-                     'account', ?4, 'at', queued_at) WHERE id = ?1 AND status = 'queued'",
-                    params![
-                        id,
-                        start.kind.as_str(),
-                        start.prompt,
-                        start.account_id.as_ref().map(AccountId::as_str)
-                    ],
                 )
                 .map_err(db)?;
             Ok(n == 1)

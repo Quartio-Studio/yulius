@@ -2288,6 +2288,17 @@ fn build_one_slot(
     usage: Arc<ScriptedUsage>,
     agent: FakeAgentOptions,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_slots(data, fake, usage, agent, u32::MAX)
+}
+
+/// [`build_one_slot`] whose queue takes at most `queue_max` tasks.
+fn build_slots(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    queue_max: u32,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     build_served_tuned(
         data,
         fake,
@@ -2295,7 +2306,12 @@ fn build_one_slot(
         agent,
         Arc::new(FakeGitHub::default()),
         "http://127.0.0.1:9",
-        |config| config.max_live_sessions = 1,
+        |config| {
+            config.max_live_sessions = 1;
+            if queue_max != u32::MAX {
+                config.queue_max = queue_max;
+            }
+        },
     )
 }
 
@@ -2481,6 +2497,183 @@ fn a_continue_on_a_chosen_subscription_keeps_it_through_the_queue() -> TestResul
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 QST-001 (review): the subscription a person chose fills up while the task waits in
+/// the queue. When the slot frees, the task is not failed for it (its person is no longer
+/// looking): the choice is given up, said in the task's terminal, and the pool places the task.
+#[test]
+fn a_chosen_subscription_that_filled_up_while_waiting_is_given_up() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_one_slot(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("a-first", usage(10.0, HOUR, 30.0, 100));
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Continued").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.continue_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
+        let mut watch = app.runtime(&id).hub.watch();
+
+        probe.set("b-second", usage(100.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        stop(&app, &holder).await?;
+        wait_for("the continued run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+                || task(&app, &id).await.is_ok_and(|t| t.status.is_resting())
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            (
+                task(&app, &id).await?.status,
+                attempts
+                    .last()
+                    .and_then(|run| run.account_id.as_ref())
+                    .map(AccountId::as_str)
+            ),
+            (TaskStatus::Running, Some("a-first")),
+            "the pool placed it: {} run(s)",
+            attempts.len()
+        );
+        let mut said = Vec::new();
+        while let Ok(frame) = watch.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter().any(|line| line
+                == "↻ The subscription chosen for this task cannot take it now, so Yulius chose one."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 QST-002 (review, from before): a paused task becomes resumable while every slot is
+/// taken and the queue is full, so its start can neither run nor wait. Its pause stays open,
+/// with its kind: the pool's next round tries again. (The pause used to be ended first, and
+/// nothing ever started the task again.)
+#[test]
+fn a_resume_that_finds_the_queue_full_keeps_its_pause() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_slots(&data, &fake, probe.clone(), agent, 1)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        )
+        .await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+
+        // Capacity returns; one task takes the slot and another the queue's one place.
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let holder = slot_holder(&app, &sandbox, &user).await?;
+        let filler = new_task(&app, &sandbox, &user, "Fills the queue").await?;
+        assert_eq!(task(&app, &filler).await?.status, TaskStatus::Queued);
+        let _ = app.resume_round().await;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::WaitingCapacity);
+        let pause = app
+            .deps
+            .store
+            .open_pause(&id)
+            .await?
+            .ok_or("the pause is gone")?;
+        assert_eq!(pause.kind, PauseKind::Limit, "{pause:?}");
+
+        // The queue's place frees (its task takes the slot): the next round queues the start,
+        // and it runs past the limit when its turn comes.
+        stop(&app, &holder).await?;
+        wait_for("the queue's task running", Duration::from_secs(30), || {
+            has_status(&app, &filler, TaskStatus::Running)
+        })
+        .await?;
+        let _ = app.resume_round().await;
+        wait_for("the start in the queue", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Queued)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        stop(&app, &filler).await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
 

@@ -1531,24 +1531,18 @@ impl App {
                     ));
                 }
                 if task.status != TaskStatus::Queued {
-                    let next = task
-                        .status
-                        .apply(TaskEvent::ContinueQueued)
-                        .unwrap_or(TaskStatus::Queued);
-                    self.deps
-                        .store
-                        .transition_task(&task.id, Some(task.status), next, None, self.now())
-                        .await?;
-                    // How it was to start waits with it: the queue starts every task with a
-                    // plain start, which this one replaces (SPEC-483 QST-001). A subscription
-                    // is kept when a person chose it (their Continue of a resting task); the
-                    // pool's own choice for a paused task is made again at the launch, when it
-                    // may be another.
+                    // How it was to start waits with it, written with the status in one step:
+                    // the queue starts every task with a plain start, which this one replaces
+                    // (SPEC-483 QST-001). A subscription is kept when a person chose it (their
+                    // Continue of a resting task); the pool's own choice for a paused task is
+                    // made again at the launch, when it may be another.
                     let chosen = account.as_ref().filter(|_| task.status.is_resting());
                     self.deps
                         .store
-                        .set_queued_start(&task.id, &start.kept(chosen))
+                        .queue_task(&task.id, task.status, &start.kept(chosen), self.now())
                         .await?;
+                    // A paused task's start waits in the queue now, not for capacity.
+                    self.end_pause(&task.id, "started").await;
                     self.publish_task(&task.id).await;
                 }
                 return Ok(true);
@@ -1557,11 +1551,18 @@ impl App {
             // now (SPEC-483 QST-001); one queued without a start takes the one given.
             let (start, account) = match task.status {
                 TaskStatus::Queued => match self.deps.store.queued_start(&task.id).await? {
-                    Some(kept) => RunStart::of_kept(kept),
+                    Some(kept) => {
+                        let (start, chosen) = RunStart::of_kept(kept);
+                        (start, self.kept_choice(&task, chosen).await?)
+                    }
                     None => (start, account),
                 },
                 _ => (start, account),
             };
+            // The start is made: a pause the task waited in is over. Only here, so that a
+            // start refused above (the queue is full) leaves the pause, and with it the pool's
+            // next round, as they were (SPEC-483 QST-002).
+            self.end_pause(&task.id, "started").await;
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
@@ -1592,6 +1593,32 @@ impl App {
             }
             result.map(|()| true)
         })
+    }
+
+    /// The subscription a person chose for a start that waited in the queue, when the task's
+    /// turn comes (SPEC-483 QST-001): still theirs while it would take the task, as their
+    /// choice of it would be accepted now. One that would be refused (at its limit, needing a
+    /// sign-in, removed) is given up and the pool places the task, said in its terminal: a
+    /// refusal now would fail a task whose person is no longer looking.
+    async fn kept_choice(
+        &self,
+        task: &TaskRecord,
+        chosen: Option<AccountId>,
+    ) -> AppResult<Option<AccountId>> {
+        let Some(chosen) = chosen else {
+            return Ok(None);
+        };
+        let input = self.rotation_input(task, None).await?;
+        let asked = Trigger::Manual {
+            account: Some(chosen.clone()),
+        };
+        if !matches!(rotation::decide(&input, asked).0, Decision::Stay) {
+            return Ok(Some(chosen));
+        }
+        self.runtime(&task.id).hub.notice(
+            "↻ The subscription chosen for this task cannot take it now, so Yulius chose one.",
+        );
+        Ok(None)
     }
 
     async fn launch_attempt(

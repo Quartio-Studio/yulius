@@ -826,9 +826,9 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-483 QST-001: a queued task keeps how it is to start. The start is read while the
-    /// task is queued since it was written, and by nobody after: not once the task left the
-    /// queue, nor when it is queued again later.
+    /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
+    /// read while the task waits, and is gone from the row once it left the queue; one written
+    /// by hand that this build cannot read gives none.
     #[tokio::test]
     async fn a_queued_task_keeps_its_start_while_it_waits() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -854,54 +854,106 @@ mod tests {
         }
         let store = SqliteStore::open(&path)?;
         assert_eq!(schema_version(), 57);
+        let raw = rusqlite::Connection::open(&path)?;
+        let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(version, 57, "the version-56 database was migrated");
+        let kept = |raw: &rusqlite::Connection| -> rusqlite::Result<Option<String>> {
+            raw.query_row(
+                "SELECT queued_start FROM tasks WHERE id = 't1'",
+                [],
+                |row| row.get(0),
+            )
+        };
         let task = TaskId::parse("t1")?;
         let start = QueuedStart {
             kind: QueuedStartKind::Resume,
-            prompt: Some("go on\nwith \"this\"".into()),
+            prompt: Some("go on\nwith \"this\" and null".into()),
             account_id: Some(AccountId::parse("a-chosen")?),
         };
-        // Not queued: nothing is kept.
-        assert!(!store.set_queued_start(&task, &start).await?);
-        assert_eq!(store.queued_start(&task).await?, None);
-
-        let waiting = Some(TaskStatus::WaitingCapacity);
+        // Not in the status it was read in: nothing changes.
         assert!(
-            store
-                .transition_task(&task, waiting, TaskStatus::Queued, None, Timestamp(600))
+            !store
+                .queue_task(&task, TaskStatus::Running, &start, Timestamp(550))
                 .await?
         );
-        assert_eq!(store.queued_start(&task).await?, None, "queued without one");
-        assert!(store.set_queued_start(&task, &start).await?);
+        let row = |raw: &rusqlite::Connection| -> rusqlite::Result<(String, Option<i64>)> {
+            raw.query_row(
+                "SELECT status, queued_at FROM tasks WHERE id = 't1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        };
+        assert_eq!(row(&raw)?, ("waiting_capacity".to_owned(), None));
+        assert_eq!(kept(&raw)?, None);
+
+        assert!(
+            store
+                .queue_task(&task, TaskStatus::WaitingCapacity, &start, Timestamp(600))
+                .await?
+        );
+        assert_eq!(row(&raw)?, ("queued".to_owned(), Some(600)));
         assert_eq!(store.queued_start(&task).await?, Some(start.clone()));
+
+        // A start this build cannot read (another kind, a subscription id of another shape,
+        // no JSON at all) is none, not an error.
+        for unreadable in [
+            r#"{"kind":"later","prompt":null,"account":null,"at":600}"#,
+            r#"{"kind":"resume","prompt":null,"account":"not an id","at":600}"#,
+            r#"{"kind":7,"prompt":null,"account":null,"at":600}"#,
+            "not json",
+        ] {
+            raw.execute(
+                "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+                [unreadable],
+            )?;
+            assert_eq!(store.queued_start(&task).await?, None, "{unreadable}");
+        }
+        // One of an earlier wait (another `at`) is not this wait's.
+        raw.execute(
+            "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+            [r#"{"kind":"after_limit","prompt":null,"account":null,"at":599}"#],
+        )?;
+        assert_eq!(store.queued_start(&task).await?, None);
+
+        // It leaves the queue (stopped): the start is gone from the row, held prompt and all.
+        let stopped = TaskStatus::Stopped(StopReason::Cancelled);
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(TaskStatus::Queued),
+                    stopped,
+                    None,
+                    Timestamp(700)
+                )
+                .await?
+        );
+        assert_eq!(kept(&raw)?, None);
+        assert_eq!(store.queued_start(&task).await?, None);
+        // Queued again with another start: that one is its start.
         let plain = QueuedStart {
             kind: QueuedStartKind::AfterLimit,
             prompt: None,
             account_id: None,
         };
-        assert!(store.set_queued_start(&task, &plain).await?);
-        assert_eq!(store.queued_start(&task).await?, Some(plain));
-
-        // It left the queue (stopped) and is queued again later: the old start is not its start.
-        let stopped = TaskStatus::Stopped(StopReason::Cancelled);
-        let queued = Some(TaskStatus::Queued);
         assert!(
             store
-                .transition_task(&task, queued, stopped, None, Timestamp(700))
+                .queue_task(&task, stopped, &plain, Timestamp(800))
                 .await?
         );
-        assert_eq!(store.queued_start(&task).await?, None);
+        assert_eq!(store.queued_start(&task).await?, Some(plain));
         assert!(
             store
                 .transition_task(
                     &task,
-                    Some(stopped),
-                    TaskStatus::Queued,
+                    Some(TaskStatus::Queued),
+                    TaskStatus::Starting,
                     None,
-                    Timestamp(800)
+                    Timestamp(900)
                 )
                 .await?
         );
-        assert_eq!(store.queued_start(&task).await?, None);
+        assert_eq!(kept(&raw)?, None, "launched: nothing is kept");
         Ok(())
     }
 

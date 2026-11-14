@@ -762,11 +762,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   menu call the others "needs a new sign-in".
 - **QST-001** A start that has to wait in the queue is kept with its task
   (`tasks.queued_start`: the kind of start, its prompt, and the subscription when a person
-  chose it), and whoever starts the queued task later starts it as that start was to be;
-  a task queued without one starts as before. The kept start is the task's only while it
-  is queued since it was written: one that left the queue, or is queued again later, has
-  none. It survives a restart of Yulius. The pool's own choice of a subscription for a
-  paused task is not kept: the pool chooses again when the slot frees.
+  chose it), written in one step with the task's change to `queued`, and whoever starts
+  the queued task later starts it as that start was to be; a task queued without one
+  starts as before. The kept start is the task's only while it waits: the change that
+  takes the task out of the queue removes it from the row. It survives a restart of
+  Yulius. The pool's own choice of a subscription for a paused task is not kept: the pool
+  chooses again when the slot frees. A subscription a person chose that would be refused
+  when the task's turn comes (at its limit, needing a sign-in, removed) is given up: the
+  pool places the task and its terminal says "The subscription chosen for this task
+  cannot take it now, so Yulius chose one."
+- **QST-002** A paused task's pause ends when its start is made or waits in the queue,
+  not before: a start that is refused (the queue is full) leaves the pause open, with its
+  kind and continuation, and the pool's next round tries again.
 
 ## Plan
 
@@ -1232,10 +1239,20 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-110** With one session slot held and the pool preferring another subscription, a
   stopped task continued on a chosen subscription is queued; Yulius restarts (the
   holder's session lives on); when the slot frees, the task runs on the chosen one.
-- **AC-111** In the store: nothing is kept for a task that is not queued; a kept start is
-  read back as written (a prompt with a line break and quotes, a subscription id) and is
-  replaced by a later one; after the task left the queue, and when it is queued again,
-  there is none. A database of schema version 56 opens at 57.
+- **AC-111** In the store: a task that no longer reads the status it was read in is not
+  queued and nothing is kept; a kept start is read back as written (a prompt with a line
+  break, quotes and the word null, a subscription id); one this build cannot read (another
+  kind, a subscription id of another shape, no JSON) or of an earlier wait gives none;
+  after the task left the queue the column is empty, and a task queued again has the
+  start of that wait. A database of schema version 56 opens at 57.
+- **AC-112** With the slot held, a stopped task continued on a chosen subscription that
+  then fills to 100 % while the task waits: when the slot frees the task runs on the
+  other subscription and its terminal says that the chosen one could not take it; it is
+  not failed.
+- **AC-113** With one slot held and a queue of one place taken, a task paused at a usage
+  limit without a process that becomes resumable keeps its `limit` pause through the
+  pool's round and stays `waiting_capacity`; once the queue has room the next round
+  queues it and its pause ends; when its turn comes it resumes past the limit.
 
 ## Test plan
 
@@ -1442,7 +1459,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   (AC-110), with the real session host and one slot; `yulius-store`
   `tests::a_queued_task_keeps_its_start_while_it_waits` (AC-111); `yulius-app`
   `supervisor::tests::a_kept_start_comes_back_as_it_was` (every kind, with and without a
-  prompt and a subscription).
+  prompt and a subscription);
+  `pool_supervision::a_chosen_subscription_that_filled_up_while_waiting_is_given_up`
+  (AC-112) and `pool_supervision::a_resume_that_finds_the_queue_full_keeps_its_pause`
+  (AC-113).
 
 ## Decisions
 
@@ -1513,12 +1533,24 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   subscription has no pause to keep anything. The queue itself keeps the start instead,
   in the task's row, read in `start_run_if` under the launch lock: whoever starts a queued
   task (the queue's pass, with its plain start) gets the kept one, so no caller can forget
-  to ask. It is valid by the task's `queued_at`, as a flag's reason is by `state_at`
-  (ADR-0306), so no other statement has to clear it. A subscription is kept only when a
-  person chose it (the start of a resting task); the pool's choice for a paused task is a
-  fact of the moment it was made, and keeping it could send the task to a subscription
-  that filled up while it waited. The kept prompt is plain text in the database, as a
-  pause's continuation already is.
+  to ask. It is written with the status in one transaction (`queue_task`) and
+  removed by the status change that takes the task out of the queue, so a held prompt
+  stays in the database no longer than a pause's continuation does (the review, findings
+  1 and 2: the first version only made it unreadable by the task's `queued_at`, and wrote
+  it in a second step). The `queued_at` check stays as a guard. A subscription is kept
+  only when a person chose it (the start of a resting task); the pool's choice for a
+  paused task is a fact of the moment it was made, and keeping it could send the task to
+  a subscription that filled up while it waited. A person's choice can go stale the same
+  way; then the task is not failed, as an immediate Continue on that subscription is
+  refused to the person's face: nobody is there, so the pool places it and the terminal
+  says so (MOV-002 forbids landing elsewhere unsaid, not landing elsewhere). One case
+  keeps no choice: a person's move of a running task whose old session reports a limit as
+  it ends goes on from `waiting_capacity`, and if every slot is taken then, the task
+  queues with the pool's choice (the status read, not the caller, says who chose).
+  The pause of a paused task used to be ended before its start was tried, and a start the
+  full queue refused left the task waiting for capacity with no pause: nothing started it
+  again (the review, from before this slice). The start ends the pause now, where it is
+  made or queued.
 - Slice 18 (no decision record: the comment at the usage write already stated the rule,
   "a reading never makes a subscription that needs a new sign-in usable again"; the code
   now has it once). `error` is kept as a status: it is what a first sign-in that failed
