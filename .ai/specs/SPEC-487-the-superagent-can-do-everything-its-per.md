@@ -158,7 +158,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 1's independent review answered test-first
 - [x] Slice 2: the person's project tools served to the Superagent (restart, pause, resume, start now, a task's delivery, CI, dev deploy), the rule's decision record, the instructions rewritten
 - [x] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
-- [ ] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
+- [x] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
 - [ ] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
 - [ ] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
 - [ ] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
@@ -559,3 +559,33 @@ the function the web UI's route calls, with the person's rights checked at the c
   limit of the mark that ends a draft sent past is said where it is kept; the wording of
   this section and of the news refusal. Left as it is: the `turn` fact of a close through a
   live session.
+
+### Slice 4 (2026-11-14)
+
+- **Slice 3 is merged:** pull request #1275 into `dev` at `ae5370970`, whose Yulius CI run
+  passed (squash `9ad06fdb2`). The notes of its approving review are this slice's first
+  commit (see round 2 above).
+- **Tests first:** the Superagent test, the session test's tail and the list of served tools
+  failed against the code before the change (`target/evidence/s4-red.log`: every task listed
+  for scope `needs_you`; no tail; two tools not served) and pass with it (`s4-green.log`).
+- **Found on the way:** the instructions grew to 4193 characters with the new sentence, past
+  the 4096 the client reads; the bound's test caught it, and they are 3963 now. A held
+  prompt's words would have reached every task's agent through the list: they go to the
+  person's own callers only, tested with a task's token.
+- **Mutation:** eleven one-line mutants (the scope's filter, the group, a held prompt's
+  words for agents, the owner of a dismissal, the four actions, the tail's three rules, the
+  two lines of text, the audit's decision), each failed by a named test
+  (`target/evidence/mutants-slice4.py`, `mutants-slice4.log`: `survived=0`). One of them
+  survived at first (the tail's cut at the front had no test): a long session now shows it.
+- **The shared code keeps its other callers:** every test of `yulius`, `yulius-app` and
+  `yulius-harness` passes (2957), the remote MCP's and the Global Superagent's among them.
+- **Gate:** `scripts/dev ci` passed on `142bbc1d5` (4354 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice4.log`); the commit after it changes this
+  specification only. (Its first run failed at `cargo doc`: a public module's text linked a
+  private function.)
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Not tested:** a real Claude Code session reading the new fields and calling the two
+  tools; `task_held_prompt` with `send`, `parallel` and `after` through the tool (the card's
+  function is called with the action as given, and its own tests cover each; `dismiss` and
+  the refusals are run here); a request that changes between its read and its dismissal
+  (the store's conditional write has its own test, `end_task_needs_you_asking`).
