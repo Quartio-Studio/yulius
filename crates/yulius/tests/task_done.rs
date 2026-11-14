@@ -1060,7 +1060,7 @@ fn nothing_is_typed_while_a_typed_goal_is_not_taken() -> TestResult {
             };
             let handle = tokio::runtime::Handle::current();
             yulius_app::race::on(
-                yulius_app::race::Point::GoalEntered,
+                yulius_app::race::Point::LineEntered,
                 Path::new(key.as_str()),
                 move || {
                     let answer = wait_in_hook(

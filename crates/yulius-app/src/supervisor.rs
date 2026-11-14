@@ -2800,7 +2800,7 @@ impl App {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
-            crate::race::reached(crate::race::Point::GoalEntered, Path::new(task_id.as_str()));
+            crate::race::reached(crate::race::Point::LineEntered, Path::new(task_id.as_str()));
             let waited = tokio::time::Instant::now();
             while waited.elapsed() < *wait {
                 if runtime.goal_submitted.load(Ordering::SeqCst) {

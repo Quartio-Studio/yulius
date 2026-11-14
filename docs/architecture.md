@@ -914,9 +914,9 @@ next successful reply. Each stage is said in the task's terminal and audited as
 ```mermaid
 stateDiagram-v2
     [*] --> Clear
-    Clear --> Compacting: ContextFull / type "/compact <focus>"
+    Clear --> Compacting: ContextFull / type "/compact <focus>" (held up to 10 min for a possible draft)
     Compacting --> Compacted: Compacted / type the wake-up line
-    Compacting --> Restarted: CompactFailed or 10 min / fresh session + handoff
+    Compacting --> Restarted: CompactFailed, 10 min, or the command refused behind a draft / fresh session + handoff
     Compacted --> Restarted: ContextFull / fresh session + handoff
     Restarted --> GaveUp: ContextFull in the fresh session / needs attention + reason
     Compacting --> Clear: a successful reply
@@ -1906,8 +1906,9 @@ is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a mess
 `/compact` and the line that wakes a compacted session, and by a typed goal until Claude Code
 took it; the first message has a mark of its own, and "Send anyway" is only an Enter. A
 compaction is held, at most ten minutes and with the task flagged, while anything typed since
-the last prompt sent from the box may sit there, SPEC-483 TYP-001, TYP-002); audited
-`task.messaged`
+the box was last emptied may sit there; typed after the hold behind real text, the command is
+refused as a prompt, which fails the compaction at once (`ContextEpisode::Compacting`'s
+`behind_draft`), SPEC-483 TYP-001, TYP-002); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 

@@ -42,14 +42,21 @@ const LEFT_TO_PERSON: &str = "Yulius leaves the full session to you: you typed i
 const COMPACT_HELD_PROBLEM: &str = "The session's context is full, and Yulius does not compact \
     it yet: someone typed in the terminal and sent no prompt since, so their text may still be \
     in the prompt box.";
-/// What the person does about [`COMPACT_HELD_PROBLEM`].
+/// What the person does about [`COMPACT_HELD_PROBLEM`], and what happens when nobody does.
 const COMPACT_HELD_ACTION: &str = "Send what you typed in the terminal, or clear it and send any \
-    prompt: Yulius then compacts the session. In ten minutes it compacts it all the same, and \
-    that text is sent with the command.";
+    prompt: Yulius then compacts the session. In ten minutes Yulius types its command all the \
+    same: text still in the prompt box then is sent with it and lost, and the task continues in \
+    a fresh session.";
 /// The same, as one line in the session's terminal.
 const COMPACT_HELD_NOTICE: &str = "Yulius holds the compaction of this full session: text typed \
     here was not sent and may still be in the prompt box. Send it, or clear it and send any \
-    prompt; in ten minutes Yulius compacts the session all the same.";
+    prompt. In ten minutes Yulius types its command all the same: text still in the box then \
+    is sent with it and lost, and the task continues in a fresh session.";
+/// What the terminal says when the line that wakes a compacted session is not typed.
+const WAKE_WITHHELD: &str = "Yulius did not tell the session to carry on: text typed here may \
+    still be in the prompt box. Send it, or clear it and send any prompt.";
+/// Why the compaction failed when its command, typed after the hold, was refused as a prompt.
+const SENT_WITH_A_DRAFT: &str = "the command was sent with text left in the prompt box";
 
 /// The reason of the flag that says a compaction waits for a person's possible draft.
 fn held_for_a_draft() -> AttentionRecord {
@@ -62,7 +69,7 @@ enum Line {
     /// `/compact <focus>`: held for the draft, its person told, and typed when the hold ends.
     Compact,
     /// The line that wakes a compacted session: not typed behind a draft, which the agent
-    /// would act on.
+    /// would act on; the terminal says so.
     Wake,
 }
 
@@ -81,6 +88,10 @@ pub(crate) enum ContextEpisode {
         attempt: AttemptId,
         /// When the compaction was asked for (ms), which identifies it.
         since: i64,
+        /// The command was typed after its hold, behind what may sit in the prompt box
+        /// (SPEC-483 TYP-001): with text there it is no command but a prompt, which the full
+        /// context refuses, and that refusal is the compaction's failure.
+        behind_draft: bool,
     },
     /// The compaction succeeded and the agent was told to carry on.
     Compacted,
@@ -103,6 +114,8 @@ enum Next {
     GiveUp,
     /// Already given up: the task is flagged again, silently.
     Reflag,
+    /// The command went out as a prompt behind a person's text and was refused.
+    Failed,
     Nothing,
 }
 
@@ -138,6 +151,9 @@ impl App {
                 ContextEpisode::Compacting { attempt: asked, .. } if *asked != attempt.id => {
                     Next::Compact
                 }
+                ContextEpisode::Compacting {
+                    behind_draft: true, ..
+                } => Next::Failed,
                 // A prompt sent before the compaction meets the full context too.
                 ContextEpisode::Compacting { .. } => Next::Nothing,
                 ContextEpisode::Compacted => Next::Restart,
@@ -150,6 +166,7 @@ impl App {
                     *episode = ContextEpisode::Compacting {
                         attempt: attempt.id.clone(),
                         since: self.now().0,
+                        behind_draft: false,
                     };
                 }
                 Next::Restart => {
@@ -158,7 +175,7 @@ impl App {
                     };
                 }
                 Next::GiveUp => *episode = ContextEpisode::GaveUp,
-                Next::Reflag | Next::Nothing => {}
+                Next::Reflag | Next::Failed | Next::Nothing => {}
             }
             next
         };
@@ -180,6 +197,11 @@ impl App {
             }
             Next::GiveUp => self.give_up_on_full_context(&task, STILL_FULL, true).await,
             Next::Reflag => self.give_up_on_full_context(&task, STILL_FULL, false).await,
+            // No wait for the compaction's time: the task continues in a fresh session now.
+            Next::Failed => {
+                self.compaction_failed(task_id, attempt, None, SENT_WITH_A_DRAFT)
+                    .await;
+            }
             // A refusal while Yulius compacts or restarts the session: its recovery goes on.
             Next::Nothing => {}
         }
@@ -204,9 +226,7 @@ impl App {
             return;
         };
         tracing::info!(task = %task_id, "the full context was compacted");
-        runtime
-            .hub
-            .notice("✓ Yulius compacted the conversation; the task goes on.");
+        runtime.hub.notice("✓ Yulius compacted the conversation.");
         self.audit_context(task_id, "compacted").await;
         let line = self.task_focus(&task).await.after_compaction();
         let asked_ms = self.now().0;
@@ -214,7 +234,8 @@ impl App {
         let task_id = task_id.clone();
         tokio::spawn(async move {
             let compacted = |e: &ContextEpisode| *e == ContextEpisode::Compacted;
-            // A person who typed during or after the compaction just goes on: nothing to say.
+            // A person who typed after the compaction just goes on; one who typed during it
+            // is told that the session was not woken.
             if !app
                 .type_line(&task_id, &attempt, (&line, Line::Wake), asked_ms, compacted)
                 .await
@@ -270,6 +291,7 @@ impl App {
                 ContextEpisode::Compacting {
                     attempt: compacted,
                     since: asked,
+                    ..
                 } if *compacted == attempt.id && since.is_none_or(|s| s == *asked) => {}
                 _ => return,
             }
@@ -536,6 +558,9 @@ impl App {
         task_id: &TaskId,
         attempt: &AttemptRecord,
     ) {
+        // A compaction that was held for a possible draft when Yulius restarted did not give
+        // up: its flag ends and the recovery starts over, hold and all (SPEC-483 TYP-001).
+        self.end_compaction_hold(task_id, Activity::Working).await;
         match self.deps.store.task(task_id).await {
             Ok(Some(task)) if task.activity != Some(Activity::NeedsAttention) => {
                 self.context_full_observed(task_id, attempt).await;
@@ -550,24 +575,49 @@ impl App {
     /// went quiet, the input failed).
     ///
     /// The box is a person's when they typed since `asked_ms`. Something typed before may
-    /// still sit in it too (any key since the last prompt sent from the box counts: Yulius sees
-    /// keys, not the box), and the line would be appended to it and sent with it (SPEC-480
-    /// DRF-001; SPEC-483 TYP-001). What then happens is the line's own ([`Line`]): the
-    /// compaction is held for at most `compact_hold_ms` with the person told, the wake-up is
-    /// not typed. From the line to its Enter nothing else is typed ([`Typing`], TYP-002).
+    /// still sit in it too (any key since the box was last emptied counts: Yulius sees keys,
+    /// not the box), and the line would be appended to it and sent with it (SPEC-480 DRF-001;
+    /// SPEC-483 TYP-001). What then happens is the line's own ([`Line`]): the compaction is
+    /// held for at most `compact_hold_ms` with the person told, the wake-up is not typed and
+    /// the terminal says so. From the line to its Enter nothing else is typed ([`Typing`],
+    /// TYP-002), and that Enter empties the box, whatever was in it.
     async fn type_line(
+        &self,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+        line: (&str, Line),
+        asked_ms: i64,
+        wanted: impl Fn(&ContextEpisode) -> bool,
+    ) -> bool {
+        let mut held = false;
+        let typed = self
+            .type_line_or_hold(task_id, attempt, line, asked_ms, &wanted, &mut held)
+            .await;
+        // A hold that ended without the command (its person typed, the run ended, the terminal
+        // never went quiet): the flag's "in ten minutes" is over, and the task waits for them.
+        if held && !typed {
+            self.end_compaction_hold(task_id, Activity::Waiting).await;
+        }
+        typed
+    }
+
+    /// [`Self::type_line`]; `held` says whether the hold's flag is up when it returns.
+    async fn type_line_or_hold(
         &self,
         task_id: &TaskId,
         attempt: &AttemptId,
         (line, kind): (&str, Line),
         asked_ms: i64,
-        wanted: impl Fn(&ContextEpisode) -> bool,
+        wanted: &impl Fn(&ContextEpisode) -> bool,
+        held: &mut bool,
     ) -> bool {
         let runtime = self.runtime(task_id);
         let typed_since = || runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms;
         let hold = Duration::from_millis(self.config.compact_hold_ms);
         // Since when the line waits for a possible draft; the person was told then.
-        let mut held: Option<tokio::time::Instant> = None;
+        let mut held_since: Option<tokio::time::Instant> = None;
+        // The hold ran out with the box still not known empty: the line goes behind it.
+        let mut behind_draft = false;
         let mut started = tokio::time::Instant::now();
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = started;
@@ -584,20 +634,23 @@ impl App {
             }
             // A person who typed since: the prompt box (and any draft in it) is theirs.
             if typed_since() {
-                self.left_to_its_person(task_id, kind, held.is_some(), &wanted)
-                    .await;
+                self.left_to_its_person(task_id, kind, wanted);
                 return false;
             }
-            if self.has_draft(task_id) {
+            if !behind_draft && self.has_draft(task_id) {
                 if kind == Line::Wake {
-                    // A draft typed while the session was compacted: its person goes on.
+                    // Typed while the session was compacted: the agent would act on it.
+                    if self.context_is(task_id, wanted) {
+                        runtime.hub.notice(WAKE_WITHHELD);
+                    }
                     return false;
                 }
-                let since = match held {
+                let since = match held_since {
                     Some(since) => since,
                     None => {
                         self.tell_of_held_compaction(task_id).await;
-                        *held.insert(tokio::time::Instant::now())
+                        *held = true;
+                        *held_since.insert(tokio::time::Instant::now())
                     }
                 };
                 if since.elapsed() < hold {
@@ -605,7 +658,8 @@ impl App {
                     started = tokio::time::Instant::now();
                     continue;
                 }
-                tracing::info!(task = %task_id, "nobody emptied the prompt box: the full session is compacted all the same");
+                tracing::info!(task = %task_id, "nobody emptied the prompt box: the command for the full session is typed all the same");
+                behind_draft = true;
             }
             ready = quiet_since.elapsed() >= TYPE_QUIET;
         }
@@ -621,16 +675,22 @@ impl App {
         // the wait for it gives a person time to start typing.
         let _typing = Typing::wait(&runtime.typing_message, TYPING_TURN_WAIT).await;
         if typed_since() {
-            self.left_to_its_person(task_id, kind, held.is_some(), &wanted)
-                .await;
+            self.left_to_its_person(task_id, kind, wanted);
             return false;
         }
-        if !self.context_is(task_id, &wanted) || !self.attempt_live(task_id, attempt).await {
+        if !self.context_is(task_id, wanted) || !self.attempt_live(task_id, attempt).await {
             return false;
         }
-        if held.is_some() {
-            // Nobody emptied the box: the task works again while Yulius compacts it.
+        if behind_draft {
+            // Nobody emptied the box: the task works again while Yulius goes on, and a refusal
+            // of what is sent now is the compaction's failure.
             self.end_compaction_hold(task_id, Activity::Working).await;
+            *held = false;
+            if let Ok(mut episode) = runtime.context.lock()
+                && let ContextEpisode::Compacting { behind_draft, .. } = &mut *episode
+            {
+                *behind_draft = true;
+            }
         }
         if let Err(err) = self.send_input(task_id, line.as_bytes()).await {
             tracing::warn!(task = %task_id, error = %err, "could not type into a full session");
@@ -649,38 +709,42 @@ impl App {
             tracing::warn!(task = %task_id, error = %err, "could not submit into a full session");
             return false;
         }
+        // The Enter sent whatever was in the box, so it is empty from here. Claude Code runs
+        // no prompt hook for a command, so nothing else would say so, and a key from hours ago
+        // would keep the wake-up out after the very compaction it was held for.
+        runtime
+            .box_emptied_ms
+            .fetch_max(self.now().0, Ordering::SeqCst);
+        crate::race::reached(
+            crate::race::Point::LineEntered,
+            std::path::Path::new(task_id.as_str()),
+        );
         true
     }
 
     /// A person typed since the line was asked for: nothing is typed, and for a compaction the
-    /// terminal says that the full session is theirs (only while it is still wanted). A
-    /// compaction that was `held` for their possible draft is theirs too now: its flag ends,
-    /// and the task waits for them as any full session a person types into does.
-    async fn left_to_its_person(
+    /// terminal says that the full session is theirs (only while it is still wanted).
+    fn left_to_its_person(
         &self,
         task_id: &TaskId,
         kind: Line,
-        held: bool,
         wanted: &impl Fn(&ContextEpisode) -> bool,
     ) {
         tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
         if kind == Line::Compact && self.context_is(task_id, wanted) {
             self.runtime(task_id).hub.notice(LEFT_TO_PERSON);
         }
-        if held {
-            self.end_compaction_hold(task_id, Activity::Waiting).await;
-        }
     }
 
     /// Tells the session's person that its compaction waits for what they may have left in the
     /// prompt box (SPEC-483 TYP-001): the task is flagged with the reason and what to do, and
-    /// its terminal says so. The flag ends when its person types (the session is theirs then)
-    /// or when the hold is over ([`Self::end_compaction_hold`]).
+    /// its terminal says so, before the flag is raised. The flag ends with the hold, however
+    /// it ends ([`Self::end_compaction_hold`]).
     async fn tell_of_held_compaction(&self, task_id: &TaskId) {
+        self.runtime(task_id).hub.notice(COMPACT_HELD_NOTICE);
         if let Err(err) = self.flag_attention(task_id, held_for_a_draft()).await {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task whose draft holds its compaction");
         }
-        self.runtime(task_id).hub.notice(COMPACT_HELD_NOTICE);
         tracing::info!(task = %task_id, "the compaction of a full session waits for a person's possible draft");
     }
 

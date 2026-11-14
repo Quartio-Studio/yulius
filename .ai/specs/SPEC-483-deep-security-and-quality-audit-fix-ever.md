@@ -833,11 +833,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
   or clear it and send any prompt), and its terminal says so. When its person types, the
   session is theirs as after any key since the refusal: the flag ends and the task waits
   for them; the prompt they send then meets the full context and is compacted in its
-  turn. The hold lasts at most `compact_hold_ms` (ten minutes); then the session
-  is compacted all the same, the flag ends and the task works on (a task nobody watches
-  must not wait for good for a key that left nothing). The line that wakes a compacted
-  session is not typed behind a draft at all: its person goes on. A person who types
-  after the refusal owns the session as before ("Yulius leaves the full session to you").
+  turn. The hold lasts at most `compact_hold_ms` (ten minutes); then Yulius types its
+  command all the same, the flag ends and the task works on (a task nobody watches must
+  not wait for good for a key that left nothing). With nothing in the box the session is
+  compacted. With text there the command goes out behind it as a prompt, which the full
+  context refuses: that refusal is the compaction's failure, and the task continues in a
+  fresh session at once; the flag's action and the terminal say this beforehand. The flag
+  ends with the hold however it ends (its person types, the command is typed, the run
+  ends, the terminal never goes quiet), and a hold cut by a restart of Yulius is taken up
+  again by the new server. The Enter of a line Yulius typed empties the box, whatever was
+  in it (Claude Code runs no prompt hook for a command), so a key from before it keeps
+  nothing out afterwards. The line that wakes a compacted session is not typed behind a
+  draft (a key typed while the session was compacted): the terminal says that the
+  session was not told to carry on and what to do, and the task waits for its person. A
+  person who types after the refusal owns the session as before ("Yulius leaves the full
+  session to you").
 - **TYP-002** From a line Yulius types to its Enter, nothing else is typed into the
   session by Yulius: a message, `/compact` and its wake-up line, and the goal hold the
   run's one typing mark for that time; the goal holds it until Claude Code took it or its
@@ -1355,7 +1365,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   left to them, the task reads Your turn and still nothing is typed. They send it: the
   session is compacted.
 - **AC-121** With a hold of 3 s and a key that left no text, the task is flagged, nothing
-  is typed at first, then the session is compacted and the flag is gone.
+  is typed at first, then the session is compacted, the flag is gone and the session is
+  told to carry on. With real text in the box, the task gets a fresh session (a second
+  run, new) within the test's minute, and the terminal says "Compacting did not help (the
+  command was sent with text left in the prompt box)".
+- **AC-125** A compaction is held and flagged; Yulius restarts; the new server (hold 3 s)
+  takes the recovery up again and the task goes on (a second run).
 - **AC-122** A reattached run that holds another person's servers and sits at a usage
   limit is restarted past the limit (a resume that continues the interrupted turn, no
   limit record left in a transcript).
@@ -1364,9 +1379,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   the terminal says the session is left to them and the task reads Your turn. The same
   key before a resumed session's `/goal` keeps the goal out, and the task reads Needs
   your action with "Someone typed in the terminal before Yulius set the task's goal".
-- **AC-124** A key typed while the session is compacted (no prompt sent after it): the
-  session is compacted, the task reads Your turn, and the line that wakes a compacted
-  session is not typed.
+- **AC-124** A key typed right after the Enter of Yulius's `/compact`: the session is
+  compacted, the terminal says "Yulius did not tell the session to carry on: …", the task
+  reads Your turn, and the line that wakes a compacted session is not typed.
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1594,12 +1609,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter`,
   `first_message::nothing_is_typed_between_the_goal_and_its_enter` and
   `task_done::nothing_is_typed_while_a_typed_goal_is_not_taken` (AC-119, with pause
-  points after the line and after the goal's Enter, `LineTyped` and `GoalEntered`);
+  points after the line and after its Enter, `LineTyped` and `LineEntered`);
   `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (AC-122);
   `context_full::a_key_just_before_the_compaction_keeps_it_out` and
   `first_message::a_key_just_before_the_goal_keeps_it_out_and_is_said` (AC-123, with a
   pause point before the typing mark, `LineReady`);
-  `context_full::a_draft_typed_during_the_compaction_keeps_the_wake_up_out` (AC-124).
+  `context_full::a_draft_typed_during_the_compaction_keeps_the_wake_up_out` (AC-124, the
+  key at the pause point after the Enter, `LineEntered`);
+  `context_full::a_command_sent_behind_real_text_continues_in_a_fresh_session` (AC-121)
+  and `context_full::a_compaction_held_at_a_restart_is_taken_up_again` (AC-125).
 
 ## Decisions
 
@@ -1672,12 +1690,21 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   from the box, so one key hours ago would stop every later compaction, with one line in
   a terminal nobody watches. So the compaction is held, not given up: the task is flagged
   with the reason and what to do, as a held message's task is (SPEC-480 DRF-006), and
-  after ten minutes it is typed all the same. That last step can send a real draft with
-  the command, after its person was told for ten minutes; the other ends were weighed and
-  are worse: waiting for good stops unattended work for a key that left nothing, a fresh
-  session loses the draft as surely and the conversation with it, and clearing the box
-  first (Ctrl-U) clears one line of it. Ten minutes is the wait a compaction's outcome
-  already gets. The rule is not the message's rule (`box_held`: a person's keys, and a
+  after ten minutes the command is typed all the same. With an empty box (the key left
+  nothing: the usual case of a task nobody watches) that compacts the session and keeps
+  its conversation. With real text there the command is no command: it goes out behind
+  the text as a prompt, the full context refuses it, and the task continues in a fresh
+  session, which is where it would have ended anyway; the refusal counts as the
+  compaction's failure at once (the review's second round: left to the compaction's own
+  ten minutes, the texts promised a compaction that could not come). The person was told
+  all of this for ten minutes, in the flag and in the terminal. The other ends were
+  weighed and are worse: waiting for good stops unattended work for a key that left
+  nothing, going to a fresh session without trying loses the conversation also when the
+  box was empty, and clearing the box first (Ctrl-U) clears one line of it. The flag is
+  the hold's: it ends with it on every way out, and a restart of Yulius does not turn a
+  hold into "gave up". Yulius's own Enter empties the box in what Yulius knows, since no
+  hook says so for a command; without that the very key the hold was for kept the
+  wake-up out after the compaction. The rule is not the message's rule (`box_held`: a person's keys, and a
   minute after their last one): a line for a full session also stays behind a message of
   Yulius's own whose Enter failed, and does not wait for a person who is only near.
   The goal's typist keeps its own question (did a person type since the run was

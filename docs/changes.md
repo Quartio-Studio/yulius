@@ -10,8 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   21, task #465). A person who typed their next instruction while a turn ran, and whose
   session then filled its context, had `/compact …` appended to that text and sent with
   it. The compaction waits now: the task reads Needs your action and says what to do
-  (send what you typed, or clear it and send any prompt), and after ten minutes Yulius
-  compacts all the same, so a task nobody watches goes on. And from a line Yulius types
+  (send what you typed, or clear it and send any prompt). After ten minutes Yulius types
+  its command all the same, so a task nobody watches goes on: an empty box is compacted,
+  and text still there is sent with the command and the task continues in a fresh
+  session, as the flag says beforehand. And from a line Yulius types
   to its Enter nothing else is typed into the session, whatever the line is (a message,
   `/compact`, a goal); a goal keeps that until Claude Code took it.
 - A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
