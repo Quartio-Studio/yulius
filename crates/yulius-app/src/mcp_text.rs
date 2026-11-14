@@ -832,6 +832,8 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(blocked) = text(task, "start_blocked") {
         parts.push(format!("will not start by itself: {blocked}"));
     }
+    // Why it waits for a person or is held (SPEC-487 QST-001), in its page's words.
+    parts.extend(waits_why(task));
     if let Some(spec) = text(task, "spec_path") {
         parts.push(format!("spec {spec}"));
     }
@@ -843,6 +845,82 @@ fn task_line(task: &Value) -> Option<String> {
         parts.push(format!("updated {updated}"));
     }
     Some(parts.join(" · "))
+}
+
+/// Why a task waits for a person or is held, one part each: its agent's request, the reason
+/// of its flag, a prompt Yulius held, a pause. The words after each colon are the agent's or
+/// Claude Code's own.
+fn waits_why(task: &Value) -> Vec<String> {
+    let mut parts = Vec::new();
+    if text(task, "shows") == Some("needs_you") {
+        parts.push("NEEDS ITS PERSON".to_owned());
+    }
+    if let Some(asked) = task.get("needs_you").filter(|v| v.is_object()) {
+        let verb = if asked.get("decision").and_then(Value::as_bool) == Some(true) {
+            "decide"
+        } else {
+            "do"
+        };
+        // The task's own words, quoted as data.
+        let mut part = format!(
+            "asks its person to {verb}: \"{}\"",
+            text(asked, "action").unwrap_or("?")
+        );
+        for (label, key) in [("what happened", "happened"), ("problem", "problem")] {
+            if let Some(said) = text(asked, key) {
+                part.push_str(&format!(" ({label}: \"{said}\")"));
+            }
+        }
+        if let Some(link) = text(asked, "link") {
+            part.push_str(&format!(" (where: {link})"));
+        }
+        if let Some(at) = text(asked, "at") {
+            part.push_str(&format!(" (asked {at})"));
+        }
+        parts.push(part);
+    }
+    if let Some(flag) = task.get("attention").filter(|v| v.is_object()) {
+        let terminal = text(flag, "kind") == Some("terminal");
+        let by = if terminal {
+            "Claude Code asks in its terminal"
+        } else {
+            "flagged by Yulius"
+        };
+        let said = [
+            text(flag, "problem"),
+            text(flag, "action"),
+            text(flag, "link"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        parts.push(match (said.is_empty(), terminal) {
+            (true, _) => by.to_owned(),
+            // Claude Code's own words, quoted as data.
+            (false, true) => format!("{by}: \"{said}\""),
+            (false, false) => format!("{by}: {said}"),
+        });
+    }
+    if let Some(held) = task.get("held_prompt").filter(|v| v.is_object()) {
+        let class = text(held, "class").unwrap_or("?");
+        parts.push(match text(held, "excerpt") {
+            Some(excerpt) => format!("holds a typed prompt ({class}): \"{excerpt}\""),
+            None => format!("holds a typed prompt ({class}) for its person's decision"),
+        });
+    }
+    if let Some(pause) = task.get("pause").filter(|v| v.is_object()) {
+        let by = match (
+            text(pause, "by"),
+            pause.get("user").and_then(|u| text(u, "login")),
+        ) {
+            (Some("person"), Some(login)) => format!("paused by @{login}"),
+            (Some("update"), _) => "held for an update of Yulius".to_owned(),
+            _ => "paused".to_owned(),
+        };
+        parts.push(by);
+    }
+    parts
 }
 
 /// `tasks_list`: one line per task, the caller's own first. Tasks are named by number in every
@@ -906,9 +984,21 @@ fn session_read(value: &Value) -> Option<String> {
         ", from line {}",
         value.get("from").and_then(Value::as_u64).unwrap_or(0)
     ));
-    match value.get("next_from").and_then(Value::as_u64) {
-        Some(next) => head.push_str(&format!("; continue with from: {next}.")),
-        None => head.push_str("; this is the end of the session."),
+    let next = value.get("next_from").and_then(Value::as_u64);
+    if value.get("tail").and_then(Value::as_bool) == Some(true) {
+        // The session's end (SPEC-487 QST-003).
+        head.push_str(" to its end so far");
+        if value.get("earlier").and_then(Value::as_bool) == Some(true) {
+            head.push_str(" (earlier lines left out)");
+        }
+        if let Some(next) = next {
+            head.push_str(&format!("; what comes later: from: {next}."));
+        }
+    } else {
+        match next {
+            Some(next) => head.push_str(&format!("; continue with from: {next}.")),
+            None => head.push_str("; this is the end of the session."),
+        }
     }
     Some(format!("{head}\n{}", body.trim_end()))
 }
@@ -1446,6 +1536,72 @@ mod tests {
             "Tasks (1, most recently updated first):\n\
              - #9 Last · chained · branch feat/9-last · start rule `#3 done and #5 done and #7 merged` · will not start by itself: Its start rule `#3 done and #5 done and #7 merged` can no longer become true. Start this task now or cancel it. · created 2026-11-13T06:44:27Z · updated 2026-11-13T20:10:29Z"
         );
+    }
+
+    /// SPEC-487 QST-001 (review of slice 4, R2-3, R2-6): every reason a task gives is in its
+    /// line, the words of the task or its person quoted as data: a request to do and one to
+    /// decide with what happened and where, a question in the terminal, a flag of Yulius's,
+    /// a held prompt with and without its words, a person's pause and an update's.
+    #[test]
+    fn every_reason_a_task_gives_is_in_its_line() {
+        let task = |number: u64, why: Value| {
+            let mut task = json!({
+                "task_id": UUID, "number": number, "title": "T", "harness": "claude",
+                "status": "running", "activity": "waiting", "branch": null, "spec_path": null,
+                "steps": {"done": 0, "total": 0, "percent": 0, "current": null},
+                "runs_after": null, "created_at": null, "updated_at": null
+            });
+            if let (Some(task), Some(why)) = (task.as_object_mut(), why.as_object()) {
+                task.extend(why.clone());
+            }
+            task
+        };
+        let value = json!({"tasks": [
+            task(1, json!({"shows": "needs_you", "needs_you": {"action": "Add DEV_HOST", "happened": "The deploy failed", "problem": null, "decision": false, "link": "https://y.test/s/a/secrets", "at": "2026-11-14T09:00:00Z"}})),
+            task(2, json!({"needs_you": {"action": "Pick a region", "decision": true, "problem": "Nothing deploys", "at": "2026-11-14T09:00:00Z"}})),
+            task(3, json!({"attention": {"kind": "terminal", "problem": "Allow Bash?", "action": null, "link": null}})),
+            task(4, json!({"attention": {"kind": "yulius", "problem": "The gate gave up.", "action": "Type a prompt.", "link": null}})),
+            task(5, json!({"held_prompt": {"class": "redirect", "excerpt": "Do the other thing", "at": "x"}})),
+            task(6, json!({"held_prompt": {"class": "new_scope", "at": "x"}})),
+            task(7, json!({"pause": {"by": "person", "user": {"login": "alice"}, "since": "x", "pending": false}})),
+            task(8, json!({"pause": {"by": "update", "user": null, "since": null, "pending": true}})),
+        ]});
+        let text = render("tasks_list", &json!({}), &value);
+        let line = |number: u64| {
+            text.lines()
+                .find(|line| line.starts_with(&format!("- #{number} ")))
+                .unwrap_or_default()
+                .to_owned()
+        };
+        for (number, said) in [
+            (
+                1,
+                "· NEEDS ITS PERSON · asks its person to do: \"Add DEV_HOST\" (what happened: \"The deploy failed\") (where: https://y.test/s/a/secrets) (asked 2026-11-14T09:00:00Z)",
+            ),
+            (
+                2,
+                "· asks its person to decide: \"Pick a region\" (problem: \"Nothing deploys\")",
+            ),
+            (3, "· Claude Code asks in its terminal: \"Allow Bash?\""),
+            (4, "· flagged by Yulius: The gate gave up. Type a prompt."),
+            (
+                5,
+                "· holds a typed prompt (redirect): \"Do the other thing\"",
+            ),
+            (
+                6,
+                "· holds a typed prompt (new_scope) for its person's decision",
+            ),
+            (7, "· paused by @alice"),
+            (8, "· held for an update of Yulius"),
+        ] {
+            assert!(
+                line(number).contains(said),
+                "#{number}: `{said}` is not in `{}`",
+                line(number)
+            );
+        }
+        assert!(!line(2).contains("NEEDS ITS PERSON"), "{}", line(2));
     }
 
     /// TOL-004: tasks are one line each, named by number; their ids are left out.

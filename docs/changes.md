@@ -12,6 +12,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   now" without a subscription, the start-up clean-up of workflows seeded before the catalog
   in October, and unused Cargo features. Nothing behaves differently. A CD run's
   `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`) is now documented.
+- The Superagent sees what waits for its person, and answers when told (SPEC-487 slice 4,
+  task #469). A task's "Needs you" reached it only when the person pasted or screenshotted
+  it, and a look at what a task was doing took 4 to 9 `session_read` calls with guessed
+  offsets. `tasks_list` and `task_get` now say where the list shows a task and why it waits
+  for a person or is held (the agent's request, the flag's reason, a held prompt, a pause),
+  `tasks_list` with scope `needs_you` lists the open ones, and `session_read` with `tail`
+  reads a session's end; tasks' agents read the same, without a held prompt's words. Two
+  new tools decide for the person: `task_question_dismiss` ends a request they call settled
+  and `task_held_prompt` decides a held prompt as its card does; the answer to a question
+  goes with `task_message`, as before.
+
 - Previews pass pages through as the dev server sends them (SPEC-483 slice 24, task #465).
   The preview proxy appended a script to every page for a framed browser panel that no longer
   exists, and fetched every page uncompressed for it. Pages now keep their compression and

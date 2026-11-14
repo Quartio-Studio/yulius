@@ -471,8 +471,8 @@ pub trait TaskStore: Send + Sync {
     /// order (SPEC-487 TCT-003): the earliest slot to the first; every other queued task keeps
     /// its slot. One transaction; nothing changes and false is returned unless every one of
     /// them is `queued`. Without ties only the named tasks' places change; where tasks shared
-    /// a millisecond (queued in one pass, as after a restart), the places from there on are
-    /// spread a millisecond apart, in the order the queue then has, other tasks' included. A
+    /// a millisecond, the places from the first named slot on are spread a millisecond apart,
+    /// in the order the queue then has, other tasks' included (their `updated_at` stays). A
     /// task's stored start (`queued_start`) keeps naming its place.
     async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool>;
     /// Appends `addition` to the prompt of a task created resting that never ran (SPEC-256

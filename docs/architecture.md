@@ -1888,7 +1888,13 @@ started by one conditional update, `TaskStore::replace_unstarted_prompt`, keepin
 files; `App::reorder_queue` swaps the places the person's queued tasks hold,
 `TaskStore::reorder_queued`; `App::close_task_for_person` closes an idle running task;
 `App::bulk_tasks` does a stop, pause, resume or message to several tasks through the single
-functions, waiting tasks first for a stop). A task's agent is served none of them; it keeps the tools about its own work
+functions, waiting tasks first for a stop). What a task asks of a person is read where the list is read
+(`task_questions.rs`: `App::waits_why` adds to a task's brief what its page shows, the list's group by
+`AttentionFacts::group`, the agent's `needs_you` request, the flag's reason, a held prompt and a pause;
+`tasks_list` with scope `needs_you` lists the tasks under Needs you; `session_read` with `tail` reads a
+session's end through `transcripts::read_tail`), and decided by two more of the person's tools
+(`App::dismiss_task_question`, which ends a request only while it still asks what was read, and
+`App::decide_task_held_prompt`, the card's `resolve_held_prompt`). A task's agent is served none of them; it keeps the tools about its own work
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
 [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task

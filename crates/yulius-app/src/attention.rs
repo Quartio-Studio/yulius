@@ -147,7 +147,7 @@ impl AttentionRecord {
 /// embeddings, overrides and isolates (which reorder what follows), zero-width spaces and the
 /// other invisible format characters. The zero-width joiner and non-joiner stay: they shape
 /// letters and emoji and neither hide nor reorder text.
-fn hidden_format(c: char) -> bool {
+pub(crate) fn hidden_format(c: char) -> bool {
     matches!(
         c,
         '\u{ad}'
@@ -171,6 +171,13 @@ fn hidden_format(c: char) -> bool {
 /// ([`hidden_format`]) are dropped: the words come from Claude Code and from agents, and are
 /// shown to a person as Yulius's own. `None` when nothing is left.
 fn one_line(text: &str) -> Option<String> {
+    shown_line(text, MAX_PROBLEM_CHARS)
+}
+
+/// `text` as one line of at most `max` characters, as [`one_line`] makes it: what an agent,
+/// Claude Code or a person wrote, shown inside Yulius's own words (a task's reason, a held
+/// prompt's excerpt in a tool's answer, SPEC-487 QST-001). `None` when nothing is left.
+pub(crate) fn shown_line(text: &str, max: usize) -> Option<String> {
     let spaced: String = text
         .chars()
         .filter(|c| !hidden_format(*c))
@@ -180,10 +187,10 @@ fn one_line(text: &str) -> Option<String> {
     if line.is_empty() {
         return None;
     }
-    if line.chars().count() <= MAX_PROBLEM_CHARS {
+    if line.chars().count() <= max {
         return Some(line);
     }
-    let mut cut: String = line.chars().take(MAX_PROBLEM_CHARS - 1).collect();
+    let mut cut: String = line.chars().take(max.saturating_sub(1)).collect();
     cut.push('…');
     Some(cut)
 }

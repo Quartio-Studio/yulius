@@ -891,6 +891,204 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     )
     .await?;
     assert!(text(&bounded["text"]).len() <= 1100);
+    // The end of a session without guessing an offset (SPEC-487 QST-003): `tail` reads the
+    // last entries, says where they begin and whether more came before, and where a later
+    // read goes on. What a file read before the tail gave away is still redacted in it.
+    let (tail, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "limit": 3}),
+    )
+    .await?;
+    assert!(!err, "{tail}");
+    let body = text(&tail["text"]);
+    assert!(body.starts_with("[line 2] user"), "{body}");
+    assert!(body.contains("[line 4] assistant"), "{body}");
+    assert!(body.contains("WEBHOOK_SIGNING=[REDACTED:"), "{body}");
+    assert!(
+        !body.contains("whsec_plain") && !body.contains(AGENT_VALUE),
+        "{body}"
+    );
+    assert_eq!(
+        (&tail["from"], &tail["earlier"], &tail["next_from"]),
+        (&json!(2), &json!(true), &json!(5)),
+        "{tail}"
+    );
+    let (all, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true}),
+    )
+    .await?;
+    assert!(text(&all["text"]).starts_with("[line 0] user"), "{all}");
+    assert_eq!(
+        (&all["from"], &all["earlier"]),
+        (&json!(0), &json!(false)),
+        "{all}"
+    );
+    // A bound keeps the end, not the beginning.
+    let (short, _) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "max_chars": 1000, "limit": 200}),
+    )
+    .await?;
+    let body = text(&short["text"]);
+    assert!(
+        body.contains("[line 4] assistant") && body.len() <= 1100,
+        "{body}"
+    );
+    // A long session: the bound leaves entries out at the front, never the last ones. (The
+    // headers make the text longer than the entries' own words, which is what the read
+    // counts: without the cut at the front the text would end before the session does.)
+    let long = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "long",
+        "A long session",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let lines: String = (0..40)
+        .map(|i| {
+            line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": format!("entry {i:02} of the long session, with words to fill its line")}
+            ]}}))
+        })
+        .collect();
+    let long_copy = data.join("copies/long.jsonl");
+    write(&long_copy, &lines)?;
+    task_session(&h.store, &long, "sess-long", &long_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": long.number, "tail": true, "max_chars": 1000, "limit": 200}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("entry 39 of the long session"), "{body}");
+    assert!(
+        !body.contains("(cut)") && body.len() <= 1000,
+        "{}: {body}",
+        body.len()
+    );
+    let first = end["from"].as_u64().ok_or("from")?;
+    assert!(
+        first > 20 && body.starts_with(&format!("[line {first}] assistant")),
+        "{body}"
+    );
+    assert_eq!(
+        (&end["earlier"], &end["next_from"]),
+        (&json!(true), &json!(40)),
+        "{end}"
+    );
+    // A session whose tools gave long results (review of slice 4, C1): the read is bounded
+    // by the text it shows, where a tool's result is cut to a few lines, not by what the
+    // transcript holds. Twenty steps of a call and its 12 000-character result: the end
+    // shows far more than the last few entries.
+    let busy = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "busy",
+        "A busy session",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let big = "x".repeat(12_000);
+    let steps: String = (0..20)
+        .map(|i| {
+            [
+                line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": format!("step {i:02}: reading the log")},
+                    {"type": "tool_use", "id": format!("r{i}"), "name": "Read", "input": {"file_path": format!("/w/log{i}.txt")}}
+                ]}})),
+                line(&json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": format!("r{i}"), "content": big.clone()}
+                ]}})),
+            ]
+            .concat()
+        })
+        .collect();
+    let busy_copy = data.join("copies/busy.jsonl");
+    write(&busy_copy, &steps)?;
+    task_session(&h.store, &busy, "sess-busy", &busy_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": busy.number, "tail": true}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("step 19: reading the log"), "{body}");
+    assert!(
+        body.contains("step 12: reading the log"),
+        "only {} characters of the end were shown: {body}",
+        body.len()
+    );
+    assert!(body.len() <= 24_000, "{}", body.len());
+
+    // An entry that shows no text (a system note) at the very end does not take the place of
+    // the last one that does (review of slice 4, R2-2).
+    let noted = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "noted",
+        "A session with a note at its end",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let noted_lines = [
+        line(&json!({"type": "user", "message": {"role": "user", "content": "summarise the work"}})),
+        line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": format!("summary {}", "y".repeat(1500))}
+        ]}})),
+        line(&json!({"type": "system", "subtype": "informational", "content": "Conversation compacted"})),
+    ]
+    .concat();
+    let noted_copy = data.join("copies/noted.jsonl");
+    write(&noted_copy, &noted_lines)?;
+    task_session(&h.store, &noted, "sess-noted", &noted_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": noted.number, "tail": true, "max_chars": 1000}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("summary yyy"), "{end}");
+
+    // The end, or a place: not both.
+    let (both, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": true, "from": 2}),
+    )
+    .await?;
+    assert!(
+        err && both.to_string().contains("`tail` or `from`"),
+        "{both}"
+    );
+    let (odd, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": other.number, "tail": "yes"}),
+    )
+    .await?;
+    assert!(err, "{odd}");
     let (foreign, err) =
         mcp_tool(&internal, "tok-me", "session_read", json!({"id": "doc-s2"})).await?;
     assert!(err, "{foreign}");

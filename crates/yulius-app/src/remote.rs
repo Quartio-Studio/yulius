@@ -77,6 +77,8 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("task_close", Reach::Project, Action::Work),
     ("tasks_reorder", Reach::Project, Action::Work),
     ("tasks_bulk", Reach::Project, Action::Work),
+    ("task_question_dismiss", Reach::Project, Action::Work),
+    ("task_held_prompt", Reach::Project, Action::Work),
     ("task_archive", Reach::Project, Action::Work),
     ("task_delete", Reach::Project, Action::Work),
     ("task_update", Reach::Project, Action::Work),
