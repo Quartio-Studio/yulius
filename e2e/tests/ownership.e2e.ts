@@ -108,6 +108,8 @@ test('control is asked for and the request withdrawn from the task menu in the s
   await menu();
   await expect(screen.getByRole('menuitem', /^Request control/)).toHaveCount(0);
   await screen.getByRole('menuitem', /^Withdraw request/).click();
+  // The toast follows the answer, so the menu opened after it is built from the task without a request.
+  await expect(screen.getByText('Withdrew your request for control of #12')).toBeVisible();
   await menu();
   await expect(screen.getByRole('menuitem', /^Request control/)).toBeEnabled();
   // One's own task has no such item.

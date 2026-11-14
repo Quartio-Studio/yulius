@@ -102,7 +102,7 @@ Not a task's, and so outside this rule (each is a decision below): the sandbox's
 CI runs (rerun, cancel) and the repository's cleanup, which are the project's; a shell in the
 sandbox repository, which reaches every worktree on disk (ADR-0060's known limit: containment
 separates sandboxes, not tasks); and automations, which any writer may change and whose tasks
-are their creator's (reported as an issue, see Decisions).
+are their creator's (reported as issue #1289, see Decisions).
 
 ## Requirements
 
@@ -284,7 +284,7 @@ are their creator's (reported as an issue, see Decisions).
   prompt and run it, and its task is its creator's: a person's prompt can run under another
   person's name. That is about who an automation runs as, with product choices of its own
   (the editor becomes its owner, or only its creator changes it), not about a task someone
-  owns; it is filed as an issue with both options.
+  owns; it is filed as issue #1289 with both options.
 - **No agent asks, grants or takes back.** Asking and consenting stay a person's own acts in
   the page or the API: a Superagent reads transcripts and web pages, and consent given on a
   sentence it read there is not the owner's.

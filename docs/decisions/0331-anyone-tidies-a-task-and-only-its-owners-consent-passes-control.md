@@ -110,7 +110,7 @@ task's own page, and a hand-over could not be undone by the person who gave it.
 - What 0060 said of the disk stays true: a shell in the sandbox repository reaches every
   worktree, so the rule guards Yulius's own ways in, not the files. And any writer may still
   change an automation, whose tasks are its creator's; that is reported for a decision of its
-  own.
+  own (issue #1289).
 - Tests and documents that named stop, archive and delete among the owner's actions say the
   new rule (SPEC-070 R3 and R7, SPEC-066 MGT-008..010, `docs/api.md`, `docs/product.md`,
   `docs/architecture.md`).

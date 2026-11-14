@@ -273,9 +273,11 @@ export function requestControl(ctx, task) {
   return taskPost(ctx, task, 'ask for control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control-request`), `Asked for control of #${task.number}`);
 }
 
-/** Withdraw your request for control, or, as the owner, decline someone's. */
+/** Withdraw your request for control, or, as the owner, decline someone's; either says so. */
 export function dropControlRequest(ctx, task) {
-  return taskPost(ctx, task, 'answer the request for', () => ctx.api.del(`/api/tasks/${enc(task.id)}/control-request`));
+  const mine = task.control_request && task.control_request.by.login === ctx.store.state.me?.user?.login;
+  return taskPost(ctx, task, 'answer the request for', () => ctx.api.del(`/api/tasks/${enc(task.id)}/control-request`),
+    mine ? `Withdrew your request for control of #${task.number}` : `Declined the request for control of #${task.number}`);
 }
 
 /** As the owner, hand the task to the person who asked: it acts on GitHub as them from now on. */
