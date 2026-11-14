@@ -906,6 +906,9 @@ impl PendingGoal {
     }
 }
 
+/// How long the restart of a reattached run waits for the replay of its transcript.
+const REPLAY_WAIT: Duration = Duration::from_secs(30);
+
 /// File in a run directory whose run was started with its owner's personal MCP servers: the
 /// owner's id (SPEC-332 MSC-009). A live run keeps its MCP configuration, and which person's
 /// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
@@ -4779,7 +4782,17 @@ impl App {
                 {
                     let app = Arc::clone(self);
                     let (task_id, account) = (task.id.clone(), attempt.account_id.clone());
-                    tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
+                    tokio::spawn(async move {
+                        // How the run is resumed (past a usage limit, with the workflows it
+                        // left) is read from its transcript: the restart waits for the replay.
+                        let asked = tokio::time::Instant::now();
+                        while app.runtime(&task_id).queue_unread.load(Ordering::SeqCst)
+                            && asked.elapsed() < REPLAY_WAIT
+                        {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        app.restart_for_new_owner(&task_id, account).await;
+                    });
                 }
                 held_again.insert(attempt.task_id.clone());
                 continue;

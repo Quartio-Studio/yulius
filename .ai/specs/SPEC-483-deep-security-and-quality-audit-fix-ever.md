@@ -53,7 +53,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
       of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
-      (merged, #1272), QA3 and QA4 slice 20;
+      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274);
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -835,7 +835,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
 - [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
-- [x] Slice 20: what a run was started with is still known after a restart of Yulius
+- [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 
 ## Acceptance criteria
 
@@ -1604,7 +1604,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   two facts the old server had, read from the run directory, not guessed from the screen.
   A Stop that was answered by a hold (no capacity) counts as answered; such a run's
   opening turn then ends through the gates, as every reattached run's did before, and a
-  flag raised before that end can still be taken away by it.
+  flag raised before that end can still be taken away by it. The other way round, an
+  opening turn that ended while Yulius was down left no answered Stop (the hook's client
+  got no answer): the new server gives the run a turn that is over, so the flag comes
+  after the opening turn's bound (five minutes) and the bound of the watch, and the
+  session's next Stop ends as an opening turn's does, once (the review's second round, a
+  nit). Telling these apart needs the transcript's replay, which the watch does not wait
+  for.
 - Slice 19 (no decision record: a column and the one function every start goes through).
   The auditor proposed to leave a paused task paused when it cannot start, so that the
   pause keeps the start. Not taken: a paused task would then wait beside the queue, not
@@ -1886,8 +1892,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 20 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 20 |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | fixed (slice 20) |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | fixed (slice 20) |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
@@ -3212,3 +3218,12 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Not tested, after it.** The trust dialog's branch of the watch for a typed goal (it
   needs a session that shows the dialog across a restart); a session whose opening turn's
   Stop was held for capacity at the restart (Decisions).
+- **Review, round 2** (the same session, head `5df74814d`): approve. Three nits, answered
+  in the commit after the merge: the edge of an opening turn that ended while Yulius was
+  down is in Decisions; the restart of a reattached run that holds another person's
+  servers waits for the transcript's replay (at most 30 s), so that a run at a usage limit
+  is resumed past it; `docs/architecture.md` names the opening turn given back and that
+  restart.
+- **Delivery.** Pull request #1274 merged into `dev` at `e310b08b6` (the approved head
+  with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
+  passed.
