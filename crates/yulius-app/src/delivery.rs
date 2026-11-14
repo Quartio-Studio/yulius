@@ -4939,10 +4939,24 @@ impl App {
                     .collect()
             })
             .unwrap_or_default();
-        let nudges: Vec<String> = yulius_domain::steps::plan_nudges(&plan, !spec.required)
+        let mut nudges: Vec<String> = yulius_domain::steps::plan_nudges(&plan, !spec.required)
             .iter()
             .map(ToString::to_string)
             .collect();
+        // Every Plan item ticked beside a status that does not say done (SPEC-491 DON-007).
+        if let Some(report) = &spec.report
+            && !plan.is_empty()
+            && report
+                .plan
+                .iter()
+                .filter(|item| item.depth == 0)
+                .all(|item| item.checked)
+            && let Some(note) = report
+                .status
+                .and_then(spec_format::SpecStatus::unfinished_note)
+        {
+            nudges.push(note);
+        }
         // A task that needs no spec and has none has nothing to fix: no "No spec is
         // registered…" problem beside "needs no spec" (F 2026-10-11).
         let unneeded = !spec.required && spec.path.is_none();

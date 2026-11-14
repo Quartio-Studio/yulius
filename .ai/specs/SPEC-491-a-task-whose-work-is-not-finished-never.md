@@ -84,7 +84,7 @@ supertask's wait and the tools.
 - [x] A pull request that conflicts or lacks required checks is not tested, and a chained task waits (DON-001 to DON-003)
 - [x] A task whose spec does not say done has work left, and a chained task waits (DON-004, DON-005)
 - [x] The API, the web UI and the counts say the same as the chains (DON-006)
-- [ ] The agent is told what keeps its task from Done (DON-007)
+- [x] The agent is told what keeps its task from Done (DON-007)
 - [ ] ADR-0332, SPEC-001, SPEC-487, the architecture, the API reference and the changes log state one rule (DON-008)
 - [ ] Every gate green and the independent review of the exact head approved
 

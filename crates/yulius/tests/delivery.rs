@@ -5274,6 +5274,17 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
     );
     let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
     assert_eq!(shown.body["spec_unfinished"], true, "{}", shown.body);
+    // Its agent is told what keeps it from Done (DON-007).
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let told = "Every step is finished and the spec says `status: in-progress`, so the task is \
+                not Done and tasks waiting for it do not start.";
+    let checked = agent_tool(&f, &agent, "spec_check", json!({})).await?;
+    assert!(
+        checked["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(told)),
+        "{checked}"
+    );
     let sandbox = f
         .req(Method::GET, "/api/sandboxes/s1", None, &f.bob)
         .await?;
@@ -5290,6 +5301,13 @@ async fn a_task_whose_spec_says_in_progress_is_not_done_with_every_step_finished
     f.h.app.sync_steps_from_spec(&task).await?;
     let shown = f.req(Method::GET, "/api/tasks/t1", None, &f.bob).await?;
     assert_eq!(shown.body["spec_unfinished"], false, "{}", shown.body);
+    let checked = agent_tool(&f, &agent, "spec_check", json!({})).await?;
+    assert!(
+        checked["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| !text.contains("the spec says")),
+        "{checked}"
+    );
     assert_eq!(successor_after_the_turn(&f).await?, "queued");
     Ok(())
 }
