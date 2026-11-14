@@ -87,7 +87,8 @@ pub fn parse_rfc3339(text: &str) -> Option<Timestamp> {
     Some(Timestamp(seconds.checked_mul(1_000)?.checked_add(millis)?))
 }
 
-/// Formats a timestamp as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC), which [`parse_rfc3339`] reads back.
+/// Formats a timestamp as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC), which [`parse_rfc3339`] reads back for
+/// the years 0000 to 9999 (a clock's; others print with more or fewer digits).
 #[must_use]
 pub fn format_rfc3339(timestamp: Timestamp) -> String {
     let millis = timestamp.0.rem_euclid(1_000);
@@ -143,6 +144,14 @@ mod tests {
             "2026-10-07X09:12:00Z",
             "2026-10-07T09:12:00Zjunk",
             "2026-1-7T9:12:00Z",
+            // Long enough for every position, one field unpadded.
+            "2026-1-07T09:12:00.0Z",
+            "2026-10-07T9:12:00.00Z",
+            // Every separator is where it belongs.
+            "2026x10-07T09:12:00Z",
+            "2026-10x07T09:12:00Z",
+            "2026-10-07T09x12:00Z",
+            "2026-10-07T09:12x00Z",
             "+026-10-07T09:12:00Z",
         ] {
             assert_eq!(parse_rfc3339(bad), None, "{bad}");
