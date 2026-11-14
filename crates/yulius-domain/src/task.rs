@@ -492,18 +492,18 @@ impl AttentionFacts {
     /// paused by a person or an update is Working, whatever it waited for (SPEC-191). A held
     /// prompt or a pending browser request needs you. A finished turn whose merge is armed is
     /// Working, an achieved goal's too (SPEC-487 CHN-001). After a finished turn the pull
-    /// request speaks: failing checks need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
-    /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
+    /// request speaks: failing checks need you once the agent stopped (SPEC-085 STT-003:
+    /// while its background work runs or it waits in `yulius wait` it goes on by itself, and
+    /// the task is Working), a CI run that
     /// could not run keeps it Working (In review); with the plan complete, background shells
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
     /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
-    /// merged pull request makes it Done. Otherwise the task's own state: a
-    /// permission prompt needs you, and so does "Your turn", an idle agent with steps open or an
-    /// unfinished goal (unless the agent's background shells still run or it waits in
-    /// `yulius wait`: it goes on by itself); an idle agent with neither answered and is Done
-    /// ("Answered", SPEC-429), as is an achieved goal; a
-    /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
-    /// the rest is Working.
+    /// merged pull request makes it Done. Otherwise the task's own state: a permission prompt
+    /// needs you, and so does "Your turn", an idle agent with steps open or an unfinished goal
+    /// (unless the agent's background shells still run or it waits in `yulius wait`: it goes on
+    /// by itself); an idle agent with neither answered and is Done ("Answered", SPEC-429), as is
+    /// an achieved goal; a queued, chained or prepared task is Queued (a chain whose predecessor
+    /// ended otherwise needs you), and the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
         use TaskGroup as G;

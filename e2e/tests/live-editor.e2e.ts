@@ -489,7 +489,9 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     endedText = 'abcd'; endedDoc.local([3, 'd']);
     await until(() => endedJoins > 1);
     endedText = 'abcY'; endedDoc.local([3, 'Y']);
-    const ended = { readOnly: endedDoc.readOnly, busy: endedDoc.busy, text: endedText };
+    // A join refused for lack of access is not tried again every second.
+    await wait(2500);
+    const ended = { readOnly: endedDoc.readOnly, busy: endedDoc.busy, text: endedText, joins: endedJoins };
     endedDoc.destroy();
     return { refused, after, closedFast, rejoined, csrf, lost, ended };
   });
@@ -500,7 +502,7 @@ test('an edit refused for lack of access gives the text back and leaves nothing 
     rejoined: { joins: 2, readOnly: false },
     csrf: { edits: 2, readOnly: false, text: 'abcd' },
     lost: { text: 'abc', readOnly: true, busy: false, joins: 1, gets: 1 },
-    ended: { readOnly: true, busy: false, text: 'abc' },
+    ended: { readOnly: true, busy: false, text: 'abc', joins: 2 },
   });
 });
 
