@@ -1145,6 +1145,28 @@ mod tests {
         cockpit_tool_descriptors, cross_action, tool_descriptors,
     };
 
+    /// SPEC-483 slice 33: every MCP of Yulius answers `initialize` the one way: the version the
+    /// client asked for when Yulius speaks it, else the newest, and the caller's instructions.
+    #[test]
+    fn initialize_speaks_the_asked_version_or_the_newest() {
+        use yulius_contracts::mcp::SUPPORTED_PROTOCOL_VERSIONS;
+        let older = SUPPORTED_PROTOCOL_VERSIONS[1];
+        let asked = super::initialize_result(&serde_json::json!({"protocolVersion": older}), "hi");
+        assert_eq!(asked["protocolVersion"], older);
+        assert_eq!(asked["instructions"], "hi");
+        assert_eq!(asked["capabilities"]["tools"]["listChanged"], false);
+        for params in [
+            serde_json::json!({"protocolVersion": "1999-01-01"}),
+            serde_json::json!({}),
+        ] {
+            let newest = super::initialize_result(&params, "hi");
+            assert_eq!(
+                newest["protocolVersion"], SUPPORTED_PROTOCOL_VERSIONS[0],
+                "{params}"
+            );
+        }
+    }
+
     /// SPEC-483 slice 33 (QB7): a task asked for in another sandbox takes `model` and `effort` as
     /// `task_create` describes them, not a bare string re-typed by hand.
     #[test]
