@@ -824,16 +824,27 @@ no code path reaches; documents, texts shown to agents and people, and code that
   back: its Stop ends it as it is, as before the restart, and the watch's time starts
   there, so the flag is not raised inside the turn and taken away by its end. A folder
   trust dialog still unanswered tells the person to type the goal after answering it.
-- **TYP-001** A line of Yulius's own for a full session (`/compact <focus>`, the line that
-  wakes a compacted session) is not typed while something typed before may still sit in
-  the prompt box (`has_draft`, the rule of SPEC-480 DRF-001), as it is not after a person
-  typed since the refusal: the terminal says that the session is left to the person and
-  the task waits for them.
+- **TYP-001** A line of Yulius's own for a full session is not typed behind what may sit
+  in the prompt box (`has_draft`: any key, a person's or a message Yulius typed, since the
+  last prompt sent from the box; Yulius sees keys, not the box, so a key that left no text
+  counts too). A prompt a person typed and sent is no draft: its submit emptied the box,
+  and the session it filled is compacted. For `/compact <focus>` the compaction is held:
+  the task reads Needs your action with the reason and what to do (send what was typed,
+  or clear it and send any prompt), and its terminal says so; a prompt sent from the box
+  ends the flag. The hold lasts at most `compact_hold_ms` (ten minutes); then the session
+  is compacted all the same, the flag ends and the task works on (a task nobody watches
+  must not wait for good for a key that left nothing). The line that wakes a compacted
+  session is not typed behind a draft at all: its person goes on. A person who types
+  after the refusal owns the session as before ("Yulius leaves the full session to you").
 - **TYP-002** From a line Yulius types to its Enter, nothing else is typed into the
-  session: a message, `/compact` and its wake-up line, and the goal hold the run's one
-  typing mark for that time. A message that comes then is refused as while another
-  message is being typed; a line of Yulius's own waits for the mark, at most 5 s, and is
-  typed then.
+  session by Yulius: a message, `/compact` and its wake-up line, and the goal hold the
+  run's one typing mark for that time; the goal holds it until Claude Code took it or its
+  tries are over, since a submit the TUI dropped leaves the line in the box. A message
+  that comes then is refused as while another message is being typed; a line of Yulius's
+  own waits for the mark, at most 5 s, is typed then, and first asks again, with the mark
+  held, whether a person typed meanwhile. Not under the mark: a person's own keys, the
+  first message Yulius types (it has its own, which keeps keys and messages out), and the
+  Enter of "Send anyway".
 
 ## Plan
 
@@ -1325,13 +1336,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   set this task's goal", and the mark is removed.
 - **AC-117** A reattached run whose `personal-mcp-of` names another person than the
   task's owner is restarted by the new server (a second run, a resume).
-- **AC-118** A person's keystroke before the prompt that the full context refuses, and no
-  prompt sent from the box since: the terminal says "Yulius leaves the full session to
-  you", the task reads Your turn, and no compaction was typed.
+- **AC-118** With an agent whose prompts reach Yulius's hooks, a person types a prompt at
+  the task's terminal and sends it, and the full context refuses it: the session is
+  compacted.
 - **AC-119** A message for the task that comes while `/compact` is in the prompt box and
   its Enter not sent is refused with "is being typed", nothing of it reaches the session,
   and the session is compacted. The same while a resumed session's `/goal` is in the box:
-  the message is refused and the goal is set.
+  the message is refused and the goal is set. The same after the Enter of a goal whose
+  submit the TUI dropped.
+- **AC-120** The same person types on while that prompt's turn runs and sends nothing;
+  the refusal comes: the task reads Needs your action with "The session's context is
+  full, and Yulius does not compact it yet: …" and "Send what you typed in the terminal,
+  or clear it and send any prompt: …", the terminal says that Yulius holds the
+  compaction, and no compaction is typed. They send what they typed: the terminal says
+  the session is left to them and the flag ends; a later refused prompt is compacted.
+- **AC-121** With a hold of 3 s and a key that left no text, the task is flagged, nothing
+  is typed at first, then the session is compacted and the flag is gone.
+- **AC-122** A reattached run that holds another person's servers and sits at a usage
+  limit is restarted past the limit (a resume that continues the interrupted turn, no
+  limit record left in a transcript).
 - **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
   by hand and a restart, the new server removes it and flags nothing.
 
@@ -1552,10 +1575,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `pool_supervision::a_reattached_run_with_another_persons_servers_is_restarted`
   (AC-117); each restart is a second server on the same data that reattaches the first
   one's run.
-- Slice 21: `yulius` `context_full::a_full_session_with_a_persons_draft_is_left_to_them`
-  (AC-118), `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter` and
-  `first_message::nothing_is_typed_between_the_goal_and_its_enter` (AC-119, with a pause
-  point between the line and its Enter, `LineTyped`).
+- Slice 21: `yulius` `context_full::a_persons_own_refused_prompt_is_compacted` (AC-118),
+  `context_full::a_possible_draft_holds_the_compaction_and_its_person_is_told` (AC-120)
+  and `context_full::a_held_compaction_is_typed_once_its_hold_is_over` (AC-121), with a
+  hooked agent and keys typed through the task's terminal;
+  `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter`,
+  `first_message::nothing_is_typed_between_the_goal_and_its_enter` and
+  `task_done::nothing_is_typed_while_a_typed_goal_is_not_taken` (AC-119, with pause
+  points after the line and after the goal's Enter, `LineTyped` and `GoalEntered`);
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (AC-122).
 
 ## Decisions
 
@@ -1619,19 +1647,32 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
-- Slice 21 (no decision record: SPEC-480's rule applied to the two typists it did not
-  reach). A full session whose prompt box may hold a person's draft is left to that
-  person; the other way, typing `/compact` all the same, was what happened, and it sent
-  their unfinished text as part of a command. The cost is that a goal task whose person
-  once typed and never sent waits for them at a full context instead of compacting; that
-  is the price SPEC-480 already pays for every message, and a restart of the session,
-  the only other way out, would lose the draft (SPEC-468 CCF-010 refuses that too). The
-  goal's typist keeps its own question (did a person type since the run was attached):
-  a new process starts with an empty box, so it is the same question there. The one
-  typing mark is waited for by Yulius's own lines and never refuses them: a recovery must
-  not depend on a mark that someone forgot to clear. The three waits for a quiet terminal
-  (the goal, the first message, the full session) stay three loops: each asks other
-  things while it waits, and one helper would take five parameters.
+- Slice 21 (no decision record: SPEC-480's care for a person's draft, brought to the
+  typists it did not reach). `/compact` typed behind a person's unsent text sent that text
+  as part of a command; that is what happened. The first version of this slice left such
+  a session to its person, as one they type into after the refusal. The review showed
+  what that costs: "a draft" is any key since the last prompt sent from the box (an arrow,
+  Esc, a dialog's answer), a goal task goes on by its Stop hook and never sends a prompt
+  from the box, so one key hours ago would stop every later compaction, with one line in
+  a terminal nobody watches. So the compaction is held, not given up: the task is flagged
+  with the reason and what to do, as a held message's task is (SPEC-480 DRF-006), and
+  after ten minutes it is typed all the same. That last step can send a real draft with
+  the command, after its person was told for ten minutes; the other ends were weighed and
+  are worse: waiting for good stops unattended work for a key that left nothing, a fresh
+  session loses the draft as surely and the conversation with it, and clearing the box
+  first (Ctrl-U) clears one line of it. Ten minutes is the wait a compaction's outcome
+  already gets. The rule is not the message's rule (`box_held`: a person's keys, and a
+  minute after their last one): a line for a full session also stays behind a message of
+  Yulius's own whose Enter failed, and does not wait for a person who is only near.
+  The goal's typist keeps its own question (did a person type since the run was
+  attached): a new process starts with an empty box, so it is the same question there.
+  The one typing mark is waited for by Yulius's own lines and never refuses them: a
+  recovery must not depend on a mark that someone forgot to clear; what was asked before
+  the wait is asked again once it is held. The goal keeps the mark until it is taken: the
+  review found that between its tries the line may sit in the box (from before this
+  slice), where a message would be sent with it or erased by the retype. The three waits
+  for a quiet terminal (the goal, the first message, the full session) stay three loops:
+  each asks other things while it waits, and one helper would take five parameters.
 - Slice 20 (no decision record: two more marks of the kind the run directory already
   holds, `launch-goal-pending`, `session-started`, `person-typed`). The facts belong to
   one run and are needed only while it lives, so they are files beside it, not columns.

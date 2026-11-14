@@ -1902,10 +1902,12 @@ possible draft leaves `person-typed` in the run folder, removed when a prompt is
 the box and read by `reconcile` for a reattached run), while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while anything else
-is typed (`TaskRuntime::typing_message`, held from a line to its Enter by every typist of
-Yulius: a message, `/compact` and the line that wakes a compacted session, the goal; those
-two lines of a full session also stay out while a draft may sit in the box, SPEC-483
-TYP-001, TYP-002); audited `task.messaged`
+is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
+`/compact` and the line that wakes a compacted session, and by a typed goal until Claude Code
+took it; the first message has a mark of its own, and "Send anyway" is only an Enter. A
+compaction is held, at most ten minutes and with the task flagged, while anything typed since
+the last prompt sent from the box may sit there, SPEC-483 TYP-001, TYP-002); audited
+`task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 

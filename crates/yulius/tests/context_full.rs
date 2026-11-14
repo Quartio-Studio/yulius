@@ -349,7 +349,7 @@ async fn served(
     tune: impl FnOnce(&mut yulius_app::context::AppConfig),
 ) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
     let usage = Arc::new(ScriptedUsage::default());
-    Ok(crate::first_message::start_with(data, fake, agent, 0, usage, tune).await?)
+    crate::first_message::start_with(data, fake, agent, 0, usage, tune).await
 }
 
 /// A person at the task's terminal: their context and a writer's attachment.

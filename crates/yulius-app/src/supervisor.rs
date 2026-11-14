@@ -2755,6 +2755,11 @@ impl App {
             .await;
             return true;
         }
+        // One typist from the goal's line until Claude Code took it or the tries are over: a
+        // submit the TUI dropped leaves the line in the prompt box, where a message typed
+        // meanwhile would be sent with it by the next Enter, or erased by the retype (SPEC-483
+        // TYP-002).
+        let mut typing = None;
         for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
             // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
             if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
@@ -2767,12 +2772,13 @@ impl App {
                 }
                 input.extend_from_slice(command.as_bytes());
             }
-            // From the line to its Enter nothing else is typed (SPEC-483 TYP-002).
-            let typing = crate::task_message::Typing::wait(
-                &runtime.typing_message,
-                crate::task_message::TYPING_TURN_WAIT,
-            )
-            .await;
+            if typing.is_none() {
+                typing = crate::task_message::Typing::wait(
+                    &runtime.typing_message,
+                    crate::task_message::TYPING_TURN_WAIT,
+                )
+                .await;
+            }
             // Asked again with the mark held: the wait for it gives a person time to type.
             if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
                 return true;
@@ -2790,7 +2796,7 @@ impl App {
                 tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                 return false;
             }
-            drop(typing);
+            crate::race::reached(crate::race::Point::GoalEntered, Path::new(task_id.as_str()));
             let waited = tokio::time::Instant::now();
             while waited.elapsed() < *wait {
                 if runtime.goal_submitted.load(Ordering::SeqCst) {

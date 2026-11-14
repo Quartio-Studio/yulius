@@ -61,6 +61,9 @@ pub enum Point {
     /// Yulius typed a line of its own into a session (SPEC-483 TYP-002): the text is in the
     /// prompt box; its Enter is not sent yet. The path is the task id.
     LineTyped,
+    /// Yulius sent the Enter of a goal it typed into a session (SPEC-483 TYP-002); whether
+    /// Claude Code took the goal is not known yet. The path is the task id.
+    GoalEntered,
     /// A run's end reached its recorder (SPEC-483): the task's end intent was taken; nothing is
     /// recorded yet. The path is the task id.
     RunEndTaken,
