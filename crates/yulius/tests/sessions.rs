@@ -1068,6 +1068,21 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
     assert!(!err, "{end}");
     let body = text(&end["text"]);
     assert!(body.contains("summary yyy"), "{end}");
+    // Nor do such entries use up `limit`: the last entry that shows text is there with
+    // `limit: 1` (review of slice 4, R3-1).
+    let (one, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": noted.number, "tail": true, "limit": 1}),
+    )
+    .await?;
+    assert!(!err, "{one}");
+    let body = text(&one["text"]);
+    assert!(
+        body.contains("summary yyy") && !body.contains("summarise the work"),
+        "{one}"
+    );
 
     // The end, or a place: not both.
     let (both, err) = mcp_tool(
