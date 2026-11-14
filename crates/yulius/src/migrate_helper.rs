@@ -525,7 +525,7 @@ impl Helper {
         };
         // The command's checklist is not touched here: a run the command refuses (a move to
         // another host is recorded, another run holds its lock) must change nothing. The
-        // server tells an earlier run's checklist from this run's by its time.
+        // server tells this run's checklist by the request id the command writes into it.
         self.write_status(&status);
         let program = match &self.args.program {
             Some(program) => Ok(program.clone()),

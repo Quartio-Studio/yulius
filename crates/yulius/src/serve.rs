@@ -573,12 +573,10 @@ pub fn build_app(
     app.set_vidoc(vidoc_services(args));
     app.set_updates(update_services(args)?);
     // The move helper is named after the unit this server runs in (SPEC-470 MVB-007).
-    let move_unit = crate::restart_safety::this_service()
-        .and_then(|service| yulius_sandbox::units::migrate_path_unit(&service));
     app.set_move_helper(Arc::new(crate::wiring::migrate_files::FileMoveHelper::new(
         &args.data_dir,
         args.migrate_state_dir.clone(),
-        move_unit,
+        crate::restart_safety::this_service(),
     )));
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());

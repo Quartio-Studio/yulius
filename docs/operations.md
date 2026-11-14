@@ -2043,7 +2043,8 @@ on the old host; without it the card says so and names the command above.
 Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
 audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the
 values). While a move's request waits or its run is in flight, **Update now** and **Restart…**
-are refused, and nothing is asked of a move while an update or restart runs. A move started with
+are refused (a run whose helper has been silent for a minute is in flight until systemd says the
+helper's service ended; only then does the card say the helper stopped without a word), and nothing is asked of a move while an update or restart runs. A move started with
 the command on the host shows on the page as a recorded checklist; whether it still runs is known
 only for runs the page started. On the new instance the card shows the move that brought it
 there until the next move does, or until `/var/lib/yulius-migrate/arrived.json` is removed.

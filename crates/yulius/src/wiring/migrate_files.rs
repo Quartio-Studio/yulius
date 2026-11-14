@@ -31,8 +31,9 @@ pub fn request_path(data_dir: &Path) -> PathBuf {
 pub struct FileMoveHelper {
     request: PathBuf,
     state_dir: PathBuf,
-    /// The helper's path unit, named after the server's own unit; `None` outside a unit.
-    path_unit: Option<String>,
+    /// The helper's path unit and the oneshot service it starts, named after the server's own
+    /// unit; `None` outside a unit.
+    units: Option<(String, String)>,
     systemctl: PathBuf,
     installed: Mutex<Option<(Instant, bool)>>,
     /// Held while the request file is written or removed: a removal is of the request it
@@ -41,14 +42,20 @@ pub struct FileMoveHelper {
 }
 
 impl FileMoveHelper {
-    /// The helper of `data_dir` whose state lives in `state_dir` (`/var/lib/yulius-migrate`)
-    /// and whose requests `path_unit` waits for.
+    /// The helper of `data_dir` whose state lives in `state_dir` (`/var/lib/yulius-migrate`),
+    /// with units named after `service`, the server's own unit (SPEC-470 MVB-007).
     #[must_use]
-    pub fn new(data_dir: &Path, state_dir: PathBuf, path_unit: Option<String>) -> Self {
+    pub fn new(data_dir: &Path, state_dir: PathBuf, service: Option<String>) -> Self {
+        let units = service.as_deref().and_then(|service| {
+            Some((
+                yulius_sandbox::units::migrate_path_unit(service)?,
+                yulius_sandbox::units::migrate_unit(service)?,
+            ))
+        });
         Self {
             request: request_path(data_dir),
             state_dir,
-            path_unit,
+            units,
             systemctl: PathBuf::from("systemctl"),
             installed: Mutex::new(None),
             writes: Mutex::new(()),
@@ -70,7 +77,7 @@ impl FileMoveHelper {
 
 impl MoveHelper for FileMoveHelper {
     fn installed(&self) -> bool {
-        let Some(unit) = &self.path_unit else {
+        let Some((unit, _)) = &self.units else {
             return false;
         };
         if let Ok(kept) = self.installed.lock()
@@ -133,6 +140,23 @@ impl MoveHelper for FileMoveHelper {
         let _held = self.writes.lock();
         if self.pending().is_some_and(|request| request.id == id) {
             let _ = std::fs::remove_file(&self.request);
+        }
+    }
+
+    fn helper_active(&self) -> Option<bool> {
+        let Some((_, service)) = &self.units else {
+            return Some(false);
+        };
+        // A oneshot is "activating" while its command runs; asked only of a silent report, so
+        // the answer is never kept.
+        let show = crate::doctor::output_of(
+            &self.systemctl,
+            &["show", "--property=ActiveState", "--", service],
+        )?;
+        match crate::restart_safety::property(&show, "ActiveState")? {
+            "activating" | "active" | "deactivating" | "reloading" => Some(true),
+            "inactive" | "failed" => Some(false),
+            _ => None,
         }
     }
 
@@ -391,7 +415,7 @@ mod tests {
         assert!(!helper(None).installed());
         assert!(asked().is_empty());
 
-        let waiting = helper(Some("yulius-migrate.path"));
+        let waiting = helper(Some("yulius.service"));
         assert!(waiting.installed());
         assert!(waiting.installed());
         assert_eq!(
@@ -399,11 +423,68 @@ mod tests {
             ["show --property=ActiveState -- yulius-migrate.path"],
             "asked once, then kept"
         );
-        assert!(!helper(Some("other-migrate.path")).installed());
+        assert!(!helper(Some("other.service")).installed());
         // A systemctl that is not there says nothing: not installed.
-        let none = FileMoveHelper::new(dir.path(), dir.path().join("state"), Some("x.path".into()))
-            .with_systemctl(dir.path().join("missing"));
+        let none = FileMoveHelper::new(
+            dir.path(),
+            dir.path().join("state"),
+            Some("x.service".into()),
+        )
+        .with_systemctl(dir.path().join("missing"));
         assert!(!none.installed());
+        Ok(())
+    }
+
+    /// SPEC-483 MOV-001: whether the helper's oneshot still runs its command is what systemd
+    /// says of the service the path unit starts; asked each time, never kept.
+    #[test]
+    fn the_helper_runs_while_systemd_says_its_service_does() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let systemctl = dir.path().join("systemctl");
+        let says = dir.path().join("says");
+        std::fs::write(
+            &systemctl,
+            "#!/bin/sh\necho \"$*\" >> \"$(dirname \"$0\")/asked\"\n\
+             case \"$*\" in *yulius-migrate.service) cat \"$(dirname \"$0\")/says\" ;; \
+             *) echo ActiveState=active ;; esac\n",
+        )?;
+        std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755))?;
+        let helper = FileMoveHelper::new(
+            dir.path(),
+            dir.path().join("state"),
+            Some("yulius.service".into()),
+        )
+        .with_systemctl(systemctl.clone());
+        for (state, active) in [
+            ("activating", Some(true)),
+            ("active", Some(true)),
+            ("deactivating", Some(true)),
+            ("reloading", Some(true)),
+            ("inactive", Some(false)),
+            ("failed", Some(false)),
+            ("maintenance", None),
+            ("", None),
+        ] {
+            std::fs::write(&says, format!("ActiveState={state}\n"))?;
+            assert_eq!(helper.helper_active(), active, "{state}");
+        }
+        let asked = std::fs::read_to_string(dir.path().join("asked"))?;
+        assert_eq!(
+            asked.lines().collect::<Vec<_>>(),
+            ["show --property=ActiveState -- yulius-migrate.service"; 8],
+            "asked each time"
+        );
+        // Outside a unit there is no helper to run; a systemctl that is not there says nothing.
+        let outside = FileMoveHelper::new(dir.path(), dir.path().join("state"), None)
+            .with_systemctl(systemctl);
+        assert_eq!(outside.helper_active(), Some(false));
+        let none = FileMoveHelper::new(
+            dir.path(),
+            dir.path().join("state"),
+            Some("yulius.service".into()),
+        )
+        .with_systemctl(dir.path().join("missing"));
+        assert_eq!(none.helper_active(), None);
         Ok(())
     }
 }

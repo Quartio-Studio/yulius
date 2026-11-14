@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
+use yulius_app::migration::LOST_AFTER_MS;
 use yulius_app::ports::migration::{MoveHelper, MoveStatus};
 use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_contracts::migrate::{
@@ -40,6 +41,12 @@ struct FakeMoveHelper {
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
+    /// What systemd says of the helper's service: still running its command (`alive`), or
+    /// nothing at all (`unknown`); by default it ended.
+    alive: AtomicBool,
+    unknown: AtomicBool,
+    /// How often systemd was asked about the helper's service.
+    asked_active: AtomicUsize,
 }
 
 impl MoveHelper for FakeMoveHelper {
@@ -97,6 +104,11 @@ impl MoveHelper for FakeMoveHelper {
 
     fn arrived(&self) -> Option<MoveChecklist> {
         self.arrived.lock().ok()?.clone()
+    }
+
+    fn helper_active(&self) -> Option<bool> {
+        self.asked_active.fetch_add(1, Ordering::SeqCst);
+        (!self.unknown.load(Ordering::SeqCst)).then(|| self.alive.load(Ordering::SeqCst))
     }
 }
 
@@ -776,6 +788,82 @@ async fn updates_and_moves_refuse_each_other() -> TestResult {
         )
         .await?;
     }
+    Ok(())
+}
+
+/// SPEC-483 MOV-001: a helper whose report is a minute old is lost only once systemd says its
+/// service ended. While the service still runs its command (a copy that saturates the disk
+/// keeps the report from being written), or systemd cannot say, the move is in flight: no
+/// update or restart, and nothing that continues a stopped move is offered.
+#[tokio::test]
+async fn a_silent_helper_is_lost_only_once_its_service_ended() -> TestResult {
+    let i = instance().await?;
+    crate::support::configure_github_app(&i.h).await?;
+    let source = FakeSource::behind();
+    let updates = FakeHelper::installed();
+    assert!(i.h.app.set_updates(services(OLD, &source, &updates)));
+    let post = |path: &'static str, body: Value| {
+        call(&i.h.router, Method::POST, path, Some(body), &i.admin)
+    };
+    assert_eq!(
+        post("/api/admin/update/check", json!({})).await?.status,
+        StatusCode::OK
+    );
+    i.planned(&GOOD, None).await?;
+    assert_eq!(i.ask(moving()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.checklist("Copy", &GOOD[..2], None, i.now());
+    // A report that still comes is believed without asking systemd.
+    i.later(LOST_AFTER_MS);
+    assert_eq!(i.view().await?["run"]["state"], "running");
+    assert_eq!(i.helper.asked_active.load(Ordering::SeqCst), 0);
+
+    i.later(1);
+    for (alive, unknown) in [(true, false), (false, true)] {
+        i.helper.alive.store(alive, Ordering::SeqCst);
+        i.helper.unknown.store(unknown, Ordering::SeqCst);
+        let silent = i.view().await?;
+        assert_eq!(silent["run"]["state"], "running", "alive {alive}");
+        assert_eq!(
+            silent["can"],
+            json!({"plan": false, "move": false, "abort": true}),
+            "alive {alive}"
+        );
+        i.refused(moving(), StatusCode::CONFLICT, "is running")
+            .await?;
+        for (path, body) in [
+            ("/api/admin/update", json!({"commit": NEW, "confirm": true})),
+            ("/api/admin/restart", json!({"confirm": true})),
+        ] {
+            let refused = post(path, body).await?;
+            assert_eq!(
+                refused.status,
+                StatusCode::CONFLICT,
+                "{path}: {}",
+                refused.body
+            );
+            let message = refused.body["error"]["message"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                message.contains("is being moved to another host"),
+                "{message}"
+            );
+        }
+    }
+    assert!(updates.last().is_none(), "the update helper was asked");
+
+    // Systemd says the service ended: the run stopped without a word, and may be continued.
+    i.helper.alive.store(false, Ordering::SeqCst);
+    i.helper.unknown.store(false, Ordering::SeqCst);
+    let lost = i.view().await?;
+    assert_eq!(lost["run"]["state"], "lost");
+    assert_eq!(
+        lost["can"],
+        json!({"plan": true, "move": true, "abort": true})
+    );
+    let started = post("/api/admin/update", json!({"commit": NEW, "confirm": true})).await?;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.body);
     Ok(())
 }
 

@@ -34,7 +34,8 @@ pub const ACK_WAIT_MS: i64 = 20_000;
 /// its answer is awaited: the path unit fires on a change of the file, and a change that comes
 /// while the helper is ending another run is lost.
 pub const RETRY_AFTER_MS: i64 = 5_000;
-/// A running helper whose report is older than this stopped without a word.
+/// A running helper whose report is older than this is asked about: it stopped without a word
+/// once systemd says its service ended.
 pub const LOST_AFTER_MS: i64 = 60_000;
 /// A move is asked on a plan shown at most this long ago.
 pub const PLAN_VALID_MS: i64 = 3_600_000;
@@ -51,6 +52,9 @@ struct Files {
     installed: bool,
     pending: Option<MoveRequest>,
     helper: Option<MoveHelperStatus>,
+    /// What systemd said of the helper's service, asked only when the report says running and
+    /// is older than [`LOST_AFTER_MS`].
+    service_active: Option<bool>,
     status: Option<MoveStatus>,
     arrived: Option<MoveChecklist>,
 }
@@ -64,6 +68,37 @@ enum Whose {
     Earlier,
     /// A run's started on the host: written after the helper's last run ended, or without any.
     Command,
+}
+
+/// What the helper's last run is doing, as its report and systemd say (SPEC-483 MOV-001).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RunState {
+    /// Its command runs: the report says so and still comes, or systemd says the service
+    /// still runs (or cannot say) though the report is silent.
+    Running,
+    /// The report says running, is silent and systemd says the service ended: killed, or the
+    /// host restarted.
+    Lost,
+    /// The command ended.
+    Ended,
+    /// The helper refused the request.
+    Refused,
+}
+
+impl RunState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Lost => "lost",
+            Self::Ended => "ended",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// Whether a report that says running is silent: older than [`LOST_AFTER_MS`].
+fn silent(run: &MoveHelperStatus, now: i64) -> bool {
+    run.state == MoveHelperState::Running && now - run.updated_at > LOST_AFTER_MS
 }
 
 /// Where a move stands, from [`Files`] at one moment.
@@ -83,14 +118,18 @@ impl Facts {
             .map(|request| self.now - request.requested_at <= ACK_WAIT_MS)
     }
 
-    /// The helper's report, with `true` when it says running and still reports.
-    fn run(&self) -> Option<(&MoveHelperStatus, &'static str)> {
+    /// The helper's report and what its run is doing.
+    fn run(&self) -> Option<(&MoveHelperStatus, RunState)> {
         let run = self.files.helper.as_ref()?;
         let state = match run.state {
-            MoveHelperState::Running if self.now - run.updated_at > LOST_AFTER_MS => "lost",
-            MoveHelperState::Running => "running",
-            MoveHelperState::Ended => "ended",
-            MoveHelperState::Refused => "refused",
+            MoveHelperState::Running
+                if silent(run, self.now) && self.files.service_active == Some(false) =>
+            {
+                RunState::Lost
+            }
+            MoveHelperState::Running => RunState::Running,
+            MoveHelperState::Ended => RunState::Ended,
+            MoveHelperState::Refused => RunState::Refused,
         };
         Some((run, state))
     }
@@ -98,7 +137,7 @@ impl Facts {
     /// Whether the helper runs a command now, and for which action.
     fn running(&self) -> Option<MoveAction> {
         self.run()
-            .filter(|(_, state)| *state == "running")
+            .filter(|(_, state)| *state == RunState::Running)
             .map(|(run, _)| run.action)
     }
 
@@ -133,7 +172,7 @@ impl Facts {
         let unwritten = self.whose() == Some(Whose::Earlier)
             && self
                 .run()
-                .is_some_and(|(_, state)| matches!(state, "running" | "lost"));
+                .is_some_and(|(_, state)| matches!(state, RunState::Running | RunState::Lost));
         self.files.status.as_ref().filter(|_| !unwritten)
     }
 
@@ -155,7 +194,7 @@ impl Facts {
         // Only what this run wrote says what it found.
         let status = self.status().filter(|_| self.whose() == Some(Whose::Run));
         match (run.action, state) {
-            (MoveAction::Plan, "ended") => {
+            (MoveAction::Plan, RunState::Ended) => {
                 let failed = status.is_some_and(|status| {
                     status
                         .lines
@@ -183,9 +222,12 @@ impl Facts {
                 Ok(())
             }
             // A move that stopped is continued; one that ended well has nothing left to do.
-            (MoveAction::Move, "ended") if run.exit_code != Some(0) => Ok(()),
-            (MoveAction::Move, "lost") => Ok(()),
-            _ => Err(PLAN_FIRST),
+            (MoveAction::Move, RunState::Ended) if run.exit_code != Some(0) => Ok(()),
+            (MoveAction::Move, RunState::Lost) => Ok(()),
+            (
+                MoveAction::Plan | MoveAction::Move | MoveAction::Abort,
+                RunState::Running | RunState::Lost | RunState::Ended | RunState::Refused,
+            ) => Err(PLAN_FIRST),
         }
     }
 
@@ -195,13 +237,13 @@ impl Facts {
             .status()
             .is_some_and(|status| !matches!(status.phase.as_str(), "done" | "aborted"));
         let run = self.run().is_some_and(|(run, state)| match state {
-            "running" => run.action != MoveAction::Abort,
-            "lost" => true,
+            RunState::Running => run.action != MoveAction::Abort,
+            RunState::Lost => true,
             // A plan or a move that did not end well may have recorded something, also when
             // the command refused it (a move to another host is recorded). How an abort ended
             // is in its checklist: one that found nothing to abort is not offered again.
-            "ended" => run.action != MoveAction::Abort && run.exit_code != Some(0),
-            _ => false,
+            RunState::Ended => run.action != MoveAction::Abort && run.exit_code != Some(0),
+            RunState::Refused => false,
         });
         unfinished || run
     }
@@ -255,7 +297,7 @@ impl Facts {
                 ssh_port: run.values.ssh_port,
                 public_url: run.values.public_url.clone(),
                 data_disks: run.values.data_disks.clone(),
-                state: state.to_owned(),
+                state: state.as_str().to_owned(),
                 exit_code: run.exit_code,
                 error: run.error.clone(),
                 started_at: at(run.started_at),
@@ -306,9 +348,15 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
             helper.request_again(&request.id);
         }
     }
+    // Systemd is asked only of a silent report: a report that still comes is believed.
+    let service_active = report
+        .as_ref()
+        .filter(|run| silent(run, now))
+        .and_then(|_| helper.helper_active());
     Files {
         installed: helper.installed(),
         pending,
+        service_active,
         helper: report,
         status: helper.status(),
         arrived: helper.arrived(),
@@ -359,6 +407,7 @@ impl App {
                 installed: false,
                 pending: None,
                 helper: None,
+                service_active: None,
                 status: None,
                 arrived: None,
             },
