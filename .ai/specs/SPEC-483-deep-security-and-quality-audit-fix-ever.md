@@ -2696,3 +2696,6 @@ slices follow.
 - **The supertask's pass is still tested.** Without it, `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held`
   fails (`mutation-no-supertask-drain.log`); the supertask, supervision, queue and remote MCP
   tests: 124 passed.
+- **Gate.** `scripts/dev ci` at `8fbd91be5`: exit 0; `4383 tests run: 4383 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
