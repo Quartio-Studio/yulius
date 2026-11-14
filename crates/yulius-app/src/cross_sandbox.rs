@@ -344,6 +344,9 @@ pub struct CrossRequests {
     answered: Mutex<VecDeque<Answered>>,
     /// Serializes the writes of [`SUPERAGENT_REQUESTS_FILE`].
     file: Mutex<()>,
+    /// Set from the start until the saved requests are back: no write may replace the file
+    /// before it was read (review of slice 8a, F7).
+    restoring: std::sync::atomic::AtomicBool,
 }
 
 impl CrossRequests {
@@ -1131,6 +1134,14 @@ impl App {
     /// Writes [`SUPERAGENT_REQUESTS_FILE`] whole, then renames it into place (XRQ-002).
     /// Failures are logged: the requests stay in memory.
     fn save_cross_requests(&self) {
+        if self
+            .cross_requests
+            .restoring
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // The restore writes them all, these with the saved ones.
+            return;
+        }
         let _guard = self
             .cross_requests
             .file
@@ -1172,6 +1183,22 @@ impl App {
     /// At a start: puts back the requests that waited and the recent outcomes (XRQ-002). A
     /// request whose sandbox is gone is dropped. No call waits for them any more.
     pub async fn restore_cross_requests(&self) {
+        self.restore_saved_requests().await;
+        self.cross_requests
+            .restoring
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.save_cross_requests();
+    }
+
+    /// At the start, before the server takes calls: until [`App::restore_cross_requests`] has
+    /// read the saved requests, none is written, so a request asked meanwhile loses none.
+    pub fn begin_cross_restore(&self) {
+        self.cross_requests
+            .restoring
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn restore_saved_requests(&self) {
         let path = self.config.data_dir.join(SUPERAGENT_REQUESTS_FILE);
         let Ok(bytes) = std::fs::read(&path) else {
             return;
@@ -1225,10 +1252,14 @@ impl App {
             }
         }
         {
+            // The saved outcomes are older than any kept since the start.
             let mut kept = self.cross_requests.answered();
-            if kept.is_empty() {
-                kept.extend(saved.answered);
+            let mut merged: VecDeque<Answered> = saved.answered.into();
+            merged.extend(kept.drain(..));
+            while merged.len() > MAX_ANSWERED {
+                merged.pop_front();
             }
+            *kept = merged;
         }
     }
 

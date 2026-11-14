@@ -547,6 +547,45 @@ async fn waiting_requests_are_kept_across_a_restart() -> TestResult {
     Ok(())
 }
 
+/// Review of slice 8a, F7: the server takes calls before it has put the saved requests back;
+/// a request asked meanwhile neither overwrites the file nor is lost: once restored, both wait.
+#[tokio::test]
+async fn a_request_asked_before_the_restore_loses_none() -> TestResult {
+    let w = world(300).await?;
+    let first = ask(&w, json!({"sandbox": "website", "prompt": "Saved before"}))?.await??;
+    let saved = first["request"].as_str().ok_or("request")?.to_owned();
+    let next = App::new(w.h.app.config.clone(), w.h.app.deps.clone());
+    next.begin_cross_restore();
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let asked = next
+        .tool_sandbox_task_create(
+            &caller,
+            &json!({"sandbox": "website", "prompt": "Asked meanwhile"}),
+        )
+        .await?;
+    let meanwhile = asked["request"].as_str().ok_or("request")?.to_owned();
+    next.restore_cross_requests().await;
+    let mine = next.tool_sandbox_requests(&caller).await?;
+    let mut ids: Vec<&str> = mine["waiting"]
+        .as_array()
+        .ok_or("waiting")?
+        .iter()
+        .filter_map(|r| r["request"].as_str())
+        .collect();
+    ids.sort_unstable();
+    let mut both = vec![saved.as_str(), meanwhile.as_str()];
+    both.sort_unstable();
+    assert_eq!(ids, both, "{mine}");
+    let file =
+        w.h.app
+            .config
+            .data_dir
+            .join(yulius_app::cross_sandbox::SUPERAGENT_REQUESTS_FILE);
+    let kept: Value = serde_json::from_slice(&std::fs::read(&file)?)?;
+    assert_eq!(kept["waiting"].as_array().map(Vec::len), Some(2), "{kept}");
+    Ok(())
+}
+
 /// SPEC-487 XRQ-006 (wall 6: "no listing of another sandbox's tasks; it probed numbers one by
 /// one"): the Superagent lists another sandbox's tasks without asking; its own sandbox, and one
 /// its person cannot work in, are refused.

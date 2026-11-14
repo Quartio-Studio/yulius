@@ -1948,8 +1948,9 @@ request's id and the request stays until the person answers it or the Superagent
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) XRQ-001,
 [decision 0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)):
 the waiting requests and the newest 200 outcomes are written whole to `superagent-requests.json`
-beside the database at every change and put back at a start (`restore_cross_requests`, after the
-armed merges). A Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`:
+beside the database at every change and put back first at a start (`restore_cross_requests`;
+nothing is written from the start until then, `begin_cross_restore`, so a request asked
+meanwhile loses none). A Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`:
 its shell and that id) withdraws it; `settle` waits for the outcome of an approval that the
 timeout raced. `sandbox_requests` reads the Superagent's own waiting requests and outcomes,
 `sandbox_request_amend` replaces a waiting one's text in place and `sandbox_request_withdraw`

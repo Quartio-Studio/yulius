@@ -169,7 +169,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | INS-003 | Anyone else is refused with whose it is ("only a superadmin …"); an action that is none is refused. | the same test |
 | INS-004 | Both are the person's project tools (SAR-001, SAR-002), to no task's agent; `instance` is pre-allowed; `instance_update` is the Superagent's only: not served through the remote MCP (a long-lived token's agent; the person decided it for a superadmin's Superagent) nor to the Global Superagent (text read in one sandbox must not pause everyone's work). The audit entry names the action. The instructions keep naming web pages among the text that is data. | the same test (through the tool as a stored superadmin, the audit's action); `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action`; `global_superagent::tests::it_is_not_served_change_merge`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
 | XRQ-001 | A request of the Superagent to its person (another sandbox's task created, changed, messaged or stopped; a `person_ask` question) stays on the panel until the person answers it or the Superagent withdraws it. When the call's wait (4 minutes) ends first, or the call is dropped, the call answers `{"outcome":"waiting","request":<id>}`; answered later, it runs as it would have. Nothing is audited until it is answered or withdrawn. `notifications/cancelled` for the call still withdraws it. | `cross_sandbox::an_unanswered_request_waits_and_is_answered_later`, `a_dropped_call_leaves_its_request_waiting`, `an_unanswered_change_waits_and_is_audited_when_answered` |
-| XRQ-002 | The waiting requests and the newest 200 outcomes are kept in `superagent-requests.json` beside the database, written whole at every change, and put back at a start; a request whose target sandbox is gone is dropped. | `cross_sandbox::waiting_requests_are_kept_across_a_restart` (a second `App` on the same data) |
+| XRQ-002 | The waiting requests and the newest 200 outcomes are kept in `superagent-requests.json` beside the database, written whole at every change, and put back at a start; a request whose target sandbox is gone is dropped. Nothing is written from the start until they are back, so a request asked meanwhile loses none. | `cross_sandbox::waiting_requests_are_kept_across_a_restart` (a second `App` on the same data), `a_request_asked_before_the_restore_loses_none` |
 | XRQ-003 | `sandbox_request_amend` replaces what a waiting create, message or question asks, checked as a new request is, keeping its id and place, audited `amended` without its text; an update or a stop is refused (withdrawn and asked again). An amended request takes the next `revision`: the card is drawn again, and an answer naming another revision (none is 0) is refused (409) while it keeps waiting. `sandbox_request_withdraw` removes one, audited `withdrawn`. Another Superagent's request is not found. A call that ended no longer names its request, so a later `notifications/cancelled` with its id withdraws nothing. | `cross_sandbox::a_waiting_request_is_amended_or_withdrawn`, `an_amended_request_is_answered_only_as_read`; `cockpit::a_cancel_after_the_call_ended_withdraws_nothing`; `superagent-requests.e2e.ts` "an amended request is drawn again and approved as drawn" |
 | XRQ-004 | `sandbox_requests` lists the Superagent's own waiting requests and its 20 latest outcomes (the call's answer: approved with what was done, declined, failed with why, withdrawn, cancelled), newest first. | `cross_sandbox::an_unanswered_request_waits_and_is_answered_later`, `a_waiting_request_is_amended_or_withdrawn` |
 | XRQ-005 | `person_ask {question}` (1 to 4096 bytes, no character a person cannot see) waits on the Superagent's own panel: the question read to its end, **Yes** / **No**; the answer is `yes` or `no`, the call's or read later; nothing runs on it. | `cross_sandbox::a_decision_waits_on_the_panel_and_its_answer_is_kept`; `superagent-requests.e2e.ts` "a decision the Superagent leaves to its person is answered Yes or No on its panel" |
@@ -833,3 +833,46 @@ the function the web UI's route calls, with the person's rights checked at the c
   of `instance_update` went, since no remote tool serves it any more (its test still holds).
 - **Gate, round 1:** `scripts/dev ci` passed on `1acba6b10` (4382 tests;
   `target/evidence/gate-slice7-r1.log`); the commit after it changes this specification only.
+
+### Slice 8a (2026-11-14)
+
+- **Slice 7 is merged:** pull request #1293 into `dev` at `e269af6ee`.
+- **Tests and code:** the six cross-sandbox tests of the old lifetime were rewritten to the new
+  one first (an unanswered request waits and is answered later, a dropped call leaves it
+  waiting, no expiry is audited) and failed; then amend and withdraw, the restart (a second
+  `App` on the same data directory), another sandbox's tasks and `person_ask` were written
+  before their code. The panel's `ask` card: the e2e test failed before the card and the mock
+  answered it (`superagent-requests.e2e.ts`, 16 of 16, then 17 of 17 with round 1's).
+- **Mutation:** ten one-line mutants, each failed by a named test
+  (`target/evidence/mutants-slice8a.py`, `mutants-slice8a.log`: `survived=0`).
+- **Gate:** `scripts/dev ci` passed on `3e500b0cc` (4409 tests, 17 skipped;
+  `target/evidence/gate-slice8a.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `3e500b0cc`): request changes, two medium and four minor
+  findings, all in this slice's code, each answered test-first:
+  - F1 (medium), the Superagent could amend a request after the person read it and before the
+    click: an amended request takes the next `revision`, the card is drawn again, and the answer
+    names the revision it showed (409 otherwise; `an_amended_request_is_answered_only_as_read`,
+    the e2e "an amended request is drawn again and approved as drawn").
+  - F2 (medium), a call that answered `waiting` kept its call key, so a later
+    `notifications/cancelled` with the same id withdrew the request: the key goes with the call
+    (`Waiting::stop_waiting`; `cockpit::a_cancel_after_the_call_ended_withdraws_nothing`).
+  - F3, "withdrawn" was described but never kept: withdrawn and cancelled outcomes are kept.
+  - F4, a crash between taking an answer and keeping its outcome could show the request again:
+    the file is saved when the answer is taken (not covered by a test: it needs a crash at that
+    point).
+  - F5, blocking writes and unbounded options: answered in words. The file holds at most 3
+    waiting requests per person and source sandbox, each checked as a request is (a prompt's
+    and a message's bounds, `task_create`'s argument names); it is written whole, a few
+    kilobytes, as `armed-merges.json` is, on the rare change of a request.
+  - F6, an amendment was not audited and a question was audited twice in its own sandbox: an
+    amendment is audited `amended` without its text, a question once.
+  - F7, the bound: `person_ask` shares the bound of 3 on purpose (each is a card for the person
+    to read); the Superagent withdraws one. The note on the restore's order hid a defect:
+    restoring ran after the listeners were bound, so a request asked before it wrote the file
+    without the saved ones, which the restore then read: they were lost. Now nothing is written
+    from the start until the saved requests are back, the restore merges them (outcomes too) and
+    writes them all, and it runs first in the background start
+    (`a_request_asked_before_the_restore_loses_none`). Until then the bound of 3 can be passed
+    by the requests asked meanwhile: they all wait, nothing is refused or lost.
+  Seventeen mutants now (`mutants-slice8a-r1.log`: `survived=0`).
