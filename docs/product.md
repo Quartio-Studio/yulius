@@ -187,7 +187,9 @@ watching, steering and unblocking.
   and decides a held prompt as its card does. It says where a task's merge stands and why a
   pull request that passed has not merged yet, lists the project's merge queue and merge
   train, merges a task's pull request for its owner (at once on green, otherwise armed until
-  its checks pass) and puts a queued CI run first in the project's queue. It no longer hands such a job back as steps to click or
+  its checks pass) and puts a queued CI run first in the project's queue. It reads the subscriptions and
+  which one a task runs on with which model and effort, moves a task to the subscription its
+  person names, and sets a task's model or effort for its next start. It no longer hands such a job back as steps to click or
   uses a finished task as hands; an ability it lacks it names
   (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
   After an update

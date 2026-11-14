@@ -832,6 +832,16 @@ fn task_line(task: &Value) -> Option<String> {
     if let Some(blocked) = text(task, "start_blocked") {
         parts.push(format!("will not start by itself: {blocked}"));
     }
+    // What it runs on (SPEC-487 SUB-002).
+    if let Some(subscription) = text(task, "subscription") {
+        parts.push(format!("on subscription \"{subscription}\""));
+    }
+    if let Some(model) = text(task, "model") {
+        parts.push(format!("model {model}"));
+    }
+    if let Some(effort) = text(task, "effort") {
+        parts.push(format!("effort {effort}"));
+    }
     // Why it waits for a person or is held (SPEC-487 QST-001), in its page's words.
     parts.extend(waits_why(task));
     if let Some(spec) = text(task, "spec_path") {

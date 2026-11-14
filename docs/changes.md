@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent tells and changes what a task runs on (SPEC-487 slice 6, task #469). It
+  could not say which subscription a task was on, move it, or change its model. Now
+  `subscriptions` shows the pool as the Subscriptions panel does, `tasks_list` and `task_get`
+  name each task's subscription, model and effort, `task_switch` moves a task to the
+  subscription its person names, and `task_model` sets its model or effort for its session's
+  next start.
+
 - The Superagent merges for its person and reads the merge queue (SPEC-487 slice 5, task
   #469). It could not say why a pull request that passed was not merging, nor arm a merge,
   and handed both back to the person. `task_delivery` now says where a task's merge stands

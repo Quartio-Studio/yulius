@@ -1674,6 +1674,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "secrets_list",
             "session_read",
             "sessions_search",
+            "subscriptions",
             "task_archive",
             "task_close",
             "task_create",
@@ -1684,11 +1685,13 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_held_prompt",
             "task_merge",
             "task_message",
+            "task_model",
             "task_pause",
             "task_question_dismiss",
             "task_restart",
             "task_start_now",
             "task_stop",
+            "task_switch",
             "task_unpause",
             "task_update",
             "tasks_bulk",
@@ -6442,6 +6445,215 @@ async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
         ("ci_prioritize", json!({"run_id": "run-a"})),
     ] {
         let result = support::mcp_tool(&f.h, "tok-mine", tool, args).await?;
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            result["isError"] == true && text.contains("unknown tool"),
+            "{tool}: {result}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-487 SUB-001 to SUB-004 (wall 5): the Superagent reads the subscriptions and which one a
+/// task runs on with which model and effort, moves a task to a subscription named as the person
+/// names it, and changes a task's model and effort, which apply at its session's next start.
+/// Another person's task is theirs; a task's agent is served none of it.
+#[tokio::test]
+async fn the_superagent_reads_subscriptions_and_sets_a_tasks_model() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus, AttemptRecord, LaunchKind};
+    use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
+    use yulius_domain::ids::{AccountId, AttemptId, UserId};
+    use yulius_domain::task::{AttemptState, TaskStatus};
+    use yulius_domain::time::Timestamp;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+    for (id, label) in [
+        ("acc-team", "Team Max"),
+        ("acc-two", "Second"),
+        ("acc-dup1", "Twin"),
+        ("acc-dup2", "Twin"),
+    ] {
+        f.h.store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse(id)?,
+                provider: yulius_domain::harness::Provider::Anthropic,
+                label: label.into(),
+                credential: Some(f.h.app.deps.crypto.seal(b"oauth-token")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+    }
+    let running =
+        support::seed_task(&f.h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a-t-run")?,
+            task_id: running.id.clone(),
+            seq: 1,
+            harness: yulius_domain::harness::Harness::ClaudeCode,
+            account_id: Some(AccountId::parse("acc-team")?),
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/nonexistent/run".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-run"),
+            host_token: f.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: f.h.app.now(),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let prepared =
+        support::seed_task(&f.h, "t-prep", "s1", "u-alice", TaskStatus::Prepared, None).await?;
+    let carols =
+        support::seed_task(&f.h, "t-carol", "s1", "u-carol", TaskStatus::Prepared, None).await?;
+
+    // The pool, as the Subscriptions panel shows it to everyone signed in.
+    let (pool, is_error) = cockpit_tool(&f, &token, "subscriptions", json!({})).await?;
+    assert!(!is_error, "{pool}");
+    let labels: Vec<&str> = pool["accounts"]
+        .as_array()
+        .ok_or("accounts")?
+        .iter()
+        .filter_map(|account| account["label"].as_str())
+        .collect();
+    assert!(
+        labels.contains(&"Team Max") && labels.contains(&"Second"),
+        "{pool}"
+    );
+
+    // Which subscription a task runs on, and its model and effort (none: the defaults).
+    let (brief, _) =
+        cockpit_tool(&f, &token, "task_get", json!({"number": running.number})).await?;
+    assert_eq!(brief["subscription"], "Team Max", "{brief}");
+    assert_eq!(brief["model"], Value::Null, "{brief}");
+
+    // Model and effort: stored, read back, applied at the session's next start.
+    let (changed, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_model",
+        json!({"number": prepared.number, "model": "claude-sonnet-5-5", "effort": "medium"}),
+    )
+    .await?;
+    assert!(!is_error, "{changed}");
+    let stored = f.h.store.task(&prepared.id).await?.ok_or("task")?;
+    assert_eq!(
+        (stored.model.as_deref(), stored.effort.as_deref()),
+        (Some("claude-sonnet-5-5"), Some("medium"))
+    );
+    assert!(
+        changed["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("when it starts")),
+        "{changed}"
+    );
+    let (changed, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_model",
+        json!({"number": running.number, "effort": "high"}),
+    )
+    .await?;
+    assert!(!is_error, "{changed}");
+    assert!(
+        changed["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("next start") && note.contains("task_switch")),
+        "{changed}"
+    );
+    let (brief, _) =
+        cockpit_tool(&f, &token, "task_get", json!({"number": running.number})).await?;
+    assert_eq!(brief["effort"], "high", "{brief}");
+    // "default" goes back to the instance's default.
+    cockpit_tool(
+        &f,
+        &token,
+        "task_model",
+        json!({"number": prepared.number, "model": "default"}),
+    )
+    .await?;
+    assert_eq!(
+        f.h.store.task(&prepared.id).await?.ok_or("task")?.model,
+        None
+    );
+    for (args, why) in [
+        (json!({"number": prepared.number}), "`model` or `effort`"),
+        (
+            json!({"number": prepared.number, "model": "--help"}),
+            "model",
+        ),
+        (
+            json!({"number": prepared.number, "effort": "a b"}),
+            "effort",
+        ),
+        (json!({"number": carols.number, "effort": "low"}), "@carol"),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "task_model", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+    assert_eq!(
+        f.h.store.task(&carols.id).await?.ok_or("task")?.effort,
+        None
+    );
+    assert_eq!(
+        f.h.store
+            .audit_details(prepared.id.as_str(), "task.model_changed", 10)
+            .await?
+            .len(),
+        2
+    );
+
+    // A move names the subscription as the person does; one that is no subscription, or two,
+    // is refused with the names there are.
+    for (args, why) in [
+        (
+            json!({"number": running.number, "subscription": "Nope"}),
+            "Team Max",
+        ),
+        (
+            json!({"number": running.number, "subscription": "twin"}),
+            "two subscriptions",
+        ),
+        (json!({"number": carols.number}), "@carol"),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "task_switch", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+
+    // A task's agent is served none of it.
+    for (tool, args) in [
+        ("subscriptions", json!({})),
+        ("task_switch", json!({"number": prepared.number})),
+        (
+            "task_model",
+            json!({"number": prepared.number, "effort": "low"}),
+        ),
+    ] {
+        let result = support::mcp_tool(&f.h, "tok-run", tool, args).await?;
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
         assert!(
             result["isError"] == true && text.contains("unknown tool"),

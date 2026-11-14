@@ -114,7 +114,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Arm or re-arm a task's merge; merge a task's pull request | yes, for the task's owner (slice 5) | its own, after an independent review (had) | The person decides what of theirs merges, as the page's Merge does; an agent delivers its own reviewed work |
 | Dev deploy, CD status | yes (slice 2) | yes, when its task asks (had) | SPEC-134 |
 | Production deploy, promotion to `main` | behind one confirmation in the panel (slice 8) | no | ADR-0110: a person decides; the Superagent prepares and asks |
-| A task's subscription: see, move; model and effort | yes (slice 6) | no | Tasks are subscription-agnostic (SPEC-001 ROT-007) |
+| A task's subscription: see, move; model and effort | yes (slice 6) | sees them in the task list (slice 6) | Tasks are subscription-agnostic (SPEC-001 ROT-007); a person moves their task |
+| The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
 | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
 | Instance: Update now, Restart | yes, a superadmin's (slice 7) | no | The buttons' rights and refusals |
 | Another sandbox: list and read tasks | yes (slice 8) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
@@ -155,6 +156,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 | MRG-003 | `task_merge` merges a task's pull request for its owner as the page's Merge does when the checks at its head passed and the branch is up to date; otherwise it arms the merge of the branch's head for them, which Yulius merges once those checks pass (bringing the branch up to date first when it can), keeps in its place when asked again and drops at a new commit. The arm remembers that the owner made it: the merge it makes is audited under their name (`delivery.person.merge`, "armed by its owner, no independent review asked for"), never as an agent's reviewed merge, and the task's delivery says who armed it. Refused, with the reason, when the checks failed, without an open pull request, for a pull request into another branch, for another person's task, for a task whose run ended (an armed merge lives with the run: it merges at once once its checks passed), for a head the pull request does not have yet (not pushed), and for what the branch policy refuses. A playground's task goes to its Merge, which squashes on green. | the merge-train test (armed, kept in place, merged by the pass, a failed head refused, the audit); the Superagent test (another person's task, no pull request) |
 | MRG-004 | `ci_prioritize` puts a queued CI run before its project's other queued runs, and the project's next free lane starts it; other projects' queues are not touched (each project has its own lanes). It never goes before another run of its own commit, since the latest run of a commit is read by place. Refused for a run that is not queued, is first already (or as far forward as it goes) or belongs to another project. Audited. | the Superagent test (three runs of the project, one of another, a running run, an unknown one, the audit) |
 | MRG-005 | The three are the person's project tools (SAR-001, SAR-002): served to the Superagent and, with `project`, through the remote MCP, to no task's agent; `merge_queue` is pre-allowed, the two that change something are not. The Global Superagent is not served `task_merge` (as `change_merge`, ADR-0271: text read in one sandbox must not merge code in another). | the Superagent test ("unknown tool" for a task's agent); `manage_tools::the_cockpit_asks_before_every_changing_tool`; `yulius-harness` `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `person_tools::tests` |
+| SUB-001 | `subscriptions` shows the subscriptions as the Subscriptions panel shows them to the caller (names, states, usage, capacity, burn rate, paused tasks; ids and live counts for an instance administrator). | `cockpit::the_superagent_reads_subscriptions_and_sets_a_tasks_model` |
+| SUB-002 | `tasks_list` and `task_get` name each task's subscription (its live run's, none without one or for a removed one), model and effort (none: the instance's defaults), in the record and the text. | the same test |
+| SUB-003 | `task_switch` moves a task for its owner to the subscription named by its label (any case) or id, or to the pool's best other one: the page's Switch. A name that is no subscription is refused with the names there are; one shared by two subscriptions is refused with how to name one. | the same test (an unknown name, a shared name, another person's task) |
+| SUB-004 | `task_model` sets a task's model, effort or both for its owner (`default` goes back to the default); stored with the task, taken at its session's next start, and said so (not started: when it starts; running: at its next start, `task_switch` restarts it now; ended: when continued). A value of a shape a launch does not take is refused. Audited. | the same test; `task_setup::tests::a_model_and_an_effort_are_what_a_launch_takes` |
+| SUB-005 | The three are the person's project tools (SAR-001, SAR-002), to no task's agent; `subscriptions` is pre-allowed. | the same test; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment` |
 
 ## Plan
 
@@ -166,7 +172,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 3: task control that had no function (rename, a prompt not started, queue order, close out, bulk stop, pause and message)
 - [x] Slice 4: tasks' questions (open ones listed, why a task needs attention, answered or dismissed for the person, the end of a session)
 - [x] Slice 5: merges (a task's merge armed for the person, the sandbox's merge queue, why a pull request is not merging, CI order and hold)
-- [ ] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
+- [x] Slice 6: subscriptions and model (which one a task is on, moved, model and effort changed)
 - [ ] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [ ] Slice 8: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, production behind one confirmation, another sandbox's task list)
 - [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
@@ -428,6 +434,16 @@ the function the web UI's route calls, with the person's rights checked at the c
   project's earliest queued run is "first" without touching another run or project. A hold
   would stop every task's checks and merges; no case in the read conversations needed more
   than cancel and run again, and no page holds it either. The table says so.
+- **Slice 6: a subscription is named as people name it** (SUB-003). The person says "Team
+  Max", not an id, and only administrators see ids; the label is matched in any case, and a
+  label two subscriptions share is refused rather than guessed.
+- **A model change waits for the session's next start** (SUB-004). Typing `/model` into a
+  running session would change it mid-turn behind its agent and is not what Yulius types;
+  the launch already takes the task's model. The answer says when it applies and that
+  `task_switch` starts the session again now. No page sets a task's model after its creation:
+  this is a person's function written as a page's would be (ADR-0330).
+- **Excluding a subscription from the pool is not a person's ability** because the pool has
+  no such setting; the table says so rather than adding one here.
 - **The rule is stored in its canonical words** (`#12 finished && #13` reads back as
   `#12 done and #13 done`): one form for the editor, the tools and the evaluation.
 
@@ -709,3 +725,18 @@ the function the web UI's route calls, with the person's rights checked at the c
   open flake of issue #1190: it passes alone ten times in a row and failed once in four beside
   48 busy loops; the issue has this occurrence. The run before that stopped at clippy (a
   vector in a test). The commit after it changes this specification only.
+
+### Slice 6 (2026-11-14)
+
+- **Slice 5 is merged:** pull request #1285 into `dev` at `50ed73e90`, after its first merge
+  train failed `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (a timeout
+  under load; it fails the same way on plain `dev` beside busy loops: issue #1286, filed). The
+  notes of its approving review are this slice's first commit: `ci_prioritize` says when a
+  run is not first, and who armed a merge is tested across a save.
+- **Tests and code:** the Superagent test (`the_superagent_reads_subscriptions_and_sets_a_tasks_model`)
+  was written before the code, which it calls through tool names the server did not serve,
+  so it failed with "unknown tool"; it passes with it. Unit tests: the shapes of a model and an
+  effort, the audit's subject of the three tools, the instructions (3 more tools named, within
+  the bound at 4071 characters after two sentences were shortened).
+- **The shared code keeps its other callers:** every test of `yulius`, `yulius-app`,
+  `yulius-harness` and `yulius-store` passes (3096).

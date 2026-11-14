@@ -42,6 +42,9 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_held_prompt", Action::Work),
     ("task_merge", Action::Work),
     ("merge_queue", Action::View),
+    ("subscriptions", Action::View),
+    ("task_switch", Action::Work),
+    ("task_model", Action::Work),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -131,7 +134,9 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
         | "task_close"
         | "task_question_dismiss"
         | "task_held_prompt"
-        | "task_merge" => {
+        | "task_merge"
+        | "task_switch"
+        | "task_model" => {
             if let Some(number) = args.get("number").and_then(Value::as_u64) {
                 about.insert("task".into(), json!(number));
             } else if let Some(task) = id("task_id") {
@@ -327,6 +332,34 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
             &[],
         ),
         tool(
+            "subscriptions",
+            "The Claude subscriptions tasks run on, as the Subscriptions panel shows them: each one's name, state (ok, limited, needs a new sign-in, error) and usage of its 5-hour and weekly windows, the pool's capacity, its burn rate and when it runs out, and the tasks paused for capacity; ids and live task counts for an instance administrator. A task's subscription, model and effort are in tasks_list and task_get. Adding, signing in or removing a subscription is an administrator's, on that panel.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "task_switch",
+            "Move a running or waiting task to another subscription now, as Switch on its page does (\"run #12 on the Team Max subscription\"): name it as the person does (its name, in any case) or by its id; with none named, the pool's best other one. The session goes on there where it was. Refused, with the reason, for a paused task (resume it first), for a subscription that cannot take it, and for a name that is no subscription (the names there are are said). The task's owner only.",
+            {
+                let mut properties = task_ref.clone();
+                properties["subscription"] = json!({"type": "string", "description": "The subscription's name or id (none: the pool's choice)"});
+                properties
+            },
+            &[],
+        ),
+        tool(
+            "task_model",
+            "Set a task's model, effort or both (\"use Sonnet for #12\", \"#12 at high effort\"); default goes back to the instance's default. It is stored with the task and its session takes it at its next start: a task that has not started runs with it, a running session keeps its model until then (task_switch starts it again now, with the new one), an ended task takes it when continued. The task's owner only.",
+            {
+                let mut properties = task_ref.clone();
+                properties["model"] =
+                    json!({"type": "string", "description": "A Claude model id, or default"});
+                properties["effort"] = json!({"type": "string", "description": "low, medium, high, xhigh or max, or default"});
+                properties
+            },
+            &[],
+        ),
+        tool(
             "ci_runs",
             "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch, pull request or merge train, commit, state, jobs).",
             json!({}),
@@ -405,6 +438,30 @@ impl App {
                 self.merge_for_person(ctx, task.id.as_str()).await
             }
             "merge_queue" => self.merge_queue_for_person(ctx, &sandbox.id).await,
+            // The Subscriptions panel as everyone signed in sees it (SPEC-487 SUB-001).
+            "subscriptions" => record(&self.capacity_view(ctx).await?),
+            "task_switch" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let name = match args.get("subscription") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(name)) => Some(name.as_str()),
+                    Some(_) => return Err(AppError::Invalid("`subscription` must be text".into())),
+                };
+                let summary = self
+                    .switch_task_for_person(ctx, task.id.as_str(), name)
+                    .await?;
+                Ok(json!({"task": record(&summary)?}))
+            }
+            "task_model" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let text = |key: &str| match args.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(Value::String(text)) => Ok(Some(text.as_str())),
+                    Some(_) => Err(AppError::Invalid(format!("`{key}` must be text"))),
+                };
+                self.set_task_model(ctx, task.id.as_str(), text("model")?, text("effort")?)
+                    .await
+            }
             "ci_prioritize" => {
                 self.ci_run_first(ctx, &sandbox.id, str_arg(args, "run_id")?)
                     .await
@@ -702,6 +759,18 @@ mod tests {
             json!({"run": "r-1"})
         );
         assert_eq!(subject("merge_queue", &json!({"run_id": "r-1"})), json!({}));
+        assert_eq!(
+            subject(
+                "task_model",
+                &json!({"number": 7, "model": "x".repeat(1 << 20)})
+            ),
+            json!({"task": 7})
+        );
+        assert_eq!(
+            subject("task_switch", &json!({"number": 7, "subscription": "Team"})),
+            json!({"task": 7})
+        );
+        assert_eq!(subject("subscriptions", &json!({"number": 7})), json!({}));
         // A decision on a held prompt names the task and the decision, when it is one.
         assert_eq!(
             subject("task_held_prompt", &json!({"number": 5, "action": "after"})),

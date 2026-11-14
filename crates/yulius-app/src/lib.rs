@@ -106,6 +106,7 @@ pub mod task_edit;
 pub mod task_message;
 pub mod task_prompt;
 pub mod task_questions;
+pub mod task_setup;
 pub mod tasks;
 pub mod terminal;
 pub mod transcripts;

@@ -137,6 +137,11 @@ impl App {
         // Where the task list shows it, and why it waits for a person or is held (SPEC-487
         // QST-001): what its page says, so nobody has to paste it.
         brief["shows"] = json!(crate::task_questions::group_name(group));
+        // What it runs on (SPEC-487 SUB-002): its live run's subscription, and the model and
+        // effort it was given (none: the instance's defaults).
+        brief["subscription"] = json!(self.run_subscription(task).await);
+        brief["model"] = json!(task.model);
+        brief["effort"] = json!(task.effort);
         if let Some(fields) = brief.as_object_mut() {
             fields.extend(self.waits_why(task, person).await);
         }
