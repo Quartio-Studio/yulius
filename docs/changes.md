@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
+  30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
+  bulk stop start its next waiting task in the tests before stopping it.
 - One reader of a bearer token and one GitHub-token scrub (SPEC-483 slice 29, task #465).
   Five routes read `Authorization: Bearer` their own way (the leftovers key untrimmed) and Git's
   and GitHub's adapters each kept the loop that removes GitHub tokens; each is written once now.

@@ -62,7 +62,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
       #1281), the rest slice 25 (merged, #1282);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
-      #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29;
+      #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
+      #1290);
   17. efficiency (QA8, QB5, QC1, QC6);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
@@ -650,6 +651,17 @@ went; two of the auditors' items had gained a user since and stay.
   21 to 28, all merged, moved to `evidence/SPEC-483-slices-21-28.md` word for word, as slices 1
   to 20 did.
 
+### Slice 30: a cancelled waiting task and the queue
+
+- **Q30 (low, #1278).** A stop of a task that waits (`queued`, `chained`, `prepared`, waiting
+  for capacity) ended with a pass of the queue, for any task, though only a supertask's cancel
+  frees anything (SUP-005: it held the project's queue); the delete path drains only for a
+  supertask. In a world with free sessions and tasks seeded as waiting (the tests'), a bulk stop
+  of two waiting tasks let the pass start the second before the stop reached it: the flaky
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (#1278, failed in slices 23
+  and 29). In production a task waits because no session is free, so the extra pass started
+  nothing (a first comment on #1278 said otherwise and was corrected).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1161,6 +1173,9 @@ went; two of the auditors' items had gained a user since and stay.
   domain (`scrub_github_tokens`): every prefix, a stateless installation token whole, a bare
   prefix kept; each adapter keeps its own rules around it (URL user information, `Bearer`,
   `password=` lines for Git; known values, JWTs and the length bound for GitHub).
+- **QUE-001** Cancelling a task that waits drains the queue only when it was a supertask (its
+  hold on the project ends, SUP-005); any other waiting task frees no session and starts no
+  pass, so a bulk stop of waiting tasks stops each of them.
 
 ## Plan
 
@@ -1195,7 +1210,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing (merged, #1283)
 - [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is (merged, #1284)
 - [x] Slice 28: the web UI asks about unsaved work on every way out, and says checks, sizes and commits one way (merged, #1287)
-- [ ] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out
+- [x] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out (merged, #1290)
+- [ ] Slice 30: a cancelled waiting task starts the queue only when it was a supertask
 
 ## Acceptance criteria
 
@@ -1805,6 +1821,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `ghs_`, and leaves text without one unchanged; the adapters' own tests of #424 pass through it
   (ONE-005).
 
+- **AC-150** A bulk stop of two waiting tasks in a world with free sessions stops both, also with
+  a 300 ms pause after each stop of the bulk loop (before the fix: 3 of 3 failed, the second
+  started and its stop refused); a stopped waiting supertask still lets the tasks it held start
+  (QUE-001).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2065,6 +2086,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 30: `yulius` `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (with
+  the probe, and `--stress-count 50` beside a busy loop) and
+  `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held` (AC-150).
 - Slice 29: `yulius-server` `auth::tests::one_bearer_reader_takes_the_trimmed_token_of_a_bearer_header_only`
   and the routes' tests (AC-148), `yulius` `leftovers::the_loopback_routes_need_the_server_s_key`
   (a padded key is taken) and `browser::another_authorization_scheme_beside_a_session_cookie_is_refused`; `yulius` `browser::the_welcome_page_names_the_sandbox_and_links_its_listening_ports`,
@@ -2162,6 +2186,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 30 (no decision record: SUP-005 decided it). The pass follows what frees a session or
+  a hold, as the delete path already did, rather than the test seeding its tasks differently:
+  the pass was not needed, and a test world with free sessions is a fair one. A committed test
+  that a cancel starts no pass would race the pass it looks for; the probe reproduces it, and
+  the test that flaked is the regression test.
 - Slice 29 (no decision record: refactors). The bearer reader trims, as four of the five did:
   the leftovers key, compared as it came, now takes a key with a stray space as the others
   take a token. The scheme stays `Bearer` as written (RFC 9110 makes it case-insensitive; no
@@ -2612,10 +2641,11 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
 | QB2, QB3, QB7 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice | low | open (item 16 of the Context) |
-| QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | slice 29 |
+| QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | open (item 16 of the Context) |
-| QC4 | duplication | The GitHub-token scrub twice | low | slice 29 |
+| QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
 | QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
+| Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | slice 30 |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
 
 ## Evidence
@@ -2655,3 +2685,14 @@ slices follow.
   untrimmed; the extractor rewritten to fall back to the cookie).
 - **Gate after it.** `scripts/dev ci` at `368bd692b`: exit 0; `4383 tests run: 4383 passed (1
   slow), 17 skipped` (`gate3.log`).
+
+### Slice 30 (2026-11-14)
+
+- **Failing before the fix.** A temporary 300 ms sleep after each stop of `bulk_tasks`' loop:
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` failed 3 of 3 (`done` 1,
+  the second task `failed_precondition`); with the fix and the same probe it passed 3 of 3
+  (`target/audit/slice30/probe-before.log`, `probe-after.log`); the probe was removed.
+- **Stress.** `--stress-count 50` beside a busy loop: 50 of 50 passed (`stress.log`).
+- **The supertask's pass is still tested.** Without it, `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held`
+  fails (`mutation-no-supertask-drain.log`); the supertask, supervision, queue and remote MCP
+  tests: 124 passed.
