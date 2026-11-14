@@ -887,6 +887,9 @@ impl App {
                     };
                     if let Err(err) = self.start_run(&task.id, start, account).await {
                         tracing::warn!(error = %err, task = %task.id, "paused task failed to start");
+                        // Nothing was resumed: the next task of this round need not wait the
+                        // stagger for it.
+                        return Resume::Waiting(None);
                     }
                 }
                 Resume::Resumed

@@ -845,19 +845,89 @@ pub(crate) fn opening_sent(run_dir: &str) {
 /// (SPEC-146 GWR-001, GWR-002).
 const LAUNCH_GOAL_FILE: &str = "launch-goal-pending";
 
-/// Whether the run in `run_dir` has a launch goal not confirmed yet.
-fn launch_goal_pending(run_dir: &Path) -> bool {
-    run_dir.join(LAUNCH_GOAL_FILE).exists()
+/// File in a run directory while Yulius still has to type the run's `/goal`: a resumed goal
+/// session gets it typed once its opening turn ended (ONE-007). Written before the spawn, like
+/// its siblings, and removed when the typist ends with an outcome (the goal recorded, the task
+/// flagged, the prompt box left to a person). It holds [`TYPED_GOAL_OPENS`] when the session
+/// opens with a turn. The typist lives in the server's memory, so a restarted server has none:
+/// for a reattached run that still has the file it waits that turn out, watches whether Claude
+/// Code recorded a goal meanwhile, and flags the task when it did not (SPEC-483 RST-002).
+const TYPED_GOAL_FILE: &str = "typed-goal-pending";
+
+/// What [`TYPED_GOAL_FILE`] holds for a session that opens with a turn before its goal is typed.
+const TYPED_GOAL_OPENS: &str = "opening";
+
+/// Whether the opening turn of the reattached run in `run_dir`, whose goal is still to be
+/// typed, has not ended: the run opened with one and no Stop of it was answered yet.
+fn typed_goal_awaits_opening(run_dir: &Path) -> bool {
+    std::fs::read_to_string(run_dir.join(TYPED_GOAL_FILE))
+        .is_ok_and(|mark| mark.trim() == TYPED_GOAL_OPENS)
+        && crate::outage::stop_answered_at(run_dir) == 0
 }
 
-/// The launch goal of the run in `run_dir` has an outcome: no later server watches it again.
-fn launch_goal_settled(run_dir: &Path) {
-    match std::fs::remove_file(run_dir.join(LAUNCH_GOAL_FILE)) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-            tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not clear the pending launch goal");
+/// A run's goal that is not confirmed yet, as its run directory records it.
+#[derive(Debug, Clone, Copy)]
+enum PendingGoal {
+    /// Given as the launch prompt ([`LAUNCH_GOAL_FILE`]).
+    Launch,
+    /// To be typed by Yulius ([`TYPED_GOAL_FILE`]).
+    Typed,
+}
+
+impl PendingGoal {
+    fn file(self) -> &'static str {
+        match self {
+            Self::Launch => LAUNCH_GOAL_FILE,
+            Self::Typed => TYPED_GOAL_FILE,
         }
-        _ => {}
     }
+
+    /// Whether the run in `run_dir` has this goal not confirmed yet.
+    fn pending(self, run_dir: &Path) -> bool {
+        run_dir.join(self.file()).exists()
+    }
+
+    /// The goal of the run in `run_dir` has an outcome: no later server watches it again.
+    fn settled(self, run_dir: &Path) {
+        match std::fs::remove_file(run_dir.join(self.file())) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not clear the pending goal");
+            }
+            _ => {}
+        }
+    }
+
+    /// Why the task has no goal when the watch of this goal ends without one.
+    fn not_taken(self) -> &'static str {
+        match self {
+            Self::Launch => "Claude Code did not take the task's goal",
+            Self::Typed => "Yulius restarted before it set this task's goal",
+        }
+    }
+}
+
+/// File in a run directory whose run was started with its owner's personal MCP servers: the
+/// owner's id (SPEC-332 MSC-009). A live run keeps its MCP configuration, and which person's
+/// servers it holds decides who may message it and whether a hand-over restarts it; a restarted
+/// server reads it back for a reattached run (SPEC-483 RST-001).
+const PERSONAL_MCP_FILE: &str = "personal-mcp-of";
+
+/// Whose personal MCP servers the run in `run_dir` was started with; `None` for none, and for
+/// a mark that cannot be read (said in the log: the run then counts as holding nobody's).
+fn personal_mcp_marked(run_dir: &Path) -> Option<yulius_domain::ids::UserId> {
+    let text = match std::fs::read_to_string(run_dir.join(PERSONAL_MCP_FILE)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::warn!(run_dir = %run_dir.display(), error = %err, "the run's personal MCP mark cannot be read");
+            return None;
+        }
+    };
+    let marked = yulius_domain::ids::UserId::parse(text.trim()).ok();
+    if marked.is_none() {
+        tracing::warn!(run_dir = %run_dir.display(), "the run's personal MCP mark names no user");
+    }
+    marked
 }
 
 /// File in a run directory once its Claude Code session started (its SessionStart hook reached
@@ -1537,10 +1607,15 @@ impl App {
                     // Continue of a resting task); the pool's own choice for a paused task is
                     // made again at the launch, when it may be another.
                     let chosen = account.as_ref().filter(|_| task.status.is_resting());
-                    self.deps
+                    let queued = self
+                        .deps
                         .store
                         .queue_task(&task.id, task.status, &start.kept(chosen), self.now())
                         .await?;
+                    // It changed meanwhile (a stop takes no launch lock): nothing was done.
+                    if !queued {
+                        return Ok(false);
+                    }
                     // A paused task's start waits in the queue now, not for capacity.
                     self.end_pause(&task.id, "started").await;
                     self.publish_task(&task.id).await;
@@ -1559,15 +1634,14 @@ impl App {
                 },
                 _ => (start, account),
             };
-            // The start is made: a pause the task waited in is over. Only here, so that a
-            // start refused above (the queue is full) leaves the pause, and with it the pool's
-            // next round, as they were (SPEC-483 QST-002).
-            self.end_pause(&task.id, "started").await;
             let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account, rest).await;
             drop(launching);
             drop(guard);
             if let Err(err) = &result {
+                // The launch failed: the task waits for nothing any more, whatever pause it
+                // was started from (one the launch would have ended with its subscription).
+                self.end_pause(task_id, "ended").await;
                 let reason = crate::account_gate::fail_reason(err);
                 if let Ok(Some(current)) = self.deps.store.task(task_id).await
                     && matches!(current.status, TaskStatus::Starting | TaskStatus::Queued)
@@ -1702,6 +1776,11 @@ impl App {
             self.pause_task(&task.id, kind, None, continuation).await?;
             return Ok(());
         };
+        // The run has its subscription: a pause the task waited in is over. Only here, so that
+        // a start the full queue refused, and one that finds no capacity after all (the branch
+        // above, where an open pause keeps its kind and its text), leave it as it was
+        // (SPEC-483 QST-002).
+        self.end_pause(&task.id, "started").await;
         let credential = self.open_credential(&account)?;
         crate::race::reached(
             crate::race::Point::AccountChosen,
@@ -1846,6 +1925,16 @@ impl App {
         if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
             *held = personal_mcp.then(|| task.owner.clone());
         }
+        // The run directory says it too: a restarted server has no other record (RST-001). A
+        // mark that cannot be written fails the launch: the run would hold a person's servers
+        // that a later server knows nothing of.
+        if personal_mcp {
+            write_private_file(
+                &run_dir.join(PERSONAL_MCP_FILE),
+                task.owner.as_str().as_bytes(),
+            )
+            .map_err(AppError::internal)?;
+        }
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
@@ -1988,6 +2077,18 @@ impl App {
         {
             tracing::warn!(task = %task.id, error = %err, "could not record the pending launch goal");
         }
+        // And for a goal Yulius types once the session reads input (SPEC-483 RST-002): the
+        // mark says whether a turn comes first, which a restarted server has to wait out.
+        if goal_mode && !goal_in_prompt && !request_unwritten {
+            let opens = if opens_with_turn {
+                TYPED_GOAL_OPENS
+            } else {
+                ""
+            };
+            if let Err(err) = write_private_file(&run_dir.join(TYPED_GOAL_FILE), opens.as_bytes()) {
+                tracing::warn!(task = %task.id, error = %err, "could not record the goal still to be typed");
+            }
+        }
         let runtime = self.runtime(&task.id);
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
@@ -2103,19 +2204,21 @@ impl App {
         }
         if goal_in_prompt {
             // Nothing to type: the goal is watched until Claude Code records it.
-            self.spawn_goal_watch(&task.id, &attempt_id, &run_dir);
+            self.spawn_goal_watch(&task.id, &attempt_id, &run_dir, PendingGoal::Launch);
         } else if request_unwritten {
             self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
                 .await;
         } else if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
                 Ok(goal) => {
-                    self.spawn_goal(&task.id, &attempt_id, &goal.typed, typed_before);
+                    self.spawn_goal(&task.id, (&attempt_id, &run_dir), &goal.typed, typed_before);
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
                     self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
                         .await;
+                    // Said: no later server has to say it again.
+                    PendingGoal::Typed.settled(&run_dir);
                 }
             }
         } else if let Some(opening) = typed_opening {
@@ -2491,11 +2594,15 @@ impl App {
     /// capacity or an update keeps the prompt does not count), else the task is flagged as for a
     /// typed goal never taken (TSK-010). A watch that ends with an outcome clears the run's
     /// [`LAUNCH_GOAL_FILE`]; a restart watches a goal whose marker is left (SPEC-146 GWR-002).
+    /// A restarted server watches a goal that was still to be typed ([`PendingGoal::Typed`])
+    /// the same way: nothing types it any more, so only a goal Claude Code recorded before the
+    /// restart ends the watch without a flag (SPEC-483 RST-002).
     fn spawn_goal_watch(
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt_id: &AttemptId,
         run_dir: &Path,
+        goal: PendingGoal,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
@@ -2503,8 +2610,18 @@ impl App {
         tokio::spawn(async move {
             let mut typed_before = 0;
             let started = tokio::time::Instant::now();
+            // A goal that was to be typed after the session's opening turn is watched from
+            // that turn's end (the restarted server gave the run its opening turn back): a
+            // flag raised inside the turn would be taken away by the turn's own end.
+            let after_opening = matches!(goal, PendingGoal::Typed);
             match app
-                .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
+                .wait_input_ready(
+                    &task_id,
+                    &attempt_id,
+                    started,
+                    after_opening,
+                    &mut typed_before,
+                )
                 .await
             {
                 // This watch types nothing: whether the launch goal was taken is told by its
@@ -2512,12 +2629,22 @@ impl App {
                 InputReady::Ready | InputReady::ScreenWithheld => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => {
-                    app.trust_unanswered(
-                        &task_id,
-                        "; the task starts by itself once it is answered.",
-                    )
-                    .await;
-                    launch_goal_settled(&run_dir);
+                    match goal {
+                        PendingGoal::Launch => {
+                            app.trust_unanswered(
+                                &task_id,
+                                "; the task starts by itself once it is answered.",
+                            )
+                            .await;
+                        }
+                        // Nothing types this goal once the dialog is answered: the person does,
+                        // as the typist would have told them.
+                        PendingGoal::Typed => {
+                            app.goal_never_set(&task_id, TRUST_UNANSWERED, Some(TRUST_ANSWER))
+                                .await;
+                        }
+                    }
+                    goal.settled(&run_dir);
                     return;
                 }
             }
@@ -2527,7 +2654,7 @@ impl App {
             let mut waited = Duration::ZERO;
             while waited < bound {
                 if runtime.goal_submitted.load(Ordering::SeqCst) {
-                    launch_goal_settled(&run_dir);
+                    goal.settled(&run_dir);
                     return;
                 }
                 if !app.attempt_live(&task_id, &attempt_id).await {
@@ -2542,11 +2669,10 @@ impl App {
                 && app.attempt_live(&task_id, &attempt_id).await
             {
                 tracing::error!(task = %task_id, "the task's launch goal was never taken by the agent");
-                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
-                    .await;
-                launch_goal_settled(&run_dir);
+                app.goal_not_taken(&task_id, goal.not_taken()).await;
+                goal.settled(&run_dir);
             } else if runtime.goal_submitted.load(Ordering::SeqCst) {
-                launch_goal_settled(&run_dir);
+                goal.settled(&run_dir);
             }
         });
     }
@@ -2562,91 +2688,115 @@ impl App {
     fn spawn_goal(
         self: &Arc<Self>,
         task_id: &TaskId,
-        attempt_id: &AttemptId,
+        (attempt_id, run_dir): (&AttemptId, &Path),
         condition: &str,
         typed_before: i64,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        let run_dir = run_dir.to_path_buf();
         let command = format!("{GOAL_COMMAND}{condition}");
         tokio::spawn(async move {
-            let runtime = app.runtime(&task_id);
-            let live = || app.attempt_live(&task_id, &attempt_id);
-            let started = tokio::time::Instant::now();
-            let mut typed_before = typed_before;
-            let unanswered = || async {
-                app.goal_never_set(&task_id, TRUST_UNANSWERED, Some(TRUST_ANSWER))
-                    .await;
-            };
-            match app
-                .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)
+            if app
+                .type_goal(&task_id, &attempt_id, &command, typed_before)
                 .await
             {
-                InputReady::Ready => {}
-                InputReady::Gone => return,
-                InputReady::TrustUnanswered => return unanswered().await,
-                InputReady::ScreenWithheld => {
-                    return app
-                        .goal_never_set(&task_id, SCREEN_WITHHELD, Some(SCREEN_WITHHELD_ANSWER))
-                        .await;
-                }
-            }
-            // The opening turn is over, or given up on: a later Stop is the goal's own.
-            runtime.opening_turn.store(false, Ordering::SeqCst);
-            runtime.goal_submitted.store(false, Ordering::SeqCst);
-            // A person typed before the goal: `/goal` would be appended to their draft and sent
-            // with it. The draft is theirs; the task waits for them instead (#252).
-            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
-                app.goal_not_taken(
-                    &task_id,
-                    "Someone typed in the terminal before Yulius set the task's goal, so their \
-                     draft was left alone",
-                )
-                .await;
-                return;
-            }
-            for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
-                // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
-                if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
-                    return;
-                }
-                let mut input = Vec::new();
-                if attempt == 0 || attempt == GOAL_RETYPE_ATTEMPT {
-                    if attempt > 0 {
-                        input.push(0x15); // Ctrl-U: clear what is in the prompt box
-                    }
-                    input.extend_from_slice(command.as_bytes());
-                }
-                if !input.is_empty()
-                    && let Err(err) = app.send_input(&task_id, &input).await
-                {
-                    tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
-                    return;
-                }
-                // A separate Enter, so the TUI sees typed text first and then a submit.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                if let Err(err) = app.send_input(&task_id, b"\r").await {
-                    tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
-                    return;
-                }
-                let waited = tokio::time::Instant::now();
-                while waited.elapsed() < *wait {
-                    if runtime.goal_submitted.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    if !live().await {
-                        return;
-                    }
-                }
-                tracing::warn!(task = %task_id, attempt, "the task goal was not taken; submitting again");
-            }
-            if live().await && !runtime.goal_submitted.load(Ordering::SeqCst) {
-                tracing::error!(task = %task_id, "the task goal was never taken by the agent");
-                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
-                    .await;
+                PendingGoal::Typed.settled(&run_dir);
             }
         });
+    }
+
+    /// The typist of [`Self::spawn_goal`]. `true` once the goal has an outcome (recorded, the
+    /// task flagged, or the prompt box left to the person who typed into it); `false` when the
+    /// run ended or could not be typed into, which says nothing about its goal.
+    async fn type_goal(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        command: &str,
+        typed_before: i64,
+    ) -> bool {
+        let app = self;
+        let runtime = app.runtime(task_id);
+        let live = || app.attempt_live(task_id, attempt_id);
+        let started = tokio::time::Instant::now();
+        let mut typed_before = typed_before;
+        match app
+            .wait_input_ready(task_id, attempt_id, started, true, &mut typed_before)
+            .await
+        {
+            InputReady::Ready => {}
+            InputReady::Gone => return false,
+            InputReady::TrustUnanswered => {
+                app.goal_never_set(task_id, TRUST_UNANSWERED, Some(TRUST_ANSWER))
+                    .await;
+                return true;
+            }
+            InputReady::ScreenWithheld => {
+                app.goal_never_set(task_id, SCREEN_WITHHELD, Some(SCREEN_WITHHELD_ANSWER))
+                    .await;
+                return true;
+            }
+        }
+        // The opening turn is over, or given up on: a later Stop is the goal's own.
+        runtime.opening_turn.store(false, Ordering::SeqCst);
+        runtime.goal_submitted.store(false, Ordering::SeqCst);
+        // A person typed before the goal: `/goal` would be appended to their draft and sent
+        // with it. The draft is theirs; the task waits for them instead (#252).
+        if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+            app.goal_not_taken(
+                task_id,
+                "Someone typed in the terminal before Yulius set the task's goal, so their \
+                 draft was left alone",
+            )
+            .await;
+            return true;
+        }
+        for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
+            // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                return true;
+            }
+            let mut input = Vec::new();
+            if attempt == 0 || attempt == GOAL_RETYPE_ATTEMPT {
+                if attempt > 0 {
+                    input.push(0x15); // Ctrl-U: clear what is in the prompt box
+                }
+                input.extend_from_slice(command.as_bytes());
+            }
+            if !input.is_empty()
+                && let Err(err) = app.send_input(task_id, &input).await
+            {
+                tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                return false;
+            }
+            // A separate Enter, so the TUI sees typed text first and then a submit.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            if let Err(err) = app.send_input(task_id, b"\r").await {
+                tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
+                return false;
+            }
+            let waited = tokio::time::Instant::now();
+            while waited.elapsed() < *wait {
+                if runtime.goal_submitted.load(Ordering::SeqCst) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if !live().await {
+                    return false;
+                }
+            }
+            tracing::warn!(task = %task_id, attempt, "the task goal was not taken; submitting again");
+        }
+        if !live().await {
+            return false;
+        }
+        if !runtime.goal_submitted.load(Ordering::SeqCst) {
+            tracing::error!(task = %task_id, "the task goal was never taken by the agent");
+            app.goal_not_taken(task_id, "Claude Code did not take the task's goal")
+                .await;
+        }
+        true
     }
 
     pub(crate) fn open_credential(&self, account: &AccountRecord) -> AppResult<Secret> {
@@ -4512,6 +4662,11 @@ impl App {
             runtime
                 .spawned_ms
                 .store(attempt.started_at.0, Ordering::SeqCst);
+            // The opening turn of a session whose goal is still to be typed (SPEC-483 RST-002):
+            // its Stop ends it as it is, as before the restart, and the goal's watch waits for it.
+            if typed_goal_awaits_opening(Path::new(&attempt.run_dir)) {
+                runtime.opening_turn.store(true, Ordering::SeqCst);
+            }
             // Only ever set here: a SessionStart hook served meanwhile is not undone.
             if session_started_marked(Path::new(&attempt.run_dir)) {
                 runtime.session_started.store(true, Ordering::SeqCst);
@@ -4589,8 +4744,42 @@ impl App {
                 // A launch goal the old server was watching is watched again: the transcript
                 // replay says whether Claude Code recorded it meanwhile (SPEC-146 GWR-002).
                 let run_dir = Path::new(&attempt.run_dir);
-                if launch_goal_pending(run_dir) {
-                    self.spawn_goal_watch(&attempt.task_id, &attempt.id, run_dir);
+                if PendingGoal::Launch.pending(run_dir) {
+                    self.spawn_goal_watch(
+                        &attempt.task_id,
+                        &attempt.id,
+                        run_dir,
+                        PendingGoal::Launch,
+                    );
+                }
+                // A goal the old server still had to type has no typist any more: whether
+                // Claude Code recorded it before the restart is watched, and a task left
+                // without a goal is flagged (SPEC-483 RST-002).
+                if PendingGoal::Typed.pending(run_dir) {
+                    self.spawn_goal_watch(
+                        &attempt.task_id,
+                        &attempt.id,
+                        run_dir,
+                        PendingGoal::Typed,
+                    );
+                }
+                // Whose personal MCP servers the run holds (SPEC-483 RST-001): never over what
+                // this server recorded itself.
+                let marked = personal_mcp_marked(run_dir);
+                if let Ok(mut held) = self.runtime(&attempt.task_id).personal_mcp_of.lock()
+                    && held.is_none()
+                {
+                    held.clone_from(&marked);
+                }
+                // A hand-over the old server did not finish (its restart of the run was cut):
+                // the run still holds the previous owner's servers, and is restarted now.
+                if let Some(marked) = marked
+                    && let Ok(Some(task)) = store.task(&attempt.task_id).await
+                    && crate::vault::Holder::of_task(&task).person() != Some(&marked)
+                {
+                    let app = Arc::clone(self);
+                    let (task_id, account) = (task.id.clone(), attempt.account_id.clone());
+                    tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
                 }
                 held_again.insert(attempt.task_id.clone());
                 continue;

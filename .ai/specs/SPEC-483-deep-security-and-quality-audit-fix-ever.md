@@ -52,7 +52,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19;
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
+      (merged, #1272), QA3 and QA4 slice 20;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -416,6 +417,21 @@ no code path reaches; documents, texts shown to agents and people, and code that
   carried by a pause was lost without a word. And "Continue on…" a chosen subscription
   ran on the pool's choice, against SPEC-447 MOV-002 ("never lands elsewhere unsaid").
 
+### Slice 20: what a restart forgot about a run
+
+- **QA3 (medium).** Whose personal MCP servers a live run was started with was only in the
+  server's memory (`TaskRuntime::personal_mcp_of`). SPEC-332 MSC-009 restarts such a run
+  when control passes, "so the previous owner's credential never stays with the new
+  owner", and lets only its owner message it meanwhile. After a restart of Yulius (every
+  update) the reattached run held the same servers and nothing knew: a hand-over restarted
+  nothing, and the new owner typed into a session whose MCP configuration carried the
+  previous owner's bearer.
+- **QA4 (medium).** A resumed goal session (a switch, Continue, a resume past a limit)
+  gets its `/goal` typed once its opening turn ended, by a task of the server (up to five
+  minutes later). A restart in that time left the reattached session with no goal, no
+  typist and no word: a goal task idled as "your turn". The same gap for a goal given as
+  the launch prompt was closed with a mark in the run directory (SPEC-146).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -771,9 +787,29 @@ no code path reaches; documents, texts shown to agents and people, and code that
   when the task's turn comes (at its limit, needing a sign-in, removed) is given up: the
   pool places the task and its terminal says "The subscription chosen for this task
   cannot take it now, so Yulius chose one."
-- **QST-002** A paused task's pause ends when its start is made or waits in the queue,
-  not before: a start that is refused (the queue is full) leaves the pause open, with its
-  kind and continuation, and the pool's next round tries again.
+- **QST-002** A paused task's pause ends when its start is made (its run has a
+  subscription) or waits in the queue, not before: a start that is refused (the queue is
+  full) or finds no capacity after all leaves the pause open, with its kind and
+  continuation, and the pool's next round tries again.
+- **RST-001** A run started with its owner's personal MCP servers says so in its run
+  directory (`personal-mcp-of`: the owner's id); a launch that cannot write it fails. A
+  restarted server reads it for a run it reattaches, so the rules of SPEC-332 MSC-009
+  hold across a restart: only that person messages the session, and a hand-over restarts
+  it with the new owner's servers. A reattached run whose mark names someone who is not
+  the task's holder (a hand-over's restart the old server did not finish) is restarted at
+  once. A mark that exists and cannot be read counts as none and is logged.
+- **RST-002** A `/goal` Yulius still has to type is marked in the run directory
+  (`typed-goal-pending`, written before the spawn; it says whether the session opens with
+  a turn) until the typist ends with an outcome: the goal recorded, the task flagged, or
+  the prompt box left to a person who typed. A restarted server watches a reattached run
+  that still has the mark, as it watches a launch goal: a goal Claude Code recorded
+  before the restart ends the watch (the mark goes, nothing is said); otherwise, after
+  `launch_goal_ms`, the task is flagged with "Yulius restarted before it set this task's
+  goal" and the mark goes, so it is said once. A session whose opening turn has not ended
+  (the mark says it opens with one, and no Stop of the run was answered) gets that turn
+  back: its Stop ends it as it is, as before the restart, and the watch's time starts
+  there, so the flag is not raised inside the turn and taken away by its end. A folder
+  trust dialog still unanswered tells the person to type the goal after answering it.
 
 ## Plan
 
@@ -798,7 +834,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
 - [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
-- [x] Slice 19: a start that has to wait in the queue keeps how it was to start
+- [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
+- [x] Slice 20: what a run was started with is still known after a restart of Yulius
 
 ## Acceptance criteria
 
@@ -1253,6 +1290,18 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   limit without a process that becomes resumable keeps its `limit` pause through the
   pool's round and stays `waiting_capacity`; once the queue has room the next round
   queues it and its pause ends; when its turn comes it resumes past the limit.
+- **AC-114** A task's run holds its owner's personal MCP server, which is then turned
+  off (so only the run's own record says it holds it); Yulius restarts and reattaches the
+  run. Another person's message to the task is refused for the MCP servers, and when
+  control passes to that person the run is resumed.
+- **AC-115** Yulius restarts while a continued goal session is in its opening turn of
+  12 s (the run directory holds `typed-goal-pending`), with a watch of 3 s: after that
+  turn's Stop was answered the new server flags the task with "Yulius restarted before it
+  set this task's goal", and the mark is removed.
+- **AC-117** A reattached run whose `personal-mcp-of` names another person than the
+  task's owner is restarted by the new server (a second run, a resume).
+- **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
+  by hand and a restart, the new server removes it and flags nothing.
 
 ## Test plan
 
@@ -1463,6 +1512,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `pool_supervision::a_chosen_subscription_that_filled_up_while_waiting_is_given_up`
   (AC-112) and `pool_supervision::a_resume_that_finds_the_queue_full_keeps_its_pause`
   (AC-113).
+- Slice 20: `yulius`
+  `pool_supervision::a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers`
+  (AC-114), `first_message::a_goal_still_to_be_typed_at_a_restart_is_flagged` (AC-115),
+  `first_message::a_typed_goal_that_was_taken_leaves_no_marker` and
+  `first_message::a_typed_goal_recorded_before_a_restart_is_not_flagged` (AC-116),
+  `pool_supervision::a_reattached_run_with_another_persons_servers_is_restarted`
+  (AC-117); each restart is a second server on the same data that reattaches the first
+  one's run.
 
 ## Decisions
 
@@ -1526,6 +1583,28 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 20 (no decision record: two more marks of the kind the run directory already
+  holds, `launch-goal-pending`, `session-started`, `person-typed`). The facts belong to
+  one run and are needed only while it lives, so they are files beside it, not columns.
+  For the goal the auditor named two ways: flag at once, or start the typist again. The
+  typist is not started again: a restart cannot tell whether the goal's line was already
+  half typed, and typing `/goal` over it would submit both. Nor is the task flagged at
+  once: the goal may have been taken just before the restart. The new server does what it
+  does for a launch goal (the same watch, with its own mark and its own sentence): the
+  transcript's replay says whether a goal was recorded, and only a task left without one
+  is flagged. The typist became a function that says whether it ended with an outcome,
+  so that the mark is removed in one place; a run that ended, or could not be typed into,
+  keeps it, and has no later server to read it. A launch that cannot write the personal
+  servers' mark fails rather than starts a run the next server knows nothing of; the
+  goal's mark is only logged when it cannot be written, as the launch goal's is.
+  The first version watched from the reattach on, and its flag could come inside the
+  session's opening turn, whose end then set the task back to "your turn" (the review,
+  finding 1). The mark now says whether the session opens with a turn, and a restarted
+  server that finds no answered Stop of the run gives the run that turn back: the same
+  two facts the old server had, read from the run directory, not guessed from the screen.
+  A Stop that was answered by a hold (no capacity) counts as answered; such a run's
+  opening turn then ends through the gates, as every reattached run's did before, and a
+  flag raised before that end can still be taken away by it.
 - Slice 19 (no decision record: a column and the one function every start goes through).
   The auditor proposed to leave a paused task paused when it cannot start, so that the
   pause keeps the start. Not taken: a paused task would then wait beside the queue, not
@@ -1805,10 +1884,10 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 19 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
 | QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 20 |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 20 |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
 | QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
 | QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
@@ -3073,3 +3152,63 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Web UI after it.** `cd e2e && npx e2e run` at `426c3c789`: exit 0;
   `Test Files 84 passed | 1 skipped (85)`, `Tests 1023 passed | 1 skipped (1024)`
   (`target/audit/slice19/e2e-full.log`).
+- **Review, round 2** (the same session, head `326e89925`): approve. Four nits, answered
+  in the commit after the merge: the pause ends once the launch has a subscription, so a
+  launch that finds none keeps an open pause as it was (a prompt a hook carried into a
+  switch is not dropped); a queueing that lost to a concurrent change does nothing; a
+  start the full queue refused reads as waiting in the pool's round; the change log names
+  the two behaviours of the review's round. Moving the pause's end showed one more case,
+  which `supertask::a_held_capacity_resume_keeps_its_pause` caught: a launch that fails
+  before it has a subscription must end the pause too, and does (the task is `failed`).
+- **Delivery.** Pull request #1272 merged into `dev` at `326e89925`, whose own Yulius CI
+  run passed.
+
+### Slice 20 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice20/before.log`): after the restart
+  the hand-over restarted nothing ("timed out waiting for the resumed run"), and no run
+  directory held the mark of a goal still to be typed.
+- **Tests failing without their fix** (`target/audit/slice20/mutate.py`, `mutations.log`, 9
+  cases, each failed its test): a run with personal servers leaving no mark; the restarted
+  server not reading it; a goal still to be typed leaving no mark; the restarted server
+  not watching it; its watch saying the launch goal's sentence; a typed goal that was
+  taken keeping its mark; a recorded goal's mark staying after the watch; and, for the
+  pause's end moved after slice 19's review, a launch that has its subscription and a
+  launch that fails each leaving the pause open.
+- **The suites:** `2750 tests run: 2750 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice20/suite1.log`), before the fourth test was added; the gate ran
+  after it.
+- **Gate.** `scripts/dev ci` at `05ba32d9b`: exit 0; `4321 tests run: 4321 passed, 17 skipped`
+  (`target/audit/slice20/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Nothing under `web/` or `e2e/` changed since the suite's last run
+  (`426c3c789`, slice 19); it was not run again.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real Claude Code session and a real update of the instance (the
+  restart is a second server on the same data); a launch that cannot write the personal
+  servers' mark; the two nits of slice 19 that have no order a test can make (a queueing
+  that lost to a concurrent change; the pool's round reading a refused start as waiting).
+- **Review, round 1** (a fresh session, read-only, head `3cd136696`): request changes. One
+  major finding in this slice's code: the watch did not wait for the session's opening
+  turn, so "the flag is gone and the task reads Your turn with no goal" once that turn's
+  Stop ran. The mark says now whether the session opens with a turn, the restarted server
+  gives the run that turn back and the watch starts at its end (AC-115 asks that the flag
+  is not raised inside the turn). Four minor: the mark was written after the spawn (now
+  before it, like its siblings); the trust dialog's branch told the person the task would
+  start by itself (for a typed goal it tells them to type it); the refusal in the
+  hand-over test could not fail without the fix (the server is turned off before the
+  restart now, so only the run's record refuses); a hand-over cut by the restart left the
+  previous owner's servers in the new holder's run (the reattached run is restarted,
+  AC-117). Nits answered: a comment; an unreadable mark is logged.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 13 cases, each
+  failed its test): the nine above as they are now, and: a reattached run that holds
+  another person's servers left running; the opening turn not given back to a reattached
+  run; the watch not waiting for the opening turn; the mark not saying that the session
+  opens with a turn.
+- **The suites after it:** `2752 tests run: 2752 passed, 17 skipped`
+  (`target/audit/slice20/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `c37c16ea1`: exit 0;
+  `4322 tests run: 4322 passed, 17 skipped` (`target/audit/slice20/gate2.log`).
+- **Not tested, after it.** The trust dialog's branch of the watch for a typed goal (it
+  needs a session that shows the dialog across a restart); a session whose opening turn's
+  Stop was held for capacity at the restart (Decisions).
