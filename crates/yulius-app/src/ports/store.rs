@@ -13,7 +13,7 @@ use crate::error::AppResult;
 use crate::model::{
     AccountChange, AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess,
     ControlRequest, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord,
-    GitHubTokenRecord, InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
+    GitHubTokenRecord, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
     ProviderSessionRecord, RecordReservation, RecountOutcome, RunFacts, SandboxRecord,
     ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
     WebSessionRecord,
@@ -697,25 +697,13 @@ pub trait CoordinationStore: Send + Sync {
         actor: &str,
         at: Timestamp,
     ) -> AppResult<StepRecord>;
-    /// Inserts a message and receipts for the recipients.
+    /// Inserts a message and receipts for the recipients. Nothing in the product writes messages
+    /// since SPEC-028; tests seed the old rows a project's export still carries.
     async fn insert_message(&self, message: &MessageRecord, recipients: &[TaskId])
     -> AppResult<()>;
-    /// Messages addressed to a task (history: nothing writes messages since SPEC-028),
-    /// newest last.
-    async fn inbox(
-        &self,
-        task: &TaskId,
-        unread_only: bool,
-        limit: u32,
-    ) -> AppResult<Vec<InboxEntry>>;
-    /// Marks messages delivered (hook context) for a task.
-    async fn mark_delivered(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
-    /// Marks messages read for a task.
-    async fn mark_read(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
-    /// Unread count for a task.
-    async fn unread_count(&self, task: &TaskId) -> AppResult<u32>;
-    /// Messages of a sandbox involving a task (sent or received), newest last.
-    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<InboxEntry>>;
+    /// Messages of a sandbox involving a task (sent or received), newest last: history, for a
+    /// project's export.
+    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
     /// Inserts a scope claim.
     async fn insert_claim(&self, claim: &ScopeClaimRecord) -> AppResult<()>;
     /// Active claims of a sandbox.

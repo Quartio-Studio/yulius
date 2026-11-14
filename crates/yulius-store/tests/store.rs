@@ -1109,16 +1109,11 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
     store
         .insert_message(&msg, std::slice::from_ref(&b.id))
         .await?;
-    assert_eq!(store.unread_count(&b.id).await?, 1);
-    assert_eq!(store.unread_count(&a.id).await?, 0);
-    assert_eq!(store.mark_delivered(&b.id, Timestamp(61)).await?, 1);
     assert_eq!(
-        store.inbox(&b.id, true, 10).await?.len(),
-        1,
-        "delivered is not read"
+        store.task_messages(&b.id, 10).await?,
+        [msg.clone()],
+        "the recipient's export has it"
     );
-    assert_eq!(store.mark_read(&b.id, Timestamp(62)).await?, 1);
-    assert!(store.inbox(&b.id, true, 10).await?.is_empty());
     assert_eq!(
         store.task_messages(&a.id, 10).await?.len(),
         1,
