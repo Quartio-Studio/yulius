@@ -665,6 +665,40 @@ def check_ui():
     print("UI contracts passed: design tokens, contrast in every theme, brand, copy, inline styles")
 
 
+# Instructions an agent follows in this repository (AGENTS.md routes to them). Yulius refuses a
+# hand merge and only a person promotes (ADR-0110, SPEC-483 DOC-002); waiting is `yulius wait`.
+INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md", "README.md", ".github/pull_request_template.md"]
+INSTRUCTION_GLOBS = ["docs/engineering/*.md", ".apm/skills/*/SKILL.md", "catalog/skills/*/*/SKILL.md", "catalog/workflows/*.md"]
+DELIVERY_RULES = [
+    (re.compile(r"gh pr merge"), "gh pr merge", "merging by hand is refused: name it only as refused, or deliver with `delivery_merge`"),
+    (re.compile(r"\b(squash-merges|self-merges?|author-merges?)\b", re.I), None, "Yulius merges through `delivery_merge`; nobody merges their own pull request by hand"),
+    (re.compile(r"\bpromote (only )?(when|unless|if) (the )?(task|request|asked)", re.I), "promote", "promotion is a person's (ADR-0110), never an agent's when asked"),
+    (re.compile(r"\bPoll live run", re.I), "Poll live run", "to wait, start `yulius wait` in the background; never poll"),
+]
+
+
+def delivery_instruction_errors(text, label):
+    errors = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for pattern, word, why in DELIVERY_RULES:
+            match = pattern.search(line)
+            if not match or (word == "gh pr merge" and "refused" in line):
+                continue
+            errors.append(f"{label}:{number}: '{match.group(0)}': {why}")
+    return errors
+
+
+def instruction_errors():
+    errors = []
+    paths = [ROOT / name for name in INSTRUCTION_FILES]
+    for pattern in INSTRUCTION_GLOBS:
+        paths.extend(sorted(ROOT.glob(pattern)))
+    for path in paths:
+        if path.is_file():
+            errors.extend(delivery_instruction_errors(path.read_text(), path.relative_to(ROOT)))
+    return errors
+
+
 def check():
     errors = []
     names = list(filter(None, output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")))
@@ -680,6 +714,7 @@ def check():
         errors.extend(skill_errors(path))
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
     errors.extend(decision_errors(ROOT / "docs/decisions"))
+    errors.extend(instruction_errors())
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]

@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
+from check_repository import delivery_instruction_errors, STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
 
 
 def package(name, layer, dependencies=()):
@@ -84,6 +84,26 @@ class RepositoryContracts(unittest.TestCase):
             directory = integration_test_errors([crate("composition", "main.rs")])
             self.assertEqual(len(directory), 1)
             self.assertIn("tests/flows/main.rs", directory[0])
+
+    def test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote(self):
+        # SPEC-483 DOC-002: Yulius refuses a hand merge and only a person promotes (ADR-0110).
+        bad = {
+            "gh pr merge 12 --squash --match-head-commit abc": "gh pr merge",
+            "The author self-reviews and squash-merges after checks pass.": "squash-merges",
+            "promote only when the task asks for a release": "promote",
+            "Poll live run IDs until the checks pass.": "Poll live run",
+        }
+        for line, word in bad.items():
+            errors = delivery_instruction_errors(line, "AGENTS.md")
+            self.assertEqual(len(errors), 1, line)
+            self.assertIn(word, errors[0])
+        fine = [
+            "Merging by hand (`gh pr merge`) is refused: it skips the queue.",
+            "Promotion (dev -> main) is a person's, on the CD page.",
+            "To wait, start `yulius wait` in the background; never poll.",
+        ]
+        for line in fine:
+            self.assertEqual(delivery_instruction_errors(line, "AGENTS.md"), [], line)
 
     def test_skill_directory_must_match_name(self):
         with tempfile.TemporaryDirectory() as tmp:
