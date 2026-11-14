@@ -98,7 +98,7 @@ const SUBJECT_ID_MAX: usize = 64;
 /// and before anything checked the arguments, so nothing else of them goes into it: an audit
 /// entry never holds text of the caller's choosing (as the remote MCP's never does, RMT-015).
 pub(crate) fn subject(name: &str, args: &Value) -> Value {
-    // Trimmed, as the call itself reads its text arguments.
+    // Trimmed, as the call reads a run id and an environment.
     let id = |key: &str| {
         args.get(key)
             .and_then(Value::as_str)
