@@ -47,6 +47,7 @@ pub mod host_move;
 pub mod hub;
 pub mod identity;
 pub mod imports;
+pub mod instance_tools;
 pub mod intake;
 pub mod integration_merges;
 pub mod isolation;
