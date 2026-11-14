@@ -2154,7 +2154,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
-  `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says`,
+  `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says` and
+  `initialize_speaks_the_asked_version_or_the_newest`,
   `yulius-contracts` `import::tests::device_poll_wire_and_redaction` (AC-153); the existing
   MCP, remote MCP and Superagent tests for unchanged behaviour.
 - Slice 32: `yulius-app` `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`, the
@@ -2878,3 +2879,18 @@ slices follow.
 - **Review, round 3** (the same session, head `2b6e73abd`): approve.
 - **Merged.** Pull request #1297 was merged into `dev` at `2b6e73abd`, its own Yulius CI run
   passed. Nits answered in slice 33.
+
+### Slice 33 (2026-11-14)
+
+- **Tests failing before the change**: the `model` and `effort` test failed on the old schema
+  (`sandbox_task_create`'s were bare strings); the redaction test failed on the derived `Debug`
+  of `DeviceStart`, then of `DevicePollRequest`; the dispatch test passes before and after (it
+  guards the next change).
+- **Tests failing without their fix** (`target/audit/slice33/mutate.py`, `mutations.log`): a
+  shared tool missing from the dispatch, `task_message` not dispatched remotely, the model
+  re-typed, either polling code shown: each failed its test. A version negotiation that ignores
+  what the client asked survived: nothing tested the handshake (on `dev` neither); a test was
+  added and the mutation fails (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `d7d01ba5e`: exit 0; `4408 tests run: 4408 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
