@@ -1,13 +1,14 @@
 ---
 name: yulius-spec
-description: Write or refine Yulius feature specifications with traceable requirements, runtime contracts and acceptance evidence. Use for feature design or material behavior changes; routine text edits do not need a spec.
+description: Write or refine Yulius specifications with traceable requirements, runtime contracts and acceptance evidence. Use for features and fixes; research, questions, documentation and text edits need no spec.
 ---
 
 # Specify a Yulius change
 
 Read `AGENTS.md`, `docs/engineering/specifications.md` and the relevant existing spec from the
-repository root. Use `.ai/templates/spec.md`; preserve its evidence discipline,
-not irrelevant sections. The product brief is SPEC-001 in `.ai/specs`: distinguish
+repository root. Start from `.ai/templates/spec.md`, the form `spec_check` validates (every
+section stays; one that does not apply says why). The product brief is SPEC-001 in `.ai/specs`:
+distinguish
 reference observations, user requirements and proposed defaults.
 
 1. Inspect the affected behavior/code and scope authorized by the user. Record

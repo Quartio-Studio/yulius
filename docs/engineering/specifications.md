@@ -1,25 +1,28 @@
-# Writing future specifications
+# Writing specifications
 
-Write a specification before a new feature or material behavior change. Record
-observable behavior, constraints, open decisions and evidence rather than a code
-narrative. Use [the template](../../.ai/templates/spec.md); omit irrelevant sections.
+Features and fixes get a spec before code; research, questions, documentation and chores do
+not (SPEC-001 DSC-013). A task's spec is `.ai/specs/SPEC-NNN-<slug>.md` (Yulius names it in the
+briefing) in the form `spec_check` validates: start from [the template](../../.ai/templates/spec.md)
+and skill `om-spec-writing`. Record observable behavior, constraints, decisions and evidence
+rather than a code narrative.
 
-Keep product research and speculative notes local unless the user requests them
-in the repository. A future accepted feature spec can live in `.ai/specs` when
-that feature work is authorized. The accepted product specs are SPEC-001 to SPEC-003.
+The form: a frontmatter with `yulius-task` (the task's id) and `status`, then the sections Goal,
+Context, Requirements, Plan (a `- [ ]` checklist), Acceptance criteria, Test plan and Decisions.
+The status moves draft → approved (optional) → in-progress → done, or abandoned; `done` needs
+every Plan item ticked and an Evidence section with the commands run and their results.
+`delivery_merge` refuses a head whose spec does not validate.
 
-Use stable requirement IDs and acceptance scenarios. Separate user requirements,
-source observations and proposed defaults. Mark decisions blocking or nonblocking.
-The lifecycle is discovery → proposed → accepted → implemented → superseded.
-Record scope authorization; an explicit implementation request is sufficient for
-that scope, without an extra approval ceremony for routine engineering choices.
+Use stable requirement IDs and acceptance scenarios. Separate user requirements, source
+observations and proposed defaults. Decide open questions with a reversible default and
+record it under Decisions; a lasting choice is an ADR in `docs/decisions/`, with alternatives
+and consequences. An explicit implementation request authorizes its scope, without an extra
+approval ceremony for routine engineering choices.
 
-A bug fix may reference an existing contract plus its regression case. Text-only
-corrections do not need a new spec. For every nonterminal execution state, name
-its owner, exit trigger and failure/recovery behavior. Define boundaries, limits,
-cancellation and compatibility where they affect the change.
+For every nonterminal execution state, name its owner, exit trigger and failure/recovery
+behavior. Define boundaries, limits, cancellation and compatibility where they affect the
+change. Text-only corrections need no spec.
 
-Only mark implemented when every acceptance item has direct evidence from current
-code and actual output. State unavailable checks explicitly; compilation alone
-cannot establish product acceptance. Use a short ADR for substantial architecture
-choices, with alternatives and consequences, when such a decision is needed.
+Mark a spec done only when every acceptance item has direct evidence from current code and
+actual output. State unavailable checks explicitly; compilation alone cannot establish product
+acceptance. The product specs SPEC-001 to SPEC-003 (and SPEC-084 to SPEC-087) predate this form
+and keep their own headers.

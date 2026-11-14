@@ -721,6 +721,17 @@ pub fn is_documentation_path(path: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// SPEC-483 DOC-001: the repository's spec template, the one AGENTS.md and the spec workflow
+    /// route to, is a spec `spec_check` accepts once its task id is filled in.
+    #[test]
+    fn the_repository_spec_template_validates() {
+        let template = include_str!("../../../../.ai/templates/spec.md");
+        let filled = template.replace("<task id>", "1fb06e11-08e1-4c37-90d0-3219e19122ad");
+        let report = validate_spec(&filled);
+        assert!(report.is_valid(), "{:?}", report.problems);
+        assert_eq!(report.status, Some(SpecStatus::Draft));
+    }
+
     /// Deterministic xorshift generator for randomized tests (no extra dependency).
     struct Rng(u64);
 
