@@ -141,7 +141,7 @@ pub fn parse_claude(body: &Value) -> Result<AccountUsage, String> {
             resets_at: w
                 .get("resets_at")
                 .and_then(Value::as_str)
-                .and_then(yulius_harness::time::parse_rfc3339),
+                .and_then(yulius_domain::time::parse_rfc3339),
         })
     };
     let usage = AccountUsage {

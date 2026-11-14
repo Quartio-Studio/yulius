@@ -19,10 +19,11 @@ use yulius_domain::permission::Action;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
-use crate::auth::{AuthContext, civil_from_days, rfc3339};
+use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{MetricsRecord, TaskOrigin};
+use yulius_domain::cron::CivilDate;
 
 /// Most tasks one analytics request reads (the newest are kept).
 pub const MAX_ANALYTICS_TASKS: u32 = 50_000;
@@ -211,19 +212,7 @@ fn day_of(ts: Timestamp) -> i64 {
 }
 
 fn day_string(day: i64) -> String {
-    let (y, m, d) = civil_from_days(day);
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// Days since 1970-01-01 for a civil date (inverse of [`civil_from_days`]).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y.rem_euclid(400);
-    let mp = i64::from((m + 9) % 12);
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    CivilDate::from_days(day).map_or_else(String::new, |date| date.to_string())
 }
 
 /// Parses `YYYY-MM-DD` (years 1970–9999) into days since the epoch.
@@ -244,14 +233,16 @@ pub fn parse_day(text: &str) -> AppResult<i64> {
         }
     };
     let (y, m, d) = (num(&text[..4])?, num(&text[5..7])?, num(&text[8..])?);
-    if !(1970..=9999).contains(&y) || !(1..=12).contains(&m) || d == 0 {
+    if !(1970..=9999).contains(&y) {
         return Err(invalid());
     }
-    let days = days_from_civil(i64::from(y), m, d);
-    if civil_from_days(days) != (i64::from(y), m, d) {
-        return Err(invalid());
-    }
-    Ok(days)
+    let date = CivilDate::new(
+        i64::from(y),
+        u8::try_from(m).map_err(|_| invalid())?,
+        u8::try_from(d).map_err(|_| invalid())?,
+    )
+    .ok_or_else(invalid)?;
+    Ok(date.days_since_epoch())
 }
 
 /// Median (mean of the two middle values for even counts) and nearest-rank p90 of `values`.

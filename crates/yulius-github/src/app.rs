@@ -7,13 +7,13 @@ use crate::config::{AppCredentials, OwnerKind};
 use crate::error::GitHubError;
 use crate::http::Call;
 use crate::secret::Secret;
-use crate::time::parse_rfc3339;
 use crate::types::{InstallationToken, Repo};
 use crate::validate;
 use crate::wire::{
     WireInstallation, WireInstallationPermissions, WireInstallationRepos, WireInstallationToken,
     WireManifestConversion,
 };
+use yulius_domain::time::parse_rfc3339;
 
 /// Cached installation tokens are reused until this long before they expire.
 pub const TOKEN_REFRESH_MARGIN_MS: i64 = 5 * 60 * 1000;

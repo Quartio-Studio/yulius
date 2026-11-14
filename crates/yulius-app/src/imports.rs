@@ -36,7 +36,6 @@ use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::{AccessLevel, Action};
-use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
@@ -268,68 +267,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn is_object_id(text: &str) -> bool {
     (text.len() == 40 || text.len() == 64)
         && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-}
-
-/// Parses `YYYY-MM-DDTHH:MM:SS[.fff…](Z|±HH:MM)` to epoch milliseconds.
-#[must_use]
-pub fn parse_rfc3339(text: &str) -> Option<Timestamp> {
-    let bytes = text.as_bytes();
-    if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || !matches!(bytes[10], b'T' | b't')
-    {
-        return None;
-    }
-    if bytes[13] != b':' || bytes[16] != b':' {
-        return None;
-    }
-    let num = |range: std::ops::Range<usize>| -> Option<i64> {
-        let part = text.get(range)?;
-        part.bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| part.parse().ok())?
-    };
-    let date = CivilDate::new(
-        num(0..4)?,
-        u8::try_from(num(5..7)?).ok()?,
-        u8::try_from(num(8..10)?).ok()?,
-    )?;
-    let (hour, minute, second) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    if hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    let mut rest = &text[19..];
-    let mut millis = 0_i64;
-    if let Some(fraction) = rest.strip_prefix('.') {
-        let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
-        if digits == 0 {
-            return None;
-        }
-        let padded: String = fraction[..digits]
-            .chars()
-            .chain("000".chars())
-            .take(3)
-            .collect();
-        millis = padded.parse().ok()?;
-        rest = &fraction[digits..];
-    }
-    let offset_minutes = match rest {
-        "Z" | "z" => 0,
-        _ => {
-            let sign = match rest.as_bytes().first()? {
-                b'+' => 1,
-                b'-' => -1,
-                _ => return None,
-            };
-            if rest.len() != 6 || rest.as_bytes()[3] != b':' {
-                return None;
-            }
-            let hours: i64 = rest.get(1..3)?.parse().ok()?;
-            let minutes: i64 = rest.get(4..6)?.parse().ok()?;
-            sign * (hours * 60 + minutes)
-        }
-    };
-    let seconds =
-        date.days_since_epoch() * 86_400 + hour * 3600 + minute * 60 + second - offset_minutes * 60;
-    Some(Timestamp(seconds.checked_mul(1000)?.checked_add(millis)?))
 }
 
 /// The branch prefix component for a user (`import/<login>/…`).
@@ -2185,28 +2122,6 @@ mod tests {
         }
         drop(held);
         assert_eq!(locks.len(), 0, "a cancelled wait leaves nothing");
-    }
-
-    #[test]
-    fn rfc3339_parsing() -> TestResult {
-        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(Timestamp(0)));
-        assert_eq!(
-            parse_rfc3339("2026-10-01T10:00:00.5Z"),
-            Some(Timestamp(1_790_848_800_500))
-        );
-        assert_eq!(
-            parse_rfc3339("2026-10-01T12:00:00+02:00"),
-            parse_rfc3339("2026-10-01T10:00:00Z")
-        );
-        for bad in [
-            "",
-            "2026-13-01T00:00:00Z",
-            "2026-10-01 10:00:00",
-            "2026-10-01T10:00:00",
-        ] {
-            assert_eq!(parse_rfc3339(bad), None, "{bad}");
-        }
-        Ok(())
     }
 
     #[test]
