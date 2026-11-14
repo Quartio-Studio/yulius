@@ -761,9 +761,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
          unrelated, generated or secret. No `git stash`. Stay current by merging \
-         `origin/{integration}` before the review or for a conflict; rerun the tests. Numbered files \
-         (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
-         400 changed lines outside tests); split bigger work into chained tasks.\n\
+         `origin/{integration}` before the review or for a conflict; rerun the tests. Numbered \
+         files (ADRs, migrations) take their number from `record_number`. One concern per pull \
+         request (about 400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`) marking findings own code \
          or pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \

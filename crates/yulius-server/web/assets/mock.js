@@ -1152,10 +1152,10 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   // The server writes both switches in one write: a refused protection switch changes neither.
-  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(503, 'unavailable', 'the store is busy');
+  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
-    if (db.vidoc.patchFail) fail(503, 'unavailable', 'the store is busy');
+    if (db.vidoc.patchFail) fail(500, 'internal', 'the store is busy');
     if ((sandbox.profile.vidoc !== false) !== Boolean(body.vidoc)) sandbox.vidocChanged = { by: db.me.user.login, at: new Date().toISOString() };
     sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
   }
@@ -5234,7 +5234,7 @@ route('PUT', '/api/admin/vidoc', ({ db, body }) => {
 route('PUT', '/api/admin/vidoc/enabled', ({ db, body }) => {
   superadminOnly(db);
   if (typeof body.enabled !== 'boolean') fail(422, 'invalid', 'enabled must be true or false');
-  if (db.vidoc.fail) fail(503, 'unavailable', 'the store is busy');
+  if (db.vidoc.fail) fail(500, 'internal', 'the store is busy');
   if (body.enabled) Object.assign(db.vidoc, { offAt: null, offBy: null });
   else if (!db.vidoc.offAt) Object.assign(db.vidoc, { offAt: new Date().toISOString(), offBy: db.me.user.login });
   return vidocView(db);

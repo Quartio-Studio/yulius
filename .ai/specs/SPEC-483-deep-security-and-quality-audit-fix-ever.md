@@ -554,7 +554,6 @@ went; two of the auditors' items had gained a user since and stay.
   `vault_enabled.enabled_by`/`enabled_at` (who and when, for a person reading the database;
   dropping a column needs a migration for no behaviour).
 
-
 ### Slice 26: what Yulius ships and shows
 
 - **P1 (medium).** The goal's Done sentence ("never promote to `main` unless asked"), the
@@ -1040,16 +1039,20 @@ went; two of the auditors' items had gained a user since and stay.
   secret; a stored configuration that still names one parses as before.
 - **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
   definition of done (short and full, and the request file) and the merge news pass
-  `cd::production_instruction`; they say promotion is a person's, to be asked with `needs_you`.
+  `cd::production_instruction`; they say promotion is not the agent's (a person's, to be asked
+  with `needs_you`, or automatic where the delivery profile says so).
 - **SHP-002** The Chore workflow, like Feature and Fix, deploys dev only when asked
   (`cd_deploy`) and leaves production to a person.
 - **SHP-003** The Docs workflow and the delivery skill say a merge needs the independent review
   `delivery_merge` asks for, documentation too.
-- **SHP-004** The Git page says agents merge and a person releases on the CD page (with
-  `auto_promote`: Yulius releases each merge); the delivery dialog says the same; the profile
-  dialog says environment commands run in their own checkout of the stage branch.
-- **SHP-005** The guard's refusal of a hand merge says it skips the queue's order and its test
-  on the current base; the briefing says to merge the integration branch before the review
+- **SHP-004** The Git page says agents merge and deploy the integration environments and a
+  person releases on the CD page (with `auto_promote`: Yulius releases each merge once they
+  pass); the delivery dialog says the same; the profile dialog says environment commands run
+  in the run's own copy of the stage branch's files, without Git.
+- **SHP-005** The guard's refusal of a hand merge says it skips the queue's order, its test on
+  the current base and the merge's own checks; the delivery skill says `Fixes #N` closes an
+  issue only for a merge into the repository's default branch, and to close it by hand
+  otherwise; the briefing says to merge the integration branch before the review
   or for a conflict; the skill's gate table says which gate the merge tool checks and which
   the review; `docs/api.md` lists only error codes a route produces.
 - **DED-001** Removing the items of slice 25 changes no behaviour a person or an agent sees:
@@ -1637,25 +1640,25 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   browser's `Accept-Encoding: gzip, br`. The proxy's refusal page (the landing's) has the
   CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'` and no
   script.
-- **AC-138** The request file, the short and full definitions of done and the merge news (with
-  and without steps ahead) contain no instruction to promote by `production_instruction`, and
-  say "Promotion to `main` and production deploys are a person's" or "Promotion is a
-  person's".
-- **AC-139** The Feature, Fix and Chore workflows name `cd_deploy` and "production is a
-  person's"; the Docs workflow names the independent review and not "no independent review".
-- **AC-140** The Git page of an `auto_promote` project says "Agents merge; Yulius releases each
-  merge."; the sentence for another profile says "Agents merge; a person releases on the CD
-  page."; no "Agents merge and release"; the delivery dialog says "a person releases on the CD
-  page"; a refused `gh pr merge` says "skips the queue's order and its test on the current
-  base" and never "does not end".
-- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
-  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
-  end in; a manual move names its account.
 - **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
   document is read-only and not busy, the text is the document's, and after 2.5 s it asked
   for no second rejoin. The same when the edit itself meets an ended document (409), its
   catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
   one edit, two joins, and a close ends within a second.
+- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
+  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
+  end in; a manual move names its account.
+- **AC-138** The request file, the short and full definitions of done and the merge news (with
+  and without steps ahead) contain no instruction to promote by `production_instruction`, and
+  say "Promotion to `main` and production deploys are not yours" or "Promotion is not yours
+  to do".
+- **AC-139** The Feature, Fix and Chore workflows name `cd_deploy` and "production is a
+  person's"; the Docs workflow names the independent review and not "no independent review".
+- **AC-140** The Git page of an `auto_promote` project says "Agents merge and deploy the
+  integration environments; Yulius releases each merge once they pass."; the sentence for
+  another profile ends "a person releases on the CD page."; no "Agents merge and release"; the
+  delivery dialog says "a person releases on the CD page"; a refused `gh pr merge` says
+  "skips the queue's order, its test on the current base" and never "does not end".
 
 ## Test plan
 

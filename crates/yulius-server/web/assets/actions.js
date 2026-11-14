@@ -460,7 +460,8 @@ const CHECK_ICONS = { success: 'check', failure: 'x', pending: 'clock' };
 
 /**
  * The task view's delivery line (UX2-18): the pull request with its checks, opening the delivery
- * details. Status only: the agent opens, merges and releases it (GIT-002). `reload` reads the
+ * details. Status only: the agent opens and merges it, and a person releases it (GIT-002,
+ * ADR-0110). `reload` reads the
  * delivery again after the details close.
  */
 export function deliveryStrip(ctx, task, delivery, { reload = () => {} } = {}) {
@@ -563,7 +564,7 @@ export function openDeliveryDialog(ctx, task) {
             next.map((action) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-ok' }, icon('check', { size: 12 })), `${actionLabel(action)}: ready`)),
             blocked.map((b) => h('li', { class: 'row-wrap' }, h('span', { class: 'tone-warn' }, icon('clock', { size: 12 })), h('span', null, h('strong', null, `${actionLabel(b.action)}: `), b.reason))))
           : h('span', { class: 'muted small' }, 'Nothing is pending at this stage.')),
-      h('p', { class: 'muted xs' }, 'Agents open and merge pull requests, following this sandbox’s delivery profile; a person releases on the CD page. This shows where the task is.'),
+      h('p', { class: 'muted xs' }, 'Agents open and merge pull requests and deploy the integration environments, following this sandbox’s delivery profile; a person releases on the CD page. This shows where the task is.'),
     );
   };
   load();

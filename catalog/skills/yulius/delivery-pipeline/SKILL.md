@@ -96,8 +96,9 @@ into chained tasks, or, when its slices share one spec and one reviewer's contex
 pull requests of one task, each slice a step from the start. The body says what changes for whom, links the spec and the issue
 (`Fixes #N`), and lists the evidence: commands run and their results, the review verdict and its
 head. (In Yulius the pull request is opened for you when your work is ready; its body names no
-issue, so add `Fixes #N` with `gh pr edit` when your task has one, or close the issue yourself
-after the merge.)
+issue. GitHub closes an issue by `Fixes #N` only for a merge into the repository's default
+branch: when the integration branch is not the default (`dev` before `main`), close the issue
+yourself after the merge.)
 
 ## 6. Merge on green
 
@@ -152,7 +153,8 @@ needs it, ask a person (in Yulius: `needs_you`) and finish the rest.
 
 Delete the remote branch, the local branch and the worktree once merged; leave no stale
 branches, worktrees or tags (`git-hygiene`; in Yulius: `repo_hygiene`, `repo_cleanup`). Close
-the issue through the merge, and add the entry to the changes log.
+the issue (by the merge into the default branch, or yourself after the merge), and add the entry
+to the changes log.
 
 ## Test reliability
 

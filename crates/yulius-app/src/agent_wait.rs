@@ -1405,11 +1405,11 @@ pub(crate) const PROFILE_ASKS: &str = "Finish what the delivery profile still as
 pub(crate) fn after_merge(ahead: &str, asks: &str) -> String {
     let ahead = ahead.trim();
     if ahead.is_empty() {
-        format!("{asks}, then end with your summary. Promotion is a person's.")
+        format!("{asks}, then end with your summary. Promotion is not yours to do.")
     } else {
         format!(
             "{asks}, then go on with the next step: the finished part of your plan is delivered. \
-             {ahead} Promotion is a person's."
+             {ahead} Promotion is not yours to do."
         )
     }
 }
@@ -1614,13 +1614,13 @@ mod tests {
              with the next step: the finished part of your plan is delivered. 2 step(s) of your \
              plan are still ahead (next: \"Slice 2\"): they stay open, and the work you commit \
              for them on this branch is delivered next, by a `delivery_merge` of its own. \
-             Promotion is a person's."
+             Promotion is not yours to do."
         );
         assert_eq!(
             after_merge("", PROFILE_ASKS),
             "Finish what the delivery profile still asks for this stage (`delivery_status`; \
              deploy and verify an integration environment with `delivery_deploy`), then end with \
-             your summary. Promotion is a person's."
+             your summary. Promotion is not yours to do."
         );
         // SPEC-483 SHP-001 (ADR-0110): nothing Yulius types tells an agent to promote.
         for text in [

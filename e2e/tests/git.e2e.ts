@@ -48,15 +48,15 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   await expect(screen.getByRole('heading', /^Where every task is/)).toBeVisible();
   await expect(screen.getByRole('heading', /^Blocked/)).toBeVisible();
   // Studio puts every merge live (auto_promote): Yulius releases it, not an agent.
-  await expect(screen.getByText(/Agents merge; Yulius releases each merge\./)).toBeVisible();
+  await expect(screen.getByText(/Agents merge and deploy the integration environments; Yulius releases each merge once they pass\./)).toBeVisible();
   await expect(screen.getByText(/Agents merge and release/)).toHaveCount(0);
   const sentences = await browser.evaluate(async () => {
     const { profileSentence } = await import('/assets/pages/git.js' as string);
     const profile = { integration_branch: 'dev', production_branch: 'main', environments: [] };
     return [profileSentence(profile), profileSentence({ ...profile, auto_promote: true })];
   });
-  expect(sentences[0]).toContain('Agents merge; a person releases on the CD page.');
-  expect(sentences[1]).toContain('Agents merge; Yulius releases each merge.');
+  expect(sentences[0]).toContain('Agents merge and deploy the integration environments; a person releases on the CD page.');
+  expect(sentences[1]).toContain('Agents merge and deploy the integration environments; Yulius releases each merge once they pass.');
   await expect(screen.getByRole('link', 'Pull requests')).toHaveAttribute('href', /\/pulls$/);
   const labels = await browser.evaluate(() => [...document.querySelectorAll('#main button, #main a.btn')].map((b) => (b.textContent ?? '').trim()));
   expect(labels.filter((label) => ACTIONS.test(label))).toEqual([]);
@@ -65,7 +65,7 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   await browser.locator('.dl-deliver').first().click();
   const dialog = screen.getByRole('dialog', /^Delivery · #/);
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(/Agents open and merge pull requests, following this sandbox’s delivery profile; a person releases on the CD page\./)).toBeVisible();
+  await expect(dialog.getByText(/Agents open and merge pull requests and deploy the integration environments, following this sandbox’s delivery profile; a person releases on the CD page\./)).toBeVisible();
   const dialogLabels = await browser.evaluate(() => [...document.querySelectorAll('dialog[open] button')].map((b) => (b.textContent ?? '').trim()));
   expect(dialogLabels.filter((label) => ACTIONS.test(label))).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);

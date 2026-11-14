@@ -436,7 +436,8 @@ impl DoneDefinition {
         format!(
             "Done = repository changes merged into {} on green Yulius CI (by delivery_merge, or \
              by anyone at a head whose own Yulius CI run passed){deploy}, or work needing no \
-             change reported; {SUMMARY}; promotion to {} is a person's.",
+             change reported; {SUMMARY}; promotion to {} is not yours (a person's, or automatic \
+             where the delivery profile says so).",
             self.integration_branch, self.production_branch
         )
     }
@@ -495,8 +496,9 @@ impl DoneDefinition {
             " Fix what fails and loop until it is green; Yulius deletes the merged branch.\n\
              - **If it needs no repository change** (research, a brainstorm, an answer, setting \
              something up outside the repository): do it and report the result.\n\
-             - **Promotion to `{}` and production deploys are a person's:** when the request \
-             needs one, ask with `needs_you` and finish the rest.\n\
+             - **Promotion to `{}` and production deploys are not yours:** they are a person's \
+             (promotion is automatic where the delivery profile says so); when the request needs \
+             one from a person, ask with `needs_you` and finish the rest.\n\
              - **End with a short summary:** what changed, how it was verified, and what could \
              not be tested in this environment.",
             self.production_branch
@@ -1273,7 +1275,7 @@ mod tests {
         assert!(file.contains("\n- /srv/a.png\n"), "{file}");
         assert!(file.contains("`delivery_merge` on green Yulius CI"));
         assert!(file.contains("Then deploy to `dev` with `delivery_deploy`"));
-        assert!(file.contains("**Promotion to `main` and production deploys are a person's:**"));
+        assert!(file.contains("**Promotion to `main` and production deploys are not yours:**"));
         // SPEC-483 SHP-001 (ADR-0110): nothing Yulius types tells an agent to promote.
         for (what, text) in [
             ("short", done(&["dev"]).short()),
