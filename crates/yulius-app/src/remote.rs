@@ -33,6 +33,7 @@ use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::mcp::{STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors};
 use crate::model::SandboxRecord;
+use crate::person_tools::{record, str_arg, tool};
 use crate::vault::{Holder, Revealed, SecretUser};
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
@@ -194,10 +195,6 @@ impl RemoteCaller {
     }
 }
 
-fn schema(properties: Value, required: &[&str]) -> Value {
-    json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
-}
-
 /// The `project` argument's schema.
 fn project_property() -> Value {
     json!({"type": "string", "description": "The project: owner/name as projects_list shows it (or its slug or id)"})
@@ -214,14 +211,6 @@ fn with_project(mut descriptor: ToolDescriptor) -> ToolDescriptor {
         None => schema["required"] = json!(["project"]),
     }
     descriptor
-}
-
-fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolDescriptor {
-    ToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema: schema(properties, required),
-    }
 }
 
 /// Descriptors of the tools only the remote MCP serves.
@@ -405,14 +394,6 @@ fn without(args: &Value, key: &str) -> Value {
     Value::Object(map)
 }
 
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
-}
-
 fn strings_arg(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -429,10 +410,6 @@ fn strings_arg(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
             "`{key}` must be a list of strings"
         ))),
     }
-}
-
-fn record<T: serde::Serialize>(value: &T) -> AppResult<Value> {
-    serde_json::to_value(value).map_err(AppError::internal)
 }
 
 impl App {
@@ -943,7 +920,7 @@ impl App {
                 self.delete_agent_secret(ctx, &own.id).await?;
                 Ok(json!({"deleted": own.name}))
             }
-            // Project variables (SPEC-275 VAR-005): plain values, shown as they are.
+            // Project variables (SPEC-275 VAR-005): plain values, never a secret's.
             "variables_set" => {
                 let inputs: Vec<ProjectVariableInput> =
                     serde_json::from_value(args.get("variables").cloned().unwrap_or(Value::Null))
@@ -967,6 +944,24 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-487 SAR-001 (review of slice 2, F8): the person's project tools are one list. Each
+    /// is a project tool of the remote MCP with the same action (its scope check and audit
+    /// follow it), and is served to the Superagent in the sandbox.
+    #[test]
+    fn every_persons_project_tool_is_served_by_both_callers_with_one_action() {
+        for (name, action) in crate::person_tools::PERSON_TOOLS {
+            assert_eq!(
+                remote_tool(name),
+                Some((Reach::Project, *action)),
+                "`{name}` in REMOTE_TOOLS"
+            );
+            assert!(
+                crate::mcp::COCKPIT_TOOLS.contains(name),
+                "`{name}` in COCKPIT_TOOLS"
+            );
+        }
+    }
 
     #[test]
     fn every_remote_tool_is_described_once_and_project_tools_take_a_project() {

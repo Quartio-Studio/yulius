@@ -18,6 +18,7 @@ use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::tasks::ContinueTask;
 use yulius_contracts::mcp::ToolDescriptor;
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -49,11 +50,18 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         .map(|(_, action)| *action)
 }
 
-fn schema(properties: Value, required: &[&str]) -> Value {
+/// A tool's input schema: an object of `properties`, `required` ones named, nothing else taken.
+pub(crate) fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
-fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolDescriptor {
+/// A tool's descriptor.
+pub(crate) fn tool(
+    name: &str,
+    description: &str,
+    properties: Value,
+    required: &[&str],
+) -> ToolDescriptor {
     ToolDescriptor {
         name: name.into(),
         description: description.into(),
@@ -61,7 +69,11 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     }
 }
 
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
+/// The text argument `key`, trimmed.
+///
+/// # Errors
+/// `Invalid` when it is missing, not text or blank.
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -69,8 +81,62 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
         .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
-fn record<T: serde::Serialize>(value: &T) -> AppResult<Value> {
+/// A view as a tool's record.
+///
+/// # Errors
+/// `Internal` when it cannot be serialized.
+pub(crate) fn record<T: serde::Serialize>(value: &T) -> AppResult<Value> {
     serde_json::to_value(value).map_err(AppError::internal)
+}
+
+/// What a call was about, for its audit entry: the task, run or environment its arguments name
+/// (none of them a secret).
+pub(crate) fn subject(args: &Value) -> Value {
+    let mut about = serde_json::Map::new();
+    if let Some(task) = args
+        .get("number")
+        .filter(|number| number.is_u64())
+        .or_else(|| args.get("task_id").filter(|id| id.is_string()))
+    {
+        about.insert("task".into(), task.clone());
+    }
+    for (key, named) in [("run_id", "run"), ("environment", "environment")] {
+        if let Some(value) = args.get(key).filter(|value| value.is_string()) {
+            about.insert(named.into(), value.clone());
+        }
+    }
+    Value::Object(about)
+}
+
+/// What `task_restart` answers when Continue refused task #`number`, which is `status`: the
+/// page's refusal with what to do instead, by what the task is doing. A task that runs is
+/// stopped first; one that waits to start is started with `task_start_now` (stopping it would
+/// cancel it); the onboarding of a project that has not started it is the person's to start
+/// (SPEC-051 OBD-002: their Superagent's context is neither their browser nor a token they
+/// made for an agent).
+fn restart_refusal(err: AppError, number: u32, status: TaskStatus) -> AppError {
+    match err {
+        AppError::Conflict(why) if why.starts_with("the task is") => {
+            AppError::Conflict(match status {
+                TaskStatus::Queued | TaskStatus::Chained | TaskStatus::Prepared => format!(
+                    "task #{number} has not started yet ({}): task_start_now starts it now",
+                    status.as_str()
+                ),
+                TaskStatus::WaitingCapacity => format!(
+                    "task #{number} waits for a subscription with capacity and goes on by itself"
+                ),
+                _ => format!("{why}: stop it first (task_stop), then restart it"),
+            })
+        }
+        AppError::Forbidden(why) if why.starts_with("Start onboarding on the sandbox page") => {
+            AppError::Forbidden(format!(
+                "task #{number} is this project's onboarding, which has not started: a person \
+                 starts it with Start onboarding on the project's page. Tell them so; nothing \
+                 else is needed from you"
+            ))
+        }
+        other => other,
+    }
 }
 
 /// The descriptors of [`PERSON_TOOLS`], in its order, without a `project` argument (the remote
@@ -84,13 +150,13 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
     vec![
         tool(
             "task_delivery",
-            "A task's delivery, as its page shows it: its pull request, the checks at its head, review and merge state, what comes next (next_actions), what is refused now and why (blocked), and the notes that say where an armed merge stands or why a green pull request is not merging.",
+            "A task's delivery, as its page shows it: its pull request, the checks at its head, the delivery stage, what comes next (next_actions), what is refused now and why (blocked), and notes, among them where an armed merge stands once Yulius has looked at it. It does not say whether a merge is armed while the checks still run.",
             task_ref.clone(),
             &[],
         ),
         tool(
             "task_restart",
-            "Continue (restart) a task that is not running: stopped, crashed, lost with the server, failed, closed or done, as Continue in the web UI. Its session continues where it was, and it takes messages again. A running task must be stopped first (task_stop). The task's owner only.",
+            "Continue (restart) a task whose session ended: stopped, crashed, lost with the server, failed or closed, as Continue in the web UI. Its session continues where it was, and it takes messages again. A task that runs (also one the list shows Done or Answered, whose session is idle: it takes a message as it is) must be stopped first (task_stop); one that waits to start is started with task_start_now. The task's owner only.",
             task_ref.clone(),
             &[],
         ),
@@ -102,7 +168,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "task_unpause",
-            "Resume a task a person paused, as Resume in the web UI; a task that is not paused stays as it is.",
+            "Resume a task a person paused, as Resume in the web UI; a task that is not paused stays as it is. The task's owner only.",
             task_ref.clone(),
             &[],
         ),
@@ -184,14 +250,7 @@ impl App {
                     "task_restart" => self
                         .continue_task(ctx, id, &ContinueTask { account_id: None })
                         .await
-                        .map_err(|err| match err {
-                            AppError::Conflict(why) if why.starts_with("the task is") => {
-                                AppError::Conflict(format!(
-                                    "{why}: stop it first (task_stop), then restart it"
-                                ))
-                            }
-                            other => other,
-                        })?,
+                        .map_err(|err| restart_refusal(err, task.number, task.status))?,
                     "task_pause" => self.pause_task_for_person(ctx, id).await?,
                     "task_unpause" => self.resume_task_for_person(ctx, id).await?,
                     _ => self.start_chained_now(ctx, id).await?,
@@ -251,7 +310,82 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{PERSON_TOOLS, descriptors};
+    use super::{PERSON_TOOLS, descriptors, restart_refusal, subject};
+    use crate::error::AppError;
+    use serde_json::json;
+    use yulius_domain::task::{StopReason, TaskStatus};
+
+    /// SPEC-487 SAR-001 (review of slice 2, F9, F12): what `task_restart` says when Continue
+    /// refuses depends on what the task is doing. "Stop it first" for a task that waits to
+    /// start would cancel it.
+    #[test]
+    fn a_refused_continue_says_what_to_do_by_the_tasks_state() {
+        let refused = |status: TaskStatus| {
+            let conflict = AppError::Conflict(format!("the task is {}", status.as_str()));
+            restart_refusal(conflict, 7, status).public_message()
+        };
+        for live in [
+            TaskStatus::Running,
+            TaskStatus::Starting,
+            TaskStatus::Switching,
+            TaskStatus::Stopping,
+        ] {
+            let said = refused(live);
+            assert!(
+                said.contains("stop it first (task_stop), then restart it"),
+                "{said}"
+            );
+        }
+        for waiting in [
+            TaskStatus::Queued,
+            TaskStatus::Chained,
+            TaskStatus::Prepared,
+        ] {
+            let said = refused(waiting);
+            assert!(
+                said.contains("task_start_now starts it now") && !said.contains("task_stop"),
+                "{said}"
+            );
+        }
+        let said = refused(TaskStatus::WaitingCapacity);
+        assert!(
+            said.contains("goes on by itself") && !said.contains("task_stop"),
+            "{said}"
+        );
+        // The onboarding of a project that has not started it: the person's, said without the
+        // words about tokens the page's refusal has for a command line.
+        let onboarding = AppError::Forbidden(
+            "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate token (Settings → Connect your local agent); a `yulius login` token cannot start it".into(),
+        );
+        let said = restart_refusal(onboarding, 1, TaskStatus::Stopped(StopReason::Cancelled))
+            .public_message();
+        assert!(
+            said.contains("a person starts it with Start onboarding on the project's page")
+                && !said.contains("token"),
+            "{said}"
+        );
+        // Every other refusal is the page's, as it is.
+        let other = restart_refusal(
+            AppError::Forbidden("Task #7 is @carol's".into()),
+            7,
+            TaskStatus::Stopped(StopReason::Cancelled),
+        );
+        assert_eq!(other.public_message(), "Task #7 is @carol's");
+    }
+
+    /// The audit entry of a call names what it was about, and nothing else of its arguments.
+    #[test]
+    fn a_calls_subject_is_its_task_run_or_environment() {
+        assert_eq!(subject(&json!({"number": 12})), json!({"task": 12}));
+        assert_eq!(subject(&json!({"task_id": "t-1"})), json!({"task": "t-1"}));
+        assert_eq!(subject(&json!({"run_id": "r-9"})), json!({"run": "r-9"}));
+        assert_eq!(
+            subject(&json!({"environment": "dev", "confirm": "x"})),
+            json!({"environment": "dev"})
+        );
+        assert_eq!(subject(&json!({"number": "12"})), json!({}));
+        assert_eq!(subject(&json!(null)), json!({}));
+    }
 
     #[test]
     fn every_persons_tool_is_described_once_in_order() {
