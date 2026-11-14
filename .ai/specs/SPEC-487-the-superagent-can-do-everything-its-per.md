@@ -575,17 +575,37 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Mutation:** eleven one-line mutants (the scope's filter, the group, a held prompt's
   words for agents, the owner of a dismissal, the four actions, the tail's three rules, the
   two lines of text, the audit's decision), each failed by a named test
-  (`target/evidence/mutants-slice4.py`, `mutants-slice4.log`: `survived=0`). One of them
+  (`target/evidence/mutants-slice4.py`; four more after the review). One of them
   survived at first (the tail's cut at the front had no test): a long session now shows it.
 - **The shared code keeps its other callers:** every test of `yulius`, `yulius-app` and
   `yulius-harness` passes (2957), the remote MCP's and the Global Superagent's among them.
-- **Gate:** `scripts/dev ci` passed on `142bbc1d5` (4354 tests, 17 skipped; clippy, docs,
-  repository contracts; `target/evidence/gate-slice4.log`); the commit after it changes this
-  specification only. (Its first run failed at `cargo doc`: a public module's text linked a
-  private function.)
+- **Independent review, round 1** (a fresh session, head `5af19aa93`; the reviewer was cut off
+  by its usage limit after confirming two findings by probe, its notes kept): both confirmed
+  findings and its candidate notes are answered, with tests that fail on that head
+  (`target/evidence/s4-r1-red.log`) and pass now (`s4-r1-green.log`):
+  - C1: the tail was bounded by what the transcript holds, so twenty 12 000-character tool
+    results left four entries of a 24 000-character read; it is bounded by the text shown
+    now (a long session's end shows its last eight steps).
+  - C2, C3: a held prompt's raw text could forge a line of the task list (a line reading
+    like another task's, a colour escape, a character that reverses text); a request's words
+    kept characters that hide text. Each is one clean line now, also for rows stored before,
+    and a stored request drops such characters.
+  - C4: a task's agent's `task_get` and its own `you` brief are tested to carry no held
+    prompt's words. C9: an ended task still shows a prompt held before its end, as its card.
+  - C5, C6, C7: the time zone advice moved into `automation_create`'s description; a
+    dismissal ends any request of the task (its agent's or one Yulius opened), said in the
+    tool, the API and ADR-0111. C8 (a dead branch) went with C1's rewrite.
+  - Merged on the way: `dev` at `435111b4d` (one typist at a time), cleanly; the suites that
+    type into sessions pass.
+  Fifteen mutants now, each failed by a named test (`mutants-slice4.log`: `survived=0`); one
+  survived at first because the test's forged prompt itself held the mark it looked for.
+- **Gate:** `scripts/dev ci` passed on `f27490452` (4367 tests, 17 skipped; clippy, docs,
+  repository contracts; `target/evidence/gate-slice4-r1.log`); the commit after it changes
+  this specification only.
 - **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
 - **Not tested:** a real Claude Code session reading the new fields and calling the two
   tools; `task_held_prompt` with `send`, `parallel` and `after` through the tool (the card's
   function is called with the action as given, and its own tests cover each; `dismiss` and
   the refusals are run here); a request that changes between its read and its dismissal
-  (the store's conditional write has its own test, `end_task_needs_you_asking`).
+  (the store's conditional write has its own test,
+  `needs_you::tests::a_request_ends_by_its_action_only_while_it_is_the_open_one`).
