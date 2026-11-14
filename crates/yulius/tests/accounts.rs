@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use yulius_app::auth::AuthContext;
 use yulius_app::error::AppResult;
 use yulius_app::hub::HubFrame;
-use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
+use yulius_app::model::{AccountStatus, AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
 use yulius_app::ports::session::{
     AttachedRun, Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
     RunWelcome, RunWriter, SessionHost, SpawnedRun,
@@ -573,6 +573,61 @@ async fn failed_logins_record_errors_and_relogin_failures_keep_working_accounts(
             .open(&record.credential.ok_or("credential")?)?,
         TOKEN.as_bytes()
     );
+    Ok(())
+}
+
+/// SPEC-483 SGN-001: Claude refused a subscription, so it needs a new sign-in. A sign-in that
+/// fails leaves it needing one, with the reason it had: it does not become an `error`, which a
+/// usage reading would turn into `ok` and the pool would place tasks on again.
+#[tokio::test]
+async fn a_failed_sign_in_leaves_a_refused_subscription_needing_one() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec![format!("token: {TOKEN}\r\n")],
+        exit: Some(0),
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "anthropic", "Claude #2").await?;
+    let signed_in = account_settled(&mut events, &account_id).await?;
+    assert_eq!(signed_in["status"], "ok");
+    let id = AccountId::parse(&account_id)?;
+    let refused = "Claude refused this subscription: the organization disabled it.";
+    s.h.store
+        .set_account_state(
+            &id,
+            AccountStatus::Relogin,
+            None,
+            Some(refused),
+            s.h.app.now(),
+        )
+        .await?;
+
+    s.host.push(Script {
+        chunks: vec!["no token here\r\n".into()],
+        exit: Some(2),
+        ..Script::default()
+    });
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{account_id}/relogin"),
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK);
+    let failed = account_settled(&mut events, &account_id).await?;
+    assert_eq!(
+        (failed["status"].as_str(), failed["last_error"].as_str()),
+        (Some("relogin"), Some(refused))
+    );
+
+    // A usage reading (the background round asks every subscription it may) changes nothing.
+    s.h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let record = s.h.store.account(&id).await?.ok_or("account")?;
+    assert_eq!(record.status, AccountStatus::Relogin);
+    assert_eq!(record.last_error.as_deref(), Some(refused));
     Ok(())
 }
 

@@ -1225,7 +1225,7 @@ impl App {
             .map(|a| AccountView {
                 id: a.id.clone(),
                 provider: a.provider,
-                healthy: matches!(a.status, AccountStatus::Ok | AccountStatus::Limited),
+                healthy: a.status.healthy(),
                 usage: a
                     .usage_json
                     .as_deref()
@@ -4595,16 +4595,11 @@ impl App {
         // A per-model window whose reset passed says nothing about the one that began.
         let usage = &usage.without_reset_model_windows(now);
         let family = crate::capacity::default_family();
-        // A reading never makes a subscription that needs a new sign-in usable again: a
-        // cancelled one can still report usage (or a late transcript line can), and only a
-        // sign-in proves it works.
+        // A reading never makes a subscription that is not healthy usable again: a cancelled
+        // one can still report usage (or a late transcript line can), and only a sign-in proves
+        // it works (SPEC-483 SGN-002).
         let needs_sign_in = match self.deps.store.account(account).await {
-            Ok(Some(record))
-                if matches!(
-                    record.status,
-                    AccountStatus::Relogin | AccountStatus::PendingLogin
-                ) =>
-            {
+            Ok(Some(record)) if !record.status.healthy() => {
                 Some((record.status, record.last_error))
             }
             _ => None,

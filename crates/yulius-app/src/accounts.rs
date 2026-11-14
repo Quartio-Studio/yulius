@@ -955,13 +955,10 @@ impl App {
         let Ok(accounts) = self.deps.store.accounts().await else {
             return;
         };
-        for account in accounts.iter().filter(|a| {
-            a.credential.is_some()
-                && !matches!(
-                    a.status,
-                    AccountStatus::PendingLogin | AccountStatus::Relogin
-                )
-        }) {
+        for account in accounts
+            .iter()
+            .filter(|a| a.credential.is_some() && a.status.healthy())
+        {
             let now = self.now();
             if not_before.get(&account.id).is_some_and(|at| *at > now) {
                 continue;
@@ -1836,23 +1833,24 @@ impl App {
     }
 
     /// Records a failed login. An account that still holds a usable credential keeps its
-    /// status (a failed re-login must not take a working account out of rotation).
+    /// status (a failed re-login must not take a working account out of rotation). One that
+    /// needs a new sign-in keeps needing it, and the reason it had: as `error` it would be a
+    /// status that nothing takes for "needs a sign-in" (SPEC-483 SGN-001). Only a first sign-in
+    /// that fails is an `error`.
     async fn record_login_failure(&self, account: &AccountId, reason: &str) {
         let store = &self.deps.store;
         let Ok(Some(record)) = store.account(account).await else {
             return;
         };
-        let usable = record.credential.is_some()
-            && matches!(record.status, AccountStatus::Ok | AccountStatus::Limited);
-        let status = if usable {
-            record.status
-        } else {
-            AccountStatus::Error
-        };
-        let message = if usable {
-            format!("re-login failed: {reason}")
-        } else {
-            reason.to_owned()
+        let (status, message) = match record.status {
+            status if record.credential.is_some() && status.healthy() => {
+                (status, format!("re-login failed: {reason}"))
+            }
+            AccountStatus::Relogin => (
+                AccountStatus::Relogin,
+                record.last_error.unwrap_or_else(|| reason.to_owned()),
+            ),
+            _ => (AccountStatus::Error, reason.to_owned()),
         };
         if let Err(err) = store
             .set_account_state(account, status, None, Some(&message), self.now())

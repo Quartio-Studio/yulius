@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268);
+      of the Plan (merged, pull request #1268), QA2 slice 18;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -391,6 +391,18 @@ no code path reaches; documents, texts shown to agents and people, and code that
   (`terminate_then_mark_lost`, SPEC-065 END-001), and a switch whose old run is lost starts
   none (SPEC-250 STW-006).
 
+### Slice 18: a subscription that needs a new sign-in
+
+- **QA2 (medium).** "This subscription works" was written four times (`ok` or `limited`:
+  the pool's input, the capacity loop, the agent gate, the login failure) and "this one
+  needs a sign-in" three more (`relogin` or `pending_login`: the usage round, the e-mail
+  round, the usage write), and the two were not each other's opposite: `error` was in
+  neither. A subscription Claude had refused (`relogin`, credential kept) whose new
+  sign-in then failed or timed out became `error`; the background round asked `error` for
+  its usage, a reading stored `ok`, and tasks were placed on the refused subscription
+  again, each losing a turn to the refusal. The administration page had the rule a fifth
+  and a sixth time, and asked an `error` subscription for its usage by itself.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -720,6 +732,16 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `switching` with a run that ended while Yulius was down lost its switch with the
   server: it rests as `stopped_server_lost` and is among the tasks a move brings back, as
   one found with no run is.
+- **SGN-001** A failed sign-in leaves a subscription that needs a new one (`relogin`) as
+  it is, with the reason it had. One that works keeps its status with a note (as before);
+  only a first sign-in that fails makes an `error`.
+- **SGN-002** A subscription works while it is `ok` or `limited`
+  (`AccountStatus::healthy`), and that is the one rule: tasks are placed only on one that
+  works, only such a one is asked for its usage or its e-mail address by the background
+  rounds, and a usage reading that arrives for any other stores its figures and leaves
+  its status and its reason. Every other status ends with a sign-in that succeeds, and
+  with nothing else. The administration page offers a reading for the same subscriptions
+  and a sign-in for the others.
 
 ## Plan
 
@@ -743,6 +765,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
+- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds
 
 ## Acceptance criteria
 
@@ -1158,6 +1181,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-103** A start that finds a `switching` task whose run ended while Yulius was down
   rests it as `stopped_server_lost` (a running one whose session left is `closed`, as
   before); with the mark of a host move the task is queued again.
+- **AC-104** A subscription that signed in, was refused by Claude (`relogin` with
+  Claude's words) and whose next sign-in fails: its status is `relogin` and its error
+  Claude's words; after a background usage round both are the same.
+- **AC-105** A subscription with a credential that reads `error`, and one that reads
+  `relogin`: a background usage round stores nothing for it; a reading an administrator
+  asks for answers 200 with the status unchanged, stores the usage and keeps the reason.
 
 ## Test plan
 
@@ -1350,6 +1379,11 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `SwitchEndsRun`);
   `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` (AC-103), on a
   host that finds every run ended.
+- Slice 18: `yulius` `accounts::a_failed_sign_in_leaves_a_refused_subscription_needing_one`
+  (AC-104, through the sign-in's own terminal with a scripted host) and
+  `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105); the
+  existing `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
+  keeps the two other cases of SGN-001.
 
 ## Decisions
 
@@ -1413,6 +1447,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 18 (no decision record: the comment at the usage write already stated the rule,
+  "a reading never makes a subscription that needs a new sign-in usable again"; the code
+  now has it once). `error` is kept as a status: it is what a first sign-in that failed
+  reads, with no credential. Rows that the old code left `error` with a credential stay
+  so until a sign-in succeeds; no migration turns them into `relogin`: they are out of
+  the pool either way and the page offers the sign-in for both, so it would change a word
+  and nothing else. A failed sign-in of a refused subscription keeps
+  Claude's reason and does not add its own: the sign-in's terminal has just shown the
+  person why it failed, and the card must go on saying why the subscription is out.
 - Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
   where they were not). After a switch's wait the run that had to be killed ends the
   switch, and no new session starts. The other way was weighed: go on with the switch once
@@ -1655,7 +1698,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
 | QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 18 |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |

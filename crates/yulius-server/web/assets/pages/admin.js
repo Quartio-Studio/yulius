@@ -432,8 +432,10 @@ export function mountAccountsPage(ctx, route) {
   let reading = 0;
   let readingAll = false;
   const NO_NEW_READING = 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.';
-  /** A subscription that is signed in can be read; one that needs a sign-in offers that instead. */
-  const signedIn = (account) => !['pending_login', 'relogin'].includes(account.status);
+  /** A subscription works while it is `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
+  const works = (account) => ['ok', 'limited'].includes(account.status);
+  /** A subscription that works can be read; one that needs a sign-in offers that instead. */
+  const signedIn = works;
   /** Draws again what the card of `id` says about its reading (the card asks the queue). */
   const redraw = (id) => {
     const card = [...host.querySelectorAll('[data-account]')].find((el) => el.dataset.account === id);
@@ -574,7 +576,7 @@ export function mountAccountsPage(ctx, route) {
         read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }
       const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
-      const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
+      const broken = !works(account);
       return h('div', { class: 'card card-pad stack' },
         usageHost,
         h('div', { class: 'row-wrap' },

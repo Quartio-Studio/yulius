@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-14
+
+- A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
+  slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
+  `error`, the background round then read its usage and stored `ok`, and tasks were placed
+  on it again, each losing a turn. It stays "needs a new sign-in" with Claude's reason
+  now, and one rule (`ok` or `limited`) says everywhere which subscriptions work: only
+  those take tasks and are asked for their usage, and a usage reading changes the status
+  of no other.
+
 ## 2026-11-13
 
 - A switch to another subscription ends no work it cannot answer for (SPEC-483 slice 17,
