@@ -647,14 +647,6 @@ pub trait AccountStore: Send + Sync {
         last_error: Option<&str>,
         at: Timestamp,
     ) -> AppResult<()>;
-    /// Records an account's last error only, leaving its status and usage as they are now
-    /// (a failed usage request must not write back an older copy, #72).
-    async fn set_account_error(
-        &self,
-        id: &AccountId,
-        last_error: &str,
-        at: Timestamp,
-    ) -> AppResult<()>;
     /// Records a note about reading an account's usage (`usage: …`) as its last error unless
     /// another error is there: a sign-in or re-login error stays (ROT-009).
     async fn set_usage_error(&self, id: &AccountId, note: &str, at: Timestamp) -> AppResult<()>;

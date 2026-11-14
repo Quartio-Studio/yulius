@@ -260,12 +260,6 @@ impl ActiveTime {
         }
     }
 
-    /// When the turn in progress started, if one is.
-    #[must_use]
-    pub fn open_since(&self) -> Option<Timestamp> {
-        self.open_since.map(Timestamp)
-    }
-
     /// Active time so far (ms): the closed spans and the open turn up to the newest time read.
     /// `None` before any turn.
     #[must_use]
@@ -661,7 +655,7 @@ mod tests {
             record(230, 230, 0),
         ]);
         assert_eq!(active_seconds(&acc), Some(230));
-        assert_eq!(acc.active().open_since(), None);
+        assert_eq!(acc.active().open_since.map(Timestamp), None);
         assert_eq!(acc.turns(), 3);
     }
 
@@ -687,11 +681,11 @@ mod tests {
         let mut acc = UsageAccumulator::new();
         acc.observe_all(&[prompt(0, false), work(40)]);
         assert_eq!(active_seconds(&acc), Some(40));
-        assert_eq!(acc.active().open_since(), Some(Timestamp(0)));
+        assert_eq!(acc.active().open_since.map(Timestamp), Some(Timestamp(0)));
         acc.observe(&Observed::TurnInterrupted {
             at: Some(Timestamp(45 * S)),
         });
-        assert_eq!(acc.active().open_since(), None);
+        assert_eq!(acc.active().open_since.map(Timestamp), None);
         acc.observe_all(&[prompt(100, false), work(110)]);
         acc.observe(&Observed::LimitReached {
             resets_at: None,
@@ -771,6 +765,6 @@ mod tests {
         assert_eq!((acc.usage().input, acc.usage().output), (Some(13), Some(7)));
         assert_eq!(acc.model(), Some("claude-test"));
         assert_eq!(acc.last_limit(), None);
-        assert_eq!(acc.active().open_since(), Some(Timestamp(0)));
+        assert_eq!(acc.active().open_since.map(Timestamp), Some(Timestamp(0)));
     }
 }

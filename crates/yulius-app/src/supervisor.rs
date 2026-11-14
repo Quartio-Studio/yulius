@@ -668,7 +668,7 @@ impl TaskRuntime {
     }
 
     /// Ends the turn in progress, if any.
-    pub(crate) fn end_turn(&self, _now: Timestamp) {
+    pub(crate) fn end_turn(&self) {
         self.turn_started_ms.store(0, Ordering::SeqCst);
     }
 
@@ -5335,7 +5335,7 @@ impl App {
                 // back to `ok`. The cut turn then moves on like a limit's, to the next working
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
-                runtime.end_turn(self.now());
+                runtime.end_turn();
                 runtime.limit_cut_the_turn(at);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
@@ -5425,7 +5425,7 @@ impl App {
                 self.context_replied(task_id, &attempt.id);
                 // A continuation that is only the answer ending the turn has no agent work.
                 self.cut_turn_continued(task_id, at).await;
-                runtime.end_turn(self.now());
+                runtime.end_turn();
                 // A sub-agent's turn end (no time) leaves the session at its limit.
                 if at.is_some() {
                     runtime.at_limit.store(false, Ordering::SeqCst);
@@ -5441,7 +5441,7 @@ impl App {
             Observation::TurnInterrupted { at } => {
                 // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
-                runtime.end_turn(self.now());
+                runtime.end_turn();
                 self.turn_interrupted(task_id, at).await;
             }
             Observation::Goal(outcome, at) => self.goal_observed(task_id, outcome, at).await,
@@ -5511,7 +5511,7 @@ impl App {
         at: Option<Timestamp>,
     ) {
         let runtime = self.runtime(task_id);
-        runtime.end_turn(self.now());
+        runtime.end_turn();
         runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
         if let Some(account) = &attempt.account_id {
