@@ -1889,8 +1889,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   lowercase word the CLI reads (`{"status":"denied","token":null}`); the CLI's device tests and
   the server's sign-in tests pass on the one contract (ONE-007).
 
-- **AC-153** Called with only its project, every tool the remote MCP lists answers, none with
-  "unknown tool"; `sandbox_task_create`'s `model` and `effort` equal `task_create`'s, each with a
+- **AC-153** Called with only its project, every tool the remote MCP lists for a person's token
+  answers, none with "unknown tool" (the Global Superagent's browser tools, which this dispatch
+  does not hold, are not called: they would open a browser); `sandbox_task_create`'s `model` and `effort` equal `task_create`'s, each with a
   description; `DeviceStart` and `DevicePollRequest` show no polling code in `Debug` (ONE-008).
 
 ## Test plan
@@ -2894,3 +2895,12 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `d7d01ba5e`: exit 0; `4408 tests run: 4408 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `efceecb23`): request changes. One minor, own code:
+  the new items were inserted between the Superagent instructions' doc comment and
+  `COCKPIT_INSTRUCTIONS`, so the const lost its doc (the rule that its text has no room to
+  grow) and `model_property` carried it. Nits: the new tests sat between the test module's
+  `use` lines; the dispatch test covers a person's token, not the Global Superagent's browser
+  tools. The reviewer found every name keeps its arm for every caller, `initialize` the same
+  answer, the remote `tools/list` the same set for each scope and `task_create`'s schema the
+  same byte for byte. All answered: the doc is back on its const, the tests follow the `use`
+  lines, AC-153 and the test's doc say a person's token.
