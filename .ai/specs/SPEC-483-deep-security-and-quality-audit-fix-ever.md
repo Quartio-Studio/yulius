@@ -3036,10 +3036,40 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Gate.** `scripts/dev ci` at `51d4412ff`: exit 0; `4315 tests run: 4315 passed, 17 skipped`
   (`target/audit/slice19/gate.log`); doctor, repository check, lint, the macOS compile,
   cargo-deny, cargo-shear and rustdoc passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
+- **Web UI.** Slice 19 changes nothing under `web/` or `e2e/`; the branch carries the
+  nits of slice 18's last review there (the sign-in dialog, the mock), and the suite ran
+  after the review of this slice (below).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Not tested.** A person's held prompt through the queue with a real pause (the kind and
   the prompt are tested in the store and in the round trip, the path with a `limit` pause
   and with a person's Continue); a start that waits for a supertask's or an update's hold
   (the same branch as the session limit); the migration on the running instance's
   database (a version-56 database made in the test opens at 57).
+- **Review, round 1** (a fresh session, read-only, head `6794d1eb8`): request changes.
+  Four minor findings in this slice's code. "The kept start is never cleared": the status
+  change out of the queue removes it now. Queueing and keeping were "two separate store
+  calls": one transaction (`queue_task`). "A chosen subscription that cannot take the
+  task when the slot frees now makes the task end `failed`": it is given up, said in the
+  terminal, and the pool places the task (AC-112). The Evidence line on the web UI was
+  wrong for the branch: corrected, and the suite run. One major from before: "`resume_paused`
+  ends the pause before calling `start_run`", so a start the full queue refused left the
+  task with nothing to start it again; the start ends the pause where it is made or
+  queued (QST-002, AC-113). Nits: the edge of a person's move that goes on from a waiting
+  task is in Decisions; the store test writes unreadable rows by hand and asks the
+  database for its version; SPEC-002's table row and the mock's comment are right.
+- **Tests failing before those fixes** (`target/audit/slice19/before2.log`): the task whose
+  chosen subscription had filled up read `Failed(Precondition)`, and the paused task's
+  pause was gone after the round that met the full queue.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 13 cases, each
+  failed its test): the first seven above as they are now; a chosen subscription that
+  cannot take the task asked for all the same; the pause ended before the start is tried;
+  a start that waits in the queue, and one that is made, leaving the pause open; a task
+  that no longer reads its status given a start; a task that leaves the queue keeping its
+  start in the row; a start of an earlier wait read again.
+- **The suites after it:** `2857 tests run: 2857 passed, 17 skipped`
+  (`target/audit/slice19/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `426c3c789`: exit 0;
+  `4317 tests run: 4317 passed, 17 skipped` (`target/audit/slice19/gate2.log`).
+- **Web UI after it.** `cd e2e && npx e2e run` at `426c3c789`: exit 0;
+  `Test Files 84 passed | 1 skipped (85)`, `Tests 1023 passed | 1 skipped (1024)`
+  (`target/audit/slice19/e2e-full.log`).
