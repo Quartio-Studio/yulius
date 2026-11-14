@@ -2859,3 +2859,28 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
   Decisions give the review's word as it was.
 - **Delivery.** Pull request #1268 merged into `dev` at `5690bb786`, whose own Yulius CI
   run passed.
+
+### Slice 18 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice18/before.log`): the failed sign-in
+  left `("error", "the sign-in ended without producing a token (exit code 2)")` where
+  `("relogin", Claude's reason)` was expected, and the usage round turned the `error`
+  subscription `Ok`. The e2e test failed on the page's old rule
+  (`target/audit/slice18/e2e-old.log`: "Usage read again for 1 subscription." never shown).
+- **Tests failing without their fix** (`target/audit/slice18/mutate.py`, `mutations.log`, 6
+  cases, each failed its test): a failed sign-in turning a refused subscription into an
+  error; replacing its reason; the usage round asking one in error; a reading making one
+  in error usable; the e-mail round asking one in error; and asking one that needs a
+  sign-in.
+- **The suites:** `2723 tests run: 2723 passed, 17 skipped` for the app and the binary
+  (`target/audit/slice18/suite1.log`), before the e-mail round's test was added; the gate
+  ran after it.
+- **Gate.** `scripts/dev ci` at `e45fb4f59`: exit 0; `4293 tests run: 4293 passed, 17 skipped`
+  (`target/audit/slice18/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** `cd e2e && npx e2e run` at `e45fb4f59`: exit 0; `Test Files 84 passed | 1 skipped
+  (85)`, `Tests 1022 passed | 1 skipped (1023)` (`target/audit/slice18/e2e-full.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A subscription Claude really refuses (the test writes `relogin` with
+  Claude's words into the store); a row left `error` with a credential by the old code on
+  the running instance (the test writes one).
