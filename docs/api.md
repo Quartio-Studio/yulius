@@ -428,8 +428,8 @@ otherwise), and applies the same shell condition to Done by a tested pull reques
 says `draft`, `approved` or `in-progress`: work the task declared is left, however complete its
 plan reads, so the task is not Done by its plan and pull request (it reads "Your turn", as with
 open steps; SPEC-491 DON-004). A pull request is tested, for Done, when it is open, its `conflicts`
-is false (GitHub says it can merge, and Yulius's own merge of its head with the integration branch
-does not conflict) and its `checks` are `success`, or `none` where the project requires none
+is false (Yulius's own merge of its head with the integration branch does not conflict; GitHub's
+flag is asked only where the task has no clone) and its `checks` are `success`, or `none` where the project requires none
 (under a profile with `require_checks` a pull request nothing reported on reads `pending`).
 
 ```json

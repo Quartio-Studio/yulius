@@ -19,9 +19,9 @@ pub struct PullView {
     pub head: String,
     /// `none`, `pending`, `success`, `failure`, or `unknown` when the checks could not be read.
     pub checks: String,
-    /// It conflicts with its base: GitHub says it cannot merge, or, for a task's pull request,
-    /// Yulius's own merge of its head with the integration branch conflicts. Such a pull
-    /// request is not tested, whatever its checks say (SPEC-491 DON-001).
+    /// A task's pull request conflicts with its base: Yulius's own merge of its head with the
+    /// integration branch conflicts (GitHub's flag only where the task has no clone to ask).
+    /// Such a pull request is not tested, whatever its checks say (SPEC-491 DON-001).
     #[serde(default)]
     pub conflicts: bool,
 }

@@ -3219,8 +3219,9 @@ after it
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
 tested pull request with no declared work left. Tested is one reading (`PullSignal::from_wire`,
 asked by `task_is_done`, the Git overview and the counts): the pull request is open, does not
-conflict with its base (GitHub's answer for one pull request, or Yulius's own merge check in its
-clone, `App::pull_conflicts`, which is also what the watch tells the agent by) and its checks
+conflict with its base (Yulius's own merge check in its clone, with its merge drivers,
+`App::pull_conflicts`, which is also what the watch tells the agent by; GitHub's flag only where
+the task has no clone, as GitHub knows nothing of the union rules) and its checks
 passed, or none are required by the project. Declared work is the plan's open steps and the
 task's spec: Yulius keeps the spec's `status` with the task whenever it reads the spec
 (`tasks.spec_status`), and while it says `draft`, `approved` or `in-progress` the task is not

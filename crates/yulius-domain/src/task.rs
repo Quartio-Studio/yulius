@@ -371,7 +371,7 @@ impl Activity {
 /// What a task's pull request says (SPEC-001 GIT-001), as the Git overview last read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PullSignal {
-    /// Open, mergeable into its base, with checks green or none required: tested.
+    /// Open, in no conflict with its base, with checks green or none required: tested.
     Tested,
     /// Open while its checks run or cannot be read.
     InReview,

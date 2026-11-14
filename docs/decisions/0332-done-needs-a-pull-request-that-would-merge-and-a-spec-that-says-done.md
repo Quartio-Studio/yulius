@@ -38,10 +38,13 @@ wrongly:
 1. **Tested means the pull request would merge as it is.** One function reads it for chains,
    start rules, the Git overview and the counts (`PullSignal::from_wire`): the pull request is
    open, does not conflict with its base, and its checks passed at its head, or none are
-   required. It conflicts when GitHub says it is not mergeable (a single pull request's answer;
-   its lists say nothing) or when Yulius's own merge of its head with the integration branch,
-   as its clone last fetched it, conflicts (`App::pull_conflicts`; the check the pull request
-   watch tells the agent by, PRN-004). The API says so in `PullView.conflicts`.
+   required. It conflicts when Yulius's own merge of its head with the integration branch, as
+   its clone last fetched it and with the clone's merge drivers, conflicts
+   (`App::pull_conflicts`; the check the pull request watch tells the agent by, PRN-004).
+   GitHub's `mergeable` decides only where the task has no clone to ask: GitHub knows nothing
+   of the union rules Yulius gives the changes log and the decision index, so two pull requests
+   that each add an entry there are "not mergeable" on GitHub and merge cleanly in Yulius. The
+   API says so in `PullView.conflicts`.
 2. **"None required" is the project's statement.** Without a Yulius CI run due at the head and
    with a delivery profile that requires no checks, a pull request without checks is tested.
    Where the profile requires checks, none reported is pending (`tested_checks_word`), for the
@@ -84,6 +87,9 @@ wrongly:
   would hold a chain for good, and prompt tasks have no goal.
 - **Read the spec at every decision.** The counts ask for every idle task many times a minute,
   and a closed task has no worktree left. Yulius reads the spec at every turn's end anyway.
+- **GitHub's `mergeable` flag as well as the clone's check.** It held a chain on every
+  changes-log collision the union rule resolves, while the overview (whose list carries no flag)
+  and the watch said nothing was wrong (found by the review).
 - **Ask GitHub for each pull request's mergeability in the overview.** One request per pull
   request per overview read, against the rate limit; and GitHub answers "not known yet" right
   after the base moved, which is when it matters. The clone's answer is what the agent is told.
