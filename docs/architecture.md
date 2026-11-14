@@ -3124,7 +3124,7 @@ this one rule ([SPEC-429](../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-t
 
 ```mermaid
 flowchart LR
-    idle["idle agent: waiting"] --> going{"background work or yulius wait?"}
+    idle["idle agent: waiting"] --> going{"background work, yulius wait\nor pull request news due?"}
     going -->|"yes"| working["Working"]
     going -->|"no"| asked{"a request: prompt, needs_you,\nbrowser, held prompt, failing checks?"}
     asked -->|"yes"| needs["Needs you"]
@@ -3132,6 +3132,25 @@ flowchart LR
     open -->|"yes"| turn["Your turn (Needs you)"]
     open -->|"no"| answered["Answered (Done group)"]
 ```
+
+A tested or merged pull request is not the end of a task that merges its own: its agent arms
+the merge and stops, the checks pass, the merge queue merges, and the pull request watch types
+the news into the session, which then goes on (the next slice, the closing summary). While
+Yulius has such news for the agent, the task goes on by itself: `yulius_wait` is true, the list
+reads "Waiting for checks or merge", and `task_is_done` answers no, so no chain or start rule
+starts on it, no supertask takes it for finished and Home counts it as working. One rule says
+when (`news_due` in `pr_watch.rs`, asked through `App::pr_news_due`): a merge is armed or being
+decided (known from the armed merges' file until a restarted server put them back); or, for a
+task the watch types into, news was typed and its turn has not begun, a merge the watch saw
+open is not told (also one GitHub reports before the record says so), or an armed merge that
+ended without merging is not explained yet. Typed news is due until the task goes from idle to
+Working, at most two minutes; typed while a turn runs, Claude Code queues it, and its queue
+(SPEC-471) says how long it waits. One decision reads the task's delivery once. A task the
+watch tells nothing is Done as before: a playground's, one whose pull request it never saw
+open, one a person paused; an update's hold changes nothing, since the news is typed right
+after it
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
+[decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
 
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
 tested pull request with a complete plan, so a task without a goal that opens no pull request would

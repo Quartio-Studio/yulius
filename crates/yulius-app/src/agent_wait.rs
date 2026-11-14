@@ -352,6 +352,29 @@ impl App {
                 tracing::info!(task = %task_id, "armed merge restored after a restart");
             }
         }
+        self.armed_restored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether `task` has a merge armed as far as this server knows: its slot, and, until the
+    /// armed merges saved before this server started were put back, their file (a hook or a
+    /// chain pass may be served before that; SPEC-487 CHN-001).
+    pub(crate) fn merge_is_armed(&self, task: &TaskId) -> bool {
+        if self.armed_view(task).0 {
+            return true;
+        }
+        if self
+            .armed_restored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        let _guard = ARMED_FILE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        read_armed(&self.config.data_dir.join(ARMED_MERGES_FILE))
+            .iter()
+            .any(|entry| entry.task == task.as_str())
     }
 
     /// At a start: puts back the armed merges (DLV-205), then tries them once, as the delivery

@@ -158,7 +158,8 @@ impl App {
                 && self
                     .background_shells_of(&task.id)
                     .is_some_and(|count| count > 0),
-            yulius_wait: finished && self.agent_waits_on_yulius(&task.id),
+            yulius_wait: finished
+                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
         }
         .group())
@@ -167,7 +168,7 @@ impl App {
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),
     /// read from its tabs (none while the browser does not run: its requests went with it), or
     /// through `needs_you` (SPEC-134 CDT-004).
-    async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
+    pub(crate) async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
         let mut requested: HashSet<String> = match self.deps.browser.running(sandbox).await {
             Some(session) => session
                 .tabs()

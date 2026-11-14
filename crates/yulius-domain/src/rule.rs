@@ -7,10 +7,12 @@
 
 use std::fmt;
 
-/// Longest rule text accepted.
-pub const MAX_RULE_CHARS: usize = 500;
-/// Most atoms in one rule.
-pub const MAX_ATOMS: usize = 16;
+/// Longest rule text accepted: room for [`MAX_ATOMS`] atoms of the longest task number in
+/// their canonical words (64 × `#4294967295 done` joined by ` and ` is 1339 characters).
+pub const MAX_RULE_CHARS: usize = 1400;
+/// Most atoms in one rule: "after all current tasks" (SPEC-487 CHN-005) names every task of a
+/// sandbox that has not ended, and a board held 24 at once.
+pub const MAX_ATOMS: usize = 64;
 /// Deepest nesting of parentheses and `not`.
 pub const MAX_DEPTH: usize = 8;
 
@@ -537,16 +539,19 @@ mod tests {
         let long = format!("#1 and {}", " ".repeat(MAX_RULE_CHARS));
         let long = format!("{long}#2");
         assert!(refusal(&long).contains("longer"));
-        let wide = (1..=17)
+        let wide = (1..=MAX_ATOMS + 1)
             .map(|n| format!("#{n}"))
             .collect::<Vec<_>>()
             .join(" and ");
-        assert!(refusal(&wide).contains("more than 16"));
-        let sixteen = (1..=16)
-            .map(|n| format!("#{n}"))
+        assert!(refusal(&wide).contains("more than 64"));
+        // The widest rule in its canonical words fits the text bound (SPEC-487 CHN-005).
+        let widest = (0..MAX_ATOMS)
+            .map(|n| format!("#{} done", u32::MAX - u32::try_from(n).unwrap_or(0)))
             .collect::<Vec<_>>()
             .join(" and ");
-        assert!(Rule::parse(&sixteen).is_ok());
+        assert!(widest.len() <= MAX_RULE_CHARS, "{}", widest.len());
+        let parsed = Rule::parse(&widest);
+        assert_eq!(parsed.map(|rule| rule.to_string()), Ok(widest));
         let deep = format!("{}#1{}", "(".repeat(10), ")".repeat(10));
         assert!(refusal(&deep).contains("deeper"));
         assert!(Rule::parse(&"not ".repeat(10)).is_err());
