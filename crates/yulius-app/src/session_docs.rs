@@ -1374,7 +1374,9 @@ impl App {
             transcripts::open(&anchor, &path)
                 .and_then(|file| {
                     if tail {
-                        transcripts::read_tail(file, limit, max_chars)
+                        // Bounded below by the text shown, where a tool's result is cut to a
+                        // few lines: what the transcript holds says little about it.
+                        transcripts::read_tail(file, limit, transcripts::MAX_PAGE_CHARS)
                     } else {
                         transcripts::read_page(file, from, limit, max_chars * 2)
                     }
@@ -1398,22 +1400,26 @@ impl App {
             "author": view.author.as_ref().map(|a| a.login.clone()),
         });
         let text = if tail {
-            // The bound keeps the end: entries are left out at the front until the text fits
-            // (the last one is shown whatever its size, cut at its own end).
-            let mut entries = page.entries.as_slice();
-            let mut earlier = page.earlier;
-            let (text, cut_at) = loop {
-                let (text, cut_at) = transcripts::render_text(entries, max_chars);
-                if cut_at.is_none() || entries.len() <= 1 {
-                    break (text, cut_at);
+            // The bound keeps the end: entries are left out at the front until the text they
+            // show fits (the last one is shown whatever its size, cut at its own end).
+            let entries = page.entries.as_slice();
+            let mut first = entries.len().saturating_sub(1);
+            let mut shown = 0;
+            for (index, entry) in entries.iter().enumerate().rev() {
+                shown += transcripts::render_text(std::slice::from_ref(entry), usize::MAX)
+                    .0
+                    .len();
+                if shown > max_chars && index + 1 < entries.len() {
+                    break;
                 }
-                entries = &entries[1..];
-                earlier = true;
-            };
+                first = index;
+            }
+            let entries = &entries[first..];
+            let (text, _) = transcripts::render_text(entries, max_chars);
             answer["from"] = json!(entries.first().map_or(page.end, |entry| entry.line));
-            answer["earlier"] = json!(earlier);
+            answer["earlier"] = json!(page.earlier || first > 0);
             // Where a later read goes on: after the last line read, for what came since.
-            answer["next_from"] = json!(cut_at.unwrap_or(page.end));
+            answer["next_from"] = json!(page.end);
             answer["tail"] = json!(true);
             text
         } else {

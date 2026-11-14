@@ -295,7 +295,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "task_question_dismiss",
-            "Dismiss what a task's agent asked of its person (the request tasks_list and task_get show as needs_you), when the person says it is done, answered elsewhere or no longer matters: the request ends and the task stops showing Needs you for it, without a word to its agent. To answer the agent instead, send the answer with task_message, which ends the request too. Only a request is dismissed: a flag (attention) says what ends it, a held prompt is decided with task_held_prompt, a question in the task's terminal is answered there. The task's owner only.",
+            "Dismiss what a task asks of its person (the request tasks_list and task_get show as needs_you: its agent's, or one Yulius opened for it, such as no subscription left), when the person says it is done, answered elsewhere or no longer matters: the request ends and the task stops showing Needs you for it, without a word to its agent. To answer the agent instead, send the answer with task_message, which ends the request too. Only a request is dismissed: a flag (attention) says what ends it, a held prompt is decided with task_held_prompt, a question in the task's terminal is answered there. The task's owner only.",
             task_ref.clone(),
             &[],
         ),

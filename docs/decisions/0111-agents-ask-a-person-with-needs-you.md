@@ -5,6 +5,10 @@
 Accepted. Specified in [SPEC-134](../../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md);
 task #113. Extends [0068](0068-needs-you-means-a-person-has-to-act.md).
 
+Amended by SPEC-487 (QST-005, task #469): a request also ends when the task's owner dismisses it
+through their Superagent or their own agent (`task_question_dismiss`, audited
+`task.needs_you.dismissed`), without a word to the task's agent.
+
 ## Context
 
 "To make something be in 'needs you' the agent should explicitly call a tool and prompt the user to

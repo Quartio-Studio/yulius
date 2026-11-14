@@ -988,6 +988,54 @@ async fn agents_search_and_read_only_their_own_sandbox_sessions() -> TestResult 
         (&json!(true), &json!(40)),
         "{end}"
     );
+    // A session whose tools gave long results (review of slice 4, C1): the read is bounded
+    // by the text it shows, where a tool's result is cut to a few lines, not by what the
+    // transcript holds. Twenty steps of a call and its 12 000-character result: the end
+    // shows far more than the last few entries.
+    let busy = insert_task(
+        &h.store,
+        &SandboxId::parse("s1")?,
+        "busy",
+        "A busy session",
+        &UserId::parse("u1")?,
+        TaskStatus::Closed,
+    )
+    .await?;
+    let big = "x".repeat(12_000);
+    let steps: String = (0..20)
+        .map(|i| {
+            [
+                line(&json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": format!("step {i:02}: reading the log")},
+                    {"type": "tool_use", "id": format!("r{i}"), "name": "Read", "input": {"file_path": format!("/w/log{i}.txt")}}
+                ]}})),
+                line(&json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": format!("r{i}"), "content": big.clone()}
+                ]}})),
+            ]
+            .concat()
+        })
+        .collect();
+    let busy_copy = data.join("copies/busy.jsonl");
+    write(&busy_copy, &steps)?;
+    task_session(&h.store, &busy, "sess-busy", &busy_copy).await?;
+    let (end, err) = mcp_tool(
+        &internal,
+        "tok-me",
+        "session_read",
+        json!({"task_number": busy.number, "tail": true}),
+    )
+    .await?;
+    assert!(!err, "{end}");
+    let body = text(&end["text"]);
+    assert!(body.contains("step 19: reading the log"), "{body}");
+    assert!(
+        body.contains("step 12: reading the log"),
+        "only {} characters of the end were shown: {body}",
+        body.len()
+    );
+    assert!(body.len() <= 24_000, "{}", body.len());
+
     // The end, or a place: not both.
     let (both, err) = mcp_tool(
         &internal,

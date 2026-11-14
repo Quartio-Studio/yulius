@@ -1,14 +1,17 @@
 //! What a task asks of a person, read and answered for them (SPEC-487 slice 4, QST-001 to
-//! QST-005; wall 7): why a task waits for a person, and the two decisions a person makes on its
-//! page that had no tool: dismissing the agent's request and deciding a prompt Yulius held.
+//! QST-005; wall 7): why a task waits for a person, and two decisions for the person: deciding
+//! a prompt Yulius held (the card on the task's page) and dismissing the task's request to its
+//! person (`needs_you`, its agent's or one Yulius opened for it), which no page did: it ended
+//! only with a message to the task or by its agent.
 //!
 //! Contract:
 //! - what a task says about itself (`App::waits_why`) is what its page shows: the list's
-//!   group, the agent's request (`needs_you`), the reason of its flag, a held prompt, a pause.
-//!   It is read by everyone who reads the task list, a task's agent included; the texts are the
-//!   agent's or Claude Code's own words, bounded and on one line where they are stored;
-//! - the decisions are the task owner's, as on the page: a person's function with their
-//!   [`AuthContext`], write access checked at the call;
+//!   group, the task's request (`needs_you`), the reason of its flag, a held prompt, a pause.
+//!   It is read by everyone who reads the task list, a task's agent included (without a held
+//!   prompt's words); the texts are an agent's, Claude Code's or a person's own words, each
+//!   shown as one bounded line without what hides or reverses text;
+//! - the decisions are the task owner's: a person's function with their [`AuthContext`],
+//!   write access checked at the call;
 //! - a request is ended only while it still asks what was read: one asked meanwhile stays.
 
 use std::collections::HashSet;
@@ -26,6 +29,10 @@ use crate::model::TaskRecord;
 
 /// The most characters of a held prompt a task's brief carries.
 const HELD_EXCERPT_CHARS: usize = 300;
+
+/// The most characters of each text of a task's request a brief carries (they are stored
+/// within 2 000).
+const SHOWN_TEXT_CHARS: usize = 2_000;
 
 /// The decisions on a held prompt an agent makes for its person (the page has two more:
 /// `skip_after`, which names steps, and `revert`, which discards the task's work).
@@ -69,10 +76,9 @@ impl App {
         task: &TaskRecord,
         person: bool,
     ) -> serde_json::Map<String, Value> {
+        // What the task's summary shows, also for a task that ended: a prompt held before its
+        // end is still decided on its card.
         let mut why = serde_json::Map::new();
-        if task.status.is_resting() {
-            return why;
-        }
         let mut add = |key: &str, value: Option<Value>| {
             if let Some(value) = value.filter(|value| !value.is_null()) {
                 why.insert(key.to_owned(), value);
@@ -80,9 +86,16 @@ impl App {
         };
         add(
             "needs_you",
-            self.needs_you_view(&task.id)
-                .await
-                .and_then(|view| serde_json::to_value(view).ok()),
+            self.needs_you_view(&task.id).await.and_then(|view| {
+                // A request stored before its words were cleaned is shown as one now is.
+                let mut view = serde_json::to_value(view).ok()?;
+                for key in ["action", "happened", "problem", "link"] {
+                    if let Some(said) = view.get(key).and_then(Value::as_str) {
+                        view[key] = json!(crate::attention::shown_line(said, SHOWN_TEXT_CHARS));
+                    }
+                }
+                Some(view)
+            }),
         );
         add(
             "attention",
@@ -95,13 +108,12 @@ impl App {
             self.held_prompt_view(&task.id).await.map(|held| {
                 let mut shown = json!({"class": held.class, "at": held.created_at});
                 if person {
-                    let cut = held.excerpt.chars().count() > HELD_EXCERPT_CHARS;
-                    let mut excerpt: String =
-                        held.excerpt.chars().take(HELD_EXCERPT_CHARS).collect();
-                    if cut {
-                        excerpt.push('…');
-                    }
-                    shown["excerpt"] = json!(excerpt);
+                    // What a person typed, as one line: it may hold anything, a line that
+                    // reads like another task's among them.
+                    shown["excerpt"] = json!(crate::attention::shown_line(
+                        &held.excerpt,
+                        HELD_EXCERPT_CHARS
+                    ));
                     shown["typed_by"] = json!(held.typed_by);
                 }
                 shown
@@ -116,9 +128,10 @@ impl App {
         why
     }
 
-    /// Dismisses what `task`'s agent asked of a person (`needs_you`), for the task's owner
-    /// (QST-005): the request ends without a word to the agent, as when the person has done it
-    /// elsewhere or it no longer matters. Only the request that was read is ended: one the
+    /// Dismisses what `task` asks of its person (`needs_you`: its agent's request, or one
+    /// Yulius opened for it, such as no subscription left), for the task's owner (QST-005):
+    /// the request ends without a word to the agent, as when the person has done it elsewhere
+    /// or it no longer matters. Only the request that was read is ended: one the
     /// agent made meanwhile stays. Answers what was asked. Audited under the person's name.
     ///
     /// # Errors
