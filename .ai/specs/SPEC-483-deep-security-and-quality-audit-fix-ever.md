@@ -965,7 +965,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
 - [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
 - [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
-- [ ] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved
+- [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved
 
 ## Acceptance criteria
 
@@ -2362,3 +2362,48 @@ stood here (this file is bounded at 256 KiB); the later slices follow.
   ("the diff adds five tests", and a line of MOV-001 over the wrap), answered in slice 23.
 - **Delivery.** Pull request #1277 merged into `dev` at `fb9f12a60`, the approved head
   `e417e1c6c` squashed, whose own Yulius CI run passed.
+
+### Slice 23 (2026-11-14)
+
+- **Tests failing before the fix**: the domain rule found a paused task with a permission
+  prompt NeedsYou; the sidebar's counter counted the awaited onboarding task working and
+  showed an armed achieved goal "Done"; with the server's group fixed, a task chained after
+  an armed achieved goal was still started (`task_is_done`, a second copy of the Done rule);
+  the live document after a 403 kept "abcd", busy and unsaved, a close waited, and a new
+  join stayed read-only; the Editor never said the refusal.
+- **Tests failing without their fix** (`target/audit/slice23/mutate.py`; `mutations.log`,
+  `mutations-local.log`, after the review `mutations-r1.log` and `mutations-r1-join.log`;
+  each case failed its test): the pause, the awaited onboarding task and the armed merge
+  taken out of the rule and, each, out of what the server reads; the armed merge out of
+  both Done functions (the local one is what a supertask's wait asks: its test was added
+  when this case survived) and out of the task's view; the sidebar's three changes; and in
+  the live document, the refusal keeping the typing, any 403 taken for lost access, the
+  tab's text left as typed, the tab strip not told, typing after a refusal kept, a join not
+  clearing the refusal, a join clearing it before it is answered (its test was added when
+  this case survived), the Editor not saying it.
+- **Gate.** `scripts/dev ci` at `969a33a91`: one failure,
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (a queued task the
+  queue started before the test's bulk stop, under load; 6 of 6 alone; filed as #1278: a
+  race in that test, which this slice does not touch); rerun at the same head: exit 0,
+  `4371 tests run: 4371 passed (1 slow), 17 skipped` (`target/audit/slice23/gate2.log`).
+- **Review, round 1** (a fresh session, head `969a33a91`): request changes. One major in own
+  code: "After a refused edit the tab strip keeps the unsaved mark", and the Editor test's
+  "status does not contain Unsaved" could not fail (the status says read-only instead).
+  Two minor: "Any 403 is taken as lost write access, but the server also answers 403 for
+  csrf_invalid"; and a refused catch-up after the refusal rejoins every second, with
+  `readOnly` false during each attempt. All three answered: the typing is given up in the tab
+  (its text the document's as it had it, the tab strip told), only `forbidden` is a refusal
+  of access, a refused catch-up asks no more, and only a successful join clears read-only
+  (LVE-001, AC-134; the Editor test asserts the tab `notes.txt×`). Nits answered: the mock's
+  summary carries `merge_armed`; the counts read the pause without building its view
+  (`App::is_paused`); `docs/api.md` says a run paused by a person or an update never needs
+  you; doc lines rewrapped; GRP-003 names how it narrows SPEC-487 CHN-003; the observation
+  that "after all current tasks" now names the awaited onboarding task is in the Decisions.
+- **Gate after it.** `scripts/dev ci` at `d72d28945`: exit 0; `4371 tests run: 4371 passed
+  (1 slow), 17 skipped` (`target/audit/slice23/gate3.log`). e2e `live-editor.e2e.ts`,
+  `editor.e2e.ts` and `task-done.e2e.ts` at the same head: 71 passed
+  (`target/audit/slice23/e2e.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A real server refusing an edit after a worktree's owner changed (the mock
+  refuses on a switch; the server's 403 for that case is `forbidden`, as the mock's); the
+  counts with a real update's hold (the domain test and a person's pause cover the fact).
