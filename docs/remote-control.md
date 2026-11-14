@@ -248,6 +248,9 @@ the Secrets page's Variables tab, or `yulius vars`.
 | "Rename #12" / "change what #13 will do" (not started) | `task_edit` | `yulius remote call task_edit '{"number": 13, "prompt": "…"}'` |
 | "Run #14 before #12" (both queued) | `tasks_reorder` | `yulius remote call tasks_reorder '{"numbers": [14, 12]}'` |
 | "Pause all my tasks" / "stop everything" / "tell all tasks …" | `tasks_bulk` | `yulius remote call tasks_bulk '{"do": "pause", "all": true}'` |
+| "What is waiting for me, and why?" | `tasks_list` with `scope: needs_you` | `yulius remote call tasks_list '{"scope": "needs_you"}'` |
+| "What is #12 doing right now?" | `session_read` with `tail: true` | `yulius remote call session_read '{"task_number": 12, "tail": true}'` |
+| "Tell #12 the answer is yes" / "that request is settled" / "send the held prompt of #12" | `task_message`, `task_question_dismiss`, `task_held_prompt` | `yulius remote call task_question_dismiss '{"number": 12}'` |
 | "Close out #12, it is merged" | `task_close` | `yulius remote call task_close '{"number": 12}'` |
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |

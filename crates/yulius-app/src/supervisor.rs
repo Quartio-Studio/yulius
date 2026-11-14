@@ -182,7 +182,12 @@ pub struct TaskRuntime {
     pub(crate) typed_seen: AtomicBool,
     /// The task's owner had a message typed behind their possible draft and Yulius is about to
     /// submit both (SPEC-487 TCT-006): the next prompt that goes on from the box carried that
-    /// draft to the agent, also one this server knows from its mark alone.
+    /// draft to the agent, also one this server knows from its mark alone. The mark is taken
+    /// by whichever prompt from the box goes on next; it is not checked to be that message.
+    /// It matters only for a draft known from its mark alone (no key seen by this server),
+    /// and there only if another prompt, held since before the restart, goes on while Claude
+    /// Code did not take Yulius's Enter as a submit: the draft would then read as ended
+    /// while its text is still in the box.
     pub(crate) sent_past_draft: AtomicBool,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a

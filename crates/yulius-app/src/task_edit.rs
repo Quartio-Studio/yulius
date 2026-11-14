@@ -565,9 +565,9 @@ pub fn close_refusal(number: u32, facts: CloseFacts) -> Option<String> {
             ))
         }
         TaskStatus::Running if facts.news => Some(format!(
-            "Yulius still has news of its pull request for task #{number} (a merge is armed, or \
-             its merge is not told yet): it goes on by itself, and tasks chained after it wait \
-             for that. Stop it (task_stop) to end it anyway"
+            "task #{number} waits for Yulius's news of its pull request (its checks, an armed \
+             merge, or a merge not told yet): it goes on by itself, and tasks chained after it \
+             wait for that. Stop it (task_stop) to end it anyway"
         )),
         TaskStatus::Running => None,
         status if status.is_resting() => Some(format!(

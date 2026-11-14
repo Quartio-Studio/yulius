@@ -109,6 +109,41 @@ impl App {
     }
 
     pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
+        let requested = self.browser_requests(&task.sandbox_id).await;
+        self.task_brief_among(task, &requested, false).await
+    }
+
+    /// [`Self::task_brief`] among the sandbox's pending requests `requested`
+    /// ([`App::browser_requests`]), read once for a list; for `person`'s own callers (their
+    /// Superagent, their own agent) with the words of a held prompt.
+    pub(crate) async fn task_brief_among(
+        &self,
+        task: &TaskRecord,
+        requested: &std::collections::HashSet<String>,
+        person: bool,
+    ) -> AppResult<Value> {
+        let group = self.shown_group(task, requested).await?;
+        self.task_brief_shown(task, group, person).await
+    }
+
+    /// [`Self::task_brief_among`] for a task whose group is read already.
+    async fn task_brief_shown(
+        &self,
+        task: &TaskRecord,
+        group: yulius_domain::task::TaskGroup,
+        person: bool,
+    ) -> AppResult<Value> {
+        let mut brief = self.task_brief_plain(task).await?;
+        // Where the task list shows it, and why it waits for a person or is held (SPEC-487
+        // QST-001): what its page says, so nobody has to paste it.
+        brief["shows"] = json!(crate::task_questions::group_name(group));
+        if let Some(fields) = brief.as_object_mut() {
+            fields.extend(self.waits_why(task, person).await);
+        }
+        Ok(brief)
+    }
+
+    async fn task_brief_plain(&self, task: &TaskRecord) -> AppResult<Value> {
         let steps = self.deps.store.steps(&task.id).await?;
         let p = self.step_progress(&task.id, &steps).await?;
         let chain = self.deps.store.chain(&task.id).await?;
@@ -155,16 +190,34 @@ impl App {
         tasks.retain(|t| match scope {
             "active" => Self::is_active_status(t.status),
             "recent" => !t.status.is_live(),
+            // Only a task that has not ended waits for a person.
+            "needs_you" => !t.status.is_resting(),
             _ => true,
         });
         tasks.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
+        let requested = self.browser_requests(&caller.sandbox).await;
+        let limit = usize::try_from(limit).unwrap_or(30);
         let mut out = Vec::new();
-        for t in tasks.iter().take(usize::try_from(limit).unwrap_or(30)) {
-            out.push(self.task_brief(t).await?);
+        for t in &tasks {
+            if out.len() >= limit {
+                break;
+            }
+            // The tasks the list shows under "Needs you" (SPEC-487 QST-002), by its own rule.
+            let group = self.shown_group(t, &requested).await?;
+            if scope == "needs_you" && group != yulius_domain::task::TaskGroup::NeedsYou {
+                continue;
+            }
+            out.push(
+                self.task_brief_shown(t, group, caller.task.is_none())
+                    .await?,
+            );
         }
         // A Cockpit has no task of its own (MGT-007).
         match &caller.task {
-            Some(own) => Ok(json!({"you": self.task_brief(own).await?, "tasks": out})),
+            Some(own) => Ok(json!({
+                "you": self.task_brief_among(own, &requested, false).await?,
+                "tasks": out,
+            })),
             None => Ok(json!({"tasks": out})),
         }
     }
@@ -176,7 +229,10 @@ impl App {
     pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
         let task = self.agent_task_ref(caller, args).await?;
         let steps = self.deps.store.steps(&task.id).await?;
-        let mut brief = self.task_brief(&task).await?;
+        let requested = self.browser_requests(&task.sandbox_id).await;
+        let mut brief = self
+            .task_brief_among(&task, &requested, caller.task.is_none())
+            .await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
         brief["steps_list"] = json!(steps.iter().map(|s| json!({"id": s.id.as_str(), "title": s.title, "status": s.status, "note": s.note})).collect::<Vec<_>>());
         Ok(brief)

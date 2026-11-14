@@ -38,6 +38,8 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("task_close", Action::Work),
     ("tasks_reorder", Action::Work),
     ("tasks_bulk", Action::Work),
+    ("task_question_dismiss", Action::Work),
+    ("task_held_prompt", Action::Work),
     ("ci_runs", Action::View),
     ("ci_run", Action::View),
     ("ci_rerun", Action::Work),
@@ -118,12 +120,31 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
     };
     let mut about = serde_json::Map::new();
     match name {
-        "task_restart" | "task_pause" | "task_unpause" | "task_start_now" | "task_edit"
-        | "task_close" => {
+        "task_restart"
+        | "task_pause"
+        | "task_unpause"
+        | "task_start_now"
+        | "task_edit"
+        | "task_close"
+        | "task_question_dismiss"
+        | "task_held_prompt" => {
             if let Some(number) = args.get("number").and_then(Value::as_u64) {
                 about.insert("task".into(), json!(number));
             } else if let Some(task) = id("task_id") {
                 about.insert("task".into(), json!(task));
+            }
+            // What was decided about a held prompt, when it is one of the decisions.
+            if let Some(action) = args
+                .get("action")
+                .and_then(Value::as_str)
+                .filter(|_| name == "task_held_prompt")
+                .and_then(|action| {
+                    crate::task_questions::HELD_PROMPT_ACTIONS
+                        .into_iter()
+                        .find(|known| *known == action)
+                })
+            {
+                about.insert("do".into(), json!(action));
             }
         }
         // The tasks a call names (a bounded list of numbers, or all), and what it does to them.
@@ -252,7 +273,7 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         tool(
             "task_close",
             "Close out a running task whose agent is idle (the list shows it Waiting, Done, Answered or Needs you): its session ends gracefully and the task is closed, as Yulius closes a finished task, whatever its plan says. Use it when the person says a task is finished (\"close out #12, its work is merged\"). Its conversation is kept: task_restart continues it. Background shells it left running end with its session, and a task chained after it may start. Refused, with the reason, for a task in a turn (wait for its end, or interrupt it with task_stop), for one Yulius still has pull request news for (a merge armed or not told yet: it goes on by itself), and for one that waits or has ended. The task's owner only.",
-            task_ref,
+            task_ref.clone(),
             &[],
         ),
         tool(
@@ -271,6 +292,23 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
                 "text": {"type": "string", "description": "The message, for do: message (at most 64 KiB)"}
             }),
             &["do"],
+        ),
+        tool(
+            "task_question_dismiss",
+            "Dismiss what a task asks of its person (the request tasks_list and task_get show as needs_you: its agent's, or one Yulius opened for it, such as no subscription left), when the person says it is done, answered elsewhere or no longer matters: the request ends and the task stops showing Needs you for it, without a word to its agent. To answer the agent instead, send the answer with task_message, which ends the request too. Only a request is dismissed: a flag (attention) says what ends it, a held prompt is decided with task_held_prompt, a question in the task's terminal is answered there. The task's owner only.",
+            task_ref.clone(),
+            &[],
+        ),
+        tool(
+            "task_held_prompt",
+            "Decide a prompt Yulius held in a task (held_prompt in tasks_list and task_get: typed into its session, and it would change what the task does), as the card on the task's page does, when the person says which: send (deliver it to the task as typed), dismiss (drop the hold; the text stays in the task's prompt box), parallel (a new task for it, started now) or after (a new task for it, after this one). Skipping steps for it and reverting the task are decided on the task's page. The task's owner only.",
+            {
+                let mut properties = task_ref.clone();
+                properties["action"] =
+                    json!({"type": "string", "enum": crate::task_questions::HELD_PROMPT_ACTIONS});
+                properties
+            },
+            &["action"],
         ),
         tool(
             "ci_runs",
@@ -437,6 +475,26 @@ impl App {
                 self.bulk_tasks(ctx, project, action, numbers.as_deref(), text)
                     .await
             }
+            "task_question_dismiss" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let asked = self.dismiss_task_question(ctx, task.id.as_str()).await?;
+                let task = self
+                    .deps
+                    .store
+                    .task(&task.id)
+                    .await?
+                    .ok_or(AppError::NotFound)?;
+                Ok(json!({"dismissed": asked, "task": self.task_brief(&task).await?}))
+            }
+            "task_held_prompt" => {
+                let task = self.agent_task_ref(project, args).await?;
+                let action = args.get("action").and_then(Value::as_str);
+                record(
+                    &self
+                        .decide_task_held_prompt(ctx, task.id.as_str(), action)
+                        .await?,
+                )
+            }
             "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
             "ci_run" => record(
                 &self
@@ -599,6 +657,25 @@ mod tests {
         assert_eq!(
             subject("tasks_bulk", &json!({"do": "stop", "numbers": [7]})),
             json!({"tasks": [7], "do": "stop"})
+        );
+        // A decision on a held prompt names the task and the decision, when it is one.
+        assert_eq!(
+            subject("task_held_prompt", &json!({"number": 5, "action": "after"})),
+            json!({"task": 5, "do": "after"})
+        );
+        assert_eq!(
+            subject(
+                "task_held_prompt",
+                &json!({"number": 5, "action": "x".repeat(1 << 20)})
+            ),
+            json!({"task": 5})
+        );
+        assert_eq!(
+            subject(
+                "task_question_dismiss",
+                &json!({"number": 5, "action": "dismiss"})
+            ),
+            json!({"task": 5})
         );
         let many: Vec<u32> = (1..=101).collect();
         for (tool, args, about) in [

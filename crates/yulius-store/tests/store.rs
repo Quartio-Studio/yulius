@@ -1733,8 +1733,8 @@ async fn queued_tasks_that_share_a_millisecond_take_the_order_asked_for() -> R {
             .await?
     );
     assert_eq!(queue(&store).await?, ["t1", "t2", "t0", "t3"]);
-    // After a restart every waiting task was queued again at one moment: all four share a
-    // place, and the order asked for still holds, with the others between as they were.
+    // All four share one place: the order asked for still holds, with the others between
+    // as they were.
     for id in &ids {
         store
             .transition_task(
@@ -1835,6 +1835,82 @@ async fn queued_tasks_swap_the_places_they_hold() -> R {
             ("t1".to_owned(), Some(130)),
         ]
     );
+    Ok(())
+}
+
+/// SPEC-487 TCT-003 (review round 2, R2-2): an order changes the tasks it names. Tasks that
+/// stand before the first named one are not written at all, also when they share a place;
+/// one behind that has to move by a millisecond to keep its slot does not read as updated.
+#[tokio::test]
+async fn an_order_leaves_the_tasks_it_does_not_name_as_they_were() -> R {
+    use yulius_app::model::{QueuedStart, QueuedStartKind};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let mut ids = Vec::new();
+    // Two tied at the head, two named ones tied behind them, one more tied with those.
+    for (name, at) in [
+        ("h1", 50),
+        ("h2", 50),
+        ("t1", 100),
+        ("t2", 100),
+        ("t3", 100),
+    ] {
+        let t = store.insert_task(&task(name, &sid, &uid)?).await?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Fresh,
+            prompt: Some(format!("start of {name}")),
+            account_id: None,
+        };
+        assert!(
+            store
+                .queue_task(&t.id, TaskStatus::Starting, &start, Timestamp(at))
+                .await?
+        );
+        ids.push(t.id);
+    }
+    let read = |store: &SqliteStore| {
+        let store = store.clone();
+        async move {
+            Ok::<_, AppError>(
+                store
+                    .tasks_with_status(&[TaskStatus::Queued])
+                    .await?
+                    .into_iter()
+                    .map(|t| {
+                        (
+                            t.id.as_str().to_owned(),
+                            t.queued_at.map(|at| at.0),
+                            t.updated_at.0,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    assert!(
+        store
+            .reorder_queued(&[ids[3].clone(), ids[2].clone()], Timestamp(500))
+            .await?
+    );
+    assert_eq!(
+        read(&store).await?,
+        vec![
+            ("h1".to_owned(), Some(50), 50),
+            ("h2".to_owned(), Some(50), 50),
+            // It holds the place it is to have already: nothing of it is written.
+            ("t2".to_owned(), Some(100), 100),
+            ("t1".to_owned(), Some(101), 500),
+            // Not named: moved by milliseconds behind them, and not updated.
+            ("t3".to_owned(), Some(102), 100),
+        ]
+    );
+    for (id, name) in ids.iter().zip(["h1", "h2", "t1", "t2", "t3"]) {
+        assert_eq!(
+            store.queued_start(id).await?.and_then(|start| start.prompt),
+            Some(format!("start of {name}")),
+            "{name} keeps the start it was to make"
+        );
+    }
     Ok(())
 }
 
