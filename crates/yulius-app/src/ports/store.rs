@@ -426,7 +426,8 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Passes control of `task` from `from` to `to`, whose request waits, and drops the request,
     /// in one statement: false (and nothing changes) unless `from` still owns the task and `to`'s
-    /// request still waits.
+    /// request still waits. `from` becomes the giver who may take it back, unless `to` is the
+    /// giver recorded (it is handed back): then nobody is (SPEC-490 OWN-009).
     async fn pass_control(
         &self,
         task: &TaskId,
@@ -434,9 +435,21 @@ pub trait TaskStore: Send + Sync {
         to: &UserId,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Who handed `task` over on request and may take it back (SPEC-490 OWN-009), if anyone.
+    async fn control_from(&self, task: &TaskId) -> AppResult<Option<UserId>>;
+    /// Gives `task` back from `owner` to `giver`, who handed it over, and drops any request and
+    /// the giver, in one statement: false unless `owner` still owns it and `giver` is still the
+    /// one recorded (SPEC-490 OWN-009).
+    async fn take_back_control(
+        &self,
+        task: &TaskId,
+        owner: &UserId,
+        giver: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Passes control of `task` from `from`, an owner who can no longer act, to `to` whatever
     /// request waits, and drops that request, in one statement: false unless `from` still owns
-    /// the task (SPEC-070 R5).
+    /// the task (SPEC-070 R5). Nobody can take it back afterwards.
     async fn take_control(
         &self,
         task: &TaskId,

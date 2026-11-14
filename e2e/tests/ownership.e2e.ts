@@ -88,10 +88,13 @@ test("Archive all leaves other people's Done tasks", async ({ app, browser, scre
   await touchTask(browser, 'sb_studio', 13, { owner: { login: 'anna-q' } });
   const theirs = browser.locator('.task-row:has-text("Improve the code")');
   await firstShown(theirs);
+  // The sidebar knows it is anna-q's before Archive all is pressed.
+  await expect(browser.locator('.task-row:has-text("Improve the code") .task-owner[title="@anna-q owns this task"]')).toBeVisible();
   const all = screen.getByRole('button', 'Archive all');
   await expect(all).toHaveAttribute('title', 'Archive your Done tasks');
   await all.click();
-  await expect(screen.getByText('Archived 1 Done task.')).toBeVisible();
+  // mkarp's own Done tasks go (how many depends on the mock's clock); anna-q's stays.
+  await expect(screen.getByText(/^Archived \d+ Done tasks?\.$/)).toBeVisible();
   await expect(theirs).toBeVisible();
 });
 
@@ -132,8 +135,9 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Hand over').click();
-  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
-  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  // The giver may take it back without asking (SPEC-490 OWN-009) instead of requesting it.
+  await expect(screen.getByText('You handed this task to @anna-q.')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take back')).toBeVisible();
   // mkarp now watches it: the session as its transcript, no terminal to send anything to (SPEC-179).
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.taskview .xterm').length), { message: 'a watcher has no terminal' }).toBe(0);
@@ -209,4 +213,27 @@ test('the owner hears of a request for control on another page', async ({ app, b
   // Answered elsewhere: the mark goes.
   await touchTask(browser, 'sb_studio', 12, { controlRequest: null });
   await expect(mark).toBeHidden();
+});
+
+// SPEC-490 OWN-009, OWN-010 (AC-11): the owner hands the task over and can take it back without
+// asking: the bar says so, Take back returns the terminal; whoever it is taken from is told.
+test('the giver takes the task back, and whoever had it hears so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
+  await screen.getByRole('button', 'Hand over').click();
+  const bar = browser.locator('.attention-bar .attention-text').filter({ hasText: 'You handed this task to @anna-q.' });
+  await expect(bar).toHaveText('You handed this task to @anna-q. It acts on GitHub as them; you can take it back at any time.');
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Take back').click();
+  await expect(screen.getByText('#12 is yours again')).toBeVisible();
+  await expect(bar).toBeHidden();
+  await expect(browser.locator('.taskview .watch')).toBeHidden();
+  await terminalShown(browser);
+
+  // mkarp had #11 from anna-q, who takes it back: he hears so.
+  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await touchTask(browser, 'sb_studio', 11, { owner: { login: 'mkarp' }, controlFrom: { login: 'anna-q' } });
+  await touchTask(browser, 'sb_studio', 11, { owner: { login: 'anna-q' }, controlFrom: null });
+  await expect(browser.locator('.toast').filter({ hasText: '@anna-q took back control of #11 3D model viewer' })).toBeVisible();
 });

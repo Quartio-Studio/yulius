@@ -223,6 +223,12 @@ impl App {
                 }),
                 None => None,
             },
+            control_from: match store.control_from(&task.id).await? {
+                Some(giver) => Some(UserRef {
+                    login: self.login_of(&giver).await,
+                }),
+                None => None,
+            },
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             state_since: times.map(|t| rfc3339(t.state_at)),

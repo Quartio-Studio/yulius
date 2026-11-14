@@ -58,6 +58,10 @@ pub struct TaskSummary {
     /// A person's request for control that waits for the owner's answer (SPEC-070), or null.
     #[serde(default)]
     pub control_request: Option<ControlRequestView>,
+    /// Who handed the task over on request and may take it back without asking (SPEC-490
+    /// OWN-009), or null.
+    #[serde(default)]
+    pub control_from: Option<UserRef>,
     /// Creation time.
     pub created_at: String,
     /// Last change of anything (title, owner, archive, status …).

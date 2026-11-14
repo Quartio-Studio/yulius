@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitC
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, takeBackTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -411,7 +411,11 @@ export function mountTaskView(ctx, sandbox, task) {
     const request = current.control_request;
     // Control of the task (SPEC-070), on its own row above what else the task needs.
     let control = null;
-    if (owner() && allows(access, 'write')) {
+    if (owner() && allows(access, 'write') && current.control_from && current.control_from.login === me()) {
+      // You handed it over on request: you take it back without asking (SPEC-490 OWN-009, OWN-010).
+      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `You handed this task to @${owner()}. `), 'It acts on GitHub as them; you can take it back at any time.'),
+        h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: 'It acts on GitHub as you again', onClick: () => takeBackTask(ctx, current) }, 'Take back')];
+    } else if (owner() && allows(access, 'write')) {
       // Someone else's task: it acts on GitHub as them; its owner may hand it over. Asking again
       // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
@@ -999,7 +1003,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'account_email', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request', 'control_from'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;

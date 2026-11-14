@@ -492,6 +492,8 @@ function summary(task) {
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
+    // Who handed it over on request and may take it back (SPEC-490 OWN-009).
+    control_from: task.controlFrom ? { ...task.controlFrom } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -1844,7 +1846,19 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
-  touch(db, task, { owner: { ...task.controlRequest.by }, controlRequest: null });
+  // The giver may take it back, unless it goes back to the one who gave it (SPEC-490 OWN-009).
+  const to = task.controlRequest.by;
+  const controlFrom = task.controlFrom && task.controlFrom.login === to.login ? null : { login: ownerOf(task).login };
+  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom });
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/control/take-back`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.controlFrom) fail(409, 'conflict', 'nobody can take this task back: it was not handed over on request, or control moved since');
+  const me = db.me.user.login;
+  if (task.controlFrom.login !== me) fail(403, 'forbidden', `only @${task.controlFrom.login}, who handed task #${task.number} over, takes it back; ask @${ownerOf(task).login} for control`);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom: null });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {

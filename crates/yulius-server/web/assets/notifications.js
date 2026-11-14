@@ -197,6 +197,20 @@ export function createNotificationCenter(ctx) {
     toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
   });
 
+  // A task the viewer had is taken back by the person who handed it to them (SPEC-490 OWN-010).
+  const holders = new Map(); // task id → { owner, from } as last seen
+  watch('task', (task) => {
+    const me = ctx.store.state.me?.user?.login;
+    const now = { owner: task.owner && task.owner.login, from: task.control_from && task.control_from.login };
+    const before = holders.get(task.id);
+    holders.set(task.id, now);
+    if (!me || !before || before.owner !== me || now.owner === me || !before.from || before.from !== now.owner) return;
+    const title = `@${now.owner} took back control of #${task.number} ${task.title || 'Task'}`;
+    const route = taskRoute(task);
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route, key: `taken:${task.id}:${task.updated_at}` });
+    toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  });
+
   watch('task', (task) => {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
     // need the user.

@@ -281,6 +281,11 @@ export function dropControlRequest(ctx, task) {
     mine ? `Withdrew your request for control of #${task.number}` : `Declined the request for control of #${task.number}`);
 }
 
+/** Take back a task you handed over on request (SPEC-490 OWN-009): it acts on GitHub as you again. */
+export function takeBackTask(ctx, task) {
+  return taskPost(ctx, task, 'take back', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control/take-back`), `#${task.number} is yours again`);
+}
+
 /** As the owner, hand the task to the person who asked: it acts on GitHub as them from now on. */
 export function handOverTask(ctx, task) {
   const to = task.control_request && task.control_request.by.login;

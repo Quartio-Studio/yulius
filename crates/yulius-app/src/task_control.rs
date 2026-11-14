@@ -25,6 +25,8 @@ pub(crate) enum Handover {
     Requested,
     OwnerAbsent,
     Unstarted,
+    /// Its giver takes it back (SPEC-490 OWN-009).
+    TakenBack,
 }
 
 impl App {
@@ -120,6 +122,48 @@ impl App {
             }
         };
         self.pass_task_control(&task, &asker, ctx, Handover::Requested)
+            .await?;
+        self.control_summary(&task).await
+    }
+
+    /// `POST /api/tasks/{tid}/control/take-back`: the person who handed the task over on request
+    /// takes it back without asking (SPEC-490 OWN-009), while nobody has moved control since.
+    ///
+    /// # Errors
+    /// `Forbidden` for anyone but the giver, a disabled giver or one without write access;
+    /// `Conflict` when nobody can take it back, or when the task changed meanwhile.
+    pub async fn take_back_task_control(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<TaskSummary> {
+        let task = self.load_task(ctx, id, Action::View).await?;
+        let giver = self
+            .deps
+            .store
+            .control_from(&task.id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(
+                "nobody can take this task back: it was not handed over on request, or control \
+                 moved since"
+                    .into(),
+            )
+            })?;
+        if giver != ctx.user.id {
+            return Err(AppError::Forbidden(format!(
+                "only @{}, who handed task #{} over, takes it back; ask @{} for control",
+                self.login_of(&giver).await,
+                task.number,
+                self.login_of(&task.owner).await
+            )));
+        }
+        self.require_for(ctx, &task.sandbox_id, Action::Work)
+            .await?;
+        if ctx.user.disabled_at.is_some() {
+            return Err(AppError::Forbidden("this account is disabled".into()));
+        }
+        self.pass_task_control(&task, &ctx.user, ctx, Handover::TakenBack)
             .await?;
         self.control_summary(&task).await
     }
@@ -257,6 +301,11 @@ impl App {
                     .take_control(&task.id, &task.owner, &to.id, now)
                     .await?
             }
+            Handover::TakenBack => {
+                store
+                    .take_back_control(&task.id, &task.owner, &to.id, now)
+                    .await?
+            }
         };
         if !passed {
             return Err(AppError::Conflict(
@@ -297,16 +346,32 @@ impl App {
         let runtime = self.runtime(&task.id);
         // The App-fallback notice is the new owner's to see again.
         runtime.acting_as_app_said.store(false, Ordering::SeqCst);
-        runtime.hub.notice(format!(
-            "Control of this task passed from @{from} to @{to}: it now acts on GitHub as @{to}."
-        ));
-        self.audit_control(
-            task,
-            ctx,
-            "task.control_passed",
-            json!({"from": from, "to": to}),
-        )
-        .await;
+        // What each side is told (SPEC-490 OWN-010): a hand-over on request can be taken back.
+        let (notice, action) = match how {
+            Handover::TakenBack => (
+                format!(
+                    "Control of this task returned to @{to}: it acts on GitHub as @{to} again."
+                ),
+                "task.control_taken_back",
+            ),
+            Handover::Requested => (
+                format!(
+                    "Control of this task passed from @{from} to @{to}: it now acts on GitHub \
+                     as @{to}. @{from} can take it back."
+                ),
+                "task.control_passed",
+            ),
+            Handover::OwnerAbsent | Handover::Unstarted => (
+                format!(
+                    "Control of this task passed from @{from} to @{to}: it now acts on GitHub \
+                     as @{to}."
+                ),
+                "task.control_passed",
+            ),
+        };
+        runtime.hub.notice(notice);
+        self.audit_control(task, ctx, action, json!({"from": from, "to": to}))
+            .await;
         self.publish_task(&task.id).await;
         Ok(())
     }

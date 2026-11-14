@@ -159,6 +159,10 @@ const MIGRATIONS: &[&str] = &[
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0058_closed_at_only_when_closed.sql"),
+    // Schema version 59 (SPEC-490 OWN-009). The file is 0059, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0059_task_control_from.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -743,6 +747,32 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-490 OWN-009: a task of a version-58 database (handed over before the column existed)
+    /// has nobody who may take it back.
+    #[tokio::test]
+    async fn version_fifty_eight_tasks_have_no_giver() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store::TaskStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v58.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..58] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 58)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1), ('u2', 'V', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, owner_id, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 'u2', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = yulius_domain::ids::TaskId::parse("t1")?;
+        assert_eq!(store.control_from(&task).await?, None);
+        Ok(())
+    }
+
     /// SPEC-482 FBK-005: a run records the model it was launched with; the runs of a version-53
     /// database have none, and the column round-trips.
     #[tokio::test]
@@ -853,10 +883,14 @@ mod tests {
             )?;
         }
         drop(SqliteStore::open(&path)?);
-        assert_eq!(schema_version(), 58);
+        assert!(schema_version() >= 58);
         let raw = rusqlite::Connection::open(&path)?;
         let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 58, "the version-57 database was migrated");
+        assert_eq!(
+            i64::from(version),
+            i64::from(schema_version()),
+            "the version-57 database was migrated"
+        );
         let mut rows = raw.prepare("SELECT id, closed_at FROM tasks ORDER BY id")?;
         let closed: Vec<(String, Option<i64>)> = rows
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?

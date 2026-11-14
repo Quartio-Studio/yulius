@@ -189,7 +189,7 @@ are their creator's (reported as issue #1289, see Decisions).
 - [ ] Independent review of the first pull request (the rule and the UI), findings fixed
 - [x] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
 - [x] The owner hears of a request anywhere, and control can be asked for from the task menu
-- [ ] The person who handed a task over takes it back (schema 59, the route, the UI)
+- [x] The person who handed a task over takes it back (schema 59, the route, the UI)
 - [ ] Independent review of the second pull request (consent), findings fixed
 - [ ] Gates green on the final head, evidence recorded
 
@@ -230,8 +230,8 @@ are their creator's (reported as issue #1289, see Decisions).
   page, adds a notification that opens the task, and the sidebar row says who asks.
 - **AC-9** (OWN-009) A hands over to B on B's request: `control_from` is A. A takes back: owner
   A, `control_from` null, B refused control again, audit `task.control_taken_back`, the notice.
-  Refused: C (never the giver) 403; A after B handed on to C on C's request (409, the giver is
-  B); A disabled or without write access (403); a stale race (409).
+  Refused: C (never the giver) 403; A after B handed on to C on C's request (403 naming B, the
+  giver now); a giver without write access (403); nobody to take it back from (409).
 - **AC-10** (OWN-009) B hands the task back to A on A's request: `control_from` is null (B
   cannot take it back). An absent owner's task passing to C clears it.
 - **AC-11** (OWN-010; e2e) The giver sees Take back, uses it and gets the terminal back.
