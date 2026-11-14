@@ -40,6 +40,9 @@ struct SavedArmed {
     summary: String,
     #[serde(default)]
     armed_at: i64,
+    /// The task's owner who armed it themselves (SPEC-487 MRG-003); absent for an agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    by: Option<String>,
 }
 
 /// A merge armed by `delivery_merge` while the checks of the reviewed head still ran.
@@ -52,6 +55,36 @@ pub(crate) struct ArmedMerge {
     /// When the agent armed it (ms): merge trains take armed merges in this order (SPEC-084).
     /// Kept when Yulius moves the head (DLV-203); 0 for merges saved before it was recorded.
     pub armed_at: i64,
+    /// The login of the task's owner when they armed it themselves, through their Superagent or
+    /// their own agent (SPEC-487 MRG-003): no independent review covers it, and its merge is
+    /// theirs. `None` for an agent's `delivery_merge`.
+    pub by: Option<String>,
+}
+
+impl ArmedMerge {
+    /// Who merges this armed merge once it passes, for the audit (SPEC-487 MRG-003): the actor,
+    /// the action and the words that say how it was armed.
+    pub(crate) fn merge_audit(&self, number: u32) -> (String, &'static str, String) {
+        match &self.by {
+            Some(login) => (
+                login.clone(),
+                "delivery.person.merge",
+                format!("armed by its owner (@{login}), no independent review asked for"),
+            ),
+            None => (
+                format!("task:{number}"),
+                "delivery.agent.merge",
+                format!(
+                    "reviewed independently ({})",
+                    if self.summary.is_empty() {
+                        "no summary"
+                    } else {
+                        self.summary.as_str()
+                    }
+                ),
+            ),
+        }
+    }
 }
 
 /// A task's armed merge, Yulius's decisions of it in progress and how the last one ended: one
@@ -139,6 +172,7 @@ impl ArmedSlot {
                 self.outcome = Some(MergeOutcome {
                     head: deciding.merge.head.clone(),
                     text,
+                    by: deciding.merge.by.clone(),
                 });
                 true
             }
@@ -185,6 +219,8 @@ pub(crate) struct MergeOutcome {
     pub head: String,
     /// One line for the agent: what happened and what to do next.
     pub text: String,
+    /// The task's owner who armed it, when they did (SPEC-487 MRG-001).
+    pub by: Option<String>,
 }
 
 /// What `yulius wait` watches for a task.
@@ -255,6 +291,24 @@ impl App {
         reviewed: &str,
         summary: &str,
     ) -> bool {
+        self.arm_merge_as(task, head, reviewed, summary, None)
+    }
+
+    /// [`Self::arm_merge`] for the task's owner `login`, who arms `head` themselves (SPEC-487
+    /// MRG-003): no review covers it, and the merge it makes is audited as theirs.
+    pub(crate) fn arm_merge_for_person(&self, task: &TaskRecord, head: &str, login: &str) -> bool {
+        let summary = format!("armed by @{login}, the task's owner");
+        self.arm_merge_as(task, head, head, &summary, Some(login.to_owned()))
+    }
+
+    fn arm_merge_as(
+        &self,
+        task: &TaskRecord,
+        head: &str,
+        reviewed: &str,
+        summary: &str,
+        by: Option<String>,
+    ) -> bool {
         let runtime = self.runtime(&task.id);
         let mut slot = lock_slot(&runtime);
         if slot.merge.as_ref().is_some_and(|armed| armed.head == head) {
@@ -270,6 +324,7 @@ impl App {
             head: head.to_owned(),
             summary: summary.to_owned(),
             armed_at,
+            by,
         };
         self.save_armed(&task.id, Some(&merge));
         slot.arm(merge);
@@ -302,6 +357,7 @@ impl App {
                 head: armed.head.clone(),
                 summary: armed.summary.clone(),
                 armed_at: armed.armed_at,
+                by: armed.by.clone(),
             });
         }
         let written = serde_json::to_vec(&saved)
@@ -348,6 +404,7 @@ impl App {
                     head: entry.head,
                     summary: entry.summary,
                     armed_at: entry.armed_at,
+                    by: entry.by,
                 });
                 tracing::info!(task = %task_id, "armed merge restored after a restart");
             }
@@ -505,6 +562,19 @@ impl App {
     pub(crate) fn armed_view(&self, task: &TaskId) -> (bool, Option<(String, String)>) {
         let (armed, outcome, _) = lock_slot(&self.runtime(task)).view();
         (armed, outcome.map(|o| (o.head, o.text)))
+    }
+
+    /// `task`'s armed merge as it is now, and whether Yulius is deciding one (SPEC-487 MRG-001):
+    /// while a decision runs, its merge is out of the slot.
+    pub(crate) fn armed_merge_view(&self, task: &TaskId) -> (Option<ArmedMerge>, bool) {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        (slot.merge.clone(), slot.deciding > 0)
+    }
+
+    /// How `task`'s last armed merge ended, with who armed it (SPEC-487 MRG-001).
+    pub(crate) fn merge_outcome(&self, task: &TaskId) -> Option<MergeOutcome> {
+        lock_slot(&self.runtime(task)).outcome.clone()
     }
 
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
@@ -847,11 +917,7 @@ impl App {
                         short(&head)
                     ),
                 );
-                return Verdict::Keep(ArmedMerge {
-                    head,
-                    summary: armed.summary,
-                    armed_at: armed.armed_at,
-                });
+                return Verdict::Keep(ArmedMerge { head, ..armed });
             }
             Current::Conflict(text) => {
                 return Verdict::Decided(text);
@@ -874,22 +940,18 @@ impl App {
         let base = pr.base.clone();
         match self.merge_task_pr_for_task(&auth, &id).await {
             Ok(_) => {
+                let (actor, action, how) = armed.merge_audit(task.number);
                 let detail = format!(
-                    "merged at head {} reviewed independently ({}); armed while the checks ran",
-                    armed.head,
-                    if armed.summary.is_empty() {
-                        "no summary"
-                    } else {
-                        armed.summary.as_str()
-                    }
+                    "merged at head {} {how}; armed while the checks ran",
+                    armed.head
                 );
                 if let Err(err) = self
                     .deps
                     .store
                     .audit(
                         self.now(),
-                        &format!("task:{}", task.number),
-                        "delivery.agent.merge",
+                        &actor,
+                        action,
                         Some(&format!("{}#{}", sandbox.slug, task.number)),
                         Some(&detail),
                     )
@@ -1444,6 +1506,7 @@ mod tests {
             head: head.to_owned(),
             summary: "approve".to_owned(),
             armed_at: 0,
+            by: None,
         }
     }
 
@@ -1461,6 +1524,7 @@ mod tests {
         let outcome = MergeOutcome {
             head: "aaa".to_owned(),
             text: "dropped".to_owned(),
+            by: None,
         };
         assert_eq!(slot.view(), (false, Some(outcome), None));
         // Arming again forgets it.

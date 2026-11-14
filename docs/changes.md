@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent merges for its person and reads the merge queue (SPEC-487 slice 5, task
+  #469). It could not say why a pull request that passed was not merging, nor arm a merge,
+  and handed both back to the person. `task_delivery` now says where a task's merge stands
+  (armed, its head, why it has not merged, how the last one ended), `merge_queue` lists the
+  project's armed merges and merge train, `task_merge` merges a task's pull request for its
+  owner (at once on green, otherwise armed until its checks pass) and `ci_prioritize` puts a
+  queued CI run first in its project's queue. The person's own agent has them too through
+  the remote MCP.
+
 - The repository's own instructions deliver as Yulius does (SPEC-483 slice 27, task #465).
   AGENTS.md, the Git and workflow documents, the Git skill and the pull request template no
   longer tell an agent to merge its own pull request by hand, to poll, or to promote; they

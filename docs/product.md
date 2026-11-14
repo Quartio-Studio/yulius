@@ -184,7 +184,10 @@ watching, steering and unblocking.
   a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
   shows the same to a task's agent, without a held prompt's words), reads the end of a
   session in one call, passes the person's answer on, dismisses a request they call settled
-  and decides a held prompt as its card does. It no longer hands such a job back as steps to click or
+  and decides a held prompt as its card does. It says where a task's merge stands and why a
+  pull request that passed has not merged yet, lists the project's merge queue and merge
+  train, merges a task's pull request for its owner (at once on green, otherwise armed until
+  its checks pass) and puts a queued CI run first in the project's queue. It no longer hands such a job back as steps to click or
   uses a finished task as hands; an ability it lacks it names
   (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
   After an update

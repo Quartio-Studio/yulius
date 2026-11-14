@@ -1655,9 +1655,11 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "cd_deploy",
             "cd_status",
             "ci_cancel",
+            "ci_prioritize",
             "ci_rerun",
             "ci_run",
             "ci_runs",
+            "merge_queue",
             "sandbox_task_create",
             "sandbox_task_get",
             "sandbox_task_message",
@@ -1680,6 +1682,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_edit",
             "task_get",
             "task_held_prompt",
+            "task_merge",
             "task_message",
             "task_pause",
             "task_question_dismiss",
@@ -6252,6 +6255,190 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
                 && !detail.to_string().contains("billing")),
         "{entries:?}"
     );
+    Ok(())
+}
+
+/// SPEC-487 MRG-001 to MRG-004 (wall 4): the Superagent reads where a task's merge stands and
+/// the project's merge queue, merges a task's pull request for its owner (another person's is
+/// theirs), and puts a queued CI run first in its project's queue (CI order), as nothing on a
+/// page did. A task's agent is served none of them.
+#[tokio::test]
+async fn the_superagent_reads_the_merge_queue_and_orders_ci() -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store::AuditStore;
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::ids::UserId;
+    use yulius_domain::task::TaskStatus;
+    use yulius_domain::time::Timestamp;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("alice's cockpit token")?;
+    let said = |record: &Value| record.to_string();
+    let mine =
+        support::seed_task(&f.h, "t-mine", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t-mine", "tok-mine").await?;
+    let carols =
+        support::seed_task(&f.h, "t-carol", "s1", "u-carol", TaskStatus::Running, None).await?;
+
+    // A task's delivery says where its merge stands; nothing is armed here.
+    let (delivery, is_error) =
+        cockpit_tool(&f, &token, "task_delivery", json!({"number": mine.number})).await?;
+    assert!(!is_error, "{delivery}");
+    assert_eq!(delivery["merge"]["armed"], false, "{delivery}");
+    let (queue, is_error) = cockpit_tool(&f, &token, "merge_queue", json!({})).await?;
+    assert!(!is_error, "{queue}");
+    assert_eq!(queue["armed"], json!([]), "{queue}");
+    // Merging another person's task is theirs; one without a pull request says so.
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_merge", json!({"number": carols.number})).await?;
+    assert!(is_error && said(&refused).contains("@carol"), "{refused}");
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_merge", json!({"number": mine.number})).await?;
+    assert!(
+        is_error && said(&refused).contains("no pull request"),
+        "{refused}"
+    );
+
+    // CI order: three runs wait in this project, one in another; the third goes first here.
+    let base = f.h.app.now().0;
+    // Each run tests a commit of its own, named after it.
+    let run = |id: &str, sandbox: &str, at: i64, state: RunState| CiRunRecord {
+        id: id.into(),
+        sandbox_id: yulius_domain::ids::SandboxId::parse(sandbox).unwrap_or_else(|_| sid()),
+        reference: CiRef::PullRequest(7),
+        sha: format!("{id:0>40}"),
+        source: GateSource::ProjectConfig,
+        state,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(at),
+        started_at: None,
+        ended_at: None,
+    };
+    support::seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    for record in [
+        run("run-a", "s1", base, RunState::Queued),
+        run("run-b", "s1", base + 10, RunState::Queued),
+        run("run-c", "s1", base + 20, RunState::Queued),
+        run("run-run", "s1", base - 50, RunState::Running),
+        // Another project's run waits longer than all of them.
+        run("run-x", "s2", base - 100, RunState::Queued),
+    ] {
+        f.h.store.insert_ci_run(&record, &[]).await?;
+    }
+    let order = || {
+        let f = &f;
+        async move {
+            let mut runs: Vec<(i64, String)> =
+                f.h.store
+                    .ci_runs(&sid(), 50)
+                    .await?
+                    .into_iter()
+                    .filter(|run| run.state == RunState::Queued)
+                    .map(|run| (run.queued_at.0, run.id))
+                    .collect();
+            runs.sort();
+            Ok::<_, Box<dyn std::error::Error>>(
+                runs.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+            )
+        }
+    };
+    assert_eq!(order().await?, ["run-a", "run-b", "run-c"]);
+    let (first, is_error) =
+        cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-c"})).await?;
+    assert!(!is_error, "{first}");
+    assert_eq!(order().await?, ["run-c", "run-a", "run-b"]);
+    // A millisecond before the project's earliest; another project's queue is left as it was.
+    assert_eq!(
+        f.h.store.ci_run("run-c").await?.ok_or("run")?.queued_at,
+        Timestamp(base - 1)
+    );
+    assert_eq!(
+        f.h.store.ci_run("run-x").await?.ok_or("run")?.queued_at,
+        Timestamp(base - 100)
+    );
+    // A run never goes before an earlier run of its own commit: which run of a commit is the
+    // latest is read by place (review of slice 5, F4).
+    let mut same = run("run-old", "s1", base + 30, RunState::Failed);
+    same.sha = "b".repeat(40);
+    f.h.store.insert_ci_run(&same, &[]).await?;
+    let mut rerun = run("run-new", "s1", base + 40, RunState::Queued);
+    rerun.sha = "b".repeat(40);
+    f.h.store.insert_ci_run(&rerun, &[]).await?;
+    let (moved, is_error) =
+        cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-new"})).await?;
+    assert!(!is_error, "{moved}");
+    let place = f.h.store.ci_run("run-new").await?.ok_or("run")?.queued_at;
+    assert_eq!(
+        place,
+        Timestamp(base + 31),
+        "after its commit's earlier run: {moved}"
+    );
+    let latest = f.h.store.ci_runs_for_sha(&sid(), &"b".repeat(40)).await?;
+    assert_eq!(latest.first().map(|run| run.id.as_str()), Some("run-new"));
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": "run-new"})).await?;
+    assert!(
+        is_error && said(&refused).contains("earlier run of its own commit"),
+        "{refused}"
+    );
+    f.h.store
+        .transition_ci_run(
+            "run-new",
+            &[RunState::Queued],
+            RunState::Cancelled,
+            &yulius_app::ci::CiRunUpdate::default(),
+        )
+        .await?;
+    for (run_id, why) in [
+        ("run-c", "first"),
+        ("run-run", "not queued"),
+        ("run-x", "not found"),
+        ("nope", "not found"),
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "ci_prioritize", json!({"run_id": run_id})).await?;
+        assert!(
+            is_error && said(&refused).to_lowercase().contains(why),
+            "{run_id}: {refused}"
+        );
+    }
+    assert_eq!(order().await?, ["run-c", "run-a", "run-b"]);
+    let audited: Vec<Value> =
+        f.h.store
+            .audit_details("s1", "superagent.tool", 50)
+            .await?
+            .iter()
+            .filter_map(|detail| serde_json::from_str(detail).ok())
+            .collect();
+    assert!(
+        audited
+            .iter()
+            .any(|d| d["tool"] == "ci_prioritize" && d["run"] == "run-c" && d["ok"] == true),
+        "{audited:?}"
+    );
+
+    // A task's agent is served none of them.
+    for (tool, args) in [
+        ("merge_queue", json!({})),
+        ("task_merge", json!({"number": mine.number})),
+        ("ci_prioritize", json!({"run_id": "run-a"})),
+    ] {
+        let result = support::mcp_tool(&f.h, "tok-mine", tool, args).await?;
+        let text = result["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(
+            result["isError"] == true && text.contains("unknown tool"),
+            "{tool}: {result}"
+        );
+    }
     Ok(())
 }
 
