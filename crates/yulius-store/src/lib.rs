@@ -151,6 +151,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0056_plan_first_steps.sql"),
+    // Schema version 57 (SPEC-483 QA1). The file is 0057, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0057_queued_start.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -819,7 +823,137 @@ mod tests {
             )
             .await?;
         assert_eq!(store.plan_first_steps(&task).await?, Some(3));
-        assert_eq!(schema_version(), 56);
+        Ok(())
+    }
+
+    /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
+    /// read while the task waits, and is gone from the row once it left the queue; one written
+    /// by hand that this build cannot read gives none.
+    #[tokio::test]
+    async fn a_queued_task_keeps_its_start_while_it_waits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::model::{QueuedStart, QueuedStartKind};
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::{AccountId, TaskId};
+        use yulius_domain::task::{StopReason, TaskStatus};
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v56.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..56] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 56)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'waiting_capacity', NULL, 'ui', 'u1', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        assert_eq!(schema_version(), 57);
+        let raw = rusqlite::Connection::open(&path)?;
+        let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(version, 57, "the version-56 database was migrated");
+        let kept = |raw: &rusqlite::Connection| -> rusqlite::Result<Option<String>> {
+            raw.query_row(
+                "SELECT queued_start FROM tasks WHERE id = 't1'",
+                [],
+                |row| row.get(0),
+            )
+        };
+        let task = TaskId::parse("t1")?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Resume,
+            prompt: Some("go on\nwith \"this\" and null".into()),
+            account_id: Some(AccountId::parse("a-chosen")?),
+        };
+        // Not in the status it was read in: nothing changes.
+        assert!(
+            !store
+                .queue_task(&task, TaskStatus::Running, &start, Timestamp(550))
+                .await?
+        );
+        let row = |raw: &rusqlite::Connection| -> rusqlite::Result<(String, Option<i64>)> {
+            raw.query_row(
+                "SELECT status, queued_at FROM tasks WHERE id = 't1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        };
+        assert_eq!(row(&raw)?, ("waiting_capacity".to_owned(), None));
+        assert_eq!(kept(&raw)?, None);
+
+        assert!(
+            store
+                .queue_task(&task, TaskStatus::WaitingCapacity, &start, Timestamp(600))
+                .await?
+        );
+        assert_eq!(row(&raw)?, ("queued".to_owned(), Some(600)));
+        assert_eq!(store.queued_start(&task).await?, Some(start.clone()));
+
+        // A start this build cannot read (another kind, a subscription id of another shape,
+        // no JSON at all) is none, not an error.
+        for unreadable in [
+            r#"{"kind":"later","prompt":null,"account":null,"at":600}"#,
+            r#"{"kind":"resume","prompt":null,"account":"not an id","at":600}"#,
+            r#"{"kind":7,"prompt":null,"account":null,"at":600}"#,
+            "not json",
+        ] {
+            raw.execute(
+                "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+                [unreadable],
+            )?;
+            assert_eq!(store.queued_start(&task).await?, None, "{unreadable}");
+        }
+        // One of an earlier wait (another `at`) is not this wait's.
+        raw.execute(
+            "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+            [r#"{"kind":"after_limit","prompt":null,"account":null,"at":599}"#],
+        )?;
+        assert_eq!(store.queued_start(&task).await?, None);
+
+        // It leaves the queue (stopped): the start is gone from the row, held prompt and all.
+        let stopped = TaskStatus::Stopped(StopReason::Cancelled);
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(TaskStatus::Queued),
+                    stopped,
+                    None,
+                    Timestamp(700)
+                )
+                .await?
+        );
+        assert_eq!(kept(&raw)?, None);
+        assert_eq!(store.queued_start(&task).await?, None);
+        // Queued again with another start: that one is its start.
+        let plain = QueuedStart {
+            kind: QueuedStartKind::AfterLimit,
+            prompt: None,
+            account_id: None,
+        };
+        assert!(
+            store
+                .queue_task(&task, stopped, &plain, Timestamp(800))
+                .await?
+        );
+        assert_eq!(store.queued_start(&task).await?, Some(plain));
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(TaskStatus::Queued),
+                    TaskStatus::Starting,
+                    None,
+                    Timestamp(900)
+                )
+                .await?
+        );
+        assert_eq!(kept(&raw)?, None, "launched: nothing is kept");
         Ok(())
     }
 

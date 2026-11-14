@@ -3950,7 +3950,7 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   return json(204);
 });
 // Reads the provider's usage windows again and asks about the limits stored for the account
-// (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
+// (SPEC-473); an account that does not work keeps its status and its reason. A test scripts what
 // Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
 // kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
 // as it is, `usage_read: false`), or `{ usage, status, at }` (what the reading and the answers
@@ -3964,7 +3964,6 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
   // Like the server: an account that never signed in has no credential to ask with (409), and
   // its sign-in error stays.
   if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
-  if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
   db.usageInFlight = (db.usageInFlight || 0) + 1;
   db.usageMostInFlight = Math.max(db.usageMostInFlight || 0, db.usageInFlight);
   try { await db.usageGate; } finally { db.usageInFlight -= 1; }
@@ -6320,7 +6319,7 @@ class LoginSession {
         'Paste the authorization code here (any text in mock mode; "fail" fails), then press Enter:',
         '> ',
       ].join('\r\n')));
-      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code }));
+      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code, cause: this.cause }));
     } else if (msg.type === 'input' && !this.done) {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') { this.finish(); return; }
@@ -6371,6 +6370,7 @@ class LoginSession {
     this.done = true;
     this.status = status;
     this.code = code;
+    this.cause = cause;
     if (this.ws) {
       this.ws.push(JSON.stringify(this.state()));
       this.ws.push(JSON.stringify({ type: 'exit', status, code, cause }));

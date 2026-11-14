@@ -52,7 +52,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
       request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
   13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
-      of the Plan (merged, pull request #1268), QA2 slice 18;
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19;
   14. documents and shipped texts against the code (P1-P14, QB9);
   15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
@@ -403,6 +403,19 @@ no code path reaches; documents, texts shown to agents and people, and code that
   again, each losing a turn to the refusal. The administration page had the rule a fifth
   and a sixth time, and asked an `error` subscription for its usage by itself.
 
+### Slice 19: the start that waits in the queue
+
+- **QA1 (medium).** "How the next run starts" (a new session or a resume, the prompt or
+  continuation it types, a resume past a usage limit, the subscription asked for) was only
+  the arguments of `start_run`. A start that met the session limit, a supertask's hold or
+  an update's hold made the task `queued` and dropped them; the queue then started every
+  task as a plain resume (or a plain new session) on the pool's choice. A task paused at a
+  usage limit that became resumable while every slot was taken came back as a plain
+  resume: the transcript not stepped back, the interrupted turn not continued, so a
+  prompt-mode task sat at the limit's error reading Working. A person's held prompt
+  carried by a pause was lost without a word. And "Continue on…" a chosen subscription
+  ran on the pool's choice, against SPEC-447 MOV-002 ("never lands elsewhere unsaid").
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -747,6 +760,20 @@ no code path reaches; documents, texts shown to agents and people, and code that
   `usage.js`): the administration page offers and makes a reading for the subscriptions
   that work and offers a sign-in for the others, and the pool's panel and the "run on"
   menu call the others "needs a new sign-in".
+- **QST-001** A start that has to wait in the queue is kept with its task
+  (`tasks.queued_start`: the kind of start, its prompt, and the subscription when a person
+  chose it), written in one step with the task's change to `queued`, and whoever starts
+  the queued task later starts it as that start was to be; a task queued without one
+  starts as before. The kept start is the task's only while it waits: the change that
+  takes the task out of the queue removes it from the row. It survives a restart of
+  Yulius. The pool's own choice of a subscription for a paused task is not kept: the pool
+  chooses again when the slot frees. A subscription a person chose that would be refused
+  when the task's turn comes (at its limit, needing a sign-in, removed) is given up: the
+  pool places the task and its terminal says "The subscription chosen for this task
+  cannot take it now, so Yulius chose one."
+- **QST-002** A paused task's pause ends when its start is made or waits in the queue,
+  not before: a start that is refused (the queue is full) leaves the pause open, with its
+  kind and continuation, and the pool's next round tries again.
 
 ## Plan
 
@@ -770,7 +797,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
 - [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
 - [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
-- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds
+- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
+- [x] Slice 19: a start that has to wait in the queue keeps how it was to start
 
 ## Acceptance criteria
 
@@ -1202,6 +1230,29 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   says "Sign-in failed" with "The sign-in ended without producing a token" and without
   Claude's refusal; the card then still shows the refusal and "Sign in again", and the
   subscription reads `relogin`.
+- **AC-109** With one session slot: a task paused at a usage limit without a process
+  becomes resumable while another task holds the slot; the pool's round queues it. While
+  it waits the subscription the pool had chosen fills up and another frees. When the slot
+  frees, the task's new run is a native resume without a prompt that continues the
+  interrupted turn, no transcript still holds the limit's record, and it runs on the
+  subscription that is free then.
+- **AC-110** With one session slot held and the pool preferring another subscription, a
+  stopped task continued on a chosen subscription is queued; Yulius restarts (the
+  holder's session lives on); when the slot frees, the task runs on the chosen one.
+- **AC-111** In the store: a task that no longer reads the status it was read in is not
+  queued and nothing is kept; a kept start is read back as written (a prompt with a line
+  break, quotes and the word null, a subscription id); one this build cannot read (another
+  kind, a subscription id of another shape, no JSON) or of an earlier wait gives none;
+  after the task left the queue the column is empty, and a task queued again has the
+  start of that wait. A database of schema version 56 opens at 57.
+- **AC-112** With the slot held, a stopped task continued on a chosen subscription that
+  then fills to 100 % while the task waits: when the slot frees the task runs on the
+  other subscription and its terminal says that the chosen one could not take it; it is
+  not failed.
+- **AC-113** With one slot held and a queue of one place taken, a task paused at a usage
+  limit without a process that becomes resumable keeps its `limit` pause through the
+  pool's round and stays `waiting_capacity`; once the queue has room the next round
+  queues it and its pause ends; when its turn comes it resumes past the limit.
 
 ## Test plan
 
@@ -1403,6 +1454,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and leaves the refusal on the card" (AC-108); the existing
   `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
   keeps the two other cases of SGN-001.
+- Slice 19: `yulius` `pool_supervision::a_resume_past_a_limit_that_waits_in_the_queue_is_still_one`
+  (AC-109) and `pool_supervision::a_continue_on_a_chosen_subscription_keeps_it_through_the_queue`
+  (AC-110), with the real session host and one slot; `yulius-store`
+  `tests::a_queued_task_keeps_its_start_while_it_waits` (AC-111); `yulius-app`
+  `supervisor::tests::a_kept_start_comes_back_as_it_was` (every kind, with and without a
+  prompt and a subscription);
+  `pool_supervision::a_chosen_subscription_that_filled_up_while_waiting_is_given_up`
+  (AC-112) and `pool_supervision::a_resume_that_finds_the_queue_full_keeps_its_pause`
+  (AC-113).
 
 ## Decisions
 
@@ -1466,6 +1526,31 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 19 (no decision record: a column and the one function every start goes through).
+  The auditor proposed to leave a paused task paused when it cannot start, so that the
+  pause keeps the start. Not taken: a paused task would then wait beside the queue, not
+  in it, and lose its place to every task queued later; and Continue on a chosen
+  subscription has no pause to keep anything. The queue itself keeps the start instead,
+  in the task's row, read in `start_run_if` under the launch lock: whoever starts a queued
+  task (the queue's pass, with its plain start) gets the kept one, so no caller can forget
+  to ask. It is written with the status in one transaction (`queue_task`) and
+  removed by the status change that takes the task out of the queue, so a held prompt
+  stays in the database no longer than a pause's continuation does (the review, findings
+  1 and 2: the first version only made it unreadable by the task's `queued_at`, and wrote
+  it in a second step). The `queued_at` check stays as a guard. A subscription is kept
+  only when a person chose it (the start of a resting task); the pool's choice for a
+  paused task is a fact of the moment it was made, and keeping it could send the task to
+  a subscription that filled up while it waited. A person's choice can go stale the same
+  way; then the task is not failed, as an immediate Continue on that subscription is
+  refused to the person's face: nobody is there, so the pool places it and the terminal
+  says so (MOV-002 forbids landing elsewhere unsaid, not landing elsewhere). One case
+  keeps no choice: a person's move of a running task whose old session reports a limit as
+  it ends goes on from `waiting_capacity`, and if every slot is taken then, the task
+  queues with the pool's choice (the status read, not the caller, says who chose).
+  The pause of a paused task used to be ended before its start was tried, and a start the
+  full queue refused left the task waiting for capacity with no pause: nothing started it
+  again (the review, from before this slice). The start ends the pause now, where it is
+  made or queued.
 - Slice 18 (no decision record: the comment at the usage write already stated the rule,
   "a reading never makes a subscription that needs a new sign-in usable again"; the code
   now has it once). `error` is kept as a status: it is what a first sign-in that failed
@@ -1720,8 +1805,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
 | D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
 | QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 18 |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 19 |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
 | QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
 | QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
 | QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
@@ -2925,3 +3010,66 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 - **Web UI after it.** `cd e2e && npx e2e run` at `3f6edfc0f` (the head but for a lint in a
   Rust test): exit 0; `Test Files 84 passed | 1 skipped (85)`,
   `Tests 1023 passed | 1 skipped (1024)` (`target/audit/slice18/e2e-full2.log`).
+- **Review, round 2** (the same session, head `f5cd00867`): approve. Three nits, answered
+  in the commit after the merge: the dialog no longer asks for the subscriptions when a
+  sign-in failed; the mock's ended sign-in tells a later viewer its cause too; the mock
+  answers a reading of a subscription that needs a sign-in as the server does.
+- **Delivery.** Pull request #1271 merged into `dev` at `4f8ed0dd9` (the approved head
+  with `dev` merged into it by Yulius for its merge train), whose own Yulius CI run
+  passed.
+
+### Slice 19 (2026-11-14)
+
+- **Tests failing before the fix** (`target/audit/slice19/before.log`): the task that was to
+  resume past its limit came out of the queue as a plain resume (the checks of a resume
+  past a limit failed), and the task continued on `b-second` ran on `a-first`, the pool's
+  choice.
+- **Tests failing without their fix** (`target/audit/slice19/mutate.py`, `mutations.log`, 8
+  cases, each failed its test): the start not kept; a queued task started with the
+  queue's plain start; the pool's own choice kept too (the task then ran on the
+  subscription that had filled up); a person's choice not kept; a kept start losing its
+  prompt; a kept resume past a limit coming back a plain resume; a start of an earlier
+  wait read again; a start kept for a task that is not queued.
+- **The suites:** `2854 tests run: 2854 passed, 17 skipped` for the app, the binary and
+  the store (`target/audit/slice19/suite1.log`), before the unit test and the restart in
+  one test were added; the gate ran after them.
+- **Gate.** `scripts/dev ci` at `51d4412ff`: exit 0; `4315 tests run: 4315 passed, 17 skipped`
+  (`target/audit/slice19/gate.log`); doctor, repository check, lint, the macOS compile,
+  cargo-deny, cargo-shear and rustdoc passed.
+- **Web UI.** Slice 19 changes nothing under `web/` or `e2e/`; the branch carries the
+  nits of slice 18's last review there (the sign-in dialog, the mock), and the suite ran
+  after the review of this slice (below).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Not tested.** A person's held prompt through the queue with a real pause (the kind and
+  the prompt are tested in the store and in the round trip, the path with a `limit` pause
+  and with a person's Continue); a start that waits for a supertask's or an update's hold
+  (the same branch as the session limit); the migration on the running instance's
+  database (a version-56 database made in the test opens at 57).
+- **Review, round 1** (a fresh session, read-only, head `6794d1eb8`): request changes.
+  Four minor findings in this slice's code. "The kept start is never cleared": the status
+  change out of the queue removes it now. Queueing and keeping were "two separate store
+  calls": one transaction (`queue_task`). "A chosen subscription that cannot take the
+  task when the slot frees now makes the task end `failed`": it is given up, said in the
+  terminal, and the pool places the task (AC-112). The Evidence line on the web UI was
+  wrong for the branch: corrected, and the suite run. One major from before: "`resume_paused`
+  ends the pause before calling `start_run`", so a start the full queue refused left the
+  task with nothing to start it again; the start ends the pause where it is made or
+  queued (QST-002, AC-113). Nits: the edge of a person's move that goes on from a waiting
+  task is in Decisions; the store test writes unreadable rows by hand and asks the
+  database for its version; SPEC-002's table row and the mock's comment are right.
+- **Tests failing before those fixes** (`target/audit/slice19/before2.log`): the task whose
+  chosen subscription had filled up read `Failed(Precondition)`, and the paused task's
+  pause was gone after the round that met the full queue.
+- **Tests failing without their fix, after the review** (`mutations2.log`, 13 cases, each
+  failed its test): the first seven above as they are now; a chosen subscription that
+  cannot take the task asked for all the same; the pause ended before the start is tried;
+  a start that waits in the queue, and one that is made, leaving the pause open; a task
+  that no longer reads its status given a start; a task that leaves the queue keeping its
+  start in the row; a start of an earlier wait read again.
+- **The suites after it:** `2857 tests run: 2857 passed, 17 skipped`
+  (`target/audit/slice19/suite2.log`).
+- **Gate after it.** `scripts/dev ci` at `426c3c789`: exit 0;
+  `4317 tests run: 4317 passed, 17 skipped` (`target/audit/slice19/gate2.log`).
+- **Web UI after it.** `cd e2e && npx e2e run` at `426c3c789`: exit 0;
+  `Test Files 84 passed | 1 skipped (85)`, `Tests 1023 passed | 1 skipped (1024)`
+  (`target/audit/slice19/e2e-full.log`).

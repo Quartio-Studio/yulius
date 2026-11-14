@@ -273,11 +273,8 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
    * `why` is the sign-in's own reason, from its exit frame. The subscription's error is not
    * asked: one Claude refused keeps saying why it is out, which is no reason of this sign-in.
    */
-  async function failed(why) {
+  function failed(why) {
     phase = 'error';
-    ended('Sign-in failed', '');
-    await fresh();
-    if (phase !== 'error' || closed) return;
     const reason = why ? sentence(why).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
     ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
   }

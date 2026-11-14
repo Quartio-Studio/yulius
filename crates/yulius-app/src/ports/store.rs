@@ -350,6 +350,20 @@ pub trait TaskStore: Send + Sync {
         reason: Option<&crate::attention::AttentionRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
+    /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
+    /// and nothing changed, when the task no longer reads `expected`.
+    async fn queue_task(
+        &self,
+        id: &TaskId,
+        expected: TaskStatus,
+        start: &crate::model::QueuedStart,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// How the queued task `id` is to start, as kept since it was queued this time. None for a
+    /// task that is not queued, was queued without a start, or whose kept start is of an
+    /// earlier wait in the queue.
+    async fn queued_start(&self, id: &TaskId) -> AppResult<Option<crate::model::QueuedStart>>;
     /// The reason of the flag a running task reads now (SPEC-472), the one written when that
     /// flag was raised, and when it was raised. None for a task that reads no flag, for a flag
     /// raised without a reason and for a reason of an earlier flag.
