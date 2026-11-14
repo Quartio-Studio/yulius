@@ -202,7 +202,8 @@ test('a read answered before a hand-over and arriving after it changes nothing b
 // that opens the task, an entry under the bell, and a mark on the task's row in the sidebar until
 // it is answered.
 test('the owner hears of a request for control on another page', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  // A page without a terminal, which would take the keyboard and close the bell's panel.
+  await app.open(mock('/s/studio', '&ambient=0'));
   await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
   await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
   const asked = '@anna-q asks for control of #12 Checkout API';
@@ -238,7 +239,7 @@ test('the giver takes the task back, and whoever had it hears so', async ({ app,
 
   // mkarp has had #11 since before the page loaded (anna-q handed it to him); she takes it back:
   // the server tells him, wherever he is (review round 2: no earlier event to compare with).
-  await app.open(mock('/s/studio/t/13', '&ambient=0'));
+  await app.open(mock('/s/studio', '&ambient=0'));
   await eventsConnected(browser);
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { takeBack: (s: string, n: number, by: string) => void } }).__yuliusMock.takeBack('sb_studio', 11, 'anna-q'));
   const taken = '@anna-q took back control of #11 3D model viewer';
@@ -250,7 +251,7 @@ test('the giver takes the task back, and whoever had it hears so', async ({ app,
 // SPEC-490 OWN-008 (review round 2): a request that waited before the owner opened Yulius is
 // under the bell too, once.
 test('a request that waited before the page loaded is heard', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/13', '&ambient=0&controlask=1'));
+  await app.open(mock('/s/studio', '&ambient=0&controlask=1'));
   await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
   const asked = '@anna-q asks for control of #12 Checkout API';
   await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();

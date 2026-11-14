@@ -388,6 +388,11 @@ Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-
   sent to the person whatever their access now, naming a task they owned; a take-back drops a
   third person's waiting request without `task.control_dropped`, as an absent owner's pass
   does.
+- Delta review of round 3's fix and a merge of `dev` (at `7732a83a9`): APPROVE; it saw "a
+  request that waited before the page loaded is heard" fail once in 4 runs (the bell's panel
+  closed, likely by the task page's terminal taking the keyboard). The tests that open the bell
+  now start from the sandbox page, which has no terminal: `ownership.e2e.ts` passed 5 of 5
+  runs (13 tests each) after that. `scripts/dev ci` at `7732a83a9`: exit 0, 4413 tests passed.
 - After round 2's fixes, at `f65ae5520`: `scripts/dev ci` exit 0, 4414 tests passed, 17
   skipped; `npx e2e run` 84 files passed, 1 skipped, 1042 tests passed, 1 skipped.
 
