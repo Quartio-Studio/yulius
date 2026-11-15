@@ -128,6 +128,10 @@ struct Train {
     /// When it was formed (ms; 0 when unknown).
     #[serde(default)]
     formed_at: i64,
+    /// The member whose own run its run ended waiting for, and since when (SPEC-493 MQC-001):
+    /// the 20 s pass has nothing to decide meanwhile, and `yulius wait` says so.
+    #[serde(default)]
+    own_wait: Option<(u64, i64)>,
 }
 
 /// A pull request in a train.
@@ -232,7 +236,13 @@ fn note_of(train: &Train, task: &str) -> Option<String> {
             prs.len(),
             listed(&prs)
         );
-        return Some(if train.merging {
+        return Some(if let Some((pr, _)) = train.own_wait {
+            format!(
+                "{place}: their combined result was tested (run {}); Yulius waits for pull \
+                 request #{pr}'s own Yulius CI run before it merges or tests them further.",
+                train.run
+            )
+        } else if train.merging {
             format!("{place}: their combined result passed; Yulius merges them in this order.")
         } else {
             format!(
@@ -362,10 +372,22 @@ impl App {
 
     /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
     /// pass merges its members or dissolves it.
+    /// A train waiting for a member's own run within its bound has nothing to decide: the end of
+    /// that run starts a pass by itself.
     pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
         let Some(train) = self.read_trains(&sandbox.id).train else {
             return false;
         };
+        if let Some((_, since)) = train.own_wait {
+            let until = if train.merging {
+                train.formed_at.saturating_add(TEST_LIMIT_MS)
+            } else {
+                since.saturating_add(WAIT_LIMIT_MS)
+            };
+            if self.now().0 <= until {
+                return false;
+            }
+        }
         !matches!(
             self.deps.store.ci_run(&train.run).await,
             Ok(Some(run)) if run.state.is_active()
@@ -507,13 +529,19 @@ impl App {
                 // A member's own run that still goes may say why: it is waited for (within the
                 // test limit), and a member whose own run fails then leaves instead of the
                 // candidate being halved (SPEC-493 MQC-002).
-                let mut going = false;
+                let mut going = None;
                 for index in 0..train.members.len() {
-                    going |= self.own_run_going(sandbox, &train, index).await;
+                    if going.is_none() && self.own_run_going(sandbox, &train, index).await {
+                        going = Some(train.members[index].pr);
+                    }
                 }
-                if going && !(train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS)
-                {
-                    return Some(train);
+                let mut train = train;
+                if let Some(pr) = going {
+                    let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
+                    if self.now().0 - since <= WAIT_LIMIT_MS {
+                        train.own_wait = Some((pr, since));
+                        return Some(train);
+                    }
                 }
                 self.bisect(sandbox, state, &train).await;
                 None
@@ -735,12 +763,19 @@ impl App {
             // run may take, not the time GitHub may take to show a head.
             if self.own_run_going(sandbox, &train, index).await {
                 if train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS {
-                    self.dissolve(sandbox, &train, "a member's own run took too long")
-                        .await;
+                    // Held back until armed again: the others form a candidate without it, and
+                    // it goes one by one once its own run passed.
+                    let member = &train.members[index];
+                    state.held_back.push((member.task.clone(), member.armed_at));
+                    let reason = format!("#{}'s own run took too long", member.pr);
+                    self.dissolve(sandbox, &train, &reason).await;
                     return None;
                 }
+                let since = train.own_wait.map_or(self.now().0, |(_, since)| since);
+                train.own_wait = Some((train.members[index].pr, since));
                 return Some(train);
             }
+            train.own_wait = None;
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
                 Step::Wait => return self.train_waits(sandbox, train).await,
@@ -1424,6 +1459,7 @@ impl App {
             merging: false,
             waiting_since: None,
             formed_at: self.now().0,
+            own_wait: None,
         })
     }
 
@@ -1495,6 +1531,8 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
         "merged before the ones ahead",
         "cannot be read",
         "has no worktree",
+        "moved on",
+        "the own run of #",
     ]) {
         Dissolved::MemberLeft
     } else if has(&["its CI run failed"]) {
@@ -1546,6 +1584,7 @@ mod tests {
             merging: false,
             waiting_since: None,
             formed_at: 1,
+            own_wait: None,
         }
     }
 

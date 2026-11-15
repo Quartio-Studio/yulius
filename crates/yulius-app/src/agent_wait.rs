@@ -538,7 +538,13 @@ impl App {
             let idle = task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-            if !candidate_running && idle && self.at_clean_head(&task, &armed.head).await {
+            // A member of a train is the train's to decide (SPEC-493: one waiting for a member's
+            // own run decides nothing until that run ends).
+            if !candidate_running
+                && idle
+                && self.train_hold(&task) == crate::merge_train::Hold::Free
+                && self.at_clean_head(&task, &armed.head).await
+            {
                 return true;
             }
         }
