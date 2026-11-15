@@ -639,7 +639,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "ability_report".into(),
-            description: "Report an ability you need and no tool of yours gives (after reading your tool list), in one call: it is kept on this Yulius instance and, when your person's GitHub access reaches the Yulius repository, opened there as an issue under their name. Write it in general terms: never the project's name, code, people or secrets. Then tell the person what you reported and do what you can meanwhile. At most 5 an hour.".into(),
+            description: "Report an ability you need and no tool of yours gives (after reading your tool list), in one call: it is kept on this Yulius instance, and the answer's link opens it as a new issue in the Yulius repository for your person to read and submit. Write it in general terms: a report naming the project or holding a secret is refused. Then give the person the link, say what you reported and do what you can meanwhile. At most 5 an hour.".into(),
             input_schema: schema(json!({
                 "ability": {"type": "string", "description": "The ability, in a few words (\"read a task's scrollback\")"},
                 "case": {"type": "string", "description": "What was asked and what stopped you, without project details"},

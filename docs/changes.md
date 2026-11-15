@@ -9,8 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A missing ability is reported in one call (SPEC-487 slice 11, task #469,
   [ADR-0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
   The Superagent offered to report walls and never could; `ability_report` (also a task's agent's)
-  keeps the report on the instance and opens it in the Yulius repository under the person's
-  name when their access reaches it. The Superagent also sets and deletes project variables. The
+  keeps the report on the instance and answers a link that opens it as a new issue in the Yulius
+  repository for the person to submit. The Superagent also sets and deletes project variables. The
   product summary now holds the full table of what the Superagent and a task's agent may do, and
   why.
 - The Superagent sees what happened to a task (SPEC-487 slice 10b, task #469): `task_screen`

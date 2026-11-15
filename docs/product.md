@@ -186,8 +186,8 @@ watching, steering and unblocking.
   It reads a task's screen, also the last one a crashed run left with its exit code, the tokens
   each task used as the Dashboard counts them, and how far its repository checkout is behind the
   integration branch (SPEC-487).
-  A missing ability it reports in one call (`ability_report`): kept on the instance, and opened
-  as an issue in the Yulius repository under its person's name when their access reaches it
+  A missing ability it reports in one call (`ability_report`): kept on the instance, with a link
+  that opens it as a new issue in the Yulius repository for its person to read and submit
   ([decision 0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
   What it and a task's agent may do, and why (SPEC-487; "yes" is with the person's rights, checked
   at the call):
@@ -233,7 +233,8 @@ watching, steering and unblocking.
   | Report a missing ability to the Yulius project | yes (`ability_report`, slice 11) | yes (slice 11) | Both meet walls; ADR-0337 |
   | Standing jobs (monitoring, a disk guard) | yes: scheduled checks Yulius holds (`superagent_check_set`, slice 9b) | its own automation or task | Its session's timers end with every restart; ADR-0335 |
   | Text typed to it while it restarts, or left in its prompt box | kept (slice 9a) | (tasks: SPEC-468, SPEC-480) | A person's message was lost to a restart |
- What its person does on the project's pages it does for them when they
+
+  What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the

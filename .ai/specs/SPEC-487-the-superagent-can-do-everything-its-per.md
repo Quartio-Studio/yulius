@@ -204,9 +204,9 @@ with those rights checked at the call.
 | VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for the tasks created in a period (default: the last 7 days), the most first and at most 50, and the period's totals by model. | the same test (a default period set; one task's row only) |
 | VIS-003 | `checkout` answers the project's repository checkout's branch and how many commits its head is behind and ahead of its integration branch on the remote as last fetched, and when that remote branch was fetched; a project not cloned, or a remote branch never fetched, is said so (409). It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
 | VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
-| ABL-001 | `ability_report {ability, case, needed_for?}`, served to the Superagent and to every task's agent, reports a missing ability in one call; refused: an ability empty, over 200 characters or on more than one line, a case empty or over 4000 characters, `needed_for` over 1000, invisible characters, unknown arguments. | `cockpit::a_missing_ability_is_reported_in_one_call` (the Superagent and a task's agent) |
-| ABL-002 | Every report is audited `ability.reported` on the instance with the ability, the case and who reported it; when the person's GitHub access reaches the Yulius repository, it is also opened there as an issue under their name, titled `Missing ability: …`, labelled to be triaged, holding the agent's words and an acceptance criterion, never the project's name; otherwise the answer says it was kept on the instance. | the same test (kept without access; opened with read access, as alice, without the project's name); `ability_reports::tests::an_issue_holds_the_words_and_a_criterion` |
-| ABL-003 | At most 5 reports an hour per person, the Superagent's and their tasks' together. | the same test (the sixth refused) |
+| ABL-001 | `ability_report {ability, case, needed_for?}`, served to the Superagent and to every task's agent (its owner still working in the project), reports a missing ability in one call; refused: an ability empty, over 200 characters or on more than one line, a case empty or over 4000 characters, `needed_for` over 1000, invisible characters, unknown arguments, a text naming the project (slug, repository, owner) or holding one of its agent secrets' values. | `cockpit::a_missing_ability_is_reported_in_one_call` (the Superagent and a task's agent) |
+| ABL-002 | Every report is audited `ability.reported` on the instance with the ability, the case and who reported it; the answer carries a link that opens a new issue in the Yulius repository titled `Missing ability: …`, labelled to be triaged, holding the agent's words and an acceptance criterion, for the person to submit: nothing is sent without them. | the same test (the link; nothing sent to GitHub; refused for the project's name and a secret); `ability_reports::tests::an_issue_holds_the_words_and_a_criterion`, `a_query_value_is_percent_encoded` |
+| ABL-003 | At most 5 reports an hour per person, the Superagent's and their tasks' together. | the same test (the sixth refused); `ability_reports::tests::reports_are_bounded_per_hour_and_the_window_moves_on` |
 | ABL-004 | The instructions send a missing ability to `ability_report`; it asks in Claude Code first as every changing tool does. | `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`; `manage_tools::the_cockpit_asks_before_every_changing_tool` |
 | VAR-001 | `variables_set {variables: [{name, value, description?}]}` and `variable_delete {name}` are the person's project tools with the Configure right: the Superagent is served them as the remote MCP already served them (the Global Superagent still withholds them). | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout` (set, listed, deleted); `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
@@ -532,9 +532,9 @@ with those rights checked at the call.
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
-- **Slice 11: a missing ability goes to the Yulius repository** (ABL-001 to ABL-004, ADR-0337),
-  under the person's GitHub name and only when their access reaches it; always kept on the
-  instance. The project variables, still a page's alone after slice 10, joined the person's
+- **Slice 11: a missing ability goes to the Yulius repository through its person** (ABL-001 to
+  ABL-004, ADR-0337): kept on the instance, and a link the person submits; no issue is posted
+  without them. The project variables, still a page's alone after slice 10, joined the person's
   tools here (VAR-001): the remote MCP already had them, so it is one implementation.
 - **Slice 10b: what the page shows, read; nothing measured anew** (VIS-001 to VIS-004). A
   task's screen, its tokens and the checkout's distance are what the page, the Dashboard and Git
@@ -1217,8 +1217,8 @@ with those rights checked at the call.
   The ability table is in `docs/product.md`.
 - **Mutation:** six mutants, each failed by a named test (`target/evidence/mutants-slice11.py`,
   `mutants-slice11.log`: `survived=0`).
-- **Not tested:** an issue against the real GitHub (the fake records it; `create_issue` is the
-  production adapter `issue_create` uses).
+- **Not tested:** the link opened in a browser on GitHub (its query is built and encoded as
+  GitHub's new-issue form reads it; the unit test checks the encoding).
 
 ## The walls, closed
 
@@ -1235,4 +1235,16 @@ with those rights checked at the call.
 | 9. Questions to the person lost | Closed behind a confirmation: `person_ask` keeps a decision on the panel until answered. | 8a |
 | 10. Secrets | Closed behind a confirmation: a value typed masked on the panel goes to the vault, never to an agent. Left as decided: hosts and `.env` copies ask once each; `secret_verify` refuses production secrets. | 10a |
 | 11. Visibility | Closed: a task's screen and a crashed run's exit, its tokens, the checkout's distance. Left open: a task's own load (not measured; the host's is). | 10b |
-| 12. Wrong "I can't" | Closed: the instructions and descriptions say to read the tool list, name the missing ability and report it (`ability_report`), and never treat a repository rule as overriding the person without saying which and asking. | 2, 11 |
+| 12. Wrong "I can't" | Closed: the instructions and descriptions say to read the tool list, name the missing ability and report it (`ability_report`: kept on the instance, filed in the Yulius repository by the person with one click), and never treat a repository rule as overriding the person without saying which and asking. | 2, 11 |
+- **Gate:** `scripts/dev ci` passed on `bd98a7977` (4447 tests, 17 skipped;
+  `target/evidence/gate-slice11.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `bd98a7977`): request changes, all in this slice's code:
+  M1, the product summary's table broke the bullet after it: a blank line and the indentation;
+  M2, "never the project's name" was only asked: a report naming the project or holding one of
+  its agent secrets is refused (tested: the repository's name, a secret's value); M3, an issue
+  was posted outside under the person's name without them (and a contained server asks
+  nothing): the report is kept on the instance and answered with a link the person submits, so
+  m1 (GitHub errors read as a permission) goes with it; m2, a task's owner must still work in the
+  project; m4, the hour's window and the link's encoding have unit tests; n1, a lone `\r` is
+  refused in the ability, and the API row speaks of error results.
