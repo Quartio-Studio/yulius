@@ -1636,6 +1636,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_eq!(
         names,
         [
+            "ability_report",
             "attachments_trash",
             "automation_create",
             "automation_delete",
@@ -1714,7 +1715,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "tasks_bulk",
             "tasks_list",
             "tasks_reorder",
+            "variable_delete",
             "variables_list",
+            "variables_set",
             "workflows_list",
         ]
     );
@@ -5187,10 +5190,144 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         other.number
     );
 
+    // The project's variables, set and deleted for the person (SPEC-487 VAR-001).
+    let (set, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "variables_set",
+        json!({"variables": [{"name": "REGION", "value": "eu-west-1", "description": "where it runs"}]}),
+    )
+    .await?;
+    assert!(!is_error, "{set}");
+    let (listed, _) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
+    assert!(said(&listed).contains("eu-west-1"), "{listed}");
+    let (deleted, is_error) =
+        cockpit_tool(&f, &token, "variable_delete", json!({"name": "REGION"})).await?;
+    assert!(!is_error, "{deleted}");
+    let (listed, _) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
+    assert!(!said(&listed).contains("eu-west-1"), "{listed}");
+
     let (checkout, is_error) = cockpit_tool(&f, &token, "checkout", json!({})).await?;
     assert!(
         is_error && said(&checkout).contains("not cloned"),
         "{checkout}"
+    );
+    Ok(())
+}
+
+/// SPEC-487 ABL-001 to ABL-004 (wall 12: "three offers to report defects were never acted
+/// on"): a missing ability is reported in one call, by the Superagent or a task's agent: kept on
+/// this instance, and answered with a link that files it in the Yulius repository once the
+/// person reads and submits it (nothing leaves the instance without them). A report that names
+/// the project or holds one of its secrets is refused; at most 5 an hour per person.
+#[tokio::test]
+async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, UserStore as _};
+    use yulius_domain::task::TaskStatus;
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let said = |record: &Value| record.to_string();
+    let secret = "s3cr3t-api-token-0123456789";
+    {
+        let ctx = yulius_app::auth::AuthContext {
+            user: f.h.store.user(&alice).await?.ok_or("alice")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let input: yulius_contracts::api::secrets::AgentSecretInput =
+            serde_json::from_value(json!({"name": "API_TOKEN", "value": secret}))?;
+        f.h.app
+            .create_agent_secret(&ctx, sid().as_str(), &input)
+            .await?;
+    }
+    let report = json!({
+        "ability": "read a task's terminal scrollback past its screen",
+        "case": "The person asked why a build failed; the error scrolled off the screen.",
+        "needed_for": "Answer from the full output instead of asking the person to scroll."
+    });
+    for (args, why) in [
+        (json!({"ability": "", "case": "c"}), "ability"),
+        (json!({"ability": "a\u{202e}b", "case": "c"}), "cannot see"),
+        (json!({"ability": "a", "case": "c", "x": 1}), "unknown"),
+        (json!({"ability": "a\rb", "case": "c"}), "one line"),
+        // Review of slice 11, M2: nothing of the project leaves in a report.
+        (
+            json!({"ability": "a", "case": "the CI of acme/fixture failed"}),
+            "general terms",
+        ),
+        (
+            json!({"ability": "a", "case": format!("it printed {secret}")}),
+            "secret",
+        ),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "ability_report", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+
+    // Kept on the instance; a link the person files, and nothing sent to GitHub by itself.
+    let (kept, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+    assert!(!is_error, "{kept}");
+    let url = kept["file_url"].as_str().ok_or("file_url")?;
+    assert!(
+        url.starts_with("https://github.com/Quartio-Studio/yulius/issues/new?title=Missing%20ability%3A%20read%20a%20task"),
+        "{url}"
+    );
+    assert!(url.contains("Acceptance%20criteria"), "{url}");
+    assert!(!url.contains("fixture"), "{url}");
+    assert!(
+        f.h.github.issues.lock().map_err(|_| "lock")?.is_empty(),
+        "nothing sent"
+    );
+    let rows =
+        f.h.store
+            .audit_details(sid().as_str(), "ability.reported", 10)
+            .await?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("scrollback"), "{rows:?}");
+
+    // A task's agent reports too, as its owner.
+    support::seed_task(
+        &f.h,
+        "t-ab",
+        sid().as_str(),
+        "u-alice",
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-ab", "tk-ability").await?;
+    let from_task = support::mcp_tool(&f.h, "tk-ability", "ability_report", report.clone()).await?;
+    assert_eq!(from_task["isError"], false, "{from_task}");
+
+    // At most 5 an hour per person.
+    for _ in 0..3 {
+        let (more, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+        assert!(!is_error, "{more}");
+    }
+    let (refused, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+    assert!(
+        is_error && said(&refused).contains("last hour"),
+        "{refused}"
+    );
+
+    // Review of slice 11, m2: a task's owner who may no longer work in the project reports
+    // nothing through it (checked before the hour's bound).
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock.0.fetch_add(
+        f.h.app.config.permission_ttl_ms + 1,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let gone = support::mcp_tool(&f.h, "tk-ability", "ability_report", report.clone()).await?;
+    assert_eq!(gone["isError"], true, "{gone}");
+    assert!(
+        !said(&gone).contains("last hour"),
+        "refused for access: {gone}"
     );
     Ok(())
 }

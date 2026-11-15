@@ -1,6 +1,6 @@
 ---
 yulius-task: 1be0c20e-fe89-4ec0-a1ff-5c054ebc7ae7
-status: in-progress
+status: done
 ---
 
 # SPEC-487: the Superagent does what its person may do
@@ -87,11 +87,11 @@ pull request delivers that part.
 | 10b | Visibility: a task's cost and load, a crash's exit and last screen, a checkout that is current | wall 11 |
 | 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
 
-### The ability table (target)
+### The ability table
 
-The target, for all of it; it goes into `docs/product.md` complete with slice 11, and until
-then each slice's part is described there in words. "Person's rights":
-the function the web UI's route calls, with the person's rights checked at the call.
+What the Superagent and a task's agent may do, and why; the same table is in
+`docs/product.md`. "Yes" is with the person's rights: the function the web UI's route calls,
+with those rights checked at the call.
 
 | Ability | Superagent | Task's agent | Why |
 | --- | --- | --- | --- |
@@ -100,7 +100,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Restart, pause, resume, start now | yes (slice 2) | no | A person speaks to their tasks; tasks do not steer each other (ADR-0178) |
 | Start a project's onboarding (also by continuing its onboarding task before it started) | behind the person's click in the panel (slice 8b) | no | SPEC-051 OBD-002, ADR-0038: a person decides that a repository is adapted |
 | Project variables: read | yes (slice 2) | in its environment (had) | They are not secrets |
-| Project variables: set, delete | yes (slice 10) | no | Decided with the vault's rules; a person's page today |
+| Project variables: set, delete | yes (`variables_set`, `variable_delete`, slice 11; Configure) | no | Plain values, never a secret's; as a person's own agent through the remote MCP |
 | Rename, edit a prompt not started, reorder, close out, bulk actions | yes (slice 3) | no | As above |
 | Send a message past text the person left unsent in a task's prompt box | yes, for the task's owner (slice 3) | no | SPEC-480: the text is the person's; they decide that it goes out with the message |
 | Discard text a person left unsent in a task's prompt box | no | no | Yulius sees keys, not the box, and the keys that clear it (Esc, Ctrl+C) also interrupt a turn or end the session; the owner's message goes past it instead |
@@ -108,7 +108,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | List open questions, see why a task needs attention | yes (slice 4) | yes, read only, without a held prompt's words (slice 4) | A task that sees another's question does not ask it again; a prompt Yulius held reached no agent |
 | Answer or dismiss a task's question for the person; decide a held prompt (send, dismiss, a new task now or after) | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
 | Decide a held prompt by skipping steps or reverting the task | no: the person, on the task's page | no | Reverting discards the task's work and asks for the person's own confirmation there (TSK-013) |
-| Answer a question Claude Code asks in a task's terminal (a permission menu, a choice) | not yet (decided with slice 10, which shows a task's screen) | no | Yulius cannot tell an agent what the menu shows; keys typed blind would take its default |
+| Answer a question Claude Code asks in a task's terminal (a permission menu, a choice) | no: it reads the menu (`task_screen`) and tells its person | no | Typing into a task's terminal is its owner's control (SPEC-490); keys typed from a screen read a moment before could take another choice |
 | The end of a session (`session_read` tail) | yes (slice 4) | yes (slice 4) | Sessions are docs for both (SPEC-001 SES) |
 | CI: read runs and logs, run again | yes (slice 2) | yes (had) | A task needs its own checks |
 | CI: cancel, order | yes (slices 2, 5) | no | They change other tasks' runs |
@@ -131,7 +131,9 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Leave a decision only the person makes, answered Yes or No on its panel (`person_ask`) | yes (slice 8a) | asks with `needs_you` (had) | A question in a report is not read; the panel keeps it until answered |
 | A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
 | Enter a secret's value | the person, masked, on the Superagent's panel (`secret_request_value`, slice 10a) | no (it asks a person: `secret_request_copy`, `needs_you`) | The value goes from the person to the vault; ADR-0336 |
-| Report a missing ability to the Yulius project | yes (slice 11) | yes (slice 11) | Both meet walls |
+| Report a missing ability to the Yulius project | yes (`ability_report`, slice 11) | yes (slice 11) | Both meet walls; ADR-0337 |
+| Standing jobs (monitoring, a disk guard) | yes: scheduled checks Yulius holds (`superagent_check_set`, slice 9b) | its own automation or task | Its session's timers end with every restart; ADR-0335 |
+| Text typed to it while it restarts, or left in its prompt box | kept (slice 9a) | (tasks: SPEC-468, SPEC-480) | A person's message was lost to a restart |
 
 ## Requirements
 
@@ -202,6 +204,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 | VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for the tasks created in a period (default: the last 7 days), the most first and at most 50, and the period's totals by model. | the same test (a default period set; one task's row only) |
 | VIS-003 | `checkout` answers the project's repository checkout's branch and how many commits its head is behind and ahead of its integration branch on the remote as last fetched, and when that remote branch was fetched; a project not cloned, or a remote branch never fetched, is said so (409). It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
 | VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
+| ABL-001 | `ability_report {ability, case, needed_for?}`, served to the Superagent and to every task's agent (its owner still working in the project), reports a missing ability in one call; refused: an ability empty, over 200 characters or on more than one line, a case empty or over 4000 characters, `needed_for` over 1000, invisible characters, unknown arguments, a text naming the project (its slug, repository or owner as a whole word; not for the Yulius repository's own project) or holding one of its agent secrets' values, a report whose filing link would pass 6000 bytes (GitHub's form refuses long ones). | `cockpit::a_missing_ability_is_reported_in_one_call` (the Superagent and a task's agent) |
+| ABL-002 | Every report is audited `ability.reported` on the instance with the ability, the case and who reported it; the answer carries a link that opens a new issue in the Yulius repository titled `Missing ability: …`, labelled to be triaged, holding the agent's words and an acceptance criterion, for the person to submit: nothing is sent without them. | the same test (the link; nothing sent to GitHub; refused for the project's name and a secret); `ability_reports::tests::an_issue_holds_the_words_and_a_criterion`, `a_query_value_is_percent_encoded` |
+| ABL-003 | At most 5 reports an hour per person, the Superagent's and their tasks' together. | the same test (the sixth refused); `ability_reports::tests::reports_are_bounded_per_hour_and_the_window_moves_on` |
+| ABL-004 | The instructions send a missing ability to `ability_report`; it sends nothing outside the instance (the person files the link), and Claude Code asks before it as before every tool that is not read-only. | `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`; `manage_tools::the_cockpit_asks_before_every_changing_tool` |
+| VAR-001 | `variables_set {variables: [{name, value, description?}]}` and `variable_delete {name}` are the person's project tools with the Configure right: the Superagent is served them as the remote MCP already served them (the Global Superagent still withholds them). | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout` (set, listed, deleted); `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
 ## Plan
 
@@ -217,11 +224,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [x] Slice 8a: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, another sandbox's task list)
 - [x] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
-- [ ] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
-- [ ] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
-- [ ] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
-- [ ] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
-- [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
+- [x] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
+- [x] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
+- [x] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
+- [x] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
+- [x] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
 ## Acceptance criteria
 
@@ -525,6 +532,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 11: a missing ability goes to the Yulius repository through its person** (ABL-001 to
+  ABL-004, ADR-0337): kept on the instance, and a link the person submits; no issue is posted
+  without them. The project variables, still a page's alone after slice 10, joined the person's
+  tools here (VAR-001): the remote MCP already had them, so it is one implementation.
 - **Slice 10b: what the page shows, read; nothing measured anew** (VIS-001 to VIS-004). A
   task's screen, its tokens and the checkout's distance are what the page, the Dashboard and Git
   already know. A task's load is left open: Yulius measures the host and the sessions per
@@ -1191,3 +1202,57 @@ the function the web UI's route calls, with the person's rights checked at the c
   the branch are failed by named tests; `no-redaction` survives on purpose: every tool result is
   redacted of the project's agent secrets by the MCP layer too (`redact_strings`), so the saved
   screen's own redaction is a second layer the tool's answer cannot tell apart.
+
+### Slice 11 (2026-11-15)
+
+- **Slice 10b is merged:** pull request #1314 into `dev` at `a968a31a1`, whose own Yulius CI run
+  passed.
+- **Review of slice 10b, round 2 notes**, answered first: the API names the `starting` screen and
+  what `fetched_at` means; a checkout that cannot be read logs why; `task_usage` says how many
+  tasks the period has (`tasks_in_period`).
+- **Tests and code:** `a_missing_ability_is_reported_in_one_call` was written first (refusals,
+  kept on the instance without access, an issue as alice with read access and without the
+  project's name, a task's agent reporting, the sixth in an hour refused). The project variables
+  test (`variables_set`, `variable_delete` through the Superagent) failed first ("unknown tool").
+  The ability table is in `docs/product.md`.
+- **Mutation:** six mutants, each failed by a named test (`target/evidence/mutants-slice11.py`,
+  `mutants-slice11.log`: `survived=0`).
+- **Not tested:** the link opened in a browser on GitHub (its query is built and encoded as
+  GitHub's new-issue form reads it; the unit test checks the encoding).
+
+## The walls, closed
+
+| Wall | How it ends | Slices |
+| --- | --- | --- |
+| 1. Yulius itself and its host | Closed: version, health, update status and checks (`instance`); Update now, Restart, Cancel for a superadmin's Superagent (`instance_update`). Left open: the host's logs and `yulius doctor` (no page shows them; the host's own tools). | 7 |
+| 2. Changing a task that exists | Closed: restart, pause and resume, start now, rename, a prompt not started, reorder, close out, bulk stop, pause and message, a message past a draft, project variables (`variables_set`). Left open: discarding a person's draft (Yulius sees keys, not the box). | 2, 3, 11 |
+| 3. Chaining | Closed: a chained task waits for its predecessor's pull request news; the rule reads back as stored; "after all current tasks". | 1 |
+| 4. CI, merges and deploys | Closed: CI read, run again, cancel, order; a task's delivery, the merge queue and train, why a pull request is not merging, merge or arm; dev deploy and rollback. Behind a confirmation: production deploy and rollback, promotion, onboarding (the typed slug, a click). Left open: holding the CI queue (no page holds it; cancel and run again). | 2, 5, 8b |
+| 5. Subscriptions and model | Closed: which subscription a task is on, moved, model and effort. Left open: the pool's priorities or exclusions (no such setting exists). | 6 |
+| 6. Other sandboxes | Closed behind a confirmation: requests last until answered, are amended or withdrawn and read back; another sandbox's tasks are listed without asking. | 8a |
+| 7. Tasks' questions | Closed: open questions and why a task waits, answered or dismissed for the person, a held prompt decided, a session's end. Left open: answering a menu in a task's terminal (read with `task_screen`, told to the person). | 4, 10b |
+| 8. The Superagent's session lasting | Closed: standing jobs are checks Yulius holds; a draft holds an update's restart and keys typed while it restarts reach it. Left open: a changed tool list still restarts it (its instructions are read only at connection; the restart resumes the conversation). | 9a, 9b |
+| 9. Questions to the person lost | Closed behind a confirmation: `person_ask` keeps a decision on the panel until answered. | 8a |
+| 10. Secrets | Closed behind a confirmation: a value typed masked on the panel goes to the vault, never to an agent. Left as decided: hosts and `.env` copies ask once each; `secret_verify` refuses production secrets. | 10a |
+| 11. Visibility | Closed: a task's screen and a crashed run's exit, its tokens, the checkout's distance. Left open: a task's own load (not measured; the host's is). | 10b |
+| 12. Wrong "I can't" | Closed: the instructions and descriptions say to read the tool list, name the missing ability and report it (`ability_report`: kept on the instance, filed in the Yulius repository by the person with one click), and never treat a repository rule as overriding the person without saying which and asking. | 2, 11 |
+- **Gate:** `scripts/dev ci` passed on `bd98a7977` (4447 tests, 17 skipped;
+  `target/evidence/gate-slice11.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `bd98a7977`): request changes, all in this slice's code:
+  M1, the product summary's table broke the bullet after it: a blank line and the indentation;
+  M2, "never the project's name" was only asked: a report naming the project or holding one of
+  its agent secrets is refused (tested: the repository's name, a secret's value); M3, an issue
+  was posted outside under the person's name without them (and a contained server asks
+  nothing): the report is kept on the instance and answered with a link the person submits, so
+  m1 (GitHub errors read as a permission) goes with it; m2, a task's owner must still work in the
+  project; m4, the hour's window and the link's encoding have unit tests; n1, a lone `\r` is
+  refused in the ability, and the API row speaks of error results.
+  Mutants of the fixes: five, each failed by a named test once a task's owner who lost work access
+  was tested (`target/evidence/mutants-slice11-r1.log`: `survived=0`).
+- **Independent review, round 2** (head `d4615916c`): request changes, narrowly: R2-1, a long
+  report made a link longer than GitHub's new-issue form takes: refused past 6000 bytes before it
+  is kept (`checked_link`); R2-2, the name check matched substrings (any "Yulius" on the Yulius
+  instance, a slug `api` in "application"): whole words only, not for the Yulius project itself,
+  and the refusal names the kind of name (`project_named`, `names_word`); R2-3, ABL-004 reworded.
+  Three more mutants, each failed by a unit test (`mutants-slice11-r2.log`: `survived=0`).
