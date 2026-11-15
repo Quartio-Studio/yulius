@@ -205,7 +205,8 @@ watching, steering and unblocking.
   (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
   After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
-  its conversation.
+  its conversation; it waits while its person has text in its prompt box they did not send, and
+  what they type while it restarts reaches the new session (SPEC-487).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
   (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where

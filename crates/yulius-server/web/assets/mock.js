@@ -3627,8 +3627,9 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   needClaude(db);
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
-  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
+  // Held first, so a test acts while a start that then fails is under way.
   if (db.holdCockpit) await db.holdCockpit;
+  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };

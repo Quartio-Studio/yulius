@@ -238,18 +238,32 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   }
 
   /** Opens the session; `focus` only when the person asked for the Superagent (not a new page or sandbox). */
-  async function open({ focus: wantFocus = true } = {}) {
+  /**
+   * What the person typed while the session restarted in place, for the new one (SPEC-487 SES-001):
+   * whole frames, so a cut never splits a key's sequence or a paste's markers.
+   */
+  let held = [];
+  const heldText = () => held.join('');
+
+  async function open({ focus: wantFocus = true, keep = false } = {}) {
     if (opening || !alive) return;
     // Where the keyboard was: a slow start does not take it once the person has moved on.
     const from = document.activeElement;
     opening = true;
-    drop();
-    setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
+    // A restart in place keeps the ended terminal, and the keyboard in it, until the new one runs:
+    // what the person types meanwhile is kept for it (SPEC-487 SES-001).
+    if (!keep) {
+      drop();
+      setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
+    }
     let shell;
     try {
       shell = await openShell();
     } catch (err) {
       opening = false;
+      // The restart failed: the ended terminal goes, and what was typed for it with it (review of slice 9a, F6).
+      held = [];
+      if (keep) drop();
       if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the ${name}: ${err.message}`, () => open())));
       return;
     }
@@ -329,11 +343,24 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
       // Opened again rather than recovered: the server answers once the new one runs (it holds the
       // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
-      onExit: (exit) => { if (exit.status === 'switched' && !restarting) open({ focus: el.contains(document.activeElement) }); },
+      onExit: (exit) => { if (exit.status === 'switched' && !restarting) open({ focus: el.contains(document.activeElement), keep: true }); },
+      // Typed while it restarts in place: kept, and typed into the new session once it runs (SPEC-487 SES-001).
+      onExitedInput: (data, exit) => {
+        if (exit.status !== 'switched') return false;
+        // A Ctrl-C would interrupt the new session as it starts (review of slice 9a, F7).
+        const keys = data.replace(/\x03/g, '');
+        if (keys) held.push(keys);
+        while (heldText().length > HELD_MAX) held.shift();
+        return true;
+      },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
       // leaves the keyboard where it is.
-      onReady: () => { asked = { focus: false, from: null }; },
+      onReady: () => {
+        asked = { focus: false, from: null };
+        // Kept until they are sent: a socket not open yet sends them at the next first screen.
+        if (held.length && terminal.sendKeys(heldText())) held = [];
+      },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository. The
       // Global Superagent has no files: it works through Yulius only.
@@ -509,6 +536,8 @@ function askedFor(request) {
   }
 }
 
+/** The most a restart keeps of what was typed meanwhile (a message's worth). */
+const HELD_MAX = 16384;
 /** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
 const ARM_MS = 600;
 /** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */

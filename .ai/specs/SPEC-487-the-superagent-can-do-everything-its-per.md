@@ -81,7 +81,8 @@ pull request delivers that part.
 | 7 | The instance: version, health, update status, checks, Update now and Restart with the buttons' refusals; reconnection after a restart | wall 1 |
 | 8a | Requests to the person that last: cross-sandbox requests stored, amendable, still there later; a pending decision of the Superagent's own; another sandbox's task list | walls 6, 9 |
 | 8b | Production deploy and rollback, promotion to `main` and a project's onboarding behind one confirmation in the panel with the typed project slug (the person's decision of 2026-11-13) | wall 4 (production) |
-| 9 | The Superagent's session lasts: standing instructions and checks survive a restart, a message typed during one is kept, a tool list that changes restarts nothing | wall 8 |
+| 9a | Nothing typed to the Superagent is lost in a restart: keys typed while it restarts reach the new session, and an update's restart waits for text left in its prompt box | wall 8 |
+| 9b | Its standing jobs have a durable home: scheduled checks held by Yulius, kept across restarts, typed into its session when it is idle | wall 8 |
 | 10 | Secrets (a value entered masked beside the chat, never seen by the agent) and visibility (cost, load, a crash's exit and last screen, a checkout that is current) | walls 10, 11 |
 | 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
 
@@ -181,6 +182,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | REL-004 | The approval runs the CD page's `cd_deploy`, `cd_rollback` or `promote_sandbox` with the answering person's browser session and the slug they typed; their checks and refusals at that moment are the answer of the click and of the waiting call. Audited `superagent.cross_task` with the action, never the slug. | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug` (production deployed to v2, rolled back to v2 from v3 with `main` unmoved, a promotion's own "nothing to promote") |
 | REL-005 | `onboarding_start {notes?}`, approved by a click, runs the project page's Start onboarding (`approve_onboarding`) as that person. | `cross_sandbox::onboarding_starts_on_the_persons_click` (the start's own answer: this harness has no Git); `superagent-requests.e2e.ts` (the click) |
 | REL-006 | The three new tools (`cd_rollback`, `promote`, `onboarding_start`) ask in Claude Code first as every changing tool does; the instructions say production, `promote` and `onboarding_start` wait on the panel. | `manage_tools::the_cockpit_asks_before_every_changing_tool`; `cockpit::a_cockpit_manages_the_project_for_its_owner`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
+| SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move, Restart) is kept in whole frames, up to 16 KiB, without Ctrl-C, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. A restart that fails drops it. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back", "what is typed for a restart that fails is not sent to a later session" |
+| SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied, for at most 30 minutes after the last keystroke; its state reads `held`. Text, a paste (also split across frames), Alt-Enter and backslash-Enter type; Enter outside a paste and Ctrl-C empty the box; Esc, Tab, arrows and editing keys do neither. Keystrokes are ordered by their count; a draft's mark is kept with the Superagent's record, so a server restarted for the update knows it. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`, `a_draft_typed_before_the_servers_restart_holds_the_superagents`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
 
 ## Plan
 
@@ -196,7 +199,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [x] Slice 8a: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, another sandbox's task list)
 - [x] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
-- [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
+- [ ] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
+- [ ] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
 - [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
 - [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
@@ -502,6 +506,15 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 9a: an update still restarts the Superagent; nothing typed is lost to it** (SES-001,
+  SES-002). Claude Code 2.1.325 handles `notifications/tools/list_changed`, but the Superagent's
+  MCP instructions are read only when it connects, and Yulius's MCP endpoint answers JSON with no
+  stream for the server's notifications (`GET /mcp` is 405, `listChanged: false`): a stream held
+  open through each sandbox's forward for every Superagent is a change of its own, for a restart
+  that already resumes the conversation. What a restart lost was the person's text and the
+  Superagent's own schedulers; the text is kept here, the schedulers move to Yulius in slice 9b.
+- **A draft holds a restart for at most half an hour** after its last keystroke: one left for
+  longer is taken as abandoned, so an update reaches every Superagent within the hour.
 - **Slice 8b: the typed slug on the panel is the CD page's confirmation** (REL-001,
   ADR-0334). The person decided it on 2026-11-13; ADR-0110 holds (a person decides production and
   types the slug). The slug is checked by the server before the request is taken, so a slip
@@ -959,3 +972,50 @@ the function the web UI's route calls, with the person's rights checked at the c
   - n1: a release's amend refusal names releases (tested), the onboarding card's hint, the mock's
     double announcement, the ADR's "amendable", the Plan box.
   Two more mutants (`mutants-slice8b-r1.log`: `survived=0`).
+
+### Slice 9a (2026-11-15)
+
+- **Slice 8b is merged:** pull request #1304 into `dev` at `5de33aa65`, whose own Yulius CI run
+  passed.
+- **Tests and code:** `an_updates_restart_waits_for_text_left_in_the_prompt_box` (an adopted
+  Superagent due a refresh, a draft typed through its terminal's socket during a turn; the turn
+  ends and the restart reads `held`; the Enter lets it go on) failed first with the check taken
+  out (it timed out waiting for `held`); a first form of it that waited for `due` passed without
+  the fix and was replaced. The rule's unit test covers Enter, Ctrl-C, a pasted line break and
+  the half hour. The panel: `agent-panel.e2e.ts` "what is typed while the Superagent restarts
+  reaches it once it is back" failed before the change (the panel swapped the terminal for its
+  skeleton, so the keys went nowhere); the panel, Global Superagent, request and terminal specs
+  pass (112 of 112).
+- **Mutation:** five one-line mutants, each failed by a named test
+  (`target/evidence/mutants-slice9a.py`, `mutants-slice9a.log`: `survived=0`).
+- **Not tested:** a real Claude Code's prompt box (the fake agent echoes keys; what empties it is
+  read from the keys, Enter and Ctrl-C, not from its screen); a usage-limit move with keys typed
+  meanwhile (it is the same `switched` path the e2e test drives).
+- **Gate:** `scripts/dev ci` passed on `4ae29eedc` (4430 tests, 17 skipped;
+  `target/evidence/gate-slice9a.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `4ae29eedc`): request changes, all in this slice's code,
+  answered test-first:
+  - F1 (major), a draft typed before the server restarts for the update was forgotten (the marks
+    lived in memory): the draft's mark is kept in `shell.json` when a draft starts or ends
+    (`a_draft_typed_before_the_servers_restart_holds_the_superagents`, failed first).
+  - F2, a paste split across frames read a line break as Enter, and two keystrokes in one
+    millisecond tied: the paste is followed across frames, and keystrokes are ordered by their
+    count, the clock kept only for the half hour.
+  - F3, F4, Alt-Enter and backslash-Enter read as sent, and Esc, Tab or arrows as a draft:
+    `read_box_keys` reads them as Claude Code does (unit test). Shift-Enter reaches the terminal
+    as a plain Enter, so it still reads as sent (the draft is then not held; nothing else changes).
+  - F5, a held refresh redid its costly steps every pass: the draft is checked first, in
+    `cockpit_refresh_now`.
+  - F6, a restart that failed kept the ended terminal and its held keys for a later session:
+    dropped (e2e "what is typed for a restart that fails is not sent to a later session", failed
+    first). F7: Ctrl-C is left out of held keys, which are kept until sent. F8: held keys are
+    whole frames.
+  - F9, `draft_holds` duplicated `agent_cli::is_draft`: it uses it. F10, F11: the comments.
+  - F12, tests: the paste, Alt-Enter, Esc, a draft across the server's restart and a failed
+    restart are tested now; the half hour in an integration test is not (the unit test holds it).
+  - Docs: "nothing typed is lost" said more than this does; the documents say what is kept.
+  Ten mutants now (`target/evidence/mutants-slice9a-r1.py`, `mutants-slice9a-r1.log`); nine are
+  failed by a named test, after Alt-Enter on its own was added; one survives on purpose: taking
+  out the early draft check in `cockpit_refresh_now` leaves the same behaviour (the check before
+  the end still holds the restart) and only costs the work F5 named.
