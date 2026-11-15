@@ -25,6 +25,9 @@ export async function instrument(browser: Browser): Promise<void> {
     (window as Instrumented).__e2eErrors = errors;
     addEventListener('error', (event) => errors.push(`uncaught: ${event.message}`));
     addEventListener('unhandledrejection', (event) => errors.push(`unhandled rejection: ${String(event.reason)}`));
+    // e2e/serve.py sends the server's policy (ADR-0338): a load it refuses is only logged by the
+    // browser, so the refusal itself is the error.
+    addEventListener('securitypolicyviolation', (event) => errors.push(`refused by the policy: ${event.effectiveDirective} ${event.blockedURI}`), true);
     const original = console.error.bind(console);
     console.error = (...args: unknown[]) => {
       errors.push(`console.error: ${args.map(String).join(' ')}`);
@@ -72,7 +75,8 @@ export async function firstShown(locator: Locator, text?: TextMatch): Promise<vo
 
 /**
  * Registers hooks for the calling test file: every test loads axe-core and fails when the page
- * reported an error (uncaught exception, unhandled rejection or `console.error`). Opening or
+ * reported an error (uncaught exception, unhandled rejection, `console.error` or a load the
+ * content security policy refused). Opening or
  * reloading a mock page also waits for the mock (`waitForTheMockOnEveryLoad`).
  */
 export function failOnPageErrors(): void {
