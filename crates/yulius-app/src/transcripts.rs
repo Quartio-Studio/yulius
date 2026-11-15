@@ -1075,6 +1075,36 @@ mod tests {
         };
         let (shifted, _) = read_page_at(File::open(&path)?, Some(&off), 3, 100, MAX_PAGE_CHARS)?;
         assert_eq!(shown(&shifted), shown(&whole));
+        // A value only the dotenv rule hides (a secret's name, a plain value): the point keeps
+        // the dotenv read made before it, at a page's end and at the file's end alike.
+        let dotenv = dir.path().join("dotenv.jsonl");
+        let mut text = String::new();
+        for line in [
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "e1", "name": "Read", "input": {"file_path": "/repo/.env"}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": "Go on"}}),
+        ] {
+            text.push_str(&serde_json::to_string(&line)?);
+            text.push('\n');
+        }
+        std::fs::write(&dotenv, &text)?;
+        let (_, at_end) = read_page_at(File::open(&dotenv)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        let (_, at_page) = read_page_at(File::open(&dotenv)?, None, 0, 1, MAX_PAGE_CHARS)?;
+        text.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "e1", "content": "DB_PASSWORD=plainword\n"}]}}),
+        )?);
+        text.push('\n');
+        std::fs::write(&dotenv, &text)?;
+        for point in [at_end, at_page] {
+            let (page, _) =
+                read_page_at(File::open(&dotenv)?, Some(&point), 2, 100, MAX_PAGE_CHARS)?;
+            let shown = shown(&page);
+            assert!(
+                shown.contains("DB_PASSWORD") && !shown.contains("plainword"),
+                "{shown}"
+            );
+        }
         Ok(())
     }
 
