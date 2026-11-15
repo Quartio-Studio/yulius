@@ -1153,3 +1153,23 @@ the function the web UI's route calls, with the person's rights checked at the c
     description is trimmed when stored.
   Mutants of the fixes: four, each failed by a named test once the project's request left its
   scope out (`target/evidence/mutants-slice10a-r1.log`: `survived=0`).
+
+### Slice 10b (2026-11-15)
+
+- **Slice 10a is merged:** pull request #1311 into `dev` at `066e6468e`, whose own Yulius CI run
+  passed. Its first run at `4f85e0196` failed one test outside this change
+  (`task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run`, which passes alone
+  6 of 6: filed as #1312, run again, passed).
+- **Review of slice 10a, round 2 notes**, answered first: n1, the password-field fallback says
+  how to write a key's line breaks and asks for a new password; n3, ADR-0336 calls the wiping best
+  effort; n2 (a card's "replaces" read on each panel read: the store looks again at storing) and
+  n4 (Configure is write access, which a Superagent's person has) answered in words.
+- **Tests and code:** `the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`
+  was written first (a crashed task's saved last screen and exit code, its tokens row, one task's
+  row only, a project not cloned); `the_checkout_says_how_far_it_is_from_the_integration_branch`
+  runs on the CD fixture's real clone (one behind more after a push and a fetch).
+- **Mutation:** six mutants, each failed by a named test after two were rewritten (one did not
+  compile, one did not match the formatted code) and the tokens test got one task's row
+  (`target/evidence/mutants-slice10b.py`, `mutants-slice10b.log`: `survived=0`).
+- **Not tested:** a live task's screen (the hub the page reads; the saved screen is the case the
+  evidence named); a task's load (left open, above).
