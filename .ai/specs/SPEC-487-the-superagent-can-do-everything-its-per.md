@@ -204,7 +204,7 @@ with those rights checked at the call.
 | VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for the tasks created in a period (default: the last 7 days), the most first and at most 50, and the period's totals by model. | the same test (a default period set; one task's row only) |
 | VIS-003 | `checkout` answers the project's repository checkout's branch and how many commits its head is behind and ahead of its integration branch on the remote as last fetched, and when that remote branch was fetched; a project not cloned, or a remote branch never fetched, is said so (409). It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
 | VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
-| ABL-001 | `ability_report {ability, case, needed_for?}`, served to the Superagent and to every task's agent (its owner still working in the project), reports a missing ability in one call; refused: an ability empty, over 200 characters or on more than one line, a case empty or over 4000 characters, `needed_for` over 1000, invisible characters, unknown arguments, a text naming the project (its slug, repository or owner as a whole word; not for the Yulius repository's own project) or holding one of its agent secrets' values, a report whose filing link would pass 6000 bytes (GitHub's form refuses long ones). | `cockpit::a_missing_ability_is_reported_in_one_call` (the Superagent and a task's agent) |
+| ABL-001 | `ability_report {ability, case, needed_for?}`, served to the Superagent and to every task's agent (its owner still working in the project), reports a missing ability in one call; refused: an ability empty, over 200 characters or on more than one line, a case empty or over 1500 characters (what the link takes of plain ASCII prose), `needed_for` over 1000, invisible characters, unknown arguments, a text naming the project (its slug, repository or owner as a word, also inside a compound such as `shop-api` or `ShopApi`, and a camelCase name as its words apart (`web app` for `WebApp`); the refusal names it and how it was written, so an agent rewords ordinary text a name catches, such as `real-time` for a project `time` or `GitHub` for `hub`; not for the Yulius repository's own project) or holding one of its agent secrets' values, a report whose filing link would pass 6000 bytes (GitHub's form refuses long ones; the refusal gives the link's size). | `cockpit::a_missing_ability_is_reported_in_one_call` (the Superagent and a task's agent); `ability_reports::tests` (`a_project_name_is_matched_as_a_whole_word`, `a_prose_case_at_its_cap_fits_the_link`, `a_link_past_the_bound_says_its_size`) |
 | ABL-002 | Every report is audited `ability.reported` on the instance with the ability, the case and who reported it; the answer carries a link that opens a new issue in the Yulius repository titled `Missing ability: …`, labelled to be triaged, holding the agent's words and an acceptance criterion, for the person to submit: nothing is sent without them. | the same test (the link; nothing sent to GitHub; refused for the project's name and a secret); `ability_reports::tests::an_issue_holds_the_words_and_a_criterion`, `a_query_value_is_percent_encoded` |
 | ABL-003 | At most 5 reports an hour per person, the Superagent's and their tasks' together. | the same test (the sixth refused); `ability_reports::tests::reports_are_bounded_per_hour_and_the_window_moves_on` |
 | ABL-004 | The instructions send a missing ability to `ability_report`; it sends nothing outside the instance (the person files the link), and Claude Code asks before it as before every tool that is not read-only. | `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do`; `manage_tools::the_cockpit_asks_before_every_changing_tool` |
@@ -229,6 +229,7 @@ with those rights checked at the call.
 - [x] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
 - [x] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
 - [x] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
+- [x] Slice 11's last review notes: a project name's compounds refused, the refusal names the word, the case's length as the link takes it
 
 ## Acceptance criteria
 
@@ -1256,3 +1257,22 @@ with those rights checked at the call.
   instance, a slug `api` in "application"): whole words only, not for the Yulius project itself,
   and the refusal names the kind of name (`project_named`, `names_word`); R2-3, ABL-004 reworded.
   Three more mutants, each failed by a unit test (`mutants-slice11-r2.log`: `survived=0`).
+- **Review of slice 11, round 3 notes** (follow-up after PR #1315, head `745f00417`): R3-1, a
+  compound of the project's name (`shop-api`, `shop_db`) slipped through: only letters and digits
+  bound a name now; R3-2, the refusal names the word; R3-3, the case is capped at 1500 characters,
+  what the filing link takes of plain ASCII prose (`MAX_CASE_CHARS`). Tests first
+  (`a_project_name_is_matched_as_a_whole_word`, `a_case_at_its_cap_fits_the_link`,
+  `cockpit::a_missing_ability_is_reported_in_one_call` failed before the fix); three mutants, each
+  killed (`mutants-slice11-r3.log`: `survived=0`). Security scan: Vidoc disabled.
+- **Independent review of `745f00417`**: approve, with minors answered test-first: the link's
+  refusal gives its size and the bound and names every text (m1, m6); a camelCase compound
+  (`ShopApi`, `ACMEShop`) is the name too (m2); the case's cap is checked by `checked_case`, its
+  bound inclusive (m3); the cap's wording says plain ASCII prose, since other text meets the
+  link's bound first (m1); the broader match's cost, ordinary text a short name catches, is said
+  in ABL-001 (n4); the test column names the unit tests (n5). Mutants:
+  `mutants-slice11-r3b.log` (one survived, a hump after a digit, until `Api2Shop` was tested;
+  then `survived=0`).
+- **Delta review of `25991ca66`**: approve, with notes answered: a camelCase name found as its
+  words apart is said so in the refusal (`naming_refusal`: ``written `web app` ``, m1), and the
+  word-split case is in ABL-001; a character outside ASCII takes up to 12 bytes in the link,
+  not 9 (n2); `docs/changes.md` says the camelCase compounds and plain ASCII prose (n3).
