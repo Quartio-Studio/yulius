@@ -742,7 +742,8 @@ went; two of the auditors' items had gained a user since and stay.
   tasks 2 738 calls, 88 ms: about 14 calls a task, and a cost that grew faster than the list.
   The growth came from every queued task's summary reading the project's whole task list (every
   task with its prompt) again to find the supertasks that hold it (`supertask_holders`): a list
-  with many queued tasks cost the square of its length.
+  with many queued tasks cost the square of its length. The pass of the queue (`drain_queue_now`,
+  every 60 s and on some seventeen events) did the same for every queued task.
 
 ## Requirements
 
@@ -1291,7 +1292,9 @@ went; two of the auditors' items had gained a user since and stay.
   (`reindex_session`).
 - **EFF-003** A project's task list reads the project's tasks once and hands them to every
   summary: a queued task's holders are found among them, so the list costs a fixed number of
-  store reads a task, whatever its length; a single task's summary reads the project as before.
+  store reads a task, whatever its length; a pass of the queue reads each project once for all
+  its queued tasks; a single task's summary, and a start's own check, read the project as
+  before.
 
 ## Plan
 
@@ -2381,7 +2384,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 37 (no decision record: a refactor). Only the part that grew with the square of the
-  list is taken out: the rest is about 13 store reads a task, each a hop of some 10 µs to the
+  list (in the list and in the queue's pass; a start checks the hold afresh at launch) is taken
+  out: the rest is about 13 store reads a task, each a hop of some 10 µs to the
   store's thread (31 ms for 200 tasks). Batching every reader of a summary (steps, the live
   run, chains, times, control requests, the attention and needs-you views, the pause) into
   per-project queries would rewrite some twenty helpers that the single task's summary and
@@ -3204,3 +3208,14 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `2a1dea047`: exit 0; `4441 tests run: 4441 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `c36cace24`): request changes. One minor, own text:
+  the same re-read stays in the queue's pass (`drain_queue_now` asks `held_by_supertask` for
+  every queued task), which runs every 60 s and on events whether anyone looks or not, so the
+  ledger's closure was incomplete. Nit: nothing pins that the list hands the project (only the
+  read count changes; accepted, the probe measured it). The reviewer found the list the same
+  query as before, the order irrelevant (`holders` sorts), archived lists on the old path, the
+  probe's saved calls equal to the queued tasks, and the kept linear reads documented.
+  Answered: the pass reads each project once (`held_by_supertask_among`); handing it an empty
+  project fails `supertask::a_new_supertask_relabels_the_queue_at_the_session_limit`
+  (`mutations-r1.log`, 3 cases, none survives); the supertask, queue, supervision and capacity
+  tests: 95 passed.
