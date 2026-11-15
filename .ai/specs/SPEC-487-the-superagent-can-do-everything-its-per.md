@@ -190,9 +190,9 @@ the function the web UI's route calls, with the person's rights checked at the c
 | CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute (checked again with its terminal held): one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then, a minute if it could not be typed; not in the first 20 seconds after the Superagent started, nor within 30 seconds of the last check typed into it. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
 | CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then: not for a disabled person; a start that fails is tried again after 2, 4, … up to 60 minutes; the checks of a person or a sandbox that is gone are deleted. | the same test (`start_superagents_for_due_checks` after the Superagent ended, for a disabled person, for a removed sandbox) |
 | CHK-005 | The three tools are the Superagent's only; `superagent_checks` is pre-allowed, the other two ask in Claude Code first; the instructions send standing jobs to `superagent_check_set`, never to a timer of the Superagent's own. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
-| SEC-001 | `secret_request_value {name, description?, scope?}` is a request on the Superagent's own panel (lasting; no amend); refused before anyone is asked for a name that is not capitals, digits and underscores starting with a capital, a scope other than `sandbox` or `personal`, a description over 500 characters, unknown arguments. The card names the secret and what it is for and holds a masked multi-line field; Store takes a click once 8 characters are typed. | `cockpit::a_secret_value_typed_on_the_panel_reaches_the_vault_only`; `superagent-requests.e2e.ts` "a secret the Superagent asks for is typed masked on its panel and stored" |
-| SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one the vault would refuse, or none, leaves the request waiting. | the same test (no value, a short one, a cut key: refused, still waiting) |
-| SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: a new agent secret of that scope, or the new value of theirs of that name; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`) |
+| SEC-001 | `secret_request_value {name, description?, scope?}` is a request on the Superagent's own panel (lasting; no amend); refused before anyone is asked for a name the vault takes from no agent (not capitals, digits and underscores, reserved, the Vidoc key), a scope other than `sandbox` (the default, named on the card; Configure needed) or `personal`, a description over 500 characters, unknown arguments. The card names the secret, the project, its scope, what it is for and, when it is so, that it replaces a value; it holds a masked multi-line field (a password field where the browser cannot mask one); Store takes a click once 8 characters are typed. | `cockpit::a_secret_value_typed_on_the_panel_reaches_the_vault_only`; `superagent-requests.e2e.ts` "a secret the Superagent asks for is typed masked on its panel and stored" |
+| SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one these rules refuse, or none, leaves the request waiting and the value typed on the card. | the same test (no value, a short one, a cut key: refused, still waiting) |
+| SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: the new value of their secret of that name in the scope asked, or a new agent secret there; never another scope's or a global one; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`; the project's of the same name: `created` beside the personal one) |
 | SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
 
 ## Plan
@@ -1113,3 +1113,25 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Not tested:** a Superagent's call that waited past its 4 minutes and the value stored later
   (the same lasting request as XRQ-001, tested there); a person without the right to manage the
   scope (the vault's own refusal, answered to both the click and the call).
+- **Gate:** `scripts/dev ci` passed on `db1442752` (4438 tests, 17 skipped;
+  `target/evidence/gate-slice10a.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `db1442752`): request changes; no leak found; all in this
+  slice's code:
+  - M1 (major), a value replaced the person's secret of that name in any scope (a personal one
+    for a project request, a global one for an administrator): only their secret of that name
+    in the scope asked is replaced (`secret_replaced`); the test creates the project's
+    `DEPLOY_KEY` beside the personal one.
+  - M2, the card did not say whose it is or that it replaces a value: it names the project and
+    the scope (the default named) and says "Replaces the value of …" (e2e).
+  - M3, reserved names and missing rights were found only once the request was taken: the name is
+    checked as the vault checks an agent's (`agent_made_name`: reserved names, the Vidoc key) and
+    the project's scope needs Configure, before asking (the Vidoc key tested; Configure is write
+    access, which a Superagent's person has); the documents say which later refusals remain.
+  - M4, the field was emptied before the server took the value: it is kept until then (e2e: a
+    value refused stays typed).
+  - m1: the Vidoc key is refused. m2: the value is held in `Zeroizing` and the input built
+    directly. m3: `RequestAnswer`'s `Debug` hides the value. m4: `auto_allow` as every agent
+    secret, said in ADR-0336. m5: a password field where the browser cannot mask a text box,
+    password-manager attributes off, the label says "never shown to your Superagent". The
+    description is trimmed when stored.

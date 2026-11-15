@@ -22,16 +22,23 @@ its line breaks without a word.
 
 - **`secret_request_value {name, description?, scope?}`** is a request on the Superagent's own
   panel, lasting as its others are: the card names the secret and what it is for, and holds a
-  masked multi-line field. Refused before anyone is asked: a name that is not capitals, digits
-  and underscores, a scope other than `sandbox` (default) or `personal`, a description over 500
-  characters, unknown arguments.
+  masked multi-line field (a password field where the browser cannot mask a text box), its scope
+  (this project's, or the person's own) and, when it is so, that it replaces the value of the
+  person's secret of that name in that scope. Refused before anyone is asked: a name the vault
+  takes from no agent (not capitals, digits and underscores, reserved, the Vidoc key), a scope
+  other than `sandbox` (default; the person needs Configure in the project) or `personal`, a
+  description over 500 characters, unknown arguments.
 - **The value goes from the page to the vault.** The answer carries it once; it is checked as
   the Secrets page checks a pasted value (`agent_value_from_file`: a final line break dropped, a
   key's line breaks as literal `\n`, a cut or flattened key refused) before the request is
-  taken, so a value the vault would refuse leaves the request waiting. Approved, it is stored
-  with the answering person's browser session as theirs: a new agent secret of that scope, or
-  the new value of theirs of that name. The request, its file, its outcome and the audit hold
-  the name only; the page clears the field once sent.
+  taken, so a value the vault refuses for its own rules leaves the request waiting, typed (the
+  vault's later refusals, such as a capacity or a race on the name, are the answer of both the
+  click and the call). Approved, it is stored with the answering person's browser session as
+  theirs: the new value of their secret of that name in the scope asked, or a new agent secret
+  there; never another scope's secret, never a global one. Like every agent secret it starts
+  with agents allowed to propose its hosts (`auto_allow`), as `secret_create_from_file`'s do. The
+  request, its file, its outcome and the audit hold the name only; the value is wiped once
+  stored, and the page clears the field once the server took it.
 - **The Superagent learns the name and whether it was created or updated**, and uses it as
   `$NAME` or its placeholder, as every agent secret.
 
