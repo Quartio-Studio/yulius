@@ -206,7 +206,11 @@ watching, steering and unblocking.
   After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation; it waits while its person has text in its prompt box they did not send, and
-  what they type while it restarts reaches the new session (SPEC-487).
+  what they type while it restarts reaches the new session (SPEC-487). A standing job its person
+  asks for ("keep monitoring the deploy", "check the disk every hour") is a scheduled check Yulius
+  holds, not a timer of its session: due, it is typed into the Superagent when it is idle, after
+  any restart, and a Superagent that is not running is started for it
+  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
   (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where

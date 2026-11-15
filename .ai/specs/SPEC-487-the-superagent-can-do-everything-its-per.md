@@ -184,6 +184,11 @@ the function the web UI's route calls, with the person's rights checked at the c
 | REL-006 | The three new tools (`cd_rollback`, `promote`, `onboarding_start`) ask in Claude Code first as every changing tool does; the instructions say production, `promote` and `onboarding_start` wait on the panel. | `manage_tools::the_cockpit_asks_before_every_changing_tool`; `cockpit::a_cockpit_manages_the_project_for_its_owner`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 | SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move, Restart) is kept in whole frames, up to 16 KiB, without Ctrl-C, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. A restart that fails drops it. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back", "what is typed for a restart that fails is not sent to a later session" |
 | SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied, for at most 30 minutes after the last keystroke; its state reads `held`. Text, a paste (also split across frames), Alt-Enter and backslash-Enter type; Enter outside a paste and Ctrl-C empty the box; Esc, Tab, arrows and editing keys do neither. Keystrokes are ordered by their count; a draft's mark is kept with the Superagent's record, so a server restarted for the update knows it. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`, `a_draft_typed_before_the_servers_restart_holds_the_superagents`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
+| CHK-001 | `superagent_check_set {name, every_minutes, prompt}` creates or replaces a check of the Superagent's (a name of 1 to 60 characters on one line, 5 to 1440 minutes, a prompt of 1 to 2048 bytes, no invisible characters, no unknown arguments; at most 10); `superagent_checks` lists them with when each runs next and ran last; `superagent_check_delete {name}` deletes one. Audited `superagent.check` without the prompt. | `cockpit::the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle` |
+| CHK-002 | The checks are kept in `superagent-checks.json` beside the database and read back at a start before the server takes calls; a file that cannot be read is kept as `.bad`. | the same test (a second `App` on the same data) |
+| CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute: one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then; one check at a time. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
+| CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then. | the same test (`start_superagents_for_due_checks` after the Superagent ended) |
+| CHK-005 | The three tools are the Superagent's only; `superagent_checks` is pre-allowed, the other two ask in Claude Code first; the instructions send standing jobs to `superagent_check_set`, never to a timer of the Superagent's own. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 
 ## Plan
 
@@ -506,6 +511,12 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 9b: standing jobs are checks Yulius holds** (CHK-001 to CHK-004, ADR-0335): the
+  conversation survives a restart, its schedulers do not, so the schedule moves out of the
+  session. A due check may start a Superagent: that is what "keep monitoring" means to the
+  person, and 10 checks of at least 5 minutes bound it. The instructions lost two parentheticals
+  (`session_read`'s tail and a browser tab's link, which their tools' descriptions say) to make
+  room for the rule within 4096 characters.
 - **Slice 9a: an update still restarts the Superagent; nothing typed is lost to it** (SES-001,
   SES-002). Claude Code 2.1.325 handles `notifications/tools/list_changed`, but the Superagent's
   MCP instructions are read only when it connects, and Yulius's MCP endpoint answers JSON with no
