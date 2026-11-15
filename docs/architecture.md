@@ -1180,10 +1180,17 @@ The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matc
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its
 number and reviewer), picks its reviewer (`review::round_agent`: rounds 1 and 2 Fable, later
-Opus; the Opus reviewer when the run's subscription cannot run Fable now), records it in
-`review_rounds` and answers: nothing to change, or `updatedInput` with the other
+Opus), records it in `review_rounds` and answers: nothing to change, or `updatedInput` with the other
 `subagent_type` and the rest of the input as asked, and in both cases a line of context naming
-the round and its model. A failure to decide lets the reviewer start as asked. `SubagentStart`
+the round and its model. When a round would run Fable and the run's subscription cannot run it
+now, the session moves first (REV-007): `rotation::move_to_also_run` picks the best other
+subscription that can run both the session's model and Fable, the Agent call is refused with
+why, and `switch_task_now` (reason `review_fable`, which interrupts the turn first as a person's
+switch does) continues the session there with a prompt asking for the review again. While
+background work runs or a prompt waits in Claude Code's queue the call is refused with that
+reason and nothing moves. With no such subscription, or a move refused moments ago, the round
+runs the Opus reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
+lets the reviewer start as asked. `SubagentStart`
 links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
 with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a

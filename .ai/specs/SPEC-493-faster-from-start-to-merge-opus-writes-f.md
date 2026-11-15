@@ -557,6 +557,12 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - **A round is counted when it ended with a report.** A reviewer cut off by a limit and started
   again (against the rule) must not push round 2 to Opus; and the request says a resumed round
   keeps its model.
+- **The move for a Fable reviewer refuses the Agent call and interrupts the turn (fix 1d).**
+  Holding the `PreToolUse` hook until the session ended would run nothing meanwhile, but the hook
+  client never holds `PreToolUse` (a `202` fails open there, and Claude Code's timeout for it is
+  short), so every running session would need a new launch first. A refused call that the agent
+  answers mid-turn is what a person's switch meets, so the move interrupts first as that one
+  does. The first prompt on the new subscription says why and asks for the review again.
 - **No refusal of `delivery_merge` for a missing round record.** A session started before the
   update has no reviewer agents, and a verdict line can be missing from a real approval. The
   record says "no recorded review round approved", and the analytics read counts such merges, so
