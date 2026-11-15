@@ -12,7 +12,25 @@ use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
-const PAUSE_COLS: &str =
+/// The pauses that were open since `?1`, with the columns `cols` (`pauses_since`): the open
+/// ones and those that ended at or after it, as two branches that each read the `ended_at`
+/// index. Unordered: an `ORDER BY` (or one `OR`) made SQLite scan the whole table in
+/// `started_at` order, so the caller sorts the few rows.
+pub(crate) fn pauses_since_sql(cols: &str) -> String {
+    format!(
+        "SELECT {cols} FROM capacity_pauses WHERE ended_at IS NULL \
+         UNION ALL SELECT {cols} FROM capacity_pauses WHERE ended_at >= ?1"
+    )
+}
+
+/// The runs that count towards the capacity view since `?1`: the live ones and those that ended
+/// at or after it, with their metrics (`token_runs`).
+pub(crate) const TOKEN_RUNS_SQL: &str = "SELECT a.account_id, a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, \
+     m.model, m.input_tokens, m.output_tokens, m.cache_read, m.cache_write, \
+     m.turns, m.active_ms FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
+     WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1";
+
+pub(crate) const PAUSE_COLS: &str =
     "id, task_id, kind, account_id, continuation, started_at, ended_at, outcome";
 
 fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {
@@ -126,14 +144,11 @@ impl CapacityStore for SqliteStore {
 
     async fn pauses_since(&self, since: Timestamp) -> AppResult<Vec<PauseRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(&format!(
-                    "SELECT {PAUSE_COLS} FROM capacity_pauses \
-                     WHERE ended_at IS NULL OR ended_at >= ?1 ORDER BY started_at, id"
-                ))
-                .map_err(db)?;
+            let mut stmt = c.prepare(&pauses_since_sql(PAUSE_COLS)).map_err(db)?;
             let rows = stmt.query_map([since.0], pause_from_row).map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+            let mut pauses = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
+            pauses.sort_by(|a, b| (a.started_at, &a.id).cmp(&(b.started_at, &b.id)));
+            Ok(pauses)
         })
         .await
     }
@@ -199,14 +214,7 @@ impl CapacityStore for SqliteStore {
 
     async fn token_runs(&self, since: Timestamp) -> AppResult<Vec<TokenRunRecord>> {
         self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT a.account_id, a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, \
-                     m.model, m.input_tokens, m.output_tokens, m.cache_read, m.cache_write, \
-                     m.turns, m.active_ms FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
-                     WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1",
-                )
-                .map_err(db)?;
+            let mut stmt = c.prepare(TOKEN_RUNS_SQL).map_err(db)?;
             let rows = stmt
                 .query_map([since.0], |row| {
                     let account: Option<String> = row.get("account_id")?;

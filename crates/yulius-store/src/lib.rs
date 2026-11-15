@@ -167,6 +167,10 @@ const MIGRATIONS: &[&str] = &[
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0059_task_control_from.sql"),
+    // Schema version 61 (SPEC-483 EFF-001). The file is 0061, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0061_capacity_window_indexes.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -406,6 +410,71 @@ pub(crate) fn to_u32(value: i64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 35 (review): a schema version is a position in [`MIGRATIONS`] and a
+    /// database records it, so a migration added before the end would give an existing version
+    /// a different migration: databases at that version would run the one after it again.
+    /// The latest versions keep their files; a new one goes at the end.
+    #[test]
+    fn the_latest_schema_versions_keep_their_migrations() {
+        let pinned = [
+            (57, include_str!("migrations/0057_queued_start.sql")),
+            (
+                58,
+                include_str!("migrations/0058_closed_at_only_when_closed.sql"),
+            ),
+            (59, include_str!("migrations/0060_task_spec_status.sql")),
+            (60, include_str!("migrations/0059_task_control_from.sql")),
+            (
+                61,
+                include_str!("migrations/0061_capacity_window_indexes.sql"),
+            ),
+        ];
+        for (version, sql) in pinned {
+            assert_eq!(
+                MIGRATIONS.get(version - 1),
+                Some(&sql),
+                "schema version {version}"
+            );
+        }
+        assert_eq!(MIGRATIONS.len(), 61, "a new migration is pinned here too");
+    }
+
+    /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of
+    /// their window through an index, never a scan of every run ever recorded. The plans are
+    /// those of a database without statistics, as the store's are: nothing runs `ANALYZE`, and
+    /// without statistics a populated database plans as an empty one (review of slice 35).
+    #[tokio::test]
+    async fn the_capacity_views_read_their_window_through_an_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteStore::open_in_memory()?;
+        for sql in [
+            crate::capacity::TOKEN_RUNS_SQL.to_owned(),
+            crate::capacity::pauses_since_sql(crate::capacity::PAUSE_COLS),
+            crate::accounts::ACCOUNT_TOKENS_SQL.to_owned(),
+        ] {
+            let plan: Vec<String> = store
+                .call(move |c| {
+                    let mut statement = c
+                        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                        .map_err(db)?;
+                    let details = statement
+                        .query_map([0_i64], |r| r.get::<_, String>(3))
+                        .map_err(db)?
+                        .collect::<Result<Vec<String>, _>>()
+                        .map_err(db)?;
+                    Ok(details)
+                })
+                .await?;
+            for step in &plan {
+                assert!(
+                    !(step.starts_with("SCAN a") || step.starts_with("SCAN capacity_pauses")),
+                    "{step} in {plan:?}"
+                );
+            }
+        }
+        Ok(())
+    }
 
     /// A version-2 database (deployed before the Claude-only change) keeps its rows when
     /// version 3 drops the harness-switching columns.
