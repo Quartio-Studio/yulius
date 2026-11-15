@@ -1680,6 +1680,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "secret_create_from_file",
             "secret_request_copy",
             "secret_request_hosts",
+            "secret_request_value",
             "secret_verify",
             "secrets_list",
             "session_read",
@@ -4818,6 +4819,169 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         std::fs::read(file.with_extension("json.bad"))?,
         b"[not json"
     );
+    Ok(())
+}
+
+/// SPEC-487 SEC-001 to SEC-004 (wall 10: "the person retyped 14 by hand; no masked input"; the
+/// person's decision of 2026-11-13: no agent sees a secret's value): the Superagent asks for a
+/// secret's value on its panel; the person types it there and it goes to the vault as theirs,
+/// a multi-line key with its line breaks kept as the Secrets page keeps them; the Superagent,
+/// the requests file and the audit see its name only.
+#[tokio::test]
+async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, UserStore as _};
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let said = |record: &Value| record.to_string();
+    for (args, why) in [
+        (json!({"name": "deploy key"}), "name"),
+        (json!({"name": "DEPLOY_KEY", "x": 1}), "unknown"),
+        (json!({"name": "DEPLOY_KEY", "scope": "instance"}), "scope"),
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "secret_request_value", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+    assert_eq!(waiting_requests(&f).await?, 0, "nobody was asked");
+
+    let ask = |f: &Fixture| {
+        let (internal, token) = (f.h.internal.clone(), token.clone());
+        tokio::spawn(async move {
+            call(
+                &internal,
+                Method::POST,
+                "/mcp",
+                Some(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {
+                    "name": "secret_request_value",
+                    "arguments": {"name": "DEPLOY_KEY", "description": "the dev VM's SSH key", "scope": "personal"}}})),
+                &Creds { bearer: Some(token), ..Creds::default() },
+            )
+            .await
+            .map(|resp| resp.body)
+            .map_err(|err| err.to_string())
+        })
+    };
+    let asking = ask(&f);
+    wait_for_count(&f, 1).await?;
+    let listed = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/superagent/requests", sid()),
+        None,
+        &f.alice,
+    )
+    .await?;
+    let card = &listed.body[0];
+    assert_eq!(card["action"], "secret", "{card}");
+    assert_eq!(card["title"], "DEPLOY_KEY", "{card}");
+    assert_eq!(card["prompt"], "the dev VM's SSH key", "{card}");
+    let id = card["id"].as_str().ok_or("id")?.to_owned();
+    let ctx = yulius_app::auth::AuthContext {
+        user: f.h.store.user(&alice).await?.ok_or("alice")?,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    let answer = |value: Option<&'static str>| {
+        let (app, ctx, id) = (f.h.app.clone(), ctx.clone(), id.clone());
+        async move {
+            app.superagent_request_answer(
+                &ctx,
+                sid().as_str(),
+                &id,
+                &yulius_app::cross_sandbox::RequestAnswer {
+                    value: value.map(str::to_owned),
+                    ..yulius_app::cross_sandbox::RequestAnswer::approve()
+                },
+            )
+            .await
+        }
+    };
+    for value in [
+        None,
+        Some("short"),
+        Some("-----BEGIN OPENSSH PRIVATE KEY----- cut"),
+    ] {
+        let refused = answer(value).await.err();
+        assert!(
+            matches!(refused, Some(yulius_app::error::AppError::Invalid(_))),
+            "{value:?}: {refused:?}"
+        );
+    }
+    assert_eq!(waiting_requests(&f).await?, 1, "still waiting");
+    let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAAAABtZWRpdW0=\n-----END OPENSSH PRIVATE KEY-----\n";
+    let stored = answer(Some(key)).await?;
+    assert_eq!(stored["outcome"], "approved", "{stored}");
+    assert_eq!(stored["secret"], "DEPLOY_KEY", "{stored}");
+    assert_eq!(stored["stored"], "created", "{stored}");
+    let called = tokio::time::timeout(WAIT, asking).await???;
+    for seen in [said(&stored), said(&called)] {
+        assert!(!seen.contains("b3BlbnNzaC1rZXk"), "{seen}");
+    }
+    let sha = f.h.app.deps.crypto.sha256_hex(key.as_bytes());
+    let (verified, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "DEPLOY_KEY", "sha256": sha}),
+    )
+    .await?;
+    assert!(!is_error, "{verified}");
+    assert!(
+        said(&verified).contains("line breaks"),
+        "the key, as its file: {verified}"
+    );
+    let kept = std::fs::read_to_string(f.data.join("superagent-requests.json")).unwrap_or_default();
+    assert!(!kept.contains("b3BlbnNzaC1rZXk"), "{kept}");
+    let rows =
+        f.h.store
+            .audit_details(sid().as_str(), "superagent.cross_task", 20)
+            .await?;
+    assert!(!format!("{rows:?}").contains("b3BlbnNzaC1rZXk"), "{rows:?}");
+
+    // Asked again for the same name: its value is replaced.
+    let again = ask(&f);
+    wait_for_count(&f, 1).await?;
+    let listed = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/superagent/requests", sid()),
+        None,
+        &f.alice,
+    )
+    .await?;
+    let id2 = listed.body[0]["id"].as_str().ok_or("id")?.to_owned();
+    let replaced =
+        f.h.app
+            .superagent_request_answer(
+                &ctx,
+                sid().as_str(),
+                &id2,
+                &yulius_app::cross_sandbox::RequestAnswer {
+                    value: Some("a-new-token-0123456789".into()),
+                    ..yulius_app::cross_sandbox::RequestAnswer::approve()
+                },
+            )
+            .await?;
+    assert_eq!(replaced["stored"], "updated", "{replaced}");
+    tokio::time::timeout(WAIT, again).await???;
+    Ok(())
+}
+
+/// Waits until `count` requests wait on alice's Superagent panel.
+async fn wait_for_count(f: &Fixture, count: usize) -> TestResult {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while waiting_requests(f).await? != count {
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("{count} requests never waited").into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     Ok(())
 }
 

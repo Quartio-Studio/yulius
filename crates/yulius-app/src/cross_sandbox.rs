@@ -148,6 +148,9 @@ pub enum CrossAction {
     Promote,
     /// `onboarding_start`: the project page's Start onboarding (REL-005), approved by a click.
     Onboard,
+    /// `secret_request_value`: a secret's value its person types masked on the panel, stored in
+    /// the vault as theirs (SPEC-487 SEC-001); the request never holds it.
+    SecretValue,
 }
 
 impl CrossAction {
@@ -162,6 +165,7 @@ impl CrossAction {
             Self::Rollback => "rollback",
             Self::Promote => "promote",
             Self::Onboard => "onboard",
+            Self::SecretValue => "secret",
         }
     }
 
@@ -169,7 +173,12 @@ impl CrossAction {
     pub(crate) fn own_sandbox(self) -> bool {
         matches!(
             self,
-            Self::Ask | Self::Deploy | Self::Rollback | Self::Promote | Self::Onboard
+            Self::Ask
+                | Self::Deploy
+                | Self::Rollback
+                | Self::Promote
+                | Self::Onboard
+                | Self::SecretValue
         )
     }
 
@@ -189,6 +198,7 @@ impl CrossAction {
             "rollback" => Self::Rollback,
             "promote" => Self::Promote,
             "onboard" => Self::Onboard,
+            "secret" => Self::SecretValue,
             _ => return None,
         })
     }
@@ -205,6 +215,7 @@ impl CrossAction {
             Self::Rollback => "cd_rollback",
             Self::Promote => "promote",
             Self::Onboard => "onboarding_start",
+            Self::SecretValue => "secret_request_value",
         }
     }
 
@@ -220,6 +231,7 @@ impl CrossAction {
             Self::Rollback => "nothing was rolled back",
             Self::Promote => "nothing was promoted",
             Self::Onboard => "onboarding did not start",
+            Self::SecretValue => "no value was stored",
         }
     }
 
@@ -231,6 +243,7 @@ impl CrossAction {
             Self::Deploy => &["environment"],
             Self::Rollback => &["environment", "release", "part"],
             Self::Promote => &[],
+            Self::SecretValue => &["scope"],
             Self::Message | Self::Stop | Self::Ask | Self::Onboard => &[],
         }
     }
@@ -368,6 +381,34 @@ struct SavedRequests {
     waiting: Vec<SavedRequest>,
     #[serde(default)]
     answered: Vec<Answered>,
+}
+
+/// The person's answer to one request (`POST …/superagent/requests/{id}`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestAnswer {
+    /// Approved, or declined.
+    pub approve: bool,
+    /// The revision of the request the card showed (SPEC-487, review of slice 8a, F1).
+    #[serde(default)]
+    pub revision: Option<u32>,
+    /// A production release: the project's slug, typed by the person (SPEC-487 REL-001).
+    #[serde(default)]
+    pub confirm: Option<String>,
+    /// A secret's value the person typed on the panel (SPEC-487 SEC-002).
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+impl RequestAnswer {
+    /// An approval with nothing typed.
+    #[must_use]
+    pub fn approve() -> Self {
+        Self {
+            approve: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// The key of a Superagent's MCP call: its shell (from its caller's audit detail) and its
@@ -690,7 +731,8 @@ impl App {
             CrossAction::Deploy
             | CrossAction::Rollback
             | CrossAction::Promote
-            | CrossAction::Onboard => String::new(),
+            | CrossAction::Onboard
+            | CrossAction::SecretValue => String::new(),
         };
         check_visible(args)?;
         let (user, target) = if action.own_sandbox() {
@@ -703,8 +745,10 @@ impl App {
                 .await?
                 .ok_or(AppError::NotFound)?;
             // A release is checked as the CD page checks it, before anyone is asked (REL-002).
-            if action != CrossAction::Ask {
-                self.checked_release(&user, &own, action, args).await?;
+            match action {
+                CrossAction::Ask => {}
+                CrossAction::SecretValue => crate::release_requests::checked_secret_request(args)?,
+                _ => self.checked_release(&user, &own, action, args).await?,
             }
             (user, own)
         } else {
@@ -829,6 +873,7 @@ impl App {
                         CrossAction::Message => w.args.get("text"),
                         CrossAction::Ask => w.args.get("question"),
                         CrossAction::Onboard => w.args.get("notes"),
+                        CrossAction::SecretValue => w.args.get("description"),
                         _ => w.args.get("prompt"),
                     };
                     let view = json!({
@@ -837,7 +882,12 @@ impl App {
                         "sandbox": {"id": w.target.id.as_str(), "slug": w.target.slug, "repository": label(&w.target)},
                         "task": null,
                         "starts_now": w.starts_now,
-                        "title": w.args.get("title"),
+                        // A secret asked for is named by its name (SEC-001).
+                        "title": if w.action == CrossAction::SecretValue {
+                            w.args.get("name")
+                        } else {
+                            w.args.get("title")
+                        },
                         "prompt": text,
                         "options": options,
                         "revision": w.revision,
@@ -878,15 +928,16 @@ impl App {
         ctx: &AuthContext,
         sid: &str,
         id: &str,
-        approve: bool,
-        revision: Option<u32>,
-        confirm: Option<&str>,
+        answer: &RequestAnswer,
     ) -> AppResult<Value> {
+        let (approve, revision) = (answer.approve, answer.revision);
+        let (confirm, value) = (answer.confirm.as_deref(), answer.value.as_deref());
         if !ctx.is_browser() {
             return Err(AppError::Forbidden(
                 "only a person answers a Superagent's request, on the Yulius page".into(),
             ));
         }
+        let mut stored_value: Option<String> = None;
         let request = {
             let mut waiting = self.cross_requests.lock();
             match waiting.get(id) {
@@ -910,6 +961,11 @@ impl App {
                             w.target.slug
                         )));
                     }
+                    // A secret's value is checked as the vault will store it before the request
+                    // is taken: one it refuses leaves the request waiting (SPEC-487 SEC-002).
+                    if approve && w.action == CrossAction::SecretValue {
+                        stored_value = Some(crate::release_requests::secret_value_to_store(value)?);
+                    }
                     waiting.remove(id)
                 }
                 _ => None,
@@ -923,9 +979,12 @@ impl App {
         // went away): the waiting call gets the outcome either way.
         let app = Arc::clone(self);
         let person = ctx.clone();
-        tokio::spawn(async move { app.answer_taken(request, approve, person).await })
-            .await
-            .map_err(AppError::internal)?
+        tokio::spawn(async move {
+            app.answer_taken(request, approve, person, stored_value)
+                .await
+        })
+        .await
+        .map_err(AppError::internal)?
     }
 
     async fn answer_taken(
@@ -933,6 +992,7 @@ impl App {
         request: Waiting,
         approve: bool,
         person: AuthContext,
+        secret_value: Option<String>,
     ) -> AppResult<Value> {
         self.announce_cross_requests(&request.user, &request.source);
         let caller = ProjectCaller {
@@ -948,7 +1008,10 @@ impl App {
             ..caller.clone()
         };
         let (outcome, answer) = if approve {
-            let done = if request.action.own_sandbox() && request.action != CrossAction::Ask {
+            let done = if request.action == CrossAction::SecretValue {
+                self.store_secret_value(&person, &request.target, &request.args, secret_value)
+                    .await
+            } else if request.action.own_sandbox() && request.action != CrossAction::Ask {
                 self.run_release(&person, &request.target, request.action, &request.args)
                     .await
             } else {
@@ -1087,7 +1150,8 @@ impl App {
             CrossAction::Deploy
             | CrossAction::Rollback
             | CrossAction::Promote
-            | CrossAction::Onboard => {
+            | CrossAction::Onboard
+            | CrossAction::SecretValue => {
                 return Err(AppError::internal(
                     "a release runs as the person who answered",
                 ));
@@ -1464,7 +1528,8 @@ impl App {
             CrossAction::Deploy
             | CrossAction::Rollback
             | CrossAction::Promote
-            | CrossAction::Onboard => {
+            | CrossAction::Onboard
+            | CrossAction::SecretValue => {
                 return Err(AppError::Invalid(
                     "a release or onboarding is not amended, so the card the person confirms \
                      never changes: withdraw it (sandbox_request_withdraw) and ask again"

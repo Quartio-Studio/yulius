@@ -472,3 +472,30 @@ test('a production deploy asked by the Superagent takes the project slug typed',
   await expect(onboard).toBeHidden();
   expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }, { action: 'onboard', confirm: null }]);
 });
+
+// SPEC-487 SEC-001, SEC-002 (wall 10, the person's decision of 2026-11-13): the Superagent asks
+// for a secret's value; the person types it masked on its panel, line breaks kept, and it goes
+// to the vault: the page never shows it, and Store takes a click only once there is a value.
+test('a secret the Superagent asks for is typed masked on its panel and stored', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'secret', title: 'DEPLOY_KEY', prompt: "the dev VM's SSH key", options: { scope: 'personal' } });
+  const card = screen.getByRole('group', 'Your Superagent asks you for the secret DEPLOY_KEY');
+  await expect(card).toBeVisible();
+  await expect(card).toHaveText(/the dev VM's SSH key/);
+  const field = browser.locator('.agent-request textarea[aria-label="DEPLOY_KEY’s value"]');
+  await expect(field).toBeVisible();
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.agent-request textarea')!).getPropertyValue('-webkit-text-security'))).toBe('disc');
+  const store = screen.getByRole('button', 'Store');
+  await expect(store).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+  await field.fill('-----BEGIN KEY-----\nAAAA\n-----END KEY-----');
+  await expect(store).toBeEnabled();
+  await store.click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Stored DEPLOY_KEY")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentSecrets?: unknown[] } }).__yuliusMock.superagentSecrets ?? []))
+    .toEqual([{ name: 'DEPLOY_KEY', value: '-----BEGIN KEY-----\nAAAA\n-----END KEY-----' }]);
+  // Nothing of it stays on the page.
+  expect(await browser.evaluate(() => document.body.innerText.includes('AAAA'))).toBe(false);
+});

@@ -611,6 +611,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "onboarding_start",
         "superagent_check_set",
         "superagent_check_delete",
+        "secret_request_value",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),

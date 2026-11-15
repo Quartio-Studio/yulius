@@ -3706,6 +3706,12 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (body.approve && ['deploy', 'rollback', 'promote'].includes(request.view.action) && String(body.confirm || '').trim() !== request.view.sandbox.slug) fail(422, 'invalid', `type the project's slug \`${request.view.sandbox.slug}\` to confirm`);
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  // A secret's value typed on the panel (SPEC-487 SEC-002): stored, never answered back.
+  if (request.view.action === 'secret') {
+    if (!body.approve) return { outcome: 'declined' };
+    db.superagentSecrets = [...(db.superagentSecrets || []), { name: request.view.title, value: body.value }];
+    return { outcome: 'approved', secret: request.view.title, stored: 'created' };
+  }
   // A production release or onboarding (SPEC-487 REL-001): the slug typed, as the server checks it.
   if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
     if (!body.approve) return { outcome: 'declined' };

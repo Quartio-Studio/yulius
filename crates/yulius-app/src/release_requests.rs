@@ -26,6 +26,64 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, UserRecord};
 use crate::person_tools::record;
 
+/// What `secret_request_value` takes (SPEC-487 SEC-001).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretRequestArgs {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// The longest description of a secret asked for.
+const MAX_SECRET_DESCRIPTION: usize = 500;
+
+/// Refuses before anyone is asked a secret's value that could not be stored as asked: a name
+/// of capitals, digits and underscores starting with a capital, a scope of `sandbox` (default)
+/// or `personal`, a description of at most 500 characters (SEC-001).
+pub(crate) fn checked_secret_request(args: &Value) -> AppResult<()> {
+    let asked: SecretRequestArgs = parse(args)?;
+    let name = asked.name.trim();
+    let shaped = name.len() <= 64
+        && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    if !shaped {
+        return Err(AppError::Invalid(
+            "the name is capitals, digits and underscores, starting with a capital (API_TOKEN)"
+                .into(),
+        ));
+    }
+    if !matches!(asked.scope.as_deref(), None | Some("sandbox" | "personal")) {
+        return Err(AppError::Invalid(
+            "scope is sandbox (the project's, the default) or personal (the person's own)".into(),
+        ));
+    }
+    if asked
+        .description
+        .is_some_and(|d| d.chars().count() > MAX_SECRET_DESCRIPTION)
+    {
+        return Err(AppError::Invalid(format!(
+            "the description is at most {MAX_SECRET_DESCRIPTION} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// The value the vault stores for what the person typed (SEC-002): as the Secrets page stores a
+/// pasted value, a key's line breaks written as literal `\n` (ADR-0156); one it refuses is
+/// refused here, naming the rule, never quoting the value.
+pub(crate) fn secret_value_to_store(typed: Option<&str>) -> AppResult<String> {
+    let typed = typed.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        AppError::Invalid("type the secret's value to store it, or decline".into())
+    })?;
+    yulius_domain::vault::dotenv::agent_value_from_file(typed)
+        .map_err(|err| AppError::Invalid(format!("the value cannot be stored: {err}")))
+}
+
 /// What a production deploy names.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -235,5 +293,50 @@ impl App {
             }
             _ => return Err(AppError::internal("not a release")),
         })
+    }
+
+    /// Stores a secret's value its person typed on the panel (SEC-003), as the Secrets page
+    /// does with their session: a new agent secret, or the new value of theirs of that name.
+    /// Answers its name and whether it was created or updated, never the value.
+    pub(crate) async fn store_secret_value(
+        &self,
+        person: &AuthContext,
+        target: &SandboxRecord,
+        args: &Value,
+        value: Option<String>,
+    ) -> AppResult<Value> {
+        let asked: SecretRequestArgs = parse(args)?;
+        let value = value.ok_or_else(|| AppError::internal("no value was taken"))?;
+        let name = asked.name.trim().to_owned();
+        let existing = self
+            .agent_secrets(person, target.id.as_str())
+            .await?
+            .into_iter()
+            .find(|s| s.name == name);
+        let stored = if let Some(existing) = existing {
+            let patch: yulius_contracts::api::secrets::AgentSecretPatch =
+                serde_json::from_value(json!({"value": value})).map_err(AppError::internal)?;
+            self.update_agent_secret(person, &existing.id, &patch)
+                .await?;
+            "updated"
+        } else {
+            let input: yulius_contracts::api::secrets::AgentSecretInput =
+                serde_json::from_value(json!({
+                    "scope": asked.scope.as_deref().unwrap_or("sandbox"),
+                    "name": name,
+                    "description": asked.description,
+                    "value": value,
+                }))
+                .map_err(AppError::internal)?;
+            self.create_agent_secret(person, target.id.as_str(), &input)
+                .await?;
+            "created"
+        };
+        Ok(json!({
+            "outcome": "approved",
+            "secret": name,
+            "stored": stored,
+            "note": format!("The person stored {name} in the vault; you never see its value: use it as ${name} or its placeholder (secrets_list says how)."),
+        }))
     }
 }

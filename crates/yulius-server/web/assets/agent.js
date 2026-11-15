@@ -518,7 +518,10 @@ function askedFor(request) {
       return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}`, failed: `stop ${task}`, declined: 'nothing was changed' };
     // SPEC-487 XRQ-005: a decision only the person makes, on the Superagent's own panel: no target.
     case 'ask':
-      return { heading: 'you to decide', own: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
+      return { heading: 'you to decide', own: true, answer: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
+    // SPEC-487 SEC-001: a secret's value, typed masked here and sent to the vault; never shown.
+    case 'secret':
+      return { heading: `you for the secret ${request.title}`, own: true, secret: true, button: 'Store', done: `Stored ${request.title}`, failed: `store ${request.title}`, declined: 'nothing was stored', text: request.prompt ? 'What it is for' : null };
     // SPEC-487 REL-001: production, on the Superagent's own panel; the slug typed, as on the CD page.
     case 'deploy': {
       const env = (request.options && request.options.environment) || 'production';
@@ -620,6 +623,8 @@ function createRequests(ctx, sandbox, onCount) {
     const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it', 'Hand-over': 'hand-over to start onboarding' }[asked.text] || 'prompt to create the task'}.`);
     // A production release takes the project's slug typed (SPEC-487 REL-001), as the CD page does.
     const typed = asked.typed ? h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Type ${slug} to confirm`, onInput: () => update() }) : null;
+    // A secret's value (SPEC-487 SEC-002): masked, line breaks kept, sent once and cleared.
+    const secretField = asked.secret ? h('textarea', { class: 'input agent-request-secret', rows: 3, autocomplete: 'off', spellcheck: 'false', 'aria-label': `${request.title}’s value`, onInput: () => update() }) : null;
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
     let armed = false;
@@ -628,7 +633,8 @@ function createRequests(ctx, sandbox, onCount) {
     // Answered: the card only waits to go; it takes no second click.
     let done = false;
     const update = () => {
-      create.disabled = !armed || !read || sending || done || (typed !== null && typed.value.trim() !== slug);
+      create.disabled = !armed || !read || sending || done || (typed !== null && typed.value.trim() !== slug)
+        || (secretField !== null && secretField.value.length < 8);
       decline.disabled = !armed || sending || done;
       hint.hidden = read;
     };
@@ -656,13 +662,15 @@ function createRequests(ctx, sandbox, onCount) {
         // The revision it showed: one the Superagent amended since is refused (409).
         const body = { approve, revision: request.revision || 0 };
         if (typed && approve) body.confirm = typed.value.trim();
+        if (secretField && approve) body.value = secretField.value;
+        if (secretField) secretField.value = '';
         const answer = await ctx.api.post(`${path}/${enc(request.id)}`, body);
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
           const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
-        } else if (asked.own) {
+        } else if (asked.answer) {
           toast(approve ? `${asked.done}.` : 'Answered no.', { kind: approve ? 'ok' : 'info' });
         } else if (approve && asked.done) {
           toast(`${asked.done} in ${slug}.`, { kind: 'ok' });
@@ -689,6 +697,7 @@ function createRequests(ctx, sandbox, onCount) {
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,
         typed ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Type “${slug}” to confirm`), typed) : null,
+        secretField ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Value (hidden; nobody but the vault sees it)'), secretField) : null,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
       revision: request.revision || 0,
