@@ -3132,3 +3132,5 @@ slices follow.
   file whose dotenv read ends exactly at the old point, failed first with `plainword` shown);
   the farther point is kept; a test of an over-long line. Each new test fails without its fix
   (`mutations-r1.log`, `mutations-r1b.log`, 10 cases, none survives).
+- **Gate after it.** `scripts/dev ci` at `6793ba26e`: exit 0; `4435 tests run: 4435 passed (1
+  slow), 17 skipped` (`gate2.log`).
