@@ -214,9 +214,13 @@ person's decision is read as holding after an approval).
   candidate: the Agent call is refused with why, the session is continued on that subscription,
   and its first prompt tells the agent to start the review again. No move is made while the
   session has background work a move would end (the refusal then names it: finish or stop it and
-  start the review again). When no subscription can run Fable 5.2, the round runs
-  `yulius-reviewer-opus`: the reviewer's prompt gets a line saying so, which its report repeats,
-  and the round's record says `no_fable`. Yulius never waits for Fable or asks a person for it.
+  start the review again). A prompt waiting in Claude Code's queue refuses the call the same way
+  (answer it or end the turn). The move is announced only once the new session's start there
+  was checked. When no subscription can run Fable 5.2, the new session could not start there, a
+  move was refused moments ago, or the looks take longer than the hook may wait (3 s), the round
+  runs `yulius-reviewer-opus`: the reviewer's prompt gets a line saying so, which its report
+  repeats, and the round's record says `no_fable`. Yulius never waits for Fable or asks a person
+  for it.
 - **REV-008** The rules name the reviewer the same way wherever the review is described (the
   briefing, the definition of done, `om-code-review`, `delivery-pipeline`, the Feature and Fix
   workflows, `yulius-review`, `yulius-git`, `docs/engineering/workflow.md`, `git.md`,
@@ -454,8 +458,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - **AC-8** (REV-007) Round 1 on a subscription whose Fable window is full, with another that can
   run both: the Agent call is refused with the reason, the session moves there and its first
   prompt says to start the review again. With background work running: refused with that reason
-  and no move. With no subscription for Fable: `yulius-reviewer-opus` runs, its prompt says why,
-  the record says `no_fable`. Round 3: no move.
+  and no move; a queued prompt, the same. With no subscription for Fable, a start that would be
+  refused there, a move refused moments ago or looks over 3 s: `yulius-reviewer-opus` runs, its
+  prompt says why, the record says `no_fable`. Round 3: no move.
 - **AC-9** (FLK) The notes test passes with the probe that made it fail (a delay or a held step
   at the racing point); the unreachable-server tests pass while another process binds free ports
   in a loop; the two tests fixed by #1313 and #1309 pass under their old probes.
@@ -894,9 +899,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   go, or a move refused moments ago, the round runs `yulius-reviewer-opus` and its prompt gets a
   line saying so.
   - `rotation::tests::a_session_moves_to_a_subscription_that_also_runs_the_reviewer`.
-  - `review_rounds::a_round_out_of_fable_moves_the_session_where_fable_runs`: the refusal while
-    background work runs (no move, no round), then the move to `acc-2`, not to `acc-0` (also
-    out of Fable). Mutation caught: the background check dropped (the session moves).
+  - `review_rounds::a_round_out_of_fable_is_refused_while_a_move_would_lose_work`: the refusal
+    while background work runs, and while a prompt waits (no move, no round). Mutations caught:
+    either check dropped. (Before round 1 this was `a_round_out_of_fable_moves_the_session_where_fable_runs`.)
   - `review_rounds::a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer`: the
     reviewer's prompt keeps its text and gets the line; nothing moves.
   - `review_rounds::real::a_session_out_of_fable_moves_and_is_asked_for_the_review_again`, with a
@@ -948,3 +953,23 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - Gate after the answers: `scripts/dev ci` exit 0 (4,500 tests passed). A run before it
     failed once on `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`, the
     known load flake #1286 (untouched here; 10 of 10 alone).
+- **Review round 2** (head `32523d6e4`, Fable 5.2). Request changes. It checked every
+  round-1 answer and caught each guard's mutation. Answered (all own code):
+  - Major, reproduced by the reviewer: the 3 s deadline dropped the start check mid-way. Over
+    the disk quota, that check runs the disk upkeep, whose CI checkout claim had no guard: a
+    cut-off removal left the sandbox's CI claimed until a restart. Two fixes:
+    - The claim is now a value (`CiClaim`, `App::ci_claim_owned`) that goes with the removal to
+      its blocking thread and ends there. A dropped upkeep keeps the claim until the removal
+      ends, so no run starts in a half-removed checkout, and then frees it.
+      `disk::an_upkeep_cut_off_mid_removal_frees_the_ci_lane` fails without it ("the sandbox's
+      CI stayed claimed").
+    - The start check runs in a task of its own; the deadline ends only the wait.
+      `review_rounds::a_slow_move_decision_runs_the_opus_reviewer_within_its_bound` (an
+      isolation that takes 5 s): the answer comes within the bound with the Opus reviewer, the
+      check runs to its end, and nothing moves. Mutations caught: no deadline, and the check cut
+      off.
+  - Minor: the live-run check now has its test,
+    `review_rounds::a_move_decided_for_an_ended_run_moves_nothing` (held at the new race point
+    `ReviewMoveDecided` while the run ends). Mutation caught.
+  - Nits: a timed-out decision is logged. REV-007 and AC-8 name every exit. The Evidence no
+    longer names the replaced test.
