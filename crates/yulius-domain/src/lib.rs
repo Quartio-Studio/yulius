@@ -34,6 +34,7 @@ pub mod pricing;
 pub mod redact;
 pub mod request;
 pub mod resources;
+pub mod review;
 pub mod rollback;
 pub mod rotation;
 pub mod rule;

@@ -92,6 +92,14 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
         },
         true,
     ))?;
+    // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
+    let agents = plan.argv[plan
+        .argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("--agents")?
+        + 1]
+    .clone();
     assert_eq!(
         plan.argv,
         [
@@ -103,6 +111,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
+            "--agents",
+            agents.as_str(),
             "--model",
             "claude-opus-4-1",
             "--effort",
@@ -241,6 +251,14 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
     request.effort = None;
     request.mcp_servers.clear();
     let plan = plan_launch(&request)?;
+    // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
+    let agents = plan.argv[plan
+        .argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("--agents")?
+        + 1]
+    .clone();
     assert_eq!(
         plan.argv,
         [
@@ -252,6 +270,8 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
+            "--agents",
+            agents.as_str(),
             // No model or effort named: Opus 5.5 at high effort, pinned so neither drifts with
             // Claude Code's aliases or a subscription's defaults (task #21).
             "--model",
@@ -465,6 +485,67 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     };
     assert!(missing_parent.write().is_err());
     assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
+    Ok(())
+}
+
+/// SPEC-493 REV-001: a task session knows Yulius's two reviewer agents from its launch, by full
+/// model id and at high effort; their prompt is the reviewer's contract. A Cockpit has none.
+#[test]
+fn a_task_session_is_launched_with_the_reviewer_agents() -> TestResult {
+    let request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("go".into()),
+        },
+        false,
+    );
+    let argv = plan_launch(&request)?.argv;
+    let at = argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("no --agents")?;
+    let agents: Value = serde_json::from_str(&argv[at + 1])?;
+    let defined: Vec<&str> = agents
+        .as_object()
+        .ok_or("an object")?
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(defined, ["yulius-reviewer", "yulius-reviewer-opus"]);
+    for (name, model) in [
+        ("yulius-reviewer", "claude-fable-5-2"),
+        ("yulius-reviewer-opus", "claude-opus-5-5"),
+    ] {
+        let agent = &agents[name];
+        assert_eq!(agent["model"], model, "{name}");
+        assert_eq!(agent["effort"], "high", "{name}");
+        assert!(
+            agent["prompt"]
+                .as_str()
+                .is_some_and(|p| p.contains("`Verdict: approve` or `Verdict: request changes`")),
+            "{name}"
+        );
+        assert!(agent["description"].as_str().is_some_and(|d| !d.is_empty()));
+    }
+    // An option, before the prompt (the last word).
+    assert_eq!(argv.last().map(String::as_str), Some("go"));
+    assert!(at + 1 < argv.len() - 1);
+    let cockpit = plan_cockpit(&CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/data/users/u1/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        model: None,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
+        bypass_permissions: false,
+        only_yulius: None,
+        disabled_plugins: Vec::new(),
+    })?;
+    assert!(!cockpit.argv.iter().any(|a| a == "--agents"));
     Ok(())
 }
 
