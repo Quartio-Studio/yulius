@@ -1287,7 +1287,7 @@ enum AfterMerge {
 }
 
 impl App {
-    async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
+    pub(crate) async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
             .store
             .sandbox(&task.sandbox_id)
@@ -1454,6 +1454,21 @@ impl App {
     /// Reads and validates the task spec; a task that needs none (DSC-013: research, a
     /// question, docs or a chore by its workflow, or a docs-only change without one) counts as
     /// valid without it.
+    /// Why the head under review cannot go out now (SPEC-493 CIR-001): a spec that is not
+    /// valid, a missing plan or uncommitted changes, as for any delivery; `None` when it can.
+    pub(crate) async fn review_head_not_ready(&self, task: &TaskRecord) -> Option<String> {
+        let worktree = task.worktree_path.as_deref()?;
+        let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
+        let spec = self.dlv_check_spec(task).await;
+        let dirty = self
+            .deps
+            .git
+            .has_changes(Path::new(worktree))
+            .await
+            .unwrap_or(false);
+        not_ready(&spec, &steps, DeliveryAsk::Review, dirty)
+    }
+
     async fn dlv_check_spec(&self, task: &TaskRecord) -> SpecCheck {
         let mut check = self.dlv_read_spec(task).await;
         // A valid spec settles it; only a missing or invalid one asks whether it is needed
