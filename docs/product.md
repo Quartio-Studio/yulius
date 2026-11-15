@@ -278,8 +278,8 @@ watching, steering and unblocking.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
   answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
-  can **stop, archive, restore and delete** any of its tasks, from the task's page, the lists
-  and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
+  can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
+  own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
   the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
   stops where it is without being told (as an update pauses every task) and goes on from there; a
   paused task, and one an update holds, reads Paused in the lists and says why. A task that
@@ -292,7 +292,9 @@ watching, steering and unblocking.
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control, from the task's page or
-  its menu in a list; once handed over, it acts as the new owner. No administrator takes a task
+  its menu in a list; the owner hears of the request wherever they are (a notification, a
+  toast and a mark on the task's row) and hands it over or declines; once handed over, it acts
+  as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
   without asking; only a task whose owner can no longer act (a disabled account, no write
   access) passes to the first person who asks.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; switches and

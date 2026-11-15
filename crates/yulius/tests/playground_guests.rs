@@ -434,6 +434,71 @@ async fn joining_is_rate_limited_per_client() -> TestResult {
     Ok(())
 }
 
+/// SPEC-490 review round 1: a guest has write access to the playground, yet stops, archives and
+/// deletes only their own tasks there; the maker's are refused with why, and stay as they were.
+/// The maker tidies the guest's tasks as anyone who may work there does.
+#[tokio::test]
+async fn a_guest_tidies_only_their_own_tasks() -> TestResult {
+    let w = world().await?;
+    let code = link(&w, 7).await?;
+    let (guest, user) = join(&w, &code, "Carol").await?;
+    let makers = seed_task(&w.h, "t-maker", "p1", "u-alice", TaskStatus::Queued, None).await?;
+    let guests = seed_task(
+        &w.h,
+        "t-guest",
+        "p1",
+        user.id.as_str(),
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    for (method, rest) in [
+        (Method::POST, "/stop"),
+        (Method::POST, "/archive"),
+        (Method::DELETE, ""),
+    ] {
+        let path = format!("/api/tasks/{}{rest}", makers.id);
+        let refused = call(&w.h.router, method.clone(), &path, None, &guest).await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: {}",
+            refused.body
+        );
+        let message = refused.body["error"]["message"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            message.contains("@alice") && message.contains("guest"),
+            "{message}"
+        );
+    }
+    use yulius_app::ports::store::TaskStore as _;
+    assert_eq!(w.h.store.task(&makers.id).await?.ok_or("task")?, makers);
+    let own = format!("/api/tasks/{}/stop", guests.id);
+    let stopped = call(&w.h.router, Method::POST, &own, None, &guest).await?;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+    seed_task(
+        &w.h,
+        "t-guest2",
+        "p1",
+        user.id.as_str(),
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    let by_maker = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t-guest2/stop",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(by_maker.status, StatusCode::OK, "{}", by_maker.body);
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_guest_works_only_in_their_playground() -> TestResult {
     let w = world().await?;

@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -96,7 +96,8 @@ test("Archive all leaves other people's Done tasks", async ({ app, browser, scre
   const all = screen.getByRole('button', 'Archive all');
   await expect(all).toHaveAttribute('title', 'Archive your Done tasks');
   await all.click();
-  await expect(screen.getByText('Archived 1 Done task.')).toBeVisible();
+  // mkarp's own Done tasks go (how many depends on the mock's clock); anna-q's stays.
+  await expect(screen.getByText(/^Archived \d+ Done tasks?\.$/)).toBeVisible();
   await expect(theirs).toBeVisible();
 });
 
@@ -139,8 +140,9 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Hand over').click();
-  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
-  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+  // The giver may take it back without asking (SPEC-490 OWN-009) instead of requesting it.
+  await expect(screen.getByText('You handed this task to @anna-q.')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take back')).toBeVisible();
   // mkarp now watches it: the session as its transcript, no terminal to send anything to (SPEC-179).
   await expect(browser.locator('.taskview .watch .ss-tui')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.taskview .xterm').length), { message: 'a watcher has no terminal' }).toBe(0);
@@ -194,4 +196,80 @@ test('a read answered before a hand-over and arriving after it changes nothing b
   await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+});
+
+// SPEC-490 OWN-008 (AC-8): a request for control reaches the owner wherever they are: a toast
+// that opens the task, an entry under the bell, and a mark on the task's row in the sidebar until
+// it is answered.
+test('the owner hears of a request for control on another page', async ({ app, browser, screen }) => {
+  // A page without a terminal, which would take the keyboard and close the bell's panel.
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
+  const asked = '@anna-q asks for control of #12 Checkout API';
+  await expect(browser.locator('.toast').filter({ hasText: asked })).toBeVisible();
+  const mark = browser.locator('.task-row:has-text("Checkout API") [title="@anna-q asks for control"]');
+  await expect(mark).toBeVisible();
+  await screen.getByRole('button', /^Notifications \(1 unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${asked}`))).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.keyboard.press('Escape');
+  await browser.locator('.toast').filter({ hasText: asked }).getByRole('button', 'Open').click();
+  await expect(screen.getByRole('button', 'Hand over')).toBeVisible();
+  // Answered elsewhere: the mark goes.
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: null });
+  await expect(mark).toBeHidden();
+});
+
+// SPEC-490 OWN-009, OWN-010 (AC-11): the owner hands the task over and can take it back without
+// asking: the bar says so, Take back returns the terminal; whoever it is taken from is told.
+test('the giver takes the task back, and whoever had it hears so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
+  await screen.getByRole('button', 'Hand over').click();
+  const bar = browser.locator('.attention-bar .attention-text').filter({ hasText: 'You handed this task to @anna-q.' });
+  await expect(bar).toHaveText('You handed this task to @anna-q. It acts on GitHub as them; you can take it back at any time.');
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Take back').click();
+  await expect(screen.getByText('#12 is yours again')).toBeVisible();
+  await expect(bar).toBeHidden();
+  await expect(browser.locator('.taskview .watch')).toBeHidden();
+  await terminalShown(browser);
+
+  // mkarp has had #11 since before the page loaded (anna-q handed it to him); she takes it back:
+  // the server tells him, wherever he is (review round 2: no earlier event to compare with).
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await eventsConnected(browser);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { takeBack: (s: string, n: number, by: string) => void } }).__yuliusMock.takeBack('sb_studio', 11, 'anna-q'));
+  const taken = '@anna-q took back control of #11 3D model viewer';
+  await expect(browser.locator('.toast').filter({ hasText: taken })).toBeVisible();
+  await screen.getByRole('button', /^Notifications \(\d+ unread\)/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${taken}`))).toBeVisible();
+});
+
+// SPEC-490 OWN-008 (review round 2): a request that waited before the owner opened Yulius is
+// under the bell too, once.
+test('a request that waited before the page loaded is heard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0&controlask=1'));
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  const asked = '@anna-q asks for control of #12 Checkout API';
+  await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();
+  await screen.getByRole('button', /^Notifications/).click();
+  await expect(screen.getByRole('dialog', 'Notifications').getByRole('button', new RegExp(`^Unread: ${asked}`))).toHaveCount(1);
+});
+
+// Review round 3: a sandbox whose first task list fails is scanned once its list loads.
+test('a waiting request is heard once a failed task list loads', async ({ app, browser, screen }) => {
+  type Failing = { __yuliusMock: { failPath: string | null } };
+  await app.open(mock('/s/studio/t/13', '&ambient=0&controlask=1&fail=/api/sandboxes/sb_studio/tasks'));
+  await firstShown(browser.locator('.load-error:has-text("Couldn’t load tasks")'));
+  // The list loads again (its Try again); the page may redraw meanwhile, so the button is pressed
+  // where it is at that moment.
+  await browser.evaluate(() => {
+    (window as unknown as Failing).__yuliusMock.failPath = null;
+    (document.querySelector('.load-error button') as HTMLButtonElement | null)?.click();
+  });
+  await firstShown(browser.locator('.task-row:has-text("Checkout API")'));
+  await expect(screen.getByRole('button', /^Notifications \(1 unread\)/)).toBeVisible();
 });

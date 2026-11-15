@@ -364,7 +364,7 @@ export function mountTasksPage(ctx, sandbox) {
     // A row opens the task's overview (times, sessions, plan, changes, Go to task), not its session.
     const path = `/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`;
     const login = task.created_by && task.created_by.login;
-    const actions = taskActions(task, sandbox.access, ctx.store.pullsOf(sandbox.id).get(task.id), myLogin());
+    const actions = taskActions(task, sandbox.access, ctx.store.pullsOf(sandbox.id).get(task.id), myLogin(), Boolean(ctx.guest && ctx.guest()));
     const git = ctx.store.gitRowOf(sandbox.id, task.id);
     // The subscription it runs on goes with what it does (SPEC-447 MOV-004).
     const what = `${detailLine(task, info)}${task.account_label ? ` · on ${task.account_label}` : ''}`;

@@ -842,7 +842,8 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
-                     control_requested_at = NULL, updated_at = ?4 \
+                     control_requested_at = NULL, updated_at = ?4, \
+                     control_from = CASE WHEN control_from = ?3 THEN NULL ELSE ?2 END \
                      WHERE id = ?1 AND owner_id = ?2 AND control_requested_by = ?3",
                     params![id, from, to, at.0],
                 )
@@ -868,9 +869,53 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
-                     control_requested_at = NULL, updated_at = ?4 \
+                     control_requested_at = NULL, updated_at = ?4, control_from = NULL \
                      WHERE id = ?1 AND owner_id = ?2",
                     params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn control_from(&self, task: &TaskId) -> AppResult<Option<UserId>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let from: Option<Option<String>> = c
+                .query_row(
+                    "SELECT control_from FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            from.flatten()
+                .map(|from| UserId::parse(&from).map_err(|_| AppError::internal("bad user id")))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn take_back_control(
+        &self,
+        task: &TaskId,
+        owner: &UserId,
+        giver: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, owner, giver) = (
+            task.as_str().to_owned(),
+            owner.as_str().to_owned(),
+            giver.as_str().to_owned(),
+        );
+        self.call_access(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_from = NULL, \
+                     control_requested_by = NULL, control_requested_at = NULL, updated_at = ?4 \
+                     WHERE id = ?1 AND owner_id = ?2 AND control_from = ?3",
+                    params![id, owner, giver, at.0],
                 )
                 .map_err(db)?;
             Ok(n == 1)

@@ -20,7 +20,9 @@
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
-// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
+// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies),
+// labtask=1 (with guest=1: the maker's stopped task in `lab`, SPEC-490),
+// controlask=1 (anna-q's request for control of studio #12 waits, SPEC-490).
 // move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
 // no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
 // preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
@@ -441,12 +443,19 @@ function seed(params) {
   // A playground's guests (SPEC-410). `guestlink=1|dead`: signed out, holding a link to `lab`;
   // `guest=1`: signed in as a guest of `lab`, who sees nothing else.
   db.guestInvites = [];
+  // `controlask=1`: anna-q asked for control of studio #12 before the page loaded (SPEC-490 OWN-008).
+  if (params.get('controlask') === '1') {
+    const asked = db.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 12);
+    if (asked) asked.controlRequest = { by: { login: 'anna-q' }, at: '2026-11-14T10:00:00Z' };
+  }
   if (params.get('guestlink') || params.get('guest') === '1') {
     const lab = guestPlayground(db);
     if (params.get('guestlink') !== 'dead') {
       db.guestInvites.push({ id: 'inv_seed', sandbox_id: lab.id, code: MOCK_GUEST_CODE, created_by: 'mkarp', created_at: iso(HOUR), expires_at: isoIn(7 * DAY), guests: [] });
     }
     if (['1', 'dead'].includes(params.get('guestlink'))) db.signedIn = false;
+    // `labtask=1`: the maker's stopped task in the playground, which a guest may not put away (SPEC-490).
+    if (params.get('labtask') === '1') db.tasks.push(t(guestPlayground(db).id, 1, 'Sketch the landing page', 'claude', 'stopped_cancelled', null, { author: 'mkarp', noSteps: true }));
     if (params.get('guest') === '1') becomeGuest(db, db.guestInvites[0], 'Carol');
   }
   return db;
@@ -489,6 +498,8 @@ function summary(task) {
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
+    // Who handed it over on request and may take it back (SPEC-490 OWN-009).
+    control_from: task.controlFrom ? { ...task.controlFrom } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -854,6 +865,8 @@ function needTaskWrite(db, task) {
 /** Stop, archive, restore and delete need write access alone (SPEC-490 OWN-002). */
 function needTaskTidy(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
+  const owner = ownerOf(task).login;
+  if (db.me.user.guest && owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest stops, archives and deletes only their own tasks on this playground.`);
 }
 
 function hashString(s) {
@@ -1841,7 +1854,19 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
-  touch(db, task, { owner: { ...task.controlRequest.by }, controlRequest: null });
+  // The giver may take it back, unless it goes back to the one who gave it (SPEC-490 OWN-009).
+  const to = task.controlRequest.by;
+  const controlFrom = task.controlFrom && task.controlFrom.login === to.login ? null : { login: ownerOf(task).login };
+  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom });
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/control/take-back`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.controlFrom) fail(409, 'conflict', 'nobody can take this task back: it was not handed over on request, or control moved since');
+  const me = db.me.user.login;
+  if (task.controlFrom.login !== me) fail(403, 'forbidden', `only @${task.controlFrom.login}, who handed task #${task.number} over, takes it back; ask @${ownerOf(task).login} for control`);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom: null });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
@@ -6817,6 +6842,13 @@ export function createMockTransport(params) {
     doc.session_id = sessionId;
     doc.transcript = [];
     db.appendTranscript(sandboxId, number, items);
+  };
+  // The person who handed a task to the viewer takes it back (SPEC-490 OWN-010): the task changes
+  // and the server tells the viewer, as `App::take_back_task_control` does.
+  db.takeBack = (sandboxId, number, by) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: null });
+    emit(db, { type: 'task.control_taken_back', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
   };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
