@@ -666,6 +666,8 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
     };
     // Approved at its head, then a commit of its own: not covered.
     let first = playground_task(&h, &made.body, "t1", &[("one.txt", "1\n")], &["done"]).await?;
+    // Started before t1 merges, so the integration branch moves under it.
+    let second = playground_task(&h, &made.body, "t2", &[("two.txt", "2\n")], &["done"]).await?;
     approve("t1", git(&first, &["rev-parse", "HEAD"])?.trim().to_owned()).await?;
     std::fs::write(first.join("more.txt"), "unreviewed\n")?;
     git(&first, &["add", "-A"])?;
@@ -679,14 +681,19 @@ async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> Te
         "{detail}"
     );
     // Approved at its head, then a clean merge of the integration branch (which t1 moved): covered.
-    let second = playground_task(&h, &made.body, "t2", &[("two.txt", "2\n")], &["done"]).await?;
     approve(
         "t2",
         git(&second, &["rev-parse", "HEAD"])?.trim().to_owned(),
     )
     .await?;
     git(&second, &["fetch", "-q", "origin"])?;
+    let approved = git(&second, &["rev-parse", "HEAD"])?;
     git(&second, &["merge", "-q", "--no-edit", "origin/dev"])?;
+    assert_ne!(
+        git(&second, &["rev-parse", "HEAD"])?,
+        approved,
+        "a merge commit"
+    );
     let merged = merge(&h, &owner, "t2").await?;
     assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
     let detail = record_of("t2").await?;
