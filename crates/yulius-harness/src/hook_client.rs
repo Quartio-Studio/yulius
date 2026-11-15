@@ -15,11 +15,11 @@
 //! pause survives the restart. Each request keeps its own 5 s deadline.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::launch::{TASK_TOKEN_ENV, YULIUS_URL_ENV};
 use yulius_contracts::hooks::SENT_AT_HEADER;
+use yulius_domain::agent_endpoint::{AgentEndpoint, EndpointError};
 
 /// Maximum hook payload read from stdin.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -175,31 +175,18 @@ pub(crate) fn forward(
     if body.len() > MAX_INPUT_BYTES {
         return Err(HookError::InputTooLarge);
     }
-    let url = env(YULIUS_URL_ENV).ok_or(HookError::MissingEnv)?;
-    let token = env(TASK_TOKEN_ENV).ok_or(HookError::MissingEnv)?;
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(HookError::MissingEnv);
-    }
-    let target = parse_url(&url)?;
-    let addrs: Vec<SocketAddr> = (target.host.as_str(), target.port)
-        .to_socket_addrs()
-        .map_err(|_| HookError::Url)?
-        .collect();
-    if addrs.is_empty() || !addrs.iter().all(|a| a.ip().is_loopback()) {
-        return Err(HookError::NotLoopback);
-    }
+    let target = AgentEndpoint::from_env(env).map_err(HookError::from)?;
     let path = format!("/hooks/{harness}/{event}");
     let request = Request {
         target: &target,
         path: &path,
-        token: &token,
         body: &body,
         timeout,
     };
     let started = Instant::now();
     let mut held = false;
     loop {
-        let wait = match ask(&addrs, &request) {
+        let wait = match ask(&request) {
             Ok(Answer::Output(response)) => return Ok(response),
             Ok(Answer::Hold(retry_after)) => {
                 held = true;
@@ -225,27 +212,14 @@ pub(crate) fn post_internal(
     env: &dyn Fn(&str) -> Option<String>,
     timeout: Duration,
 ) -> Result<Vec<u8>, HookError> {
-    let url = env(YULIUS_URL_ENV).ok_or(HookError::MissingEnv)?;
-    let token = env(TASK_TOKEN_ENV).ok_or(HookError::MissingEnv)?;
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(HookError::MissingEnv);
-    }
-    let target = parse_url(&url)?;
-    let addrs: Vec<SocketAddr> = (target.host.as_str(), target.port)
-        .to_socket_addrs()
-        .map_err(|_| HookError::Url)?
-        .collect();
-    if addrs.is_empty() || !addrs.iter().all(|a| a.ip().is_loopback()) {
-        return Err(HookError::NotLoopback);
-    }
+    let target = AgentEndpoint::from_env(env).map_err(HookError::from)?;
     let request = Request {
         target: &target,
         path,
-        token: &token,
         body,
         timeout,
     };
-    match ask(&addrs, &request)? {
+    match ask(&request)? {
         Answer::Output(response) => Ok(response),
         Answer::Hold(_) => Err(HookError::Protocol),
     }
@@ -253,17 +227,16 @@ pub(crate) fn post_internal(
 
 /// One hook request's fixed parts.
 struct Request<'a> {
-    target: &'a Target,
+    target: &'a AgentEndpoint,
     path: &'a str,
-    token: &'a str,
     body: &'a [u8],
     timeout: Duration,
 }
 
 /// Sends the request to the first address that answers.
-fn ask(addrs: &[SocketAddr], request: &Request<'_>) -> Result<Answer, HookError> {
+fn ask(request: &Request<'_>) -> Result<Answer, HookError> {
     let mut last_error = HookError::Io;
-    for addr in addrs {
+    for addr in &request.target.addresses {
         match exchange(addr, request) {
             Ok(answer) => return Ok(answer),
             Err(error @ (HookError::Status(_) | HookError::Protocol)) => return Err(error),
@@ -273,55 +246,16 @@ fn ask(addrs: &[SocketAddr], request: &Request<'_>) -> Result<Answer, HookError>
     Err(last_error)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Target {
-    host: String,
-    port: u16,
-    base_path: String,
-    host_header: String,
-}
-
-/// Parses `http://host[:port][/path]`; only plain HTTP to a literal loopback address or
-/// `localhost` is accepted.
-pub(crate) fn parse_url(url: &str) -> Result<Target, HookError> {
-    let rest = url.strip_prefix("http://").ok_or(HookError::Url)?;
-    let (authority, path) = match rest.find('/') {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, ""),
-    };
-    if authority.is_empty() || authority.contains('@') || path.contains(['?', '#']) {
-        return Err(HookError::Url);
-    }
-    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-        let (host, after) = bracketed.split_once(']').ok_or(HookError::Url)?;
-        let port = match after {
-            "" => 80,
-            p => p
-                .strip_prefix(':')
-                .and_then(|p| p.parse().ok())
-                .ok_or(HookError::Url)?,
-        };
-        (host, port)
-    } else {
-        match authority.rsplit_once(':') {
-            Some((host, port)) => (host, port.parse().map_err(|_| HookError::Url)?),
-            None => (authority, 80),
+impl From<EndpointError> for HookError {
+    fn from(error: EndpointError) -> Self {
+        match error {
+            EndpointError::UrlMissing
+            | EndpointError::TokenMissing
+            | EndpointError::TokenNotPrintable => Self::MissingEnv,
+            EndpointError::Url => Self::Url,
+            EndpointError::NotLoopback => Self::NotLoopback,
         }
-    };
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    if !loopback {
-        return Err(HookError::NotLoopback);
     }
-    if !path.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(HookError::Url);
-    }
-    Ok(Target {
-        host: host.to_owned(),
-        port,
-        base_path: path.trim_end_matches('/').to_owned(),
-        host_header: authority.to_owned(),
-    })
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, HookError> {
@@ -337,10 +271,10 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
     let Request {
         target,
         path,
-        token,
         body,
         timeout,
     } = *request;
+    let token = &target.token;
     let stream = TcpStream::connect_timeout(addr, timeout)?;
     let deadline = Instant::now() + timeout;
     stream.set_write_timeout(Some(remaining(deadline)?))?;
@@ -473,36 +407,30 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    /// SPEC-483 slice 34 (review): `localhost` is 127.0.0.1 then ::1; the hook client reaches a
+    /// server on ::1 only through the second address.
     #[test]
-    fn url_parsing_accepts_only_loopback_http() -> Result<(), String> {
-        let ok = parse_url("http://127.0.0.1:8123").map_err(|e| format!("{e:?}"))?;
-        assert_eq!(ok.port, 8123);
-        assert_eq!(ok.base_path, "");
-        let prefixed = parse_url("http://localhost:9/internal/").map_err(|e| format!("{e:?}"))?;
-        assert_eq!(prefixed.base_path, "/internal");
-        let v6 = parse_url("http://[::1]:7").map_err(|e| format!("{e:?}"))?;
-        assert_eq!((v6.host.as_str(), v6.port), ("::1", 7));
-        assert!(matches!(
-            parse_url("http://10.0.0.1:80"),
-            Err(HookError::NotLoopback)
-        ));
-        assert!(matches!(
-            parse_url("http://example.com"),
-            Err(HookError::NotLoopback)
-        ));
-        assert!(matches!(
-            parse_url("https://127.0.0.1"),
-            Err(HookError::Url)
-        ));
-        assert!(matches!(
-            parse_url("http://u@127.0.0.1"),
-            Err(HookError::Url)
-        ));
-        assert!(matches!(
-            parse_url("http://127.0.0.1:x"),
-            Err(HookError::Url)
-        ));
-        Ok(())
+    fn localhost_reaches_a_server_on_the_second_address() -> io::Result<()> {
+        let listener = TcpListener::bind("[::1]:0")?;
+        let port = listener.local_addr()?.port();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut buf = [0u8; 4096];
+            let _read = stream.read(&mut buf)?;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")?;
+            Ok(())
+        });
+        let url = format!("http://localhost:{port}");
+        let env = move |key: &str| match key {
+            "YULIUS_URL" => Some(url.clone()),
+            "YULIUS_TASK_TOKEN" => Some("t".into()),
+            _ => None,
+        };
+        let answer = post_internal("/internal/x", b"{}", &env, Duration::from_secs(5));
+        assert_eq!(answer.ok().as_deref(), Some(&b"ok"[..]));
+        server
+            .join()
+            .map_err(|_| io::Error::other("server panicked"))?
     }
 
     #[test]
