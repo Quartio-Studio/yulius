@@ -199,7 +199,10 @@ pub struct ShellRuntime {
     pub(crate) typed_seq: AtomicU64,
     pub(crate) typed_ms: AtomicI64,
     pub(crate) emptied_seq: AtomicU64,
-    pub(crate) in_paste: AtomicBool,
+    pub(crate) key_state: Mutex<crate::cockpit::KeyState>,
+    /// When its person's last keystroke frame came, and when a draft's mark was last kept.
+    pub(crate) last_key_ms: AtomicI64,
+    pub(crate) draft_saved_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
@@ -915,7 +918,9 @@ impl App {
             typed_seq: AtomicU64::new(0),
             typed_ms: AtomicI64::new(0),
             emptied_seq: AtomicU64::new(0),
-            in_paste: AtomicBool::new(false),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
@@ -1554,7 +1559,9 @@ impl App {
             typed_seq: AtomicU64::new(u64::from(file.draft_typed_at.is_some())),
             typed_ms: AtomicI64::new(file.draft_typed_at.unwrap_or(0)),
             emptied_seq: AtomicU64::new(0),
-            in_paste: AtomicBool::new(false),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
