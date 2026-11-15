@@ -22,6 +22,9 @@ use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::person_tools::record;
 
+/// The most task rows `task_usage` answers.
+const USAGE_ROWS: usize = 50;
+
 /// Lines of a screen a call answers by default, and at most.
 const SCREEN_LINES: usize = 40;
 const MAX_SCREEN_LINES: usize = 200;
@@ -63,8 +66,15 @@ impl App {
         let task = self.agent_task_ref(project, args).await?;
         let last = self.deps.store.attempts(&task.id).await?.pop();
         let runtime = self.runtime(&task.id);
-        let live = self.deps.store.live_attempt(&task.id).await?.is_some();
-        let (screen, from) = if live && runtime.hub.has_output() {
+        let live = self.deps.store.live_attempt(&task.id).await?;
+        // A run still starting shows nothing of its own yet: not the screen the run before
+        // left in the hub (review of slice 10b, F6).
+        let starting = live
+            .as_ref()
+            .is_some_and(|run| run.state != yulius_domain::task::AttemptState::Live);
+        let (screen, from) = if starting {
+            (String::new(), "starting")
+        } else if live.is_some() && runtime.hub.has_output() {
             (runtime.hub.screen_text(), "live")
         } else if let Some((cols, rows, bytes)) = last
             .as_ref()
@@ -95,7 +105,8 @@ impl App {
     }
 
     /// `task_usage {number?, from?, to?}` (VIS-002): the Dashboard's tokens per task of the
-    /// project in the period (default: its last 7 days), and the period's totals by model.
+    /// project for the tasks created in the period (default: the last 7 days), the most first
+    /// and at most [`USAGE_ROWS`], and the period's totals by model.
     ///
     /// # Errors
     /// `Invalid` dates, the Dashboard's refusals.
@@ -107,12 +118,34 @@ impl App {
     ) -> AppResult<Value> {
         let text = |key: &str| args.get(key).and_then(Value::as_str);
         let sid = Some(sandbox.id.as_str());
-        let (from, to) = (text("from"), text("to"));
+        // The last 7 days when no period is named (review of slice 10b, F1), as the
+        // description says; the Dashboard's own default is all time.
+        let week =
+            crate::analytics::day_string(self.now().0.div_euclid(crate::analytics::DAY_MS) - 6);
+        let from = text("from").or(if text("to").is_none() {
+            Some(week.as_str())
+        } else {
+            None
+        });
+        let to = text("to");
         let summary = self.analytics_summary(ctx, sid, from, to).await?;
         let mut rows = self.analytics_tasks(ctx, sid, from, to).await?;
         if let Some(number) = args.get("number").and_then(Value::as_u64) {
             rows.retain(|row| u64::from(row.number) == number);
         }
+        let used = |row: &yulius_contracts::api::analytics::TaskRow| {
+            [
+                row.input_tokens,
+                row.output_tokens,
+                row.cache_read_tokens,
+                row.cache_write_tokens,
+            ]
+            .iter()
+            .flatten()
+            .sum::<u64>()
+        };
+        rows.sort_by_key(|row| std::cmp::Reverse(used(row)));
+        rows.truncate(USAGE_ROWS);
         Ok(json!({
             "period": record(&summary.range)?,
             "tokens": record(&summary.tokens)?,
@@ -122,8 +155,8 @@ impl App {
     }
 
     /// `checkout` (VIS-003): the repository checkout the project's Superagent works in: its
-    /// branch, its head, how many commits it is behind and ahead of its integration branch on
-    /// the remote as last fetched, and when that was.
+    /// branch, how many commits its head is behind and ahead of its integration branch on the
+    /// remote as last fetched, and when that branch was last fetched.
     ///
     /// # Errors
     /// `Conflict` when the repository is not cloned; Git failures.
@@ -136,14 +169,41 @@ impl App {
         }
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
         let upstream = format!("origin/{integration}");
-        let (ahead, behind) = self.deps.git.ahead_behind(&repo, &upstream, "HEAD").await?;
-        let fetched_at = std::fs::metadata(repo.join(".git").join("FETCH_HEAD"))
+        // A remote branch never fetched is a state, not a failure (review of slice 10b, F4).
+        let (ahead, behind) = self
+            .deps
+            .git
+            .ahead_behind(&repo, &upstream, "HEAD")
+            .await
+            .map_err(|_| {
+                AppError::Conflict(format!(
+                    "{upstream} is not in this checkout yet: run git fetch, then look again"
+                ))
+            })?;
+        let git = repo.join(".git");
+        let branch = std::fs::read_to_string(git.join("HEAD"))
+            .ok()
+            .and_then(|head| {
+                head.trim()
+                    .strip_prefix("ref: refs/heads/")
+                    .map(str::to_owned)
+            });
+        // When that remote branch was fetched (its own ref), else the last fetch of anything
+        // (F5).
+        let remote_ref = git.join("refs/remotes/origin").join(&integration);
+        let stamp = if remote_ref.exists() {
+            remote_ref
+        } else {
+            git.join("FETCH_HEAD")
+        };
+        let fetched_at = std::fs::metadata(stamp)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .and_then(|d| i64::try_from(d.as_millis()).ok())
             .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms)));
         Ok(json!({
+            "branch": branch,
             "integration_branch": integration,
             "behind": behind,
             "ahead": ahead,

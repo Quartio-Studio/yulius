@@ -5080,11 +5080,29 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         None,
     )
     .await?;
+    // An agent secret the task printed (review of slice 10b, F2): its value never comes back.
+    let value = "s3cr3t-deploy-token-0123456789";
+    {
+        use yulius_app::ports::store::UserStore as _;
+        let ctx = yulius_app::auth::AuthContext {
+            user: f.h.store.user(&alice).await?.ok_or("alice")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let input: yulius_contracts::api::secrets::AgentSecretInput =
+            serde_json::from_value(json!({"name": "DEPLOY_TOKEN", "value": value}))?;
+        f.h.app
+            .create_agent_secret(&ctx, sid().as_str(), &input)
+            .await?;
+    }
     let run_dir = f.data.join("runs").join("t-crash-1");
     std::fs::create_dir_all(&run_dir)?;
     std::fs::write(
         run_dir.join("final-screen"),
-        b"80 24\nerror: the build ran out of memory\r\nwarning: retry with fewer jobs\r\n",
+        format!(
+            "80 24\nusing {value}\r\nerror: the build ran out of memory\r\nwarning: retry with fewer jobs\r\n"
+        ),
     )?;
     f.h.store
         .insert_attempt(&yulius_app::model::AttemptRecord {
@@ -5117,6 +5135,19 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
     );
     assert!(said(&screen).contains("137"), "{screen}");
     assert!(said(&screen).contains("crashed"), "{screen}");
+    assert!(!said(&screen).contains(value), "redacted: {screen}");
+    assert!(
+        said(&screen).contains("DEPLOY_TOKEN"),
+        "its label: {screen}"
+    );
+    let (one, _) = cockpit_tool(
+        &f,
+        &token,
+        "task_screen",
+        json!({"number": task.number, "lines": 1}),
+    )
+    .await?;
+    assert_eq!(one["screen"], "warning: retry with fewer jobs", "{one}");
     let (refused, is_error) =
         cockpit_tool(&f, &token, "task_screen", json!({"number": 999})).await?;
     assert!(is_error, "{refused}");
@@ -5129,7 +5160,8 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
             .is_some_and(|rows| rows.iter().any(|r| r["number"] == task.number)),
         "{usage}"
     );
-    assert!(usage.get("period").is_some(), "{usage}");
+    // Review of slice 10b, F1: the default period is the last 7 days, not all time.
+    assert!(usage["period"]["from"].is_string(), "{usage}");
     let other = support::seed_task(
         &f.h,
         "t-other",

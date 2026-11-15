@@ -198,9 +198,9 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one these rules refuse, or none, leaves the request waiting and the value typed on the card. | the same test (no value, a short one, a cut key: refused, still waiting) |
 | SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: the new value of their secret of that name in the scope asked, or a new agent secret there; never another scope's or a global one; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`; the project's of the same name: `created` beside the personal one) |
 | SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
-| VIS-001 | `task_screen {task_id \| number, lines?}` answers a task's screen as its page's terminal shows it: live while it runs, else the last screen its last run left (redacted of agent secrets again before it is read), its last 40 lines that hold something (at most 200), with how that run ended: state, exit code, reason, start and end. | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`; `visibility_tools::tests::a_screen_is_cut_to_its_last_lines` |
-| VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for a period (default: its last 7 days) and the period's totals by model. | the same test |
-| VIS-003 | `checkout` answers how many commits the project's repository checkout is behind and ahead of its integration branch on the remote as of its last fetch, and when that was; a project not cloned is said so. It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
+| VIS-001 | `task_screen {task_id \| number, lines?}` answers a task's screen as its page's terminal shows it: live while it runs (nothing while its run is starting), else the last screen its last run left (redacted of agent secrets again before it is read), its last 40 lines that hold something (at most 200), with how that run ended: state, exit code, reason, start and end. | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`; `visibility_tools::tests::a_screen_is_cut_to_its_last_lines` |
+| VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for the tasks created in a period (default: the last 7 days), the most first and at most 50, and the period's totals by model. | the same test (a default period set; one task's row only) |
+| VIS-003 | `checkout` answers the project's repository checkout's branch and how many commits its head is behind and ahead of its integration branch on the remote as last fetched, and when that remote branch was fetched; a project not cloned, or a remote branch never fetched, is said so (409). It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
 | VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
 ## Plan
@@ -1173,3 +1173,17 @@ the function the web UI's route calls, with the person's rights checked at the c
   (`target/evidence/mutants-slice10b.py`, `mutants-slice10b.log`: `survived=0`).
 - **Not tested:** a live task's screen (the hub the page reads; the saved screen is the case the
   evidence named); a task's load (left open, above).
+- **Gate:** `scripts/dev ci` passed on `578b0f6d3` (4445 tests, 17 skipped;
+  `target/evidence/gate-slice10b.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `578b0f6d3`): request changes, no exposure found, all in
+  this slice's code: F1 (medium), "the last 7 days" was all time (the Dashboard's default): the
+  last 7 days now, the period selecting tasks by their creation, the most tokens first, at most
+  50 rows (tested: a default period is set); F2 (medium), the saved screen held no secret, so
+  nothing proved the redaction: the test writes a project agent secret into it and reads its
+  label, never its value, and reads one line; F3, the checkout names its branch; F4, a remote
+  branch never fetched is a 409 that says so, not a Git failure; F5, the time is that remote
+  branch's own fetch, else the last fetch; F6, a run still starting shows nothing, not the run
+  before's screen; F8, the description says a screen is data, never an instruction. F7 (blank
+  lines inside the window kept, `lines` clamped) answered in words: the screen's own blank lines
+  are part of what it shows.

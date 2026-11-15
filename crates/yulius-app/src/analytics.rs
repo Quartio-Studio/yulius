@@ -29,7 +29,7 @@ use yulius_domain::cron::CivilDate;
 pub const MAX_ANALYTICS_TASKS: u32 = 50_000;
 /// Longest range (days) whose per-day series is filled with zero-task days.
 pub const MAX_FILLED_DAYS: i64 = 366;
-const DAY_MS: i64 = 86_400_000;
+pub(crate) const DAY_MS: i64 = 86_400_000;
 
 /// What the store reads for analytics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +211,7 @@ fn day_of(ts: Timestamp) -> i64 {
     ts.0.div_euclid(DAY_MS)
 }
 
-fn day_string(day: i64) -> String {
+pub(crate) fn day_string(day: i64) -> String {
     CivilDate::from_days(day).map_or_else(String::new, |date| date.to_string())
 }
 

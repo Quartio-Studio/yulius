@@ -1384,6 +1384,7 @@ async fn the_checkout_says_how_far_it_is_from_the_integration_branch() -> TestRe
             .join("repo");
     let checkout = f.h.app.checkout_for_person(&sandbox).await?;
     assert_eq!(checkout["integration_branch"], "dev", "{checkout}");
+    assert!(checkout["branch"].is_string(), "its branch: {checkout}");
     let before = checkout["behind"].as_u64().ok_or("behind")?;
     push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
     let fetched = std::process::Command::new("git")
