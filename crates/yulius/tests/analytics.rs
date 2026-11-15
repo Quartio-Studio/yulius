@@ -980,6 +980,32 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
     .await?;
     entry(OCT1, two.clone(), "delivery.agent.merge_armed", "armed").await?;
     entry(OCT1 + 3 * HOUR, two, "delivery.agent.merge", "merged").await?;
+    // A person's armed merge names the task by its id, and its merge by `<slug>#<n>`; another one
+    // was armed before the range and merged in it.
+    for (id, armed_at) in [("t-person", OCT1 + HOUR), ("t-early", OCT1 - 2 * HOUR)] {
+        task(
+            &h,
+            TaskSpec {
+                id,
+                sandbox: "s1",
+                title: id,
+                harness: Harness::ClaudeCode,
+                status: TaskStatus::Running,
+                created: OCT1 - 3 * HOUR,
+                closed: None,
+            },
+        )
+        .await?;
+        let number = h.store.task(&TaskId::parse(id)?).await?.ok_or(id)?.number;
+        entry(armed_at, id.to_owned(), "delivery.person.merge_armed", "{}").await?;
+        entry(
+            OCT1 + 4 * HOUR,
+            format!("{}#{number}", s1.slug),
+            "delivery.person.merge",
+            "merged",
+        )
+        .await?;
+    }
     // Another sandbox's candidate, and an entry outside the range.
     entry(OCT1 + HOUR, s2.slug.clone(), mq::FORMED, "merge train #1").await?;
     entry(OCT1 - 30 * 24 * HOUR, one, mq::FORMED, "long ago").await?;
@@ -1001,7 +1027,8 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
     );
     assert_eq!(body["dissolved_by"]["member_left"], 1, "{body}");
     assert_eq!(body["days"][0]["day"], "2026-10-01", "{body}");
-    assert_eq!(body["merges"], 1);
+    // 180, 180 and 360 minutes.
+    assert_eq!(body["merges"], 3, "{body}");
     assert_eq!(body["median_arm_to_merge_minutes"], 180.0);
     assert_eq!(read(&admin, "").await?.body["formed"], 3);
     let hidden = read(&alice, "&sandbox=s2").await?;

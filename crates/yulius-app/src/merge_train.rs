@@ -1517,7 +1517,6 @@ impl App {
     }
 }
 
-/// Every sandbox's trains; none when the file is missing or unreadable.
 /// Why a train was dissolved, from the reason this module gives (SPEC-493 MQC-005).
 fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     use yulius_domain::merge_queue::Dissolved;
@@ -1544,6 +1543,7 @@ fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
     }
 }
 
+/// Every sandbox's trains; none when the file is missing or unreadable.
 fn read_all(path: &Path) -> BTreeMap<String, SandboxTrains> {
     std::fs::read(path)
         .ok()
@@ -1588,8 +1588,7 @@ mod tests {
         }
     }
 
-    /// SPEC-441 MQ-003 (was TRN-004): under test and once it passed, the train holds every member,
-    /// the first too; others are free.
+    /// SPEC-493 MQC-005: each reason this module dissolves a train for names its why.
     #[test]
     fn the_why_of_each_dissolve() {
         use yulius_domain::merge_queue::Dissolved;
@@ -1613,11 +1612,19 @@ mod tests {
             ("it waited too long to merge", Dissolved::TooLong),
             ("its CI run ended cancelled", Dissolved::Errored),
             ("its CI run is gone", Dissolved::Errored),
+            ("#1's own run took too long", Dissolved::TooLong),
+            ("#4 moved on", Dissolved::MemberLeft),
+            (
+                "the own run of #2 at abc ended failed",
+                Dissolved::MemberLeft,
+            ),
         ] {
             assert_eq!(dissolved_why(reason), why, "{reason}");
         }
     }
 
+    /// SPEC-441 MQ-003 (was TRN-004): under test and once it passed, the train holds every member,
+    /// the first too; others are free.
     #[test]
     fn a_train_holds_every_member() {
         let mut train = train();

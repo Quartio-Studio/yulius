@@ -1452,7 +1452,6 @@ async fn a_passed_candidate_waits_for_its_members_own_runs() -> TestResult {
 /// Holds pull request `n`'s own run running, as if a job of it took long: no process takes it.
 async fn hold_own_run(f: &Fixture, app: &App, n: u64) -> BoxResult<String> {
     use yulius_app::ci::CiRunUpdate;
-    use yulius_app::ports::store_ext::CiStore;
     let own = f
         .runs(app)
         .await?
@@ -1475,7 +1474,6 @@ async fn hold_own_run(f: &Fixture, app: &App, n: u64) -> BoxResult<String> {
 /// Ends a held own run in `state`, with its status published.
 async fn end_own_run(app: &App, id: &str, state: RunState) -> TestResult {
     use yulius_app::ci::CiRunUpdate;
-    use yulius_app::ports::store_ext::CiStore;
     let ended = CiRunUpdate {
         ended_at: Some(app.now()),
         ..CiRunUpdate::default()
@@ -1492,7 +1490,6 @@ async fn end_own_run(app: &App, id: &str, state: RunState) -> TestResult {
 
 /// Dispatches CI until the merge candidate's run `id` ended, and returns how.
 async fn run_candidate(f: &Fixture, app: &Arc<App>, id: &str) -> BoxResult<RunState> {
-    use yulius_app::ports::store_ext::CiStore;
     loop {
         app.ci_dispatch().await;
         let run = app.deps.store.ci_run(id).await?.ok_or("run")?;

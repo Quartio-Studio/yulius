@@ -796,12 +796,14 @@ pub trait AuditStore: Send + Sync {
     /// The details of the newest `limit` entries of `action` about `target`, newest first.
     async fn audit_details(&self, target: &str, action: &str, limit: u32)
     -> AppResult<Vec<String>>;
-    /// The entries about sandbox `slug` (target `<slug>`) and its tasks (`<slug>#<n>`) whose
-    /// action is one of `actions`, written in `[from, to)` (open ends unbounded), oldest first,
-    /// at most `limit`, each with its target (SPEC-493 MQC-005).
+    /// The entries about sandbox `slug` (target `<slug>`), its tasks (`<slug>#<n>`) and the
+    /// targets `also` (its tasks' ids, as a person's armed merge names them) whose action is one
+    /// of `actions`, written in `[from, to)` (open ends unbounded): the newest `limit`, oldest
+    /// first, each with its target (SPEC-493 MQC-005).
     async fn audit_of_sandbox(
         &self,
         slug: &str,
+        also: &[String],
         actions: &[&str],
         from: Option<Timestamp>,
         to: Option<Timestamp>,

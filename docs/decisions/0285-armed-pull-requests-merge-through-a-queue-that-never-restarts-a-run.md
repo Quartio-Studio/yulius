@@ -75,12 +75,14 @@ hand, and re-armed merges, which reset their place and dissolved trains.
 ## Consequences
 
 - A merge costs at most one run beyond the pre-check (its candidate), shared by every pull request
-  waiting at that time, and since SPEC-493 that run goes beside the pre-check, not after it. A red
-  member costs the others at most the candidate run it was in.
+  waiting at that time. With three pull requests turning green one after another, the base moving
+  after each merge: 3 pre-checks and at most 2 candidates, nothing cancelled. Since SPEC-493 that
+  run goes beside the pre-check, not after it. A red member costs the others at most the candidate
+  run it was in; a member whose own run outlasts the candidate's two-hour test limit is held back,
+  and the others form a candidate without it.
 - The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (with `(why: <kind>)`), and
   `GET /api/analytics/merge-queue` (the Dashboard's Pipeline tab) counts them per day with the
-  minutes from arming to merge (SPEC-493 MQC-005). With three pull requests turning green one after another, the base moving
-  after each merge: 3 pre-checks and at most 2 candidates, nothing cancelled.
+  minutes from arming to merge (SPEC-493 MQC-005).
 - A pull request's run is only superseded by its own new commits.
 - A pull request that passes alone but breaks on the current base is told so after its candidate,
   not by a rerun of its own.
