@@ -3047,3 +3047,7 @@ slices follow.
   query 0.2 to 1.8 ms at 200 000 runs. Answered: the migration is schema version 61 at the
   end, a test pins the latest versions to their files (it fails with the old placement,
   `mutations-r1.log`), the test uses `PAUSE_COLS`, its doc says it, the line is wrapped.
+- **Gate after it.** `scripts/dev ci` at `02bafbf68`: exit 0; `4427 tests run: 4427 passed (1
+  slow), 17 skipped` (`gate2.log`). The reviewer's reproduction, a database made with `dev`'s
+  migration list (version 60) opened by this head, applies only 0061 and gets the three
+  indexes (`migorder-after.log`).
