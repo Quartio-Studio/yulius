@@ -150,7 +150,7 @@ fn colour(code: u8, text: &str) -> String {
 }
 
 /// Claude Code's tools that start a subagent (the hook client sends their `PreToolUse` here).
-fn yulius_harness_agent_tool(tool: &str) -> bool {
+fn agent_tool(tool: &str) -> bool {
     matches!(tool, "Agent" | "Task")
 }
 
@@ -1221,11 +1221,7 @@ impl App {
     /// gate. A failure to decide lets the edit go ahead (the Stop gate still checks).
     async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
         // A subagent's start: a review round's reviewer (SPEC-493 REV-002).
-        if input
-            .tool_name
-            .as_deref()
-            .is_some_and(|tool| yulius_harness_agent_tool(tool))
-        {
+        if input.tool_name.as_deref().is_some_and(agent_tool) {
             return self.review_gate(ctx, input).await;
         }
         match self.edit_gate(&ctx.task, input).await {
