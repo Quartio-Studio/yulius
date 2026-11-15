@@ -118,12 +118,15 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
   const reload = loader(host, 'the pipeline', async () => {
     const p = period();
     rangeLabel.textContent = `${SHORT_DATE.format(new Date(`${p.from}T00:00:00Z`))} – ${SHORT_DATE.format(new Date(`${p.to}T00:00:00Z`))}`;
-    // The review's numbers (SPEC-493 REV-006) beside the stages; the stages show without them.
-    const [summary, reviews] = await Promise.all([
+    // The review's numbers (SPEC-493 REV-006) and the merge queue's (MQC-005) beside the
+    // stages; the stages show without them.
+    const range = new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to });
+    const [summary, reviews, queue] = await Promise.all([
       ctx.api.get(`${api}/stages/summary?${params()}`),
-      ctx.api.get(`/api/analytics/reviews?${new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to })}`).catch(() => null),
+      ctx.api.get(`/api/analytics/reviews?${range}`).catch(() => null),
+      ctx.api.get(`/api/analytics/merge-queue?${range}`).catch(() => null),
     ]);
-    return { ...summary, reviews };
+    return { ...summary, reviews, queue };
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
@@ -145,6 +148,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       summary.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more stages than are read at once; the figures describe the newest.')) : null,
       deliveryCard(summary.delivery || []),
       summary.reviews ? reviewCard(summary.reviews) : null,
+      summary.queue ? queueCard(summary.queue) : null,
       h('section', { class: 'card db-card', 'aria-label': `Trend: ${label}` },
         h('header', { class: 'db-card-head' },
           h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, label),
@@ -227,6 +231,21 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
         tile('Rounds per pull request', Number.isFinite(r.median_rounds) ? `${r.median_rounds}` : '—', 'median'),
         tile('First review cut off', share(r.first_rounds_without_report || 0), 'ended with no report (a usage limit)'),
         tile('Rounds by model', models || '—', r.no_fable_rounds ? `${int(r.no_fable_rounds)} on Opus for want of Fable` : 'the model that answered')));
+  }
+
+  /** The merge queue's candidates in the range (SPEC-493 MQC-005). */
+  function queueCard(q) {
+    const why = { member_left: 'a member left', bisected: 'bisected', base_moved: 'base moved', errored: 'errored', too_long: 'too long' };
+    const dissolved = Object.entries(q.dissolved_by || {}).map(([k, n]) => `${why[k] || k} ${int(n)}`).join(' · ');
+    const minutes = Number.isFinite(q.median_arm_to_merge_minutes) ? `${Math.round(q.median_arm_to_merge_minutes)} min` : '—';
+    return h('section', { class: 'card db-card', 'aria-label': 'Merge queue' },
+      h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'Merge queue'),
+        h('span', { class: 'db-card-sub' }, 'merge candidates: armed pull requests tested together on top of the integration branch'))),
+      h('div', { class: 'db-kpis pl-kpis' },
+        tile('Candidates formed', int(q.formed || 0), 'in this range'),
+        tile('Merged', int(q.merged || 0), 'every member merged on one run'),
+        tile('Dissolved', int(q.dissolved || 0), dissolved || 'none'),
+        tile('Arming to merge', minutes, `median of ${int(q.merges || 0)} armed ${q.merges === 1 ? 'merge' : 'merges'}`)));
   }
 
   function tile(label, value, sub) {

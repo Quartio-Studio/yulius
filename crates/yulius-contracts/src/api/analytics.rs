@@ -306,6 +306,42 @@ pub struct ReviewAnalytics {
     pub no_fable_rounds: u32,
 }
 
+/// `GET /api/analytics/merge-queue`: the merge queue's candidates over the range, per day, and the
+/// minutes from arming a merge to the merge (SPEC-493 MQC-005).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MergeQueueAnalytics {
+    /// The range read.
+    pub range: AnalyticsRange,
+    /// Per UTC day, oldest first; days with nothing are left out.
+    pub days: Vec<MergeQueueDay>,
+    /// Candidates formed, merged and dissolved over the range.
+    pub formed: u32,
+    /// See `formed`.
+    pub merged: u32,
+    /// See `formed`.
+    pub dissolved: u32,
+    /// Dissolved candidates by why (`member_left`, `bisected`, `base_moved`, `errored`,
+    /// `too_long`), over the range.
+    pub dissolved_by: std::collections::BTreeMap<String, u32>,
+    /// Pull requests merged after an armed merge.
+    pub merges: u32,
+    /// The median minutes from a merge's last arming to the merge; `null` without any.
+    pub median_arm_to_merge_minutes: Option<f64>,
+}
+
+/// One day of [`MergeQueueAnalytics`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MergeQueueDay {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    /// Candidates formed.
+    pub formed: u32,
+    /// Candidates whose members all merged.
+    pub merged: u32,
+    /// Candidates dissolved, by why.
+    pub dissolved: std::collections::BTreeMap<String, u32>,
+}
+
 /// A model and how many review rounds it ran.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ModelCount {

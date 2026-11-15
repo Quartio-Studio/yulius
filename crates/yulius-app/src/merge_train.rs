@@ -453,11 +453,12 @@ impl App {
         tracing::info!(sandbox = %sandbox.slug, run = %train.run, reason, "merge train dissolved");
         self.train_audit(
             sandbox,
-            "delivery.train.dissolved",
+            yulius_domain::merge_queue::DISSOLVED,
             &format!(
-                "merge train {} (run {}): {reason}; its pull requests merge one by one",
+                "merge train {} (run {}): {reason}; its pull requests merge one by one (why: {})",
                 listed(&numbers(&train.members)),
-                train.run
+                train.run,
+                dissolved_why(reason).as_str()
             ),
         )
         .await;
@@ -774,7 +775,7 @@ impl App {
                 train.run
             )
         };
-        self.train_audit(sandbox, "delivery.train.merged", &detail)
+        self.train_audit(sandbox, yulius_domain::merge_queue::MERGED, &detail)
             .await;
         None
     }
@@ -1394,7 +1395,7 @@ impl App {
         let left: Vec<u64> = left_out.iter().map(|l| l.pr).collect();
         self.train_audit(
             sandbox,
-            "delivery.train.formed",
+            yulius_domain::merge_queue::FORMED,
             &format!(
                 "merge train {} on {} at {}: run {} tests {}{}",
                 listed(&prs),
@@ -1479,6 +1480,30 @@ impl App {
 }
 
 /// Every sandbox's trains; none when the file is missing or unreadable.
+/// Why a train was dissolved, from the reason this module gives (SPEC-493 MQC-005).
+fn dissolved_why(reason: &str) -> yulius_domain::merge_queue::Dissolved {
+    use yulius_domain::merge_queue::Dissolved;
+    let has = |words: &[&str]| words.iter().any(|w| reason.contains(w));
+    if has(&["too long"]) {
+        Dissolved::TooLong
+    } else if has(&[
+        "leaves the candidate",
+        "was armed again",
+        "is no longer armed",
+        "merged before the ones ahead",
+        "cannot be read",
+        "has no worktree",
+    ]) {
+        Dissolved::MemberLeft
+    } else if has(&["its CI run failed"]) {
+        Dissolved::Bisected
+    } else if has(&["did not predict", "the train predicted"]) {
+        Dissolved::BaseMoved
+    } else {
+        Dissolved::Errored
+    }
+}
+
 fn read_all(path: &Path) -> BTreeMap<String, SandboxTrains> {
     std::fs::read(path)
         .ok()
@@ -1524,6 +1549,34 @@ mod tests {
 
     /// SPEC-441 MQ-003 (was TRN-004): under test and once it passed, the train holds every member,
     /// the first too; others are free.
+    #[test]
+    fn the_why_of_each_dissolve() {
+        use yulius_domain::merge_queue::Dissolved;
+        for (reason, why) in [
+            (
+                "#2's own run at abc ended failed: it leaves the candidate",
+                Dissolved::MemberLeft,
+            ),
+            ("#3 was armed again", Dissolved::MemberLeft),
+            ("#3 is no longer armed", Dissolved::MemberLeft),
+            ("its CI run failed", Dissolved::Bisected),
+            (
+                "`dev` moved to a state the train did not predict",
+                Dissolved::BaseMoved,
+            ),
+            (
+                "`dev` is not in the state the train predicted before #4",
+                Dissolved::BaseMoved,
+            ),
+            ("its CI run took too long", Dissolved::TooLong),
+            ("it waited too long to merge", Dissolved::TooLong),
+            ("its CI run ended cancelled", Dissolved::Errored),
+            ("its CI run is gone", Dissolved::Errored),
+        ] {
+            assert_eq!(dissolved_why(reason), why, "{reason}");
+        }
+    }
+
     #[test]
     fn a_train_holds_every_member() {
         let mut train = train();

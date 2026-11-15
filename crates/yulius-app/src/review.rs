@@ -470,6 +470,73 @@ impl App {
         })
     }
 
+    /// `GET /api/analytics/merge-queue` (SPEC-493 MQC-005): the merge queue's candidates formed,
+    /// merged and dissolved per day in the visible sandboxes (or `sandbox`), and the minutes
+    /// from arming a merge to it, read from the audit log (at most 20,000 entries a sandbox).
+    ///
+    /// # Errors
+    /// `Invalid` for a range whose start is after its end; `NotFound` for a sandbox the caller
+    /// cannot see; store failures.
+    pub async fn analytics_merge_queue(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        sandbox: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<yulius_contracts::api::analytics::MergeQueueAnalytics> {
+        use yulius_contracts::api::analytics::{MergeQueueAnalytics, MergeQueueDay};
+        use yulius_domain::merge_queue as mq;
+        let (sandboxes, from_at, to_at, range) =
+            self.analytics_window(ctx, sandbox, from, to).await?;
+        let mut actions = vec![mq::FORMED, mq::MERGED, mq::DISSOLVED];
+        actions.extend(mq::ARMED);
+        actions.extend(mq::MERGE);
+        let mut events = Vec::new();
+        for id in &sandboxes {
+            let Some(record) = self.deps.store.sandbox(id).await? else {
+                continue;
+            };
+            let entries = self
+                .deps
+                .store
+                .audit_of_sandbox(&record.slug, &actions, from_at, to_at, 20_000)
+                .await?;
+            events.extend(entries.into_iter().map(|(target, entry)| mq::QueueEvent {
+                at: entry.at,
+                target,
+                action: entry.action,
+                detail: entry.detail.unwrap_or_default(),
+            }));
+        }
+        let numbers = mq::queue_numbers(&events);
+        let mut totals = MergeQueueAnalytics {
+            range,
+            merges: numbers.merges,
+            median_arm_to_merge_minutes: numbers.median_arm_to_merge_minutes,
+            ..MergeQueueAnalytics::default()
+        };
+        for day in numbers.days {
+            totals.formed += day.formed;
+            totals.merged += day.merged;
+            let dissolved: std::collections::BTreeMap<String, u32> = day
+                .dissolved
+                .into_iter()
+                .map(|(why, n)| (why.to_owned(), n))
+                .collect();
+            for (why, n) in &dissolved {
+                totals.dissolved += n;
+                *totals.dissolved_by.entry(why.clone()).or_default() += n;
+            }
+            totals.days.push(MergeQueueDay {
+                day: day.day,
+                formed: day.formed,
+                merged: day.merged,
+                dissolved,
+            });
+        }
+        Ok(totals)
+    }
+
     /// The rounds of `task`'s open pull request, as the delivery view shows them. A failed read
     /// shows none.
     pub(crate) async fn review_round_views(

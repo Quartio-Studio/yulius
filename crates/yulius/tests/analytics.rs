@@ -926,3 +926,85 @@ async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
     assert_eq!(read(&alice, "&sandbox=s1").await?.body["pull_requests"], 1);
     Ok(())
 }
+
+/// SPEC-493 MQC-005 (AC-15): the merge-queue read counts the candidates formed, merged and
+/// dissolved by why, per day, from the audit entries of the sandboxes the caller sees, and the
+/// minutes from arming a merge to it; a hidden sandbox is not found.
+#[tokio::test]
+async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _};
+    use yulius_domain::merge_queue as mq;
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let s1 = h
+        .store
+        .sandbox(&SandboxId::parse("s1")?)
+        .await?
+        .ok_or("s1")?;
+    let s2 = h
+        .store
+        .sandbox(&SandboxId::parse("s2")?)
+        .await?
+        .ok_or("s2")?;
+    let entry = |at: i64, target: String, action: &'static str, detail: &'static str| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit(Timestamp(at), "yulius", action, Some(&target), Some(detail))
+                .await
+        }
+    };
+    let (one, two) = (s1.slug.clone(), format!("{}#7", s1.slug));
+    entry(OCT1 + HOUR, one.clone(), mq::FORMED, "merge train #7, #8").await?;
+    entry(
+        OCT1 + 2 * HOUR,
+        one.clone(),
+        mq::DISSOLVED,
+        "merge train #7, #8 (run r): #8's own run at abc ended failed: it leaves the candidate; \
+         its pull requests merge one by one (why: member_left)",
+    )
+    .await?;
+    entry(
+        OCT1 + 2 * HOUR + 1,
+        one.clone(),
+        mq::FORMED,
+        "merge train #7",
+    )
+    .await?;
+    entry(
+        OCT1 + 3 * HOUR,
+        one.clone(),
+        mq::MERGED,
+        "merge train #7 merged",
+    )
+    .await?;
+    entry(OCT1, two.clone(), "delivery.agent.merge_armed", "armed").await?;
+    entry(OCT1 + 3 * HOUR, two, "delivery.agent.merge", "merged").await?;
+    // Another sandbox's candidate, and an entry outside the range.
+    entry(OCT1 + HOUR, s2.slug.clone(), mq::FORMED, "merge train #1").await?;
+    entry(OCT1 - 30 * 24 * HOUR, one, mq::FORMED, "long ago").await?;
+    let read = |who: &Creds, query: &str| {
+        let (router, who, uri) = (
+            h.router.clone(),
+            who.clone(),
+            format!("/api/analytics/merge-queue?from=2026-10-01&to=2026-10-07{query}"),
+        );
+        async move { call(&router, Method::GET, &uri, None, &who).await }
+    };
+    let seen = read(&alice, "").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    let body = &seen.body;
+    assert_eq!(
+        (&body["formed"], &body["merged"], &body["dissolved"]),
+        (&json!(2), &json!(1), &json!(1)),
+        "{body}"
+    );
+    assert_eq!(body["dissolved_by"]["member_left"], 1, "{body}");
+    assert_eq!(body["days"][0]["day"], "2026-10-01", "{body}");
+    assert_eq!(body["merges"], 1);
+    assert_eq!(body["median_arm_to_merge_minutes"], 180.0);
+    assert_eq!(read(&admin, "").await?.body["formed"], 3);
+    let hidden = read(&alice, "&sandbox=s2").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    Ok(())
+}

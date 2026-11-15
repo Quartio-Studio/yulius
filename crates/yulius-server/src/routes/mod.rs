@@ -222,6 +222,7 @@ pub fn public() -> Router<AppState> {
         .route("/api/analytics/summary", get(analytics::summary))
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/analytics/reviews", get(analytics::reviews))
+        .route("/api/analytics/merge-queue", get(analytics::merge_queue))
         .route("/api/status", get(status::status))
         .route("/api/disk", get(status::disk))
         .route("/api/connections", get(status::connections))
