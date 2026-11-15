@@ -41,23 +41,28 @@ fn take_report(sent: &mut Vec<i64>, now: i64) -> bool {
 }
 
 /// The longest case: what the filing link takes of plain ASCII prose with the other texts at
-/// their caps (review of slice 11, R3-3); other text, up to 9 bytes a character in the link,
+/// their caps (review of slice 11, R3-3); other text, up to 12 bytes a character in the link,
 /// can meet [`MAX_LINK_BYTES`] first, and that refusal gives the size.
 const MAX_CASE_CHARS: usize = 1500;
 
 /// The longest filing link answered: GitHub's new-issue form refuses much longer ones.
 const MAX_LINK_BYTES: usize = 6000;
 
-/// Whether `text` holds `name` as a whole word (any case): bounded by what is not a letter or
+/// How `text` writes `name` as a whole word (any case): bounded by what is not a letter or
 /// a digit, so a compound of it (`shop-api`, `shop_db`) holds it too (review of slice 11,
 /// R3-1), and by a camelCase change (`ShopApi`, `ACMEShop`), the name's own humps or none;
 /// a name shorter than 3 characters is no name.
-fn names_word(text: &str, name: &str) -> bool {
+/// The answer is the name lowercased, or its camelCase words apart (`web app` for `WebApp`).
+fn named_as(text: &str, name: &str) -> Option<String> {
     if name.chars().count() < 3 {
-        return false;
+        return None;
     }
-    lowercase_holds(&text.to_lowercase(), &name.to_lowercase())
-        || lowercase_holds(&camel_split(text), &camel_split(name))
+    let plain = name.to_lowercase();
+    if lowercase_holds(&text.to_lowercase(), &plain) {
+        return Some(plain);
+    }
+    let humps = camel_split(name);
+    lowercase_holds(&camel_split(text), &humps).then_some(humps)
 }
 
 /// `text` lowercased with a space at each camelCase change: before an upper-case letter after a
@@ -96,14 +101,14 @@ fn lowercase_holds(text: &str, name: &str) -> bool {
 
 /// Which of the project's names one of `texts` holds as a whole word (review of slice 11,
 /// R2-2): `name`, `repository's name` or `owner's name`, with the name itself so the refusal
-/// can say it (R3-2); none for the Yulius repository's own project, whose name is the
-/// product's.
+/// can say it (R3-2) and how the text wrote it; none for the Yulius repository's own project,
+/// whose name is the product's.
 fn project_named<'a>(
     texts: &[&str],
     slug: &'a str,
     owner: &'a str,
     repo: &'a str,
-) -> Option<(&'static str, &'a str)> {
+) -> Option<(&'static str, &'a str, String)> {
     let (yulius_owner, yulius_repo) = YULIUS_REPO;
     if owner.eq_ignore_ascii_case(yulius_owner) && repo.eq_ignore_ascii_case(yulius_repo) {
         return None;
@@ -114,7 +119,26 @@ fn project_named<'a>(
         ("owner's name", owner),
     ]
     .into_iter()
-    .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
+    .find_map(|(kind, name)| {
+        texts
+            .iter()
+            .find_map(|text| named_as(text, name))
+            .map(|written| (kind, name, written))
+    })
+}
+
+/// The refusal of a report naming the project: the name, and how the text wrote it when that
+/// differs (a camelCase name's words apart).
+fn naming_refusal(kind: &str, name: &str, written: &str) -> String {
+    let written = if written == name.to_lowercase() {
+        String::new()
+    } else {
+        format!("written `{written}`; ")
+    };
+    format!(
+        "write the report in general terms: it holds this project's {kind} `{name}` \
+         ({written}the report is meant for the Yulius repository)"
+    )
 }
 
 /// The case, refused empty or past [`MAX_CASE_CHARS`].
@@ -133,7 +157,7 @@ fn checked_link(ability: &str, asked: &ReportArgs, from: &str) -> AppResult<Stri
     if link.len() > MAX_LINK_BYTES {
         return Err(AppError::Invalid(format!(
             "the report's link is {} bytes, at most {MAX_LINK_BYTES} (a letter outside ASCII \
-             takes up to 9): shorten the case, the ability or needed_for",
+             takes up to 12): shorten the case, the ability or needed_for",
             link.len()
         )));
     }
@@ -235,16 +259,13 @@ impl App {
             asked.case.as_str(),
             asked.needed_for.as_deref().unwrap_or(""),
         ];
-        if let Some((kind, name)) = project_named(
+        if let Some((kind, name, written)) = project_named(
             &texts,
             &sandbox.slug,
             &sandbox.repo_owner,
             &sandbox.repo_name,
         ) {
-            return Err(AppError::Invalid(format!(
-                "write the report in general terms: it holds this project's {kind} `{name}` (the \
-                 report is meant for the Yulius repository)"
-            )));
+            return Err(AppError::Invalid(naming_refusal(kind, name, &written)));
         }
         for text in texts {
             if self.redact_for_sandbox(&sandbox.id, text).await != text {
@@ -349,8 +370,13 @@ impl App {
 mod tests {
     use super::{
         HOUR_MS, MAX_CASE_CHARS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_case,
-        checked_link, filing_link, issue_body, names_word, project_named, query_value, take_report,
+        checked_link, filing_link, issue_body, named_as, naming_refusal, project_named,
+        query_value, take_report,
     };
+
+    fn names_word(text: &str, name: &str) -> bool {
+        named_as(text, name).is_some()
+    }
 
     /// R2-2: the project's names are refused, but not the Yulius project's own.
     #[test]
@@ -358,11 +384,30 @@ mod tests {
         let texts = ["the CI of acme/shop failed"];
         assert_eq!(
             project_named(&texts, "shop", "acme", "shop"),
-            Some(("name", "shop"))
+            Some(("name", "shop", "shop".to_string()))
         );
         assert_eq!(
             project_named(&["Acme said no"], "web", "acme", "site"),
-            Some(("owner's name", "acme"))
+            Some(("owner's name", "acme", "acme".to_string()))
+        );
+        // Delta review, m1: a camelCase name matched as its words apart says how it was found.
+        assert_eq!(
+            project_named(&["the web app crashed"], "site", "acme", "WebApp"),
+            Some(("repository's name", "WebApp", "web app".to_string()))
+        );
+        assert_eq!(
+            project_named(&["the webapp crashed"], "site", "acme", "WebApp"),
+            Some(("repository's name", "WebApp", "webapp".to_string()))
+        );
+        assert_eq!(
+            naming_refusal("repository's name", "WebApp", "web app"),
+            "write the report in general terms: it holds this project's repository's name \
+             `WebApp` (written `web app`; the report is meant for the Yulius repository)"
+        );
+        assert_eq!(
+            naming_refusal("name", "Shop", "shop"),
+            "write the report in general terms: it holds this project's name `Shop` (the report \
+             is meant for the Yulius repository)"
         );
         assert_eq!(
             project_named(&["yulius restarted"], "yulius", "Quartio-Studio", "yulius"),

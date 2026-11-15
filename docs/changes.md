@@ -6,9 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
-- `ability_report` refuses a compound of the project's name too (`shop-api`), names the word it
-  refused, and caps the case at 1500 characters, what its filing link takes (SPEC-487, review
-  of slice 11).
+- `ability_report` refuses a compound of the project's name too (`shop-api`, `ShopApi`), names
+  the word it refused and how it was written, caps the case at 1500 characters (what its filing
+  link takes of plain ASCII prose) and gives the link's size when it is too long (SPEC-487,
+  review of slice 11).
 - A missing ability is reported in one call (SPEC-487 slice 11, task #469,
   [ADR-0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
   The Superagent offered to report walls and never could; `ability_report` (also a task's agent's)
