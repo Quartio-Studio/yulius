@@ -58,6 +58,35 @@ fn names_word(text: &str, name: &str) -> bool {
     })
 }
 
+/// Which of the project's names one of `texts` holds as a whole word (review of slice 11,
+/// R2-2): `name`, `repository's name` or `owner's name`; none for the Yulius repository's own
+/// project, whose name is the product's.
+fn project_named(texts: &[&str], slug: &str, owner: &str, repo: &str) -> Option<&'static str> {
+    let (yulius_owner, yulius_repo) = YULIUS_REPO;
+    if owner.eq_ignore_ascii_case(yulius_owner) && repo.eq_ignore_ascii_case(yulius_repo) {
+        return None;
+    }
+    [
+        ("name", slug),
+        ("repository's name", repo),
+        ("owner's name", owner),
+    ]
+    .into_iter()
+    .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
+    .map(|(kind, _)| kind)
+}
+
+/// The filing link, refused past [`MAX_LINK_BYTES`] (R2-1).
+fn checked_link(ability: &str, asked: &ReportArgs, from: &str) -> AppResult<String> {
+    let link = filing_link(ability, asked, from);
+    if link.len() > MAX_LINK_BYTES {
+        return Err(AppError::Invalid(
+            "the report is too long for a link: shorten the case".into(),
+        ));
+    }
+    Ok(link)
+}
+
 /// The link that opens the report as a new issue in the Yulius repository.
 fn filing_link(ability: &str, asked: &ReportArgs, from: &str) -> String {
     let (owner, repo) = YULIUS_REPO;
@@ -157,25 +186,15 @@ impl App {
             asked.case.as_str(),
             asked.needed_for.as_deref().unwrap_or(""),
         ];
-        // Whole words only, and not for the Yulius repository's own project, whose name is the
-        // product's (review of slice 11, R2-2).
-        let (yulius_owner, yulius_repo) = YULIUS_REPO;
-        let is_yulius = sandbox.repo_owner.eq_ignore_ascii_case(yulius_owner)
-            && sandbox.repo_name.eq_ignore_ascii_case(yulius_repo);
-        let names = [
-            ("its name", sandbox.slug.as_str()),
-            ("its repository's name", sandbox.repo_name.as_str()),
-            ("its owner's name", sandbox.repo_owner.as_str()),
-        ];
-        if !is_yulius
-            && let Some((kind, _)) = names
-                .iter()
-                .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
-        {
+        if let Some(kind) = project_named(
+            &texts,
+            &sandbox.slug,
+            &sandbox.repo_owner,
+            &sandbox.repo_name,
+        ) {
             return Err(AppError::Invalid(format!(
-                "write the report in general terms: it holds this project's {} (the report is \
-                 meant for the Yulius repository)",
-                kind.trim_start_matches("its ")
+                "write the report in general terms: it holds this project's {kind} (the report \
+                 is meant for the Yulius repository)"
             )));
         }
         for text in texts {
@@ -187,13 +206,7 @@ impl App {
                 ));
             }
         }
-        let file_url = filing_link(ability, &asked, from);
-        if file_url.len() > MAX_LINK_BYTES {
-            // Checked before the report is kept, below the length GitHub's form takes (R2-1).
-            return Err(AppError::Invalid(
-                "the report is too long for a link: shorten the case".into(),
-            ));
-        }
+        let file_url = checked_link(ability, &asked, from)?;
         let now = self.now().0;
         {
             let mut sent = self
@@ -286,9 +299,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        HOUR_MS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, filing_link, issue_body, names_word,
-        query_value, take_report,
+        HOUR_MS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_link, filing_link,
+        issue_body, names_word, project_named, query_value, take_report,
     };
+
+    /// R2-2: the project's names are refused, but not the Yulius project's own.
+    #[test]
+    fn a_report_naming_the_project_is_known_but_not_yulius_own() {
+        let texts = ["the CI of acme/shop failed"];
+        assert_eq!(project_named(&texts, "shop", "acme", "shop"), Some("name"));
+        assert_eq!(
+            project_named(&["Acme said no"], "web", "acme", "site"),
+            Some("owner's name")
+        );
+        assert_eq!(
+            project_named(&["yulius restarted"], "yulius", "Quartio-Studio", "yulius"),
+            None
+        );
+        assert_eq!(
+            project_named(&["nothing here"], "shop", "acme", "shop"),
+            None
+        );
+    }
 
     /// Review of slice 11, R2-2: a name is matched as a whole word only.
     #[test]
@@ -317,6 +349,8 @@ mod tests {
             needed_for: None,
         };
         assert!(filing_link("a", &long, "A Superagent").len() > MAX_LINK_BYTES);
+        assert!(checked_link("a", &short, "A Superagent").is_ok());
+        assert!(checked_link("a", &long, "A Superagent").is_err());
     }
 
     /// SPEC-487 ABL-003 (review of slice 11, m4): five an hour, and the window moves on.
