@@ -1352,6 +1352,86 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 MQC-001: a candidate that passed while a member's own run still runs merges nothing
+/// yet: the member waits for its own run, then merges on both. The own run is held running (no
+/// process takes it), so only the candidate's run executes first.
+#[tokio::test]
+async fn a_passed_candidate_waits_for_its_members_own_runs() -> TestResult {
+    use yulius_app::ci::CiRunUpdate;
+    use yulius_app::ports::store_ext::CiStore;
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    let head = git(&one, &["rev-parse", "HEAD"])?;
+    let own = f
+        .runs(&app)
+        .await?
+        .into_iter()
+        .find(|r| r.reference == CiRef::PullRequest(1))
+        .ok_or("own run")?;
+    let started = CiRunUpdate {
+        started_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&own.id, &[RunState::Queued], RunState::Running, &started)
+            .await?
+    );
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f
+        .train_runs(&app)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("no candidate")?;
+    loop {
+        app.ci_dispatch().await;
+        let run = app.deps.store.ci_run(&train.id).await?.ok_or("run")?;
+        if !run.state.is_active() {
+            assert_eq!(run.state, RunState::Passed, "{run:?}");
+            break;
+        }
+        if tokio::time::Instant::now() > f.deadline {
+            return Err("the candidate did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for _ in 0..3 {
+        app.merge_armed(&f.sandbox).await;
+    }
+    assert!(
+        !f.merged(&app, 1).await?,
+        "merged before its own run passed"
+    );
+    // The own run passes: the pull request merges on both.
+    let ended = CiRunUpdate {
+        ended_at: Some(app.now()),
+        ..CiRunUpdate::default()
+    };
+    assert!(
+        app.deps
+            .store
+            .transition_ci_run(&own.id, &[RunState::Running], RunState::Passed, &ended)
+            .await?
+    );
+    app.ci_retry_statuses().await;
+    assert_eq!(f.status_of(&head).as_deref(), Some("success"));
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    Ok(())
+}
+
 /// SPEC-493 MQC-002 (AC-13): a member whose own run fails leaves the candidate: the candidate is
 /// formed again from the other, which merges, and the failed member's armed merge ends with its
 /// run named, as a failed own run ends it outside a candidate.
