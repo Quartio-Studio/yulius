@@ -2980,3 +2980,5 @@ slices follow.
   the fallback in both clients (a server on ::1 only) and for a spent deadline,
   `EndpointError::message`, the stricter spelling. Each new test fails without its fix
   (`mutations-r1.log`, 5 cases).
+- **Gate after it.** `scripts/dev ci` at `2819ef95b`: exit 0; `4416 tests run: 4416 passed (1
+  slow), 17 skipped` (`gate2.log`).
