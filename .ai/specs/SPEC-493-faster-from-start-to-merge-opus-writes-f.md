@@ -1210,6 +1210,15 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     Turning it off fails the test.
   - Minor: such a run never reached the executor, which starts the merge pass at a run's end.
     It records its sandbox (`passed_when_queued`), and the dispatcher, woken at once, starts the
-    pass. Read, not tested on its own: the 20 s fast pass would merge it anyway.
+    pass (tested in round 3).
   - Nits: tree reuse into a branch's run goes on past a same-tree source that skipped a `paths`
     job, to an earlier one that ran it. A run passing at queueing records the current time.
+- **Review round 3** (Opus 5.5; head `375dd4dce`). Request changes: two answers of round 2 had no
+  test. Answered with tests, each caught by its mutation:
+  - `merge_train::a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once`: dev's own run ends
+    first, then the armed pull request's run passes at queueing. The dispatcher alone merges it.
+    Without the drain's merge pass it waits ("the armed merge waited for another pass").
+  - `local_ci::a_branch_reuses_a_same_tree_run_that_ran_its_paths_job`: an older passed run of
+    another commit with the same tree ran `web`; the integration branch's run reuses it, not the
+    newer pull request's run that skipped `web`. With `return` instead of `continue` it runs
+    again.
