@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A CI job can name the files it tests (SPEC-493 fix 5, task #472,
+  [ADR-0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md)):
+  `paths = [...]` on a `[[ci.jobs]]` entry skips it, with the reason, for a pull request or merge
+  candidate that touches none of them; the integration and production branches, a change to
+  `yulius.toml` and an unknown change still run it.
 - An armed pull request whose base moved waits about one CI run, not two (SPEC-493 fix 4, task
   #472, [ADR-0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md)
   amended): its merge candidate runs beside its own run, and it merges once both passed; a member

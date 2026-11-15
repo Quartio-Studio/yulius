@@ -1138,3 +1138,37 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     The spec's route is corrected.
   - Nits: the doc comments are back on their functions, and ADR-0285's three-in-sequence
     sentence is back in its consequence.
+
+### Fix 5: a CI job can say which files it tests
+
+- Fix 4's round-2 minors first:
+  - `merge_queue::queue_numbers` takes the range's start: a merge before it uses up its arming
+    without being counted (domain test).
+  - `analytics::the_audit_read_of_a_sandbox_keeps_the_newest_entries` holds the newest-first
+    limit (oldest-first fails it), `<slug>2#n` left out and task ids read.
+- CJP-001: `paths` on `[[ci.jobs]]` (`ci::parse_paths`: 1-50 scope-claim globs, normalized,
+  each once), rendered back by `render_yulius_toml`.
+  `config::tests::ci_jobs_name_the_files_they_test`: matrix jobs inherit them, a round trip,
+  and an empty list, `..`, an absolute path, `a/**b` and a repeat are each a configuration error
+  naming the job.
+- CJP-002, CJP-003: `ci::paths_skip` (unit `a_job_runs_only_for_a_change_to_its_paths`: skipped
+  with "no file this job tests changed (paths: …)"; a touched path, `yulius.toml` and an unknown
+  change run it; `*` stays in its folder). `GitPort::changed_paths` (`base...head`, NUL-separated;
+  `None` past 20,000 files or a non-UTF-8 path; an adapter without it says `None`).
+  `ci_queue_placed` decides at queueing: a job is created `skipped`, its reason and output set,
+  and never takes a lane.
+  `local_ci::a_job_with_paths_runs_only_for_a_change_to_them`, real Git and real jobs:
+  - the pull request touching `feature.txt` passes with `web` skipped, its reason in its output
+    and nothing run, and its status reads "1 skipped";
+  - the integration branch's own run runs `web`;
+  - a change to `crates/a/src/lib.rs` runs it.
+- CJP-004: the jobs in force are `ci_gate_for_head`'s, as before; `paths` only decide run or
+  skipped for each. A rerun goes through `ci_queue_placed` again, and a copied verdict keeps a
+  skipped job skipped (`copied_job_verdict`, SPEC-162). A merge candidate is decided by the
+  same rule on its commit (built on the integration branch, so its members' changes); no test
+  of a candidate of its own.
+- `ci_status` shows a skipped job's output, which now holds the reason (SPEC-162's view).
+- ADR-0343, architecture, api.md, the `yulius.toml` reference in `config.rs`, changes.
+- How to read it a week later: in quartio-v2 once it sets `paths` on `websites`, that job's
+  runs against skips per day (the Pipeline tab's job stages), and the median minutes to merge
+  of pull requests that do not touch it.
