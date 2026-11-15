@@ -1024,9 +1024,11 @@ async fn yulius_is_never_shown_inside_itself() -> TestResult {
     // Yulius's pages refuse every frame, its own included.
     let ui = fetch(&f.h, "yulius.test", "/", &[]).await?;
     assert_eq!(ui.header("x-frame-options").as_deref(), Some("DENY"));
-    assert_eq!(
-        ui.header("content-security-policy").as_deref(),
-        Some("frame-ancestors 'none'")
+    // (The whole policy is pinned by `http_auth::public_responses_carry_security_headers`.)
+    let policy = ui.header("content-security-policy").unwrap_or_default();
+    assert!(
+        policy.split("; ").any(|d| d == "frame-ancestors 'none'"),
+        "{policy}"
     );
     // The on-demand TLS `ask` endpoint approves only existing preview hosts.
     for (domain, status) in [

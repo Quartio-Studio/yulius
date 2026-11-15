@@ -45,6 +45,12 @@ pub fn public_router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+/// The web UI's policy (SPEC-483 W1b, ADR-0338): everything from Yulius itself, the editor's
+/// workers, pasted images and attached recordings as `blob:`, icons as `data:`, inline styles
+/// (xterm and Monaco add `<style>` elements), never inline or evaluated script, plugins, frames
+/// or `<base>`. `e2e/serve.py` sends the same file, so every e2e test runs under it.
+const CONTENT_SECURITY_POLICY: &str = include_str!("content-security-policy.txt").trim_ascii_end();
+
 /// Baseline security headers on every public response, unless the route set its own (the
 /// sandbox-browser resources keep their stricter policy): nothing may frame Yulius's pages, not
 /// even Yulius itself (clickjacking, and no Yulius inside its own browser, BRW-008), no MIME
@@ -64,7 +70,7 @@ async fn security_headers(
     }
     for (name, value) in [
         (header::X_FRAME_OPTIONS, "DENY"),
-        (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'none'"),
+        (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, "same-origin"),
     ] {

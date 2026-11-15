@@ -241,9 +241,14 @@ test('an attached page opens as plain text and an unknown file downloads, never 
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
   await installDrop(browser);
   await browser.evaluate(() => {
-    const w = window as unknown as { __opened: string[]; __downloads: string[][] };
+    const w = window as unknown as { __opened: string[]; __downloads: string[][]; __blobs: Map<string, Blob> };
     w.__opened = [];
     w.__downloads = [];
+    // The page's policy refuses a fetch of a blob: URL (connect-src 'self'), so each object URL's
+    // blob is kept as it is made.
+    w.__blobs = new Map();
+    const make = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob: Blob | MediaSource) => { const url = make(blob); if (blob instanceof Blob) w.__blobs.set(url, blob); return url; };
     window.open = (url?: string | URL) => { w.__opened.push(String(url)); return null; };
     HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) { w.__downloads.push([this.href, this.download]); };
   });
@@ -253,8 +258,8 @@ test('an attached page opens as plain text and an unknown file downloads, never 
   await openFromPreview(screen, 'bug.html');
   await screen.getByRole('button', 'Open logs.zip').click();
   const result = await browser.evaluate(async () => {
-    const w = window as unknown as { __opened: string[]; __downloads: string[][] };
-    const types = await Promise.all(w.__opened.map(async (url) => (await (await fetch(url)).blob()).type.split(';')[0]));
+    const w = window as unknown as { __opened: string[]; __downloads: string[][]; __blobs: Map<string, Blob> };
+    const types = w.__opened.map((url) => (w.__blobs.get(url)?.type ?? 'no blob').split(';')[0]);
     return { types, downloads: w.__downloads.map(([href, name]) => [href.slice(0, 5), name]) };
   });
   expect(result.types).toEqual(['text/plain']);

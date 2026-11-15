@@ -361,10 +361,13 @@ server {
 cookie `__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and of every
 cookie-authenticated API request is checked against it.
 
-Yulius itself sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`
-(nothing may frame Yulius, not even its own browser panel), `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: same-origin` and `X-Yulius: <process tag>` on every response (stricter route
-policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it once the
+Yulius itself sends `X-Frame-Options: DENY`, a strict `Content-Security-Policy` (scripts and
+connections from Yulius itself only, no `eval`; styles, fonts, images and media also inline or
+as `data:`/`blob:`; and `frame-ancestors 'none'`:
+nothing may frame Yulius, not even its own browser panel; ADR-0338),
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and `X-Yulius: <process tag>`
+on every response (stricter route policies are kept). A proxy in front must pass these headers
+on, not replace them. HSTS is the TLS proxy's job, as in the examples above; add it once the
 domain is meant to stay on HTTPS.
 
 ### Per-client sign-in limits (trusted proxy header)
