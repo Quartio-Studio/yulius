@@ -30,7 +30,7 @@ pub(crate) const TOKEN_RUNS_SQL: &str = "SELECT a.account_id, a.started_at, a.en
      m.turns, m.active_ms FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
      WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1";
 
-const PAUSE_COLS: &str =
+pub(crate) const PAUSE_COLS: &str =
     "id, task_id, kind, account_id, continuation, started_at, ended_at, outcome";
 
 fn pause_from_row(row: &Row<'_>) -> rusqlite::Result<PauseRecord> {

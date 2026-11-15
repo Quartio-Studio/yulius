@@ -1256,7 +1256,8 @@ went; two of the auditors' items had gained a user since and stay.
   each error, and connects to the first address that takes the connection before the one
   deadline (trying the next never stretches it).
 - **EFF-001** The runs and pauses of a window are read through indexes on `attempts.ended_at`,
-  `attempts.started_at` and `capacity_pauses.ended_at` (migration 0061): no query of the
+  `attempts.started_at` and `capacity_pauses.ended_at` (migration 0061, schema version 61,
+  after every version `dev` had): no query of the
   capacity or accounts view scans either table; the pauses come in the same order as before
   (by start, then id).
 
@@ -2205,8 +2206,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
-- Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`
-  and `spans::tests::the_pauses_of_a_window_come_in_start_order` (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
+- Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`,
+  `spans::tests::the_pauses_of_a_window_come_in_start_order` and
+  `tests::the_latest_schema_versions_keep_their_migrations` (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
   dashboard tests.
 - Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
   `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
@@ -3032,3 +3034,16 @@ slices follow.
 - **Not measured.** The time a dashboard load takes on a large instance (no such database here);
   the plans say what SQLite reads.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `83a6e75ce`): request changes. Blocking, own code:
+  the new migration was listed at position 60, ahead of `dev`'s schema version 60
+  (`0059_task_control_from`, #1301): a database at version 60 would run 0059 again on open,
+  fail with "duplicate column name: control_from" and never get the indexes (reproduced by the
+  reviewer from `dev`'s list); no test opened a database made with `dev`'s list. Nits: the
+  plan test built the pauses' query with another column list than the store's; its doc should
+  say it assumes no statistics (nothing runs `ANALYZE`; with statistics and a whole-table
+  window SQLite rightly scans); a Test plan line past the width; the `::1` helper narrows the
+  port race without closing it (accepted). The reviewer found the rewritten pauses' query the
+  same rows in the same order, `token_runs` reading both terms through the index, and each
+  query 0.2 to 1.8 ms at 200 000 runs. Answered: the migration is schema version 61 at the
+  end, a test pins the latest versions to their files (it fails with the old placement,
+  `mutations-r1.log`), the test uses `PAUSE_COLS`, its doc says it, the line is wrapped.
