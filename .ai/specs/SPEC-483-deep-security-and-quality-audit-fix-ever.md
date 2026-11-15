@@ -1241,8 +1241,10 @@ went; two of the auditors' items had gained a user since and stay.
 - **ONE-009** Every client in a sandbox reads its way to Yulius by one function
   (`AgentEndpoint::from_env`): `YULIUS_URL` plain HTTP, printable ASCII, no user information,
   query or fragment, to a literal loopback address or `localhost` (127.0.0.1 then ::1, no name
-  lookup), and a non-empty printable `YULIUS_TASK_TOKEN`; each keeps its own messages and its own
-  way of reading answers, and connects to the first address that takes the connection.
+  lookup), IPv6 only in brackets, a port of digits, and a non-empty printable
+  `YULIUS_TASK_TOKEN`; each keeps its own way of reading answers and says the one message of
+  each error, and connects to the first address that takes the connection before the one
+  deadline (trying the next never stretches it).
 
 ## Plan
 
@@ -1918,7 +1920,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-154** `http://127.0.0.1:7171/base/` gives that address and the path `/base`; `[::1]`
   and `localhost` (both loopback addresses) are taken, port 80 when absent; `https`, an empty
   host, user information, a bad port, a space, a query or a non-ASCII byte in the path are
-  refused as malformed, `10.0.0.1`, `0.0.0.0` and a host name as not loopback; an empty or
+  refused as malformed, so are `[127.0.0.1]`, an unbracketed `::1`, a signed port and an empty
+  one, `10.0.0.1`, `0.0.0.0` and a host name as not loopback; a server on ::1 only is reached
+  through `localhost` by the Git and the hook clients; a spent deadline tries no address; an empty or
   unprintable token and missing variables are refused; `Debug` hides the token; the Git
   credential, `agent_call`, hook and redaction clients' tests pass through it (ONE-009).
 
@@ -2182,8 +2186,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
-- Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`
-  (AC-154); the clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`,
+- Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
+  `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
+  `a_spent_deadline_tries_no_address`, `yulius-harness`
+  `hook_client::tests::localhost_reaches_a_server_on_the_second_address` (AC-154); the clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`,
   `yulius-harness` `hook_client::tests`) and the `yulius` tests of `wait`, `tool`, the MCP
   bridge and the hooks.
 - Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
@@ -2962,3 +2968,15 @@ slices follow.
 - **Gate.** `scripts/dev ci` at `cbed41969`: exit 0; `4413 tests run: 4413 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `490fe6d50`): request changes. The reviewer found
+  security holding (the addresses come from the parsed literal and are never resolved again; no
+  token in `Debug` or errors; the `Host` header printable and checked), messages and exit codes
+  unchanged. Two minors, own code: every address got the whole timeout, so a `localhost` whose
+  127.0.0.1 never answers could take twice the bound (and `agent_call` report `Lost` for
+  `Unsent`); nothing tested the fallback to the next address. Nits: a stale doc line, the
+  error-to-message match twice, the changes entry under the previous day, and (pre-existing in
+  both old parsers) `[127.0.0.1]`, an unbracketed `::1:80` and ports `+80` taken. All
+  answered: `connect` takes the one deadline and gives each attempt the time left, tests for
+  the fallback in both clients (a server on ::1 only) and for a spent deadline,
+  `EndpointError::message`, the stricter spelling. Each new test fails without its fix
+  (`mutations-r1.log`, 5 cases).

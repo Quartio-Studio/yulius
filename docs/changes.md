@@ -4,12 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
-## 2026-11-14
+## 2026-11-15
 
 - One reader of a sandbox's way to Yulius (SPEC-483 slice 34, task #465). The Git credential
   helper, `yulius wait` and `yulius tool`, the MCP bridge and the hook clients each read
   `YULIUS_URL` and the task token and parsed the URL with one of two parsers that took different
   addresses; they now read them one way.
+
+## 2026-11-14
+
 - One dispatch of the Superagent's tools (SPEC-483 slice 33, task #465). The Yulius MCP and the
   remote MCP each kept the same 18 project tools and the protocol handshake; a tool added to one
   only would have been listed and answered "unknown tool". The device sign-in's polling code is
