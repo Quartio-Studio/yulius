@@ -1312,10 +1312,11 @@ went; two of the auditors' items had gained a user since and stay.
   before.
 - **CSP-001** Every public response without a policy of its own carries the one policy of
   `crates/yulius-server/src/content-security-policy.txt`: everything from Yulius itself,
-  `blob:` and `data:` images, `data:` fonts and `blob:` workers, inline styles, no inline or
-  evaluated script, no frames, plugins, `<base>` or forms to other sites, and no framing. The
-  e2e server sends the same file (a brand lab page, mock only, may also load Google Fonts), and
-  every e2e test fails on a load it refuses. Routes with a stricter policy (preview pages,
+  `blob:` and `data:` images, `blob:` media, `data:` fonts and `blob:` workers, inline styles,
+  no inline or evaluated script, no frames, plugins or `<base>`, and no framing; forms may post
+  elsewhere (the GitHub App's manifest goes to GitHub). The e2e server sends the same file (a
+  brand lab page, mock only, may also load Google Fonts), and every e2e test fails on a load the
+  page itself is refused (not one in a tab it opens or in a worker). Routes with a stricter policy (preview pages,
   attachments) keep theirs.
 
 ## Plan
@@ -2020,7 +2021,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-158** `/`, a UI path, `/api/me`, `/api/setup/status` and `/healthz` carry the policy word
   for word; the e2e server answers every path with the same file, and a lab page with the two
   font hosts added; an inline script, an image from elsewhere and `new Function` in the page are
-  refused and each fails the test; the whole e2e suite (terminals, the editor, the browser
+  refused and each fails the test; a form posted to another site from a tab the page opened is
+  sent and a recording plays from a `blob:` URL (in the e2e suite and in a real Chrome); the
+  whole e2e suite (terminals, the editor, the browser
   panel, pasted images, the brand lab) passes under it, and a real Chrome on the real server
   shows setup, Home, Settings, Users, Archived, the design page and a missing sandbox with no
   refusal (CSP-001).
@@ -2288,7 +2291,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 38: `yulius` `http_auth::public_responses_carry_security_headers` (the policy word for
   word, AC-158); `scripts/test_e2e_serve.py` (the same file on every answer, the lab's fonts on
   a lab page only); e2e `content-security-policy.e2e.ts` (the page's policy; refusals fail the
-  test); the whole e2e suite under the policy, with `filedrop.e2e.ts`'s check of an opened file's
+  test; a form posted elsewhere from a tab the page opened is sent; a recording plays from a
+  `blob:` URL); the whole e2e suite under the policy, with `filedrop.e2e.ts`'s check of an opened file's
   type reading the blob, not fetching it (the policy refuses `fetch` of a `blob:` URL); a real
   Chrome on `yulius serve` over CDP (`target/audit/slice38/csp-probe.mjs`).
 - Slice 37: `yulius` `supertask::a_supertask_waits_for_working_tasks_and_holds_its_project`
@@ -2988,3 +2992,25 @@ later slices follow.
   `frame-ancestors 'none'` (the whole policy is pinned in `http_auth`). Then at `38023f5f7`:
   exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped` (`gate2.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `9348149d5`): request changes. Two majors, own
+  code, both reproduced by the reviewer in Chrome 157: F1, `form-action 'self'` refused the
+  GitHub App's manifest, which `admin.js` posts to GitHub from a blank tab that inherits the
+  page's policy (onboarding could not connect GitHub; the mock returns before the post, and
+  `instrument()` does not see another tab); F2, no `media-src`, so a recording attached to a
+  draft or a queued message, opened from a `blob:` URL, no longer played. F3 (minor): the
+  docs said every e2e test fails on a refused load, which holds for the page's own document
+  only. Nits: F4, the operations text said styles, fonts and images came from Yulius only; F5,
+  no test pinned the attachments' own policy. Checked and fine: preview hosts answer before the
+  layer, no public HTML with inline script, no same-origin route serving user content as
+  script, the lab exception narrow, the evidence move word for word.
+- **Fixes.** Tests first, both failing for the policy's reason (`e2e-r1-before.log`: "Sending
+  form data to '/settings/apps/new' violates … form-action 'self'"; "Loading media from 'blob:…'
+  violates … default-src 'self'"): a form posted to another origin from a tab the page opened
+  must leave for it, and a WAV from a `blob:` URL must load. The policy drops `form-action`
+  (GitHub's web address is configurable, and `form-action` also checks redirects) and gains
+  `media-src 'self' blob:`; 4 of 4 pass (`e2e-r1-after.log`). The reviewer's own real-Chrome
+  probes against the new file (`probe-r1/`): the manifest POST arrives at the other origin, the
+  audio plays (`readyState` 4) with no refusal. F3: ADR-0338, CSP-001, the web README and the
+  changes entry say the page's own document, and the ADR names the gap (another tab, a worker).
+  F4 reworded. F5: `task_prompt.rs` already pins it (`sandbox` in the attachment's policy,
+  through the router).
