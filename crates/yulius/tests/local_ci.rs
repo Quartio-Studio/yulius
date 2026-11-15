@@ -1611,6 +1611,89 @@ async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> Test
     Ok(())
 }
 
+/// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
+/// same-tree source that skipped a `paths` job, to an older one that ran it.
+#[tokio::test]
+async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::time::Timestamp;
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+         [[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    // Another commit with the pull request's tree, whose (older) passed run ran `web`.
+    let tree = git(&f.origin, &["rev-parse", "feat/one^{tree}"])?;
+    let alt = git(
+        &f.work,
+        &["commit-tree", &tree, "-p", "origin/dev", "-m", "alt"],
+    )?;
+    git(
+        &f.work,
+        &["push", "-q", "origin", &format!("{alt}:refs/heads/alt")],
+    )?;
+    let run = CiRunRecord {
+        id: "run-alt".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::Branch("alt".into()),
+        sha: alt.clone(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: Some(RunState::Passed),
+        status_note: Some("recorded by the test".into()),
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+    };
+    let job = |ordinal: u32, name: &str| CiJobRecord {
+        id: format!("alt-{name}"),
+        run_id: "run-alt".into(),
+        ordinal,
+        name: name.into(),
+        key: name.into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Passed,
+        reason: None,
+        exit_code: Some(0),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store
+        .insert_ci_run(&run, &[job(0, "check"), job(1, "web")])
+        .await?;
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains(&alt[..7])),
+        "reused from the run that ran web: {run}"
+    );
+    assert_eq!(job_named(&detail, "web")?["state"], "passed", "{detail}");
+    Ok(())
+}
+
 /// Review round 1 of SPEC-493 fix 5: a job skipped for its `paths` waits for nothing: not for its
 /// `exclusive` turn while another run's job of that name runs, nor for a slot.
 #[tokio::test]
