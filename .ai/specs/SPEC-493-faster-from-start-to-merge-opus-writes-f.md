@@ -884,3 +884,35 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     the record only informs. It is fixed in fix 1d's pull request, which reads the merge
     commit from GitHub (Plan).
 
+
+### Fix 1d: the move for a Fable reviewer (head `ca7b4219d` before the review)
+
+- REV-007, the move: `review::move_for_fable` refuses the Agent call and moves the session
+  (`switch_task_now`, reason `review_fable`, which interrupts the turn first) to
+  `rotation::move_to_also_run`, the best other subscription that can run the session's model and
+  Fable. Background work or a queued prompt refuses the call with that reason; with nowhere to
+  go, or a move refused moments ago, the round runs `yulius-reviewer-opus` and its prompt gets a
+  line saying so.
+  - `rotation::tests::a_session_moves_to_a_subscription_that_also_runs_the_reviewer`.
+  - `review_rounds::a_round_out_of_fable_moves_the_session_where_fable_runs`: the refusal while
+    background work runs (no move, no round), then the move to `acc-2`, not to `acc-0` (also
+    out of Fable). Mutation caught: the background check dropped (the session moves).
+  - `review_rounds::a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer`: the
+    reviewer's prompt keeps its text and gets the line; nothing moves.
+  - `review_rounds::real::a_session_out_of_fable_moves_and_is_asked_for_the_review_again`, with a
+    real process: the fake agent's new `/agent` runs the Agent tool's `PreToolUse` through the
+    real `yulius hook` client. The session moves from `a-first` (Fable used up) to `b-second`,
+    the switch completes, and the resumed run gets the prompt asking for the review again.
+  - Not tested: a real model's turn interrupted mid-answer. The fake agent is idle when the move
+    ends it; the interrupt path is the one a person's switch uses.
+- REV-005, a merge found on GitHub: `GhPull::merge_commit_sha` (from GitHub's `merge_commit_sha`
+  of a merged pull request) gives `MergedHead::of_pull` the base `<merge>^1` on both reconcile
+  paths. `delivery::a_merge_commit_merge_judges_the_head_against_the_branch_before_it` now also
+  merges on GitHub and lets Yulius find it. Mutation caught: base `None` (the clean case gets
+  the caveat).
+- Round 4 of fix 1c's nit: the AC-GIT-2 doc comment is back on its own test.
+- How to read it a week later: `GET /api/analytics/reviews` gives `no_fable_rounds` (rounds run
+  on Opus because nowhere could run Fable); Task details lists the moves with the reason
+  `review_fable`.
+- Gate: `scripts/dev ci` exit 0 (4,496 tests passed, 17 skipped; lint, docs and repository
+  checks). Security scan: disabled for this project in Yulius, not run.
