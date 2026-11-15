@@ -309,10 +309,8 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     meta.textContent = lastEdit && lastEdit.updated_by ? `Edited by ${lastEdit.updated_by} · ${relLong(lastEdit.updated_at)}` : '';
   }
 
-  let retrying = null; // what the pending retry does (`load` or `save`)
   function retryLater(fn) {
     clearTimeout(retryTimer);
-    retrying = fn;
     retryTimer = setTimeout(() => { retryTimer = 0; fn(); }, retryDelay);
     retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
   }
@@ -404,7 +402,6 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
 
   /** Loads again when an event told of a newer revision and nothing is unsaved. */
   function catchUp() {
-    if (retryTimer && retrying === load) return; // the retry after its pause loads (#1246)
     if (loaded && announcedRevision > base && !dirty() && !saving && !conflict) load();
   }
 
@@ -584,9 +581,7 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   function announced(event) {
     if (event) announcedRevision = Math.max(announcedRevision, event.revision);
     if (loaded && event && event.revision <= base) return;
-    // A load already retried after its pause (the first load, or a reload behind a teammate's
-    // save) loads then: a resync does not jump the pause (#1246).
-    if (retryTimer && retrying === load) return;
+    if (!loaded && retryTimer) return; // the first load is already retrying with its pauses
     if (loading) { reloadAfter = true; return; }
     load();
   }

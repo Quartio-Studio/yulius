@@ -345,8 +345,7 @@ test('a conflict kept over a reload is still a choice after another reload', asy
 // #1246, review round 1 of SPEC-493 fix 2: the test counted every notepad's loads, and the Team
 // notepad's opening load, answered late (it is held here until the count starts), failed and
 // retried inside the window: "expected 4 to be less than or equal to 3". It counts the sandbox
-// notepad's loads now. A resync in the window (events lost: every notepad loads again) leaves a
-// reload already waiting for its pause to that retry: before, it loaded at once.
+// notepad's loads now.
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
@@ -356,15 +355,9 @@ test("a failed reload after a teammate's edit backs off", async ({ app, browser,
   // The Team notepad's opening load is answered (and fails) only now.
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
-  await browser.evaluate(() => new Promise((resolve) => setTimeout(() => {
-    (window as unknown as { __yuliusMock: { resyncNow: () => void } }).__yuliusMock.resyncNow();
-    resolve(null);
-  }, 1200)));
-  await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1300)));
-  // The load the edit's event asked for and its first retry 1 s later; the resync's waits for
-  // the next retry, 2 s after that.
+  await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
   const tries = await sandboxLoads(browser);
-  expect(tries - before).toBeLessThanOrEqual(2);
+  expect(tries - before).toBeLessThanOrEqual(3);
   // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
   await expect.poll(() => sandboxLoads(browser)).toBeGreaterThanOrEqual(before + 2);
   await setMock(browser, 'failNoteLoads', false);

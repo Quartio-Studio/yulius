@@ -7,9 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-15
 
 - The flaky tests of the measurement are fixed at their root (SPEC-493 fix 2, task #472): the
-  unreachable-server tests hold their port instead of letting it go, and a notepad's reload that
-  waits for its pause after a failure is no longer jumped by a resync (#1246); the notes test
-  counts the sandbox notepad's loads.
+  unreachable-server tests hold their port instead of letting it go, and the notes back-off
+  test counts the sandbox notepad's loads (a late load of the Team notepad failed it, #1246).
 - A first or second review round whose subscription cannot run Fable 5.2 moves the session to
   one that can (SPEC-493 fix 1d, task #472): the reviewer's start is refused with why, and the
   session goes on there with a prompt to start the review again. While background work runs it

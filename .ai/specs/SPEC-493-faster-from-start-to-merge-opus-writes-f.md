@@ -986,24 +986,20 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   the very same socket. Probe (AC-9): 40 stress iterations of the five tests while another
   process made 16,021,891 loopback binds and listens: 40 of 40 passed.
 - FLK-002 (#1246). The first diagnosis here (a resync in the window) was wrong: a resync gives
-  6 loads, never the 4 that CI reported. Review round 1's reviewer reproduced the exact failure
-  ("expected 4 to be less than or equal to 3") with no resync. Its cause: the Team notepad's
-  opening load, answered late (a loaded host), lands after the test's count starts, fails, and
-  retries 1 s later: 2 loads of another notepad. A test defect, since the test counted every
-  notepad's loads. The same look found a product defect: a resync while a reload waited for its
-  pause loaded at once, and so did the end of a retry that was in flight when the resync came.
-  Fixes:
-  - The mock counts loads per notepad (`noteLoadsBy`); both tests that count loads count the
-    sandbox notepad's.
-  - `notes.js`: a load already retried after its pause is left to that retry, by `announced`
-    and by `catchUp` (`retrying === load`). A person's own load (a tab shown again) still loads
-    at once.
-  - The test holds the Team notepad's opening load until its count starts (`hold=/api/notes`,
-    the reviewer's probe) and sends a resync 1.2 s into the window (`resyncNow`). It allows 2
-    loads (the edit's and its 1 s retry), not 3.
-  - Before the product fix: "expected 3 to be less than or equal to 2" (5 of 6 runs; the
-    resync's own load, or the in-flight retry's `catchUp`). After it: 6 of 6, and the whole
-    file passes (36 tests).
+  6 loads, never the 4 that CI reported. Review round 1's first reviewer (Fable 5.2, cut off by
+  its usage limit, its notes kept) reproduced the exact failure with no resync. Its cause: the
+  Team notepad's opening load, answered late on a loaded host, lands after the test's count
+  starts, fails and retries 1 s later, which adds 2 loads of another notepad. A test defect: the
+  test counted every notepad's loads.
+  - Fix: the mock counts loads per notepad (`noteLoadsBy`). Both tests that count loads count
+    the sandbox notepad's. The back-off test holds the Team notepad's opening load until its
+    count starts (`hold=/api/notes`, the reviewer's probe).
+  - Proof: with the old total count and the held load, "expected 4 to be less than or equal to
+    3", CI's own message. With the sandbox notepad's count: 5 of 5 runs, and the whole file
+    passes (36 tests).
+  - A product change tried on the way (a resync leaving a reload that waited for its pause to
+    that retry) was reverted after the Opus round. It also kept a newer revision from loading
+    after a recovery for up to the 30 s back-off, and #1246 never needed it.
 - FLK-003, not redone:
   - #1309 (#1171): the cd test keeps its probe (the deploy answer held until the page is back).
     It passed 5 of 5. With #1309's fix reverted (the page that is shown again does not read
@@ -1014,3 +1010,15 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - Met and left: `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (#1286,
   open) failed once in a full gate of fix 1d; it is outside the flakes this fix was measured
   on.
+- **Review round 1** (Fable 5.2 on `fa1b9e2c1`, cut off by its usage limit before a report,
+  which resets 21:10 UTC; then Opus 5.5 on `1454e14c2`, since Fable could not run). Request
+  changes. Answered (all own code):
+  - Major: the `notes.js` guard deferred every announcement while a load retry waited, so a
+    notepad stayed stale for up to 30 s after the server recovered (the reviewer's probe on the
+    head against the base). Reverted. `notes.js` is as on `dev`.
+  - Minor: the bound of 2 had little slack on a starved host. It is back to 3 without the
+    injected resync, which was not the cause.
+  - Nits: `SOCK_CLOEXEC` is not offered on Apple targets, and the gate compiles for macOS, so
+    the test-only socket stays without it. A bound socket that is not listening is refused on
+    Linux. On macOS it may be dropped (a timeout instead), but these tests run on Linux only
+    (`scripts/zig_macos.py` builds, it does not run).
