@@ -9,7 +9,7 @@ use crate::support::{TestResult, harness};
 use serde_json::{Value, json};
 use yulius_app::delivery::DeliveryRecord;
 use yulius_app::model::{ReviewRoundRecord, TaskMode};
-use yulius_app::ports::store::CoordinationStore;
+use yulius_app::ports::store::{CoordinationStore, TaskStore as _};
 use yulius_app::ports::store_ext::DeliveryStore;
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
@@ -306,6 +306,76 @@ async fn a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer() -> Test
         ),
         (1, "yulius-reviewer-opus", "no_fable")
     );
+    // The reviewer is told too, and its report repeats it; the rest of the prompt is kept.
+    let prompt = answer["hookSpecificOutput"]["updatedInput"]["prompt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        prompt.starts_with("Review origin/dev...HEAD against the spec.")
+            && prompt.contains("runs on Opus 5.5")
+            && prompt.contains("summary"),
+        "{prompt}"
+    );
+    assert!(h.store.switches(&task).await?.is_empty(), "nowhere to move");
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (AC-8): a first round on a subscription out of Fable 5.2, with another that
+/// can run both the session's model and Fable: while background work runs, the Agent call is
+/// refused with that reason and nothing moves; without it, the call is refused with why and the
+/// session moves to that subscription (not to one also out of Fable), its first prompt asking
+/// for the review again. No round is recorded before the reviewer can start.
+#[tokio::test]
+async fn a_round_out_of_fable_moves_the_session_where_fable_runs() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let full = json!({"weekly_fable": {"used_percent": 100.0, "window_minutes": 10080,
+        "resets_at": 4_102_444_800_000_i64}})
+    .to_string();
+    let account = add_account(&h, "acc-1", Some(full.clone())).await?;
+    add_account(&h, "acc-0", Some(full)).await?;
+    add_account(&h, "acc-2", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let denied = |answer: &Value| {
+        assert_eq!(
+            answer["hookSpecificOutput"]["permissionDecision"], "deny",
+            "{answer}"
+        );
+        answer["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    h.app.background_agents_observed(&task, 1).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let why = denied(&answer);
+    assert!(
+        why.contains("background work") && why.contains("Fable 5.2"),
+        "{why}"
+    );
+    assert!(rounds(&h, &task, false).await?.is_empty());
+    assert!(h.store.switches(&task).await?.is_empty());
+
+    h.app.background_agents_observed(&task, 0).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let why = denied(&answer);
+    assert!(
+        why.contains("moves this session") && why.contains("Fable 5.2"),
+        "{why}"
+    );
+    assert!(rounds(&h, &task, false).await?.is_empty());
+    let mut switch = None;
+    for _ in 0..250 {
+        switch = h.store.switches(&task).await?.into_iter().next();
+        if switch.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let switch = switch.ok_or("the session never moved")?;
+    assert_eq!(switch.reason, "review_fable");
+    assert!(switch.inputs.contains("acc-2"), "{}", switch.inputs);
     Ok(())
 }
 
