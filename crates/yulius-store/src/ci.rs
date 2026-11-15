@@ -416,8 +416,9 @@ impl CiStore for SqliteStore {
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
                      memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL \
-                     WHERE run_id = ?1",
-                    [&id, &note],
+                     WHERE run_id = ?1 AND NOT (state = 'skipped' \
+                       AND substr(COALESCE(reason, ''), 1, length(?3)) = ?3)",
+                    [&id, &note, &yulius_domain::ci::PATHS_SKIP_REASON.to_owned()],
                 )
                 .map_err(db)?;
             }
