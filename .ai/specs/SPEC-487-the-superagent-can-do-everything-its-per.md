@@ -1135,3 +1135,5 @@ the function the web UI's route calls, with the person's rights checked at the c
     secret, said in ADR-0336. m5: a password field where the browser cannot mask a text box,
     password-manager attributes off, the label says "never shown to your Superagent". The
     description is trimmed when stored.
+  Mutants of the fixes: four, each failed by a named test once the project's request left its
+  scope out (`target/evidence/mutants-slice10a-r1.log`: `survived=0`).
