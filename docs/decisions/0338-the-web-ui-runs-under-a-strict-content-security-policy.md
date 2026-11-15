@@ -36,9 +36,9 @@ base-uri 'none'; frame-ancestors 'none'
   production policy. The browser only logs a refused load, so the suite's page instrumentation
   (`e2e/tests/support.ts`) records each `securitypolicyviolation` of the page's own document as
   a page error, and the test fails on it. It does not see a tab the page opens or a worker: a
-  refusal there shows only as a test that waits in vain for what was refused. The one difference: a brand lab page (`?lab=`, mock only, never shipped) may load
-  the Google Fonts families it previews (`fonts.googleapis.com` styles, `fonts.gstatic.com`
-  fonts).
+  refusal there shows only as a test that waits in vain for what was refused. The one
+  difference: a brand lab page (`?lab=`, mock only, never shipped) may load the Google Fonts
+  families it previews (`fonts.googleapis.com` styles, `fonts.gstatic.com` fonts).
 - **Scripts only from Yulius**: no inline script, no `eval`, no other origin. Files people attach
   are served as images or `application/octet-stream` with `nosniff` and their own `sandbox`
   policy, so no same-origin URL hands back user content as a script.
