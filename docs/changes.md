@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Watching a live task reads only what was written since (SPEC-483 slice 36, task #465). Each
+  1.5 s poll re-read and re-parsed the whole transcript; the server now goes on from where the
+  last read ended (30 MB: 497 ms a poll before, 18 µs now).
 - The capacity and accounts views read through indexes (SPEC-483 slice 35, task #465). Their
   runs and pauses were found by scanning every run and pause ever recorded on each load of the
   dashboard; three indexes (migration 0061) let them read only their window.
