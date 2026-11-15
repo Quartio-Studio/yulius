@@ -171,6 +171,52 @@ async fn a_person_pauses_and_resumes_a_running_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 GRP-001 (finding W2): Home's cards and the sandbox tabs count a paused task where
+/// the sidebar shows it, Paused under Working, whatever it was waiting for when it was paused.
+#[tokio::test]
+async fn a_paused_task_is_counted_working_whatever_it_waited_for() -> TestResult {
+    let f = fixture().await?;
+    let counts = || async {
+        let sandbox = call(
+            &f.h.router,
+            Method::GET,
+            "/api/sandboxes/s1",
+            None,
+            &f.alice,
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(sandbox.body["counts"].clone())
+    };
+    assert!(
+        f.h.store
+            .transition_task(
+                &f.task,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(yulius_domain::task::Activity::NeedsAttention),
+                yulius_domain::time::Timestamp(5),
+            )
+            .await?
+    );
+    assert_eq!(
+        counts().await?,
+        json!({"running": 0, "needs_attention": 1, "queued": 0})
+    );
+    let (status, body) = post(&f, "/api/tasks/t1/pause", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        counts().await?,
+        json!({"running": 1, "needs_attention": 0, "queued": 0})
+    );
+    let (status, body) = post(&f, "/api/tasks/t1/resume", &f.alice).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        counts().await?,
+        json!({"running": 0, "needs_attention": 1, "queued": 0})
+    );
+    Ok(())
+}
+
 /// AC-PER-3: a run that cannot be frozen pauses at its turn boundary: pending until its Stop
 /// hook is held, and released by resume.
 #[tokio::test]

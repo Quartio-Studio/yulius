@@ -575,13 +575,13 @@ fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
     if ctx.acts_for_person() {
         Ok(())
     } else {
-        Err(AppError::Forbidden(
-            "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate \
-             token (Settings → Connect your local agent); a `yulius login` token cannot start it"
-                .into(),
-        ))
+        Err(AppError::Forbidden(STARTS_WITH_A_PERSON.into()))
     }
 }
+
+/// What a caller that is not a person is told when it would start onboarding. A caller that
+/// answers its own way (the Superagent's `task_restart`, SPEC-487) recognises the refusal by it.
+pub(crate) const STARTS_WITH_A_PERSON: &str = "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate token (Settings → Connect your local agent); a `yulius login` token cannot start it";
 
 impl App {
     /// Continuing the onboarding task of a `pending` sandbox starts onboarding, so it needs a
@@ -1013,7 +1013,7 @@ impl App {
                 == Some(OnboardingState::Pending) =>
             {
                 // Boxed: creating that task goes through task creation, which called this.
-                match Box::pin(self.onboarding_task(sandbox)).await? {
+                match Box::pin(self.onboarding_task(sandbox, None)).await? {
                     Some(task) => Some(task),
                     // Skipped meanwhile: the new task may start now.
                     None => return Ok(None),
@@ -1068,20 +1068,25 @@ impl App {
         sandbox: &SandboxId,
         actor: &str,
     ) -> AppResult<bool> {
-        self.start_onboarding_with(sandbox, actor, None).await
+        self.start_onboarding_with(sandbox, actor, None, None).await
     }
 
     /// [`Self::start_onboarding`], with the hand-over of the person's agent (`actor`'s) added to
     /// the onboarding task's request after the default branch is prepared and before the task
-    /// starts (SPEC-256 LOB-005).
+    /// starts (SPEC-256 LOB-005). With a `starter` (a person's Start onboarding), a task created
+    /// now is theirs, one that exists and never ran passes to them, and one that has run is
+    /// started only by its owner (SPEC-490 OWN-004);
+    /// without one (Yulius starting it for the sandbox's creator) it is the creator's.
     ///
     /// # Errors
-    /// As [`Self::start_onboarding`]; `Conflict` when the hand-over can no longer join the request.
+    /// As [`Self::start_onboarding`]; `Conflict` when the hand-over can no longer join the
+    /// request; `Forbidden` for a `starter` who does not own the task.
     async fn start_onboarding_with(
         self: &Arc<Self>,
         sandbox: &SandboxId,
         actor: &str,
         notes: Option<&str>,
+        starter: Option<&AuthContext>,
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
@@ -1099,13 +1104,31 @@ impl App {
         // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
         self.ensure_agent_account(Harness::ClaudeCode.provider())
             .await?;
+        // Starting onboarding starts its task: control of it (SPEC-490 OWN-004). One that exists
+        // is claimed before anything is prepared, so a refusal pushes no first commit.
+        if let Some(ctx) = starter
+            && let Some(id) = &record.onboarding_task_id
+            && let Some(existing) = self.deps.store.task(id).await?
+        {
+            self.claim_onboarding_task(ctx, existing).await?;
+        }
         // A task's worktree starts from a branch; an empty repository gets its first (SPEC-241).
         self.prepare_default_branch(&record, actor).await?;
-        let Some(task) = self.onboarding_task(sandbox).await? else {
+        let for_person = starter.map(|ctx| &ctx.user);
+        let Some(task) = self.onboarding_task(sandbox, for_person).await? else {
             if notes.is_some() {
                 return Err(AppError::Conflict(SKIPPED_MEANWHILE.into()));
             }
             return Ok(false);
+        };
+        // Starting onboarding starts its task, with the hand-over added to its request: that is
+        // control of the task (SPEC-490 OWN-004). One that has never run is nobody's yet (another
+        // start may have made it a moment ago), so the starter takes it, as a hand-over; one
+        // that has run is its
+        // owner's, and anyone else asks for control on its page.
+        let task = match starter {
+            Some(ctx) => self.claim_onboarding_task(ctx, task).await?,
+            None => task,
         };
         if let Some(notes) = notes {
             self.add_handover(&task, actor, notes).await?;
@@ -1137,16 +1160,19 @@ impl App {
         Ok(true)
     }
 
-    /// The onboarding task of a sandbox, created (resting) by its sandbox's creator when it has
-    /// none yet and is still `pending`: the repository's preparation, or its environment alone
-    /// when it already follows the format. `None` when it has none and is no longer `pending`
-    /// (an admin skipped meanwhile): nothing is created and its state is left as it is.
+    /// The onboarding task of a sandbox, created (resting) when it has none yet and is still
+    /// `pending`: the repository's preparation, or its environment alone when it already follows
+    /// the format. It is created for `starter`, the person who starts onboarding (it acts on
+    /// GitHub as them, SPEC-490 OWN-004), or for its sandbox's creator when Yulius starts it.
+    /// `None` when it has none and is no longer `pending` (an admin skipped meanwhile): nothing
+    /// is created and its state is left as it is.
     ///
     /// # Errors
     /// `NotFound` when the creator is gone; store failures.
     async fn onboarding_task(
         self: &Arc<Self>,
         sandbox: &SandboxId,
+        starter: Option<&UserRecord>,
     ) -> AppResult<Option<TaskRecord>> {
         let _serial = self.onboarding_task_lock.lock().await;
         let store = &self.deps.store;
@@ -1161,10 +1187,13 @@ impl App {
         }
         let (dir, root) = (self.sandbox_dir(&record.id), self.sandbox_repo(&record.id));
         let (report, _) = blocking(move || Ok(validate_sandbox_checkout(&dir, &root))).await?;
-        let creator = store
-            .user(&record.created_by)
-            .await?
-            .ok_or(AppError::NotFound)?;
+        let creator = match starter {
+            Some(starter) => starter.clone(),
+            None => store
+                .user(&record.created_by)
+                .await?
+                .ok_or(AppError::NotFound)?,
+        };
         let task = self
             .create_onboarding_task(&record, &creator, &report)
             .await?;
@@ -1458,7 +1487,8 @@ impl App {
             crate::race::Point::OnboardingApproved,
             Path::new(id.as_str()),
         );
-        self.start_onboarding_with(&id, &actor, notes).await?;
+        self.start_onboarding_with(&id, &actor, notes, Some(ctx))
+            .await?;
         let record = self
             .deps
             .store
@@ -1466,6 +1496,49 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+impl App {
+    /// The onboarding `task` for `ctx`'s person who starts onboarding (SPEC-490 OWN-004): theirs
+    /// already, or passed to them when it has never run (it has acted for nobody yet, however it
+    /// was made); one that has run stays its owner's.
+    ///
+    /// # Errors
+    /// `Forbidden` naming the owner of a task that has run; the hand-over's `Conflict`s.
+    async fn claim_onboarding_task(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        task: TaskRecord,
+    ) -> AppResult<TaskRecord> {
+        if crate::tasks::owns(&task, &ctx.user.id) {
+            return Ok(task);
+        }
+        if self.task_ran(&task).await? {
+            self.require_control(ctx, &task).await?;
+        }
+        self.pass_task_control(
+            &task,
+            &ctx.user,
+            ctx,
+            crate::task_control::Handover::Unstarted,
+        )
+        .await?;
+        self.deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
+    /// Whether `task` ever had a session: a run or a provider session on record.
+    ///
+    /// # Errors
+    /// Store failures.
+    async fn task_ran(&self, task: &TaskRecord) -> AppResult<bool> {
+        let store = &self.deps.store;
+        Ok(!store.attempts(&task.id).await?.is_empty()
+            || !store.provider_sessions(&task.id).await?.is_empty())
     }
 }
 

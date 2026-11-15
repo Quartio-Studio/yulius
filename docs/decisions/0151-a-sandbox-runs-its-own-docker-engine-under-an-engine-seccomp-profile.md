@@ -8,7 +8,9 @@ task #172, #551. Amends [0003](0003-sandbox-isolation.md) (SPEC-002 ADR-22). Sup
 [0158](0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md): the
 socket is a Docker front's beside every holder, runs bind its directory, and live runs get it.
 Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): `dockerd` comes from the sandbox's own system, not the host's. Amended by [0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md):
-`yulius host setup` installs the host prerequisites; every update re-checks them.
+`yulius host setup` installs the host prerequisites; every update re-checks them. Amended by
+[0339](0339-the-engine-runs-below-the-group-that-holds-its-limits.md): the engine runs in
+`engine/inside`, below the group that holds its limits.
 
 ## Context
 
@@ -62,7 +64,7 @@ What each part of ADR-22 means for an engine:
   the sandbox's idle time with no connection and no container process. It lives as long as the
   holder, so it survives Yulius restarts.
 - **Its own cgroup.** `sandboxes/<sid>/engine` has CPU weight 100 beside `system`, `agents` and
-  `ci`.
+  `ci` (the engine itself runs in `engine/inside` since ADR-0339).
 - **Its own storage.** `sysroots/<sid>/docker` counts toward the soft quota as "containers". Under
   disk pressure, a running engine's unused images and build cache are pruned through its own
   control socket. A stopped engine is never started for that. Containers and volumes are never
@@ -109,7 +111,8 @@ What each part of ADR-22 means for an engine:
 - Per-container resource flags (`-m`, `--cpus`) are not supported: memory flags are discarded,
   and CPU flags may make the container fail to start. The engine lives in its own group, and
   cgroup v2 passes no controller below a group that holds processes. The sandbox's limits still
-  bound every container.
+  bound every container. (ADR-0339: runc passes `cpu` and `pids` on in threaded mode, so
+  `--pids-limit` works and `--cpus` fails.)
 - A `--privileged` container is as strong as the engine (root of the sandbox with the engine's
   view and filter), never more. Paths outside the engine's view (another user's home in a Shell,
   run directories) do not exist for `-v`.

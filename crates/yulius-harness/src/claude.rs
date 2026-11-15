@@ -26,7 +26,8 @@ use yulius_domain::usage::{
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
 use crate::observe::Observed;
-use crate::time::{from_epoch_seconds, parse_rfc3339};
+use crate::time::from_epoch_seconds;
+use yulius_domain::time::parse_rfc3339;
 
 /// Maximum bytes of provider limit text kept in [`Observed::LimitReached`].
 const LIMIT_MESSAGE_BYTES: usize = 512;

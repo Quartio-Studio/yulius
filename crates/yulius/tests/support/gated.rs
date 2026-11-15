@@ -78,6 +78,10 @@ pub struct GatedHost {
     refusing: Arc<AtomicBool>,
     /// Shutdown requests dropped while refusing, so far.
     refused: Arc<watch::Sender<u32>>,
+    /// Runs do not hear a request to end; `terminate` still ends them.
+    deaf: Arc<AtomicBool>,
+    /// The look at a run's background shells gives no answer.
+    probe_silent: AtomicBool,
     /// The strays every probe reports, once set.
     strays: Mutex<Option<Vec<StrayProcess>>>,
     /// The strays it was asked to reap, each with the number of probes before it.
@@ -97,6 +101,8 @@ impl GatedHost {
             spawn: Gate::new(),
             refusing: Arc::new(AtomicBool::new(false)),
             refused: Arc::new(watch::channel(0).0),
+            deaf: Arc::new(AtomicBool::new(false)),
+            probe_silent: AtomicBool::new(false),
             strays: Mutex::new(None),
             reaped: Mutex::new(Vec::new()),
             probes: AtomicU32::new(0),
@@ -145,6 +151,18 @@ impl GatedHost {
     /// fails (a process that survives SIGKILL); its own exit is still reported.
     pub fn refuse_ends(&self, refuse: bool) {
         self.refusing.store(refuse, Ordering::SeqCst);
+    }
+
+    /// While `deaf` holds, a run does not hear a request to end (it is dropped); `terminate`
+    /// ends it, as it ends a session that hangs.
+    pub fn deafen(&self, deaf: bool) {
+        self.deaf.store(deaf, Ordering::SeqCst);
+    }
+
+    /// While `silent` holds, the look at a run's background shells gives no answer (a probe
+    /// that timed out, a process table that cannot be read).
+    pub fn silence_probe(&self, silent: bool) {
+        self.probe_silent.store(silent, Ordering::SeqCst);
     }
 
     /// Returns once a run was asked to shut down while ends were refused (the request dropped).
@@ -209,6 +227,7 @@ impl SessionHost for GatedHost {
             inner: attached.writer,
             refusing: Arc::clone(&self.refusing),
             refused: Arc::clone(&self.refused),
+            deaf: Arc::clone(&self.deaf),
         });
         Ok(attached)
     }
@@ -227,6 +246,9 @@ impl SessionHost for GatedHost {
     }
 
     fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        if self.probe_silent.load(Ordering::SeqCst) {
+            return None;
+        }
         self.inner.background_shells(child_pid)
     }
 
@@ -269,6 +291,7 @@ struct RefusingWriter {
     inner: Box<dyn RunWriter>,
     refusing: Arc<AtomicBool>,
     refused: Arc<watch::Sender<u32>>,
+    deaf: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -282,13 +305,16 @@ impl RunWriter for RefusingWriter {
     }
 
     async fn signal(&mut self, signal: RunSignal) -> AppResult<()> {
-        if self.refusing.load(Ordering::SeqCst) {
+        if self.refusing.load(Ordering::SeqCst) || self.deaf.load(Ordering::SeqCst) {
             return Ok(());
         }
         self.inner.signal(signal).await
     }
 
     async fn shutdown(&mut self, grace_ms: u32) -> AppResult<()> {
+        if self.deaf.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         if self.refusing.load(Ordering::SeqCst) {
             self.refused.send_modify(|count| *count += 1);
             return Ok(());

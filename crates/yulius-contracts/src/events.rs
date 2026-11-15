@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::admin::AccountView;
 use crate::api::notes::NoteSelection;
-use crate::api::sandboxes::Sandbox;
 use crate::api::tasks::TaskSummary;
 
 /// One server-pushed event. Delivery is best effort; on `Resync` clients refetch lists.
@@ -23,17 +22,26 @@ pub enum UiEvent {
         /// Task id.
         task_id: String,
     },
+    /// The person who handed a task over took it back (SPEC-490 OWN-010): sent only to the
+    /// person it was taken from, so they hear of it wherever they are.
+    #[serde(rename = "task.control_taken_back")]
+    ControlTakenBack {
+        /// Task id.
+        task_id: String,
+        /// Its sandbox.
+        sandbox_id: String,
+        /// Its number in the sandbox.
+        number: u32,
+        /// Its title.
+        title: String,
+        /// Who took it back.
+        by: String,
+    },
     /// Steps changed.
     #[serde(rename = "steps.updated")]
     StepsUpdated {
         /// Task id.
         task_id: String,
-    },
-    /// A sandbox changed.
-    #[serde(rename = "sandbox.updated")]
-    SandboxUpdated {
-        /// New sandbox view.
-        sandbox: Sandbox,
     },
     /// An agent asked a person to act in the browser.
     #[serde(rename = "browser.action_requested")]

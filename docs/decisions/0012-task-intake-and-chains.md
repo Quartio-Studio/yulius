@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Recorded retroactively from SPEC-002 (ADR-16); the full analysis is in
-[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md).
+[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md). When a chained task
+starts is amended by
+[0328](0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md).
 
 ## Context
 

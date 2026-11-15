@@ -6,6 +6,11 @@ Accepted. Specified in [SPEC-480](../../.ai/specs/SPEC-480-a-message-yulius-type
 task #463, issue #1199. Amends [ADR-0178](0178-the-superagent-messages-tasks-by-queueing-or-typing.md)
 ("the person's draft counts for a minute") and SPEC-230 TMS-004.
 
+Amended by SPEC-487 (TCT-006, task #469): the task's owner, and only they, may have a message
+sent past their own possible draft (`task_message` with `with_draft`): it is typed behind the
+text and both are submitted as one prompt, once their last key is more than a minute old.
+Yulius's own messages and everyone else's still wait.
+
 ## Context
 
 Yulius types messages into running sessions through one function, `App::type_into_session`: a

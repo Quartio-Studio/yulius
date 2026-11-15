@@ -115,7 +115,7 @@ const ANSWER_HERE = 'The terminal has the keyboard: answer there.';
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, onExitedInput = null }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -749,6 +749,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   }
 
   function send(data) {
+    // Typed after the session ended: its owner may keep it for the session that follows (SPEC-487 SES-001).
+    if (exited && onExitedInput && isTyping(data) && onExitedInput(data, exited)) return true;
     if (!state.can_write) {
       showNotice(readOnlyText());
       return false;

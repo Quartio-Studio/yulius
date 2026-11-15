@@ -12,7 +12,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::accounts::{USAGE_BACKOFF_MAX_MS, USAGE_BACKOFF_MS};
 use crate::context::App;
-use crate::model::{AccountRecord, AccountStatus, Secret};
+use crate::model::{AccountRecord, Secret};
 use crate::ports::usage::{UsageFailureKind, plausible_email};
 
 /// What one email request ended with.
@@ -99,12 +99,7 @@ impl App {
             return;
         };
         for account in accounts.iter().filter(|a| {
-            a.credential.is_some()
-                && a.email_checked_at.is_none()
-                && !matches!(
-                    a.status,
-                    AccountStatus::PendingLogin | AccountStatus::Relogin
-                )
+            a.credential.is_some() && a.email_checked_at.is_none() && a.status.healthy()
         }) {
             let now = self.now();
             if not_before.get(&account.id).is_some_and(|at| *at > now) {

@@ -156,7 +156,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
-  joins `sandboxes/<sandbox>/engine` and execs `bwrap`, then `yulius sandbox-host engine`
+  joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
+  view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
   supervises `dockerd`. The front splices each connection to the engine's own socket (for a
   holder of SPEC-187, to that holder's own engine).
 - **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
@@ -597,6 +598,12 @@ which a new sign-in takes too; it is never held across a request to the provider
 recorded while a reading is under way is kept. The write that marks a subscription refused
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
+A subscription works while it reads `ok` or `limited` (`AccountStatus::healthy`), and that is
+the one rule: the pool places tasks only on one that works, the background rounds ask only such
+a one for its usage and its e-mail address, and a reading that arrives for any other stores its
+figures and leaves its status. A sign-in that fails leaves a refused subscription `relogin` with
+Claude's reason; every status but the two ends with a sign-in that succeeds, and with nothing
+else.
 
 ### The fallback model
 
@@ -908,9 +915,9 @@ next successful reply. Each stage is said in the task's terminal and audited as
 ```mermaid
 stateDiagram-v2
     [*] --> Clear
-    Clear --> Compacting: ContextFull / type "/compact <focus>"
+    Clear --> Compacting: ContextFull / type "/compact <focus>" (held up to 10 min for a possible draft)
     Compacting --> Compacted: Compacted / type the wake-up line
-    Compacting --> Restarted: CompactFailed or 10 min / fresh session + handoff
+    Compacting --> Restarted: CompactFailed, 10 min, or the command refused behind a draft / fresh session + handoff
     Compacted --> Restarted: ContextFull / fresh session + handoff
     Restarted --> GaveUp: ContextFull in the fresh session / needs attention + reason
     Compacting --> Clear: a successful reply
@@ -1537,7 +1544,13 @@ A resumed goal session (Continue, a switch) gets its `/goal` typed after its con
 one line of at most 700 code units (Claude Code takes a longer write as a paste, which is no
 command): the request when it fits, else the request file named; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
-(only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
+(only keystrokes count as typing; focus and mouse reports and terminal answers do not). While that
+goal is still to be typed the run directory holds `typed-goal-pending`: a server that restarts
+then has no typist for it, gives a run whose opening turn has not ended that turn back (the
+mark says the session opens with one, and no Stop of the run was answered), watches the
+reattached run from that turn's end as it watches a launch goal, and flags a task that Claude
+Code recorded no goal for
+([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) RST-002). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. The same preparation,
 for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the config dir's user
@@ -1691,7 +1704,15 @@ hold (`yulius-app/src/supertask.rs`,
 without a live run waits `queued` while its project has a pending supertask (only an earlier one
 counts, for a supertask). A supertask also waits while the project has a working task. Live runs
 are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
-the other. A held task's summary lists what it waits for (`held_by`).
+the other. A held task's summary lists what it waits for (`held_by`). A start that has to wait
+(the session limit, a supertask's or an update's hold) is kept with its task
+(`tasks.queued_start`: a new session or a resume, its prompt, a resume past a usage limit, the
+subscription a person chose), and `start_run` gives a queued task that start whoever starts it
+later; it is written with the change to `queued` and removed by the change out of it. A chosen
+subscription that could not take the task when its turn comes is given up, said in the task's
+terminal. A paused task's pause ends where its start is made or queued, so a start the full
+queue refuses leaves it for the pool's next round
+([SPEC-483](../.ai/specs/SPEC-483-deep-security-and-quality-audit-fix-ever.md) QST-001).
 
 ```mermaid
 flowchart LR
@@ -1843,8 +1864,9 @@ It manages the project through the Yulius MCP server
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served `COCKPIT_TOOLS`: the task, automation, workflow and session tools,
 `attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list`,
-`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and
-`sandbox_task_stop` for its person's other sandboxes. Those tools act for a person (`ProjectCaller`, which names its
+`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message`,
+`sandbox_task_stop`, `sandbox_tasks_list`, `sandbox_requests`, `sandbox_request_amend`,
+`sandbox_request_withdraw` and `person_ask` for its person's other sandboxes and decisions. Those tools act for a person (`ProjectCaller`, which names its
 `Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
 person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, SPEC-396);
@@ -1853,6 +1875,41 @@ and `automation_template_enable` call the UI's own functions with that person an
 the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
+What a person does on a project's pages is one list of tools, `person_tools::PERSON_TOOLS`
+(a task's Continue, Pause, Resume and Start now, its delivery, the CI page's runs, run again
+and cancel, the CD page's state and dev deploy, the variables): `App::person_project_tool`
+runs the function the page's route calls with the person's `AuthContext`, and two callers
+serve it: the Cockpit (`cockpit_person_tool`: the person's rights as they are at the call, and
+one `superagent.tool` audit entry for a tool that changes something, which names the task, run
+or environment and is written even when the client went away) and the remote MCP (with
+`project`, its token's scope and `remote.tool`), which the Global Superagent calls too (without
+what it is withheld). Every text served to a client (instructions, tool descriptions) stays
+within the 4096 characters Claude Code reads (`CLIENT_TEXT_MAX`). Task control that has no page yet is in the same list
+(`task_edit.rs`: `App::edit_task` renames a task and replaces the request of one that has not
+started by one conditional update, `TaskStore::replace_unstarted_prompt`, keeping its attached
+files; `App::reorder_queue` swaps the places the person's queued tasks hold,
+`TaskStore::reorder_queued`; `App::close_task_for_person` closes an idle running task;
+`App::bulk_tasks` does a stop, pause, resume or message to several tasks through the single
+functions, waiting tasks first for a stop). What a task asks of a person is read where the list is read
+(`task_questions.rs`: `App::waits_why` adds to a task's brief what its page shows, the list's group by
+`AttentionFacts::group`, the agent's `needs_you` request, the flag's reason, a held prompt and a pause;
+`tasks_list` with scope `needs_you` lists the tasks under Needs you; `session_read` with `tail` reads a
+session's end through `transcripts::read_tail`), and decided by two more of the person's tools
+(`App::dismiss_task_question`, which ends a request only while it still asks what was read, and
+`App::decide_task_held_prompt`, the card's `resolve_held_prompt`). Merges and CI order for a person are in
+`merges.rs`: `App::merge_state` reads a task's `ArmedSlot` (`armed_merge_view`), its merge train's
+sentence and its last outcome; `App::merge_queue_for_person` lists a sandbox's armed merges and its
+train (`train_summary`); `App::merge_for_person` is the page's `merge_task_pr` on green and otherwise
+`arm_merge` at the worktree's head, which the armed-merge pass merges under the owner's authority as for
+an agent's `delivery_merge`; `App::ci_run_first` moves a queued run before its sandbox's others
+(`CiStore::ci_run_to_front`; `ci_dispatch` starts each sandbox's queued runs in that order). What a task runs on is
+`task_setup.rs`: `App::switch_task_for_person` resolves a subscription's name and calls the page's
+`switch_task`; `App::set_task_model` stores a model or effort with the task (`TaskFieldUpdate`), which
+the next start of its session takes; a task's brief names its live run's subscription. The instance is `instance_tools.rs`: the Status panel's and
+Settings' views for everyone, and for a superadmin the update buttons' functions (`check_updates_now`,
+`start_update`, `start_restart`, `cancel_update`) with the ask as their confirmation. A task's agent is served none of them; it keeps the tools about its own work
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
+[decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
@@ -1861,7 +1918,8 @@ Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a 
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
 while a person's draft may sit in its prompt box (they typed since the box was last empty,
-however long ago) or they typed in the last minute (`App::box_held`, `policy::box_held`;
+however long ago; the task's owner alone sends past their own with `with_draft`,
+`Sender::OwnerPastDraft`, SPEC-487) or they typed in the last minute (`App::box_held`, `policy::box_held`;
 [SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
 [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
@@ -1869,8 +1927,14 @@ and its terminal says so once the person's last key is ten minutes old; the key 
 possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
 the box and read by `reconcile` for a reattached run), while Claude Code's
 folder-trust dialog shows
-(`trust_prompt_shown`), while Yulius types the first message or while another
-message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
+(`trust_prompt_shown`), while Yulius types the first message or while anything else
+is typed (`TaskRuntime::typing_message`, held from a line to its Enter by a message,
+`/compact` and the line that wakes a compacted session, and by a typed goal until Claude Code
+took it; the first message has a mark of its own, and "Send anyway" is only an Enter. A
+compaction is held, at most ten minutes and with the task flagged, while anything typed since
+the box was last emptied may sit there; typed after the hold behind real text, the command is
+refused as a prompt, which fails the compaction at once (`ContextEpisode::Compacting`'s
+`behind_draft`), SPEC-483 TYP-001, TYP-002); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
@@ -1878,12 +1942,36 @@ Only the Superagent reaches its person's other sandboxes, and only through them
 ([SPEC-335](../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
 [decision 0227](decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
 `cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
-`sandbox_task_create` records a request in `App::cross_requests` (in memory, at most 3 per person
-and source sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes,
-below Node's 300 s headers timeout). A guard removes the request however the call ends, and a
-Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`: its shell and
-that id) ends it at once, so a dropped or cancelled call, a timeout or a restart leaves nothing
-to approve; `settle` waits for the outcome of an approval that the timeout raced. The panel reads the person's own
+`sandbox_task_create` records a request in `App::cross_requests` (at most 3 per person and source
+sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes, below Node's
+300 s headers timeout). Then, or when the call is dropped, the call answers `waiting` with the
+request's id and the request stays until the person answers it or the Superagent withdraws it
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) XRQ-001,
+[decision 0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)):
+the waiting requests and the newest 200 outcomes are written whole to `superagent-requests.json`
+beside the database at every change and put back first at a start (`restore_cross_requests`;
+nothing is written from the start until then, `begin_cross_restore`, so a request asked
+meanwhile loses none). A Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`:
+its shell and that id) withdraws it; `settle` waits for the outcome of an approval that the
+timeout raced. `sandbox_requests` reads the Superagent's own waiting requests and outcomes,
+`sandbox_request_amend` replaces a waiting one's text in place and `sandbox_request_withdraw`
+removes one; `person_ask` records a request of the action `Ask` on the Superagent's own sandbox
+(Yes / No on the same panel, nothing runs), and `sandbox_tasks_list` reads another sandbox's
+tasks without asking. The Superagent's production releases are requests of its own sandbox too
+([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md),
+`release_requests.rs`): `cd_deploy` and `cd_rollback` of a production-stage environment, `promote`
+and `onboarding_start` are checked as the page would check the person (`checked_release`), and
+the approval, which for a release carries the project's slug as typed (checked before the request
+is taken), runs `cd_deploy`, `cd_rollback`, `promote_sandbox` or `approve_onboarding` with the
+answering person's browser `AuthContext` (`run_release`); a dev-stage deploy or rollback is the
+person's project tool, run at once. `secret_request_value` is one too
+([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)):
+its answer carries the value the person typed in the card's masked field, checked as the Secrets
+page checks a pasted value (`secret_value_to_store`) before the request is taken, and stored with
+the answering person's session (`store_secret_value`: `update_agent_secret` of theirs of that
+name in the scope asked, `secret_replaced`, or `create_agent_secret`; never another scope's or a
+global one); the request, its file and the audit hold the name only, and the value is held in a
+`Zeroizing` wrapper. The panel reads the person's own
 requests, announced by `superagent.requests` to that person only. An answer needs a browser
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
@@ -1915,7 +2003,8 @@ sequenceDiagram
     P->>Y: POST …/requests/{id} {approve: false}
     Y-->>S: declined, nothing created
   else 4 minutes, or the call dropped
-    Y-->>S: unanswered, request gone
+    Y-->>S: waiting + request id (the card stays, kept across a restart)
+    S->>Y: sandbox_requests (how it ended), or _amend / _withdraw
   end
 ```
 
@@ -1952,7 +2041,7 @@ end and remove. Its person types into its terminal as into the sandbox Superagen
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
-settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. An
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge`, `task_merge` nor `instance_update`. An
 image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
 into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
 which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
@@ -1996,9 +2085,12 @@ or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, per
 team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
 per name by rank and attaches the enabled winners. The holder is ADR-0186's: a task's owner unless
 an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
-MCP API answers 404 for another person's server, administrators included, and `task_message` from
-anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
-`TaskRuntime::personal_mcp_of`, was started with one); a hand-over resumes such a run with the new
+MCP API answers 404 for another person's server, administrators included, and `task_message` is
+the task owner's alone (SPEC-490), so nobody else's words reach a run holding their personal
+server. `TaskRuntime::personal_mcp_of` records whose servers a live run was started with (the run
+directory's `personal-mcp-of` gives that back to a server that restarted, which also restarts a
+run whose record names someone who is not the task's holder any more, SPEC-483 RST-001); a
+hand-over resumes such a run with the new
 owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
 `App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
 generation).
@@ -2126,7 +2218,35 @@ descriptors, whether the egress proxy is wired and `COCKPIT_LAUNCH_REVISION`; `s
 the proxy before it adopts shells). One adopted after a restart with another digest, or
 none, is due a refresh: its watch tracks whether a turn or background work is open, and once its
 conversation is idle it is ended (`switched`) and started again resuming that conversation, as a
-usage-limit move does but without redoing a turn.
+usage-limit move does but without redoing a turn. It keeps its person's text
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) SES-001,
+SES-002): the shell reads its person's keystrokes (`read_box_keys`: text, a paste across frames,
+Alt-Enter and backslash-Enter type; Enter and Ctrl-C empty the box; Esc, Tab and arrows do
+neither), ordered by their count, and keeps a draft's mark in `shell.json` (`draft_typed_at`), so
+a server restarted for an update knows it; while a draft is there (for at most `DRAFT_HOLDS_MS`, 30
+minutes after its last keystroke) the refresh waits (`held`), checked before anything costly. The
+panel keeps the ended terminal, and the keyboard in it, until the new session runs, and types the
+frames typed meanwhile into it (`onExitedInput`, `sendKeys`; Ctrl-C left out, dropped if the
+restart fails).
+
+What the Superagent sees of the work (SPEC-487 VIS-001 to VIS-004, `visibility_tools.rs`) is
+read, not measured anew: `task_screen` takes a task's live hub screen, or renders its last run's
+`final-screen` after `terminal_snapshot` redacts it again; `task_usage` the Dashboard's
+`analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
+repository's `HEAD` against `origin/<integration branch>`, without a fetch.
+
+A Superagent's standing jobs are scheduled checks held by Yulius
+([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
+`superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
+keep them in `App::superagent_checks` and `superagent-checks.json`, read back at the start before
+the listeners serve (`restore_superagent_checks`). The Cockpit watch types the first due check into
+its session when the conversation is idle and no restart is pending (`type_due_check`: not in
+the first 20 seconds of the Superagent, nor within 30 seconds of the last check; no draft and no
+keystroke in the last minute, checked again with its terminal held; one paste and Enter, the next
+interval counted from then, a minute if it could not be typed), and a background tick every
+minute starts the Superagent of a due check that is not running, through `cockpit_open` with its
+person's rights (`start_superagents_for_due_checks`; a failed start backs off up to an hour, a
+gone person's or sandbox's checks are deleted).
 
 ```mermaid
 flowchart LR
@@ -2248,8 +2368,8 @@ project and the person (SPEC-287), never a shadowed or switched-off one.
 The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
 its task's current holder on every request, so a hand-over or a deleted task applies also to
 connections opened before it, a hand-over (also one during a launch) rewrites the run's
-fingerprint file in place for the new owner (SPEC-248), and `task_message` from anyone but the
-owner refuses a task holding personal secrets. A personal secret is never copied
+fingerprint file in place for the new owner (SPEC-248), and `task_message` is the
+owner's alone, as every message to a task is (SPEC-490). A personal secret is never copied
 into `.env` files, resolved in MCP references, typed by `browser_fill_secret` or given to
 production. Yulius' own redaction of a project covers every candidate; the fingerprint file a run
 gets covers only its holder's and only what can be in its sandbox (`App::matcher_for`: no
@@ -2807,20 +2927,44 @@ A task acts on GitHub with one person's token, so it is that person's: its owner
 until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
 [decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
-agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
-owner. Anyone else who may work in the project asks for control; the owner hands it over or
-declines, and an absent owner's task passes at once.
+agent; `created_by` stays who asked.
+
+What a person does to a task is one of three things, decided in one place
+(`yulius_domain::task_access`, [SPEC-490](../.ai/specs/SPEC-490-users-may-stop-archive-and-delete-other.md),
+[decision 0331](decisions/0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md)):
+**view** (read access), **tidy** (stop, close out, archive, restore, delete: write access,
+whoever owns the task) and **control** (everything that steers it: write access and ownership).
+`App::load_task` and `App::require_control` apply it; a sandbox-level action above view passed
+to `load_task` means control, so a new task function is the owner's unless it asks for tidy by
+name. Nothing else compares a task's owner: the terminal's write grant, shells and files in a
+worktree, the queue's order, a Superagent's message, a restore of attachments into a task and
+Start onboarding all ask the same rule. A playground's guest tidies only their own tasks
+(`TaskRefusal::Guest`). Anyone else who may work in the project asks for control, from the
+task's page or its menu; the owner hears of it wherever they are (a notification, a toast, a
+mark on the sidebar row) and hands it over or declines, and an absent owner's task passes at
+once. A hand-over on request records its giver (`tasks.control_from`, schema 60), who takes the
+task back without asking (`App::take_back_task_control`, one conditional update) until control
+moves again: handed on, handed back to the giver, or passed from an absent owner, which clear
+or replace it. An onboarding task that never ran passes to whoever
+starts onboarding.
 
 ```mermaid
 flowchart LR
-  B["Bob: Request control"] -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  P["A person, or an agent for them"] --> RULE{"task_access::decide<br/>(action, access, owns)"}
+  RULE -->|"view: read access"| READ["detail, transcript, delivery"]
+  RULE -->|"tidy: write access"| TIDY["stop, close out, archive,<br/>restore, delete"]
+  TIDY --> AUD[("audit: who, and the owner")]
+  RULE -->|"control: write access + owner"| CTRL["terminal, messages, answers,<br/>start, pause, deliver, worktree"]
+  RULE -->|"control, not the owner"| ASK["403: ask the owner for control"]
+  ASK -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
   REQ -->|"owner absent"| PASS["pass_control"]
-  A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
+  A["Owner: Hand over"] -->|"POST /control-request/accept"| PASS
   A -->|"DELETE: decline"| REQ
-  PASS --> OWN[("tasks.owner_id = Bob")]
-  OWN --> TOK["Yulius's pushes, PRs, merges as Bob"]
-  OWN --> ID["worktree commit identity: Bob"]
-  OWN --> GATE["load_task: only Bob writes"]
+  PASS --> OWN[("tasks.owner_id = the asker<br/>tasks.control_from = the giver")]
+  OWN -->|"POST /control/take-back (the giver)"| BACK["take_back_control"]
+  BACK --> GIVER[("tasks.owner_id = the giver")]
+  OWN --> TOK["Yulius's pushes, PRs, merges as the new owner"]
+  OWN --> ID["worktree commit identity"]
 ```
 
 Everyone but the owner watches the task as its live transcript, not its terminal: the terminal is
@@ -3051,7 +3195,10 @@ merge"), even with a complete plan and a tested pull request; only an achieved g
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
-([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), and for a
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), also when
+the look at the session's processes gives no answer (`background_work_now` is `None`: not known
+counts as running for everyone who asks before a session ends, so a host whose look never
+answers moves no session at a turn's end; a move at a usage limit does not ask), and for a
 prompt that waits in Claude Code's queue, which would go with the process: `hook_stop` asks
 `prompt_waits_for_turns_end` once the turn's lines were read and answers the Stop as on a
 subscription that stays; a turn held for capacity is released in place instead of moved
@@ -3121,7 +3268,7 @@ this one rule ([SPEC-429](../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-t
 
 ```mermaid
 flowchart LR
-    idle["idle agent: waiting"] --> going{"background work or yulius wait?"}
+    idle["idle agent: waiting"] --> going{"background work, yulius wait\nor pull request news due?"}
     going -->|"yes"| working["Working"]
     going -->|"no"| asked{"a request: prompt, needs_you,\nbrowser, held prompt, failing checks?"}
     asked -->|"yes"| needs["Needs you"]
@@ -3130,9 +3277,40 @@ flowchart LR
     open -->|"no"| answered["Answered (Done group)"]
 ```
 
+A tested or merged pull request is not the end of a task that merges its own: its agent arms
+the merge and stops, the checks pass, the merge queue merges, and the pull request watch types
+the news into the session, which then goes on (the next slice, the closing summary). While
+Yulius has such news for the agent, the task goes on by itself: `yulius_wait` is true, the list
+reads "Waiting for checks or merge", and `task_is_done` answers no, so no chain or start rule
+starts on it (an armed merge also keeps an achieved goal's task out of Done, and `merge_armed`
+says so in the task's view; archiving it is refused rather than ending the merge), no supertask
+takes it for finished and Home counts it as working. One rule says
+when (`news_due` in `pr_watch.rs`, asked through `App::pr_news_due`): a merge is armed or being
+decided (known from the armed merges' file until a restarted server put them back); or, for a
+task the watch types into, news was typed and its turn has not begun, a merge the watch saw
+open is not told (also one GitHub reports before the record says so), or an armed merge that
+ended without merging is not explained yet. Typed news is due until the task goes from idle to
+Working, at most two minutes; typed while a turn runs, Claude Code queues it, and its queue
+(SPEC-471) says how long it waits. One decision reads the task's delivery once. A task the
+watch tells nothing is Done as before: a playground's, one whose pull request it never saw
+open, one a person paused; an update's hold changes nothing, since the news is typed right
+after it
+([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md),
+[decision 0328](decisions/0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md)).
+
 A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
-tested pull request with a complete plan, so a task without a goal that opens no pull request would
-never be Done. For that reason the
+tested pull request with no declared work left. Tested is one reading (`PullSignal::from_wire`,
+asked by `task_is_done`, the Git overview and the counts): the pull request is open, does not
+conflict with its base (Yulius's own merge check in its clone, with its merge drivers,
+`App::pull_conflicts`, which is also what the watch tells the agent by; GitHub's flag only where
+the task has no clone, as GitHub knows nothing of the union rules) and its checks
+passed, or none are required by the project. Declared work is the plan's open steps and the
+task's spec: Yulius keeps the spec's `status` with the task whenever it reads the spec
+(`tasks.spec_status`), and while it says `draft`, `approved` or `in-progress` the task is not
+Done, however complete its plan reads
+([SPEC-491](../.ai/specs/SPEC-491-a-task-whose-work-is-not-finished-never.md),
+[decision 0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+So a task without a goal that opens no pull request would never be Done. For that reason the
 tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
 preparation. Only the continuation of an imported session is a prompt task, because the person
 whose conversation it continues decides when it is finished

@@ -131,6 +131,15 @@ impl UsageProbe for LimitDuringRequest {
     }
 }
 
+/// Sets `id`'s last error as an earlier failure left it, its status and usage as they are.
+async fn earlier_error(h: &support::Harness, id: &AccountId, error: &str, at: i64) -> TestResult {
+    let status = h.store.account(id).await?.ok_or("account")?.status;
+    h.store
+        .set_account_state(id, status, None, Some(error), Timestamp(at))
+        .await?;
+    Ok(())
+}
+
 async fn account(h: &support::Harness, id: &str, credential: &[u8]) -> TestResult {
     h.store
         .insert_account(&AccountRecord {
@@ -295,7 +304,7 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     account(&h, "a-setup", b"setup-token").await?;
     let id = AccountId::parse("a-setup")?;
     let old = "usage: the provider refused this account's token for usage (HTTP 403); it refreshes on the next run or needs a re-login";
-    h.store.set_account_error(&id, old, Timestamp(2)).await?;
+    earlier_error(&h, &id, old, 2).await?;
 
     let refreshed = call(
         &h.router,
@@ -316,13 +325,7 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     assert_eq!(refreshed.body["status"], "ok");
 
     // Other errors are not cleared by it.
-    h.store
-        .set_account_error(
-            &id,
-            "re-login failed: the sign-in was cancelled",
-            Timestamp(3),
-        )
-        .await?;
+    earlier_error(&h, &id, "re-login failed: the sign-in was cancelled", 3).await?;
     let mut not_before = HashMap::new();
     h.app.refresh_usage_round(&mut not_before).await;
     let record = h.store.account(&id).await?.ok_or("a-setup")?;
@@ -434,6 +437,49 @@ async fn a_failed_refresh_keeps_a_limit_observed_meanwhile() -> TestResult {
     Ok(())
 }
 
+/// SPEC-483 SGN-002: a usage reading never makes a subscription usable that is not. One left
+/// `error` with a credential (rows written before a failed re-login kept `relogin`), like one
+/// that needs a new sign-in, is not asked by the background round, and a reading an
+/// administrator asks for stores its figures and leaves its status and its reason.
+#[tokio::test]
+async fn a_usage_reading_leaves_a_broken_subscription_broken() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    for (name, status) in [
+        ("a-error", AccountStatus::Error),
+        ("a-relogin", AccountStatus::Relogin),
+    ] {
+        account(&h, name, b"works").await?;
+        let id = AccountId::parse(name)?;
+        let why = "the sign-in ended without producing a token";
+        h.store
+            .set_account_state(&id, status, None, Some(why), Timestamp(2))
+            .await?;
+        h.app.refresh_usage_round(&mut HashMap::new()).await;
+        let kept = h.store.account(&id).await?.ok_or(name)?;
+        assert_eq!(kept.status, status, "{name}: the round asks no broken one");
+        assert_eq!(kept.usage_json, None, "{name}");
+        let refreshed = call(
+            &h.router,
+            Method::POST,
+            &format!("/api/admin/accounts/{name}/usage"),
+            None,
+            &admin,
+        )
+        .await?;
+        assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+        assert_eq!(refreshed.body["status"], status.as_str(), "{name}");
+        let read = h.store.account(&id).await?.ok_or(name)?;
+        assert_eq!(read.status, status, "{name}: a reading proves no sign-in");
+        assert_eq!(read.last_error.as_deref(), Some(why), "{name}");
+        assert!(read.usage_json.is_some(), "{name}: the figures are kept");
+    }
+    Ok(())
+}
+
 /// A failed usage reading is a note only over no error or an earlier note: a re-login error
 /// written while it ran stays (ROT-009).
 #[tokio::test]
@@ -445,17 +491,13 @@ async fn a_failed_refresh_keeps_a_relogin_error() -> TestResult {
     account(&h, "a-expired", b"expired").await?;
     let id = AccountId::parse("a-expired")?;
     let relogin = "re-login failed: the sign-in was cancelled";
-    h.store
-        .set_account_error(&id, relogin, Timestamp(2))
-        .await?;
+    earlier_error(&h, &id, relogin, 2).await?;
     h.app.refresh_usage_round(&mut HashMap::new()).await;
     let kept = h.store.account(&id).await?.ok_or("a-expired")?;
     assert_eq!(kept.last_error.as_deref(), Some(relogin));
 
     // An earlier note is replaced by the new one.
-    h.store
-        .set_account_error(&id, "usage: an older note", Timestamp(3))
-        .await?;
+    earlier_error(&h, &id, "usage: an older note", 3).await?;
     h.app.refresh_usage_round(&mut HashMap::new()).await;
     let noted = h.store.account(&id).await?.ok_or("a-expired")?;
     assert!(

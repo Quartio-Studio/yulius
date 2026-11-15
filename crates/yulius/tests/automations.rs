@@ -17,9 +17,9 @@ use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskMode, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{SandboxStore, TaskStore};
-use yulius_app::ports::store_ext::{AutomationStore, WorkflowStore};
+use yulius_app::ports::store_ext::AutomationStore;
 use yulius_app::supervisor::RunStart;
-use yulius_app::workflows::{WorkflowRecord, catalog};
+use yulius_app::workflows::catalog;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
@@ -398,121 +398,6 @@ async fn workflows_defaults_scope_permissions_and_task_steps() -> TestResult {
     let mut expected = default_names();
     expected.push("Hotfix".into());
     assert_eq!(names(&after.body), expected);
-    Ok(())
-}
-
-/// The old seeded "Feature" and "Quick task" rows: an unchanged one is retired (references to
-/// `wf-feature` now reach the default, those to `wf-quick-task` are cleared), an edited one
-/// whose id a default answers to is kept as a custom copy, any other edited one stays.
-#[tokio::test]
-async fn workflows_seeded_before_the_catalog_are_retired() -> TestResult {
-    let legacy =
-        |id: &str, name: &str, steps: &[&str], instructions: &str, gate: bool| WorkflowRecord {
-            id: id.to_owned(),
-            sandbox_id: None,
-            name: name.to_owned(),
-            description: if gate {
-                "Spec first, then implementation, tests and a pull request.".into()
-            } else {
-                "A small change without required steps or gates.".into()
-            },
-            steps: steps.iter().map(|s| (*s).to_owned()).collect(),
-            instructions: instructions.to_owned(),
-            require_spec: gate,
-            require_tests: gate,
-            created_at: Timestamp(1),
-            builtin: false,
-            when_to_use: String::new(),
-        };
-    const FEATURE_TEXT: &str = "Start by writing the task spec with a Plan checklist in the project's spec directory and keep the steps in sync with it. Implement only what the spec describes, add tests that prove the behavior, run the project's test command and open a pull request into the integration branch.";
-    const FEATURE_STEPS: [&str; 4] = ["Write spec with plan", "Implement", "Test", "Open PR"];
-
-    // Unchanged rows, each used by an automation.
-    let w = world().await?;
-    let store = &w.h.store;
-    store
-        .insert_workflow(
-            &legacy("wf-feature", "Feature", &FEATURE_STEPS, FEATURE_TEXT, true),
-            200,
-        )
-        .await?;
-    store
-        .insert_workflow(&legacy("wf-quick-task", "Quick task", &[], "", false), 200)
-        .await?;
-    let mut uses = Vec::new();
-    for workflow in ["wf-feature", "wf-quick-task"] {
-        let mut body = daily(workflow, "0 9 * * *");
-        body["workflow_id"] = json!(workflow);
-        uses.push(create_automation(&w, body).await?);
-    }
-    assert_eq!(w.h.app.retire_legacy_workflows().await?, 2);
-    assert_eq!(w.h.app.retire_legacy_workflows().await?, 0, "idempotent");
-    assert!(store.workflow("wf-feature").await?.is_none());
-    assert!(store.workflow("wf-quick-task").await?.is_none());
-    let feature_use = store.automation(&uses[0]).await?.ok_or("automation")?;
-    assert_eq!(feature_use.workflow_id.as_deref(), Some("wf-feature"));
-    let quick_use = store.automation(&uses[1]).await?.ok_or("automation")?;
-    assert_eq!(quick_use.workflow_id, None);
-    let list = call(
-        &w.h.router,
-        Method::GET,
-        "/api/sandboxes/s1/workflows",
-        None,
-        &w.bob,
-    )
-    .await?;
-    assert_eq!(names(&list.body), default_names());
-
-    // Edited rows keep their edits.
-    let w = world().await?;
-    let store = &w.h.store;
-    store
-        .insert_workflow(
-            &legacy(
-                "wf-feature",
-                "Feature",
-                &["Spec", "Ship"],
-                FEATURE_TEXT,
-                true,
-            ),
-            200,
-        )
-        .await?;
-    store
-        .insert_workflow(
-            &legacy("wf-quick-task", "Quick task", &["Do it"], "", false),
-            200,
-        )
-        .await?;
-    assert_eq!(w.h.app.retire_legacy_workflows().await?, 1);
-    assert!(store.workflow("wf-feature").await?.is_none());
-    assert!(
-        store.workflow("wf-quick-task").await?.is_some(),
-        "a custom workflow now"
-    );
-    let list = call(
-        &w.h.router,
-        Method::GET,
-        "/api/sandboxes/s1/workflows",
-        None,
-        &w.bob,
-    )
-    .await?;
-    let custom: Vec<&Value> = list
-        .body
-        .as_array()
-        .ok_or("list")?
-        .iter()
-        .filter(|w| w["builtin"] == false)
-        .collect();
-    assert_eq!(custom.len(), 2, "{}", list.body);
-    let kept = custom
-        .iter()
-        .find(|w| w["name"] == "Feature (custom)")
-        .ok_or("the edited Feature kept as a copy")?;
-    assert_eq!(kept["steps"], json!(["Spec", "Ship"]));
-    assert_eq!(kept["scope"], "instance");
-    assert!(custom.iter().any(|w| w["id"] == "wf-quick-task"));
     Ok(())
 }
 

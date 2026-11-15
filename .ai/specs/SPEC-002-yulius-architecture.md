@@ -123,10 +123,11 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
 
 **Real-world issues and how C handles them.**
 
-- *X-Frame-Options and CSP `frame-ancestors`* (dev servers and frameworks send them):
-  - the proxy removes `X-Frame-Options` and every `frame-ancestors` directive;
-  - it then adds its own `Content-Security-Policy: frame-ancestors 'self' <Yulius origin>`;
-  - only Yulius (and the app itself, for its own nested frames) can frame a preview.
+- *X-Frame-Options and CSP `frame-ancestors`* (dev servers and frameworks send them): kept as
+  the app sent them, and the proxy adds `Content-Security-Policy: frame-ancestors 'self'`, so
+  only the app itself (for its own nested frames) can frame a preview. Narrowed by SPEC-483
+  slice 24: since ADR-15 nothing in Yulius frames a preview, so the Yulius origin is no longer
+  allowed and the app's own policy is no longer removed.
 - *Root-relative URLs* (`/assets/app.js`, `/api`): a path-prefix proxy (`/preview/20001/…`)
   would break them, as well as service workers, cookies with `Path=/` and client routers. So
   each app gets an **origin of its own**, `<port>-<key>.<host>`, and its paths are untouched.
@@ -140,10 +141,12 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
   - Absolute `localhost` URLs inside page bodies or scripts are not rewritten (not done: body
     rewriting is fragile). Apps should use relative URLs or their dev server's proxy, as on any
     remote dev box.
-- *Cookies in iframes*:
+- *Cookies*:
   - Preview origins are subdomains of the Yulius host, so they are **same-site** with Yulius.
-    The iframe is therefore not a third-party context, and its cookies work under third-party
-    cookie blocking (Safari ITP, Firefox TCP, Chrome).
+    The handshake's redirects between Yulius and a preview are therefore same-site navigations,
+    and the grant cookie works under third-party cookie blocking (Safari ITP, Firefox TCP,
+    Chrome). (Written for the panel's frames, which ADR-15 removed; SPEC-483 slice 25 reworded
+    it.)
   - `sslip.io` is **not** on the Public Suffix List (checked 2026-10-09), so the site is
     `sslip.io`. For the same reason a bare `localhost` does not work for local development
     (`*.localhost` hosts are sites of their own); use `yulius.localhost`.
@@ -151,10 +154,8 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
     `Secure` over HTTPS.
 - *WebSockets, HMR and streaming*:
   - upgrades are spliced through (bounded, re-checked every 60 s);
-  - bodies stream both ways without buffering, so large uploads, server-sent events and
-    streamed HTML work;
-  - only HTML documents get one `<script>` tag appended (the bridge, below); they are requested
-    without compression.
+  - bodies stream both ways without buffering and unchanged (compression and length included,
+    SPEC-483 slice 24), so large uploads, server-sent events and streamed HTML work.
 - *Service workers*: they are scoped to their preview origin, so they cannot touch Yulius.
   Paths under `/__yulius/` are reserved on every preview origin.
 - *Auth*:
@@ -172,12 +173,11 @@ there: an AWS sign-in the agent needs must live in the agent's Chrome.
   5. The grant cookie never reaches the app.
 - *Phones*: native.
 
-**Browser chrome (address bar, back, forward).** A cross-origin iframe hides its location and
-history from the parent. The proxy therefore appends a small bridge script to proxied
-documents. It posts the address, the title and `navigation.canGoBack/canGoForward` to the
-Yulius origin only, and takes back, forward (Navigation API, so traversal stays inside the
-frame) and reload, but only from the Yulius window that frames it. The panel shows addresses as
-`localhost:<port>/…`. "Open in a new window" opens the preview origin top-level.
+**Browser chrome (address bar, back, forward).** Since ADR-15 a preview opens top-level in its
+own window ("Open live in a new window"), where the browser's own address bar and history
+serve. The bridge script the proxy once appended to proxied documents for a framed panel (it
+posted the address, title and history to Yulius) was removed by SPEC-483 slice 24, together
+with the uncompressed fetch of documents it needed: documents pass as the app sent them.
 
 **Isolation between the preview origins and Yulius (security).** Every `*.sslip.io` host on the
 internet, and every preview, is same-site with Yulius, so `SameSite` never protects anything
@@ -609,9 +609,11 @@ context.
    in the task status `chained` (§6.1) with a row in `task_chains`.
    - *Starting.* The chain is re-evaluated when the predecessor's run ends, after its clean Stop
      hook (after the automatic pull request), when it is cancelled or deleted, and every minute.
-     **Done** is the sidebar's rule (#35): a finished turn (`running`/`waiting`, or `closed`) and a
-     pull request recorded as merged, or open with checks green or none required (read from
-     GitHub). Released tasks go `chained → queued` (compare-and-set) and then start normally.
+     **Done** is the sidebar's rule (#35): a finished turn (`running`/`waiting`, or `closed`), no
+     work the task declared left (no open step, and a spec that does not say `draft`, `approved`
+     or `in-progress`) and a pull request recorded as merged, or open and tested: in no conflict
+     with its base, with checks green or none required by the project (read from GitHub and
+     Yulius's clone; SPEC-491, ADR-0332). Released tasks go `chained → queued` (compare-and-set) and then start normally.
    - *Needing a person.* A predecessor that ends otherwise sets a reason, and the task stays
      `chained` and shows as Needs you until Start now, Cancel or a continued predecessor.
    - *Branch.* A chained task starts from its predecessor's branch until that branch is merged.
@@ -1638,7 +1640,7 @@ Schema version 1 (tables; columns abbreviated):
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
 | `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
-| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id, supertask (SPEC-071, schema version 17), plan_first_steps (the plan's size when its first step was finished, written once; SPEC-484, schema version 56) |
+| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id, supertask (SPEC-071, schema version 17), plan_first_steps (the plan's size when its first step was finished, written once; SPEC-484, schema version 56), queued_start (how a task that waits in the queue is to start, while it waits; SPEC-483, schema version 57) |
 | `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
 | `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
 | `accounts` | id, provider, label, credential (enc), status, usage (json), last_error (version 4 drops priority and enabled, ADR-17) |
@@ -1688,9 +1690,9 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | `chained` | chain controller (ADR-16) | predecessor Done (the chain evaluated still stored), or a person's Start now → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
 | `prepared` | the person, or the background tick for a time (SPEC-105, ADR-0085) | Start now, or its time on the minute tick once onboarding no longer blocks the sandbox → `queued`; a person's new start choice → `chained`, `prepared` or `queued` (SPEC-126, ADR-0102); cancel → `stopped(cancelled)` | No timeout without a time (it never starts by itself); with one, at most a minute late, or at the first tick after a restart; at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
-| `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
+| `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(spawn_error)` (the ptyhost's spawn timeout; SPEC-483 slice 25 removed the never-written `failed(start_timeout)`). |
 | `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
-| `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`. |
+| `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`; one that cannot be ended keeps the task `running` in it, flagged (SPEC-483 SWT-002). |
 | `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the hold ends without the pool — a held hook nobody asked about for 45 s, a transcript line (prompt or interrupt; for a `limit` pause also agent work or a turn end) written after the hold, or a typed prompt replacing a held turn — → `running` (held again at submit when still no capacity); the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min (every 15 s while a hook is held); the pause row survives restarts; a held hook gives up after 8 days (fails open). |
 | `stopping` | supervisor | child and descendants reaped → `stopped(cancelled)` | Interrupt → 5 s → SIGTERM → 5 s → SIGKILL (bwrap: namespace dies) → 10 s; if still not reaped: `stopped(lost)` + audit alert; capacity released only after reaping or `lost`. |
 | `closed`, `stopped`, `failed` | — (terminal for the run) | Continue → `starting` (new attempt, resume) | — |
@@ -2228,12 +2230,11 @@ Defaults are never stored: `App::workflows_for` lists them first, then the store
 sandbox workflows, and lookups by id (`visible_workflow`, `task_workflow`) answer them from the
 catalog, so a release replaces their content. The API marks them `builtin: true` with
 `when_to_use`; `PUT`/`DELETE` on one answer 409 ("duplicate it to customise"), and a duplicate is
-an ordinary custom workflow. A stored row whose id a default answers to is never listed. At
-startup `App::retire_legacy_workflows` handles the two instance rows seeded before the catalog
-(`wf-feature` "Feature", `wf-quick-task` "Quick task"): one still equal to its seed is deleted
-(references to `wf-feature` stay and reach the default; those to `wf-quick-task` are cleared as by
-a delete); an edited `wf-feature` is kept as a new custom instance workflow "Feature (custom)"; an
-edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`workflow.retired`).
+an ordinary custom workflow. A stored row whose id a default answers to is never listed. The
+two instance rows seeded before the catalog (`wf-feature` "Feature", `wf-quick-task` "Quick
+task") were retired at startup by the releases from 2026-10-11 until SPEC-483 slice 25 removed
+that step: a `wf-feature` row an instance still holds is hidden by the default (references to it
+reach the default), a `wf-quick-task` row is listed as a custom instance workflow.
 
 ## 8. Security and trust model
 

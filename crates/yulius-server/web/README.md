@@ -12,20 +12,29 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 - Serve `assets/**` at `/assets/...` with the usual content types (`.js` and `.mjs` as
   `text/javascript`, `.css`, `.png`). Assets are referenced by absolute `/assets/` paths.
 - Nothing is loaded from other origins: no CDNs, remote fonts or external images (a brand font is
-  self-hosted under `assets/fonts/`). A strict `Content-Security-Policy` works:
+  self-hosted under `assets/fonts/`). The server sends a strict `Content-Security-Policy`, kept in
+  one file, [`src/content-security-policy.txt`](../src/content-security-policy.txt)
+  ([ADR-0338](../../../docs/decisions/0338-the-web-ui-runs-under-a-strict-content-security-policy.md)):
 
   ```
   default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:; font-src 'self' data:; worker-src 'self' blob:;
-  connect-src 'self' https://*.<host>; frame-src 'self' https://*.<host> data:; frame-ancestors 'none'; base-uri 'none'
+  img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:;
+  connect-src 'self'; worker-src 'self' blob:; frame-src 'none'; object-src 'none';
+  base-uri 'none'; frame-ancestors 'none'
   ```
 
-  There are no inline scripts (`boot.js` is a file). Inline `style` attributes carry computed values
-  only (bar widths, indentation). The editor (Monaco) needs `font-src data:` for its icon font and
-  `worker-src blob:` for its language workers. The browser panel draws the sandbox Chrome's video
-  (WebCodecs) and JPEG frames (`blob:`) on a canvas and opens preview origins only in new windows,
-  so it needs nothing beyond the policy above. The server sends only `frame-ancestors 'none'` so
-  far, and `boot.js` makes the app refuse to run inside any frame.
+  There are no inline scripts (`boot.js` is a file) and nothing is evaluated (Monaco and the shader
+  library fall back when `eval` is refused). xterm and Monaco add `<style>` elements, hence
+  `'unsafe-inline'` for styles; our own inline styles are set through the style object, with
+  computed values only (bar widths, indentation). The editor (Monaco) needs `font-src data:` for
+  its icon font and `worker-src blob:` for its language workers. The browser panel draws the
+  sandbox Chrome's video (WebCodecs) and JPEG frames (`blob:`) on a canvas and opens preview
+  origins only in new windows. The e2e server (`e2e/serve.py`) sends the same file (a lab page,
+  `?lab=`, may also load Google Fonts), and `e2e/tests/support.ts` fails a test on any load the
+  policy refuses in the page itself (not in a tab it opens or a worker). Attached recordings
+  open from `blob:` URLs (`media-src`); the GitHub App's manifest is posted to GitHub from a
+  tab the page opens, so there is no `form-action`; `boot.js` makes the app refuse to run inside
+  any frame.
 - `README.md` files are documentation and need not be embedded. `assets/mock.js` is not embedded
   either: it runs the e2e suite and local UI work from this directory, and a real instance answers
   a page link with `?mock=1` by redirecting to the same page without it (ADR-0206).
@@ -346,11 +355,11 @@ The source of truth for paths and methods is the route table in
   scrolls horizontally instead of resizing it; a shell's `exit` frame ends it for good.
 - **Browser.** An `upstream` error followed by a 1011 close (Chromium missing or stopped) shows
   the reason with a Retry button instead of reconnecting in a loop.
-- **Delivery.** Shown, never driven (GIT-002): agents open, merge, deploy and release through
-  their workflow. Next steps come from the server (`open_pr`, `merge`, `run_env:<name>`,
-  `confirm_env:<name>`, `promote`) and show as status, `blocked` ones with their reason. Profile
-  presets come from `GET /api/delivery/presets`; a running deploy's output is polled via
-  `GET …/delivery/runs/{id}`.
+- **Delivery.** Shown, never driven (GIT-002): agents open and merge pull requests and deploy the
+  integration environments; a person releases on the CD page (ADR-0110). Next steps come from the
+  server (`open_pr`, `merge`, `run_env:<name>`, `confirm_env:<name>`, `promote`) and show as status,
+  `blocked` ones with their reason. Profile presets come from `GET /api/delivery/presets`; a running
+  deploy's output is polled via `GET …/delivery/runs/{id}`.
 - **Uploads.** `api.put|post(path, file, {onProgress})` sends a `Blob` as the raw body; the real
   transport uses XMLHttpRequest for upload progress (`transport.upload`), and the timeout then
   counts from the last progress. Dropped files use `PUT /api/sandboxes/{sid}/files/upload` and the

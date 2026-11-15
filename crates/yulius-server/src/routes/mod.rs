@@ -38,17 +38,14 @@ mod uploads;
 mod variables;
 mod workflows;
 
-use std::sync::Arc;
-
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, patch, post, put};
-use yulius_app::context::App;
 
 use crate::AppState;
 
 /// Public API routes.
-pub fn public(_app: Arc<App>) -> Router<AppState> {
+pub fn public() -> Router<AppState> {
     Router::new()
         .merge(secrets::public())
         .merge(variables::public())
@@ -154,6 +151,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route(
             "/api/tasks/{tid}/control-request/accept",
             post(tasks::accept_control),
+        )
+        .route(
+            "/api/tasks/{tid}/control/take-back",
+            post(tasks::take_back_control),
         )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
@@ -490,7 +491,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
 }
 
 /// Internal (loopback) routes.
-pub fn internal(_app: Arc<App>) -> Router<AppState> {
+pub fn internal() -> Router<AppState> {
     Router::new()
         .merge(secrets::internal())
         .route("/internal/healthz", get(|| async { "ok" }))

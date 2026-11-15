@@ -287,3 +287,56 @@ async fn watchers_read_the_tail_of_a_task_s_live_session_and_follow_it() -> Test
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);
     Ok(())
 }
+
+/// SPEC-483 slice 36 (QB5): a watcher's next poll goes on from where its last read ended, without
+/// reading the transcript's earlier lines again. A transcript is append-only (one rewritten in
+/// place is read afresh), so a newline slipped into an earlier line after a read does not
+/// renumber the lines read after it, which a read from the start would.
+#[tokio::test]
+async fn a_watcher_s_next_poll_reads_only_what_was_written_since() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let files = scaffold_files("follow", TemplateKind::Empty);
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, contents)| (path.as_str(), contents.as_str()))
+        .collect();
+    w.remote(OWNER, "follow", &refs, &[])?;
+    w.grant("alice", "follow", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "import", "repo": "Quartio-Studio/follow"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let sid = SandboxId::parse(created.body["id"].as_str().ok_or("id")?)?;
+    w.h.store.set_onboarding(&sid, "ready", None).await?;
+    let task = insert_task(&w.h.store, &sid, "t-follow", &alice_user.id).await?;
+    let live = w.scratch.path().join("follow.jsonl");
+    let mut text = String::new();
+    for n in 0..4 {
+        text.push_str(&prompt(&format!("Step {n}xx")));
+    }
+    std::fs::write(&live, &text)?;
+    session(&w.h.store, &task, "sess-follow", 20, &live).await?;
+    let path = format!("/api/tasks/{}/transcript", task.id);
+    let first = get(&w, &alice, &format!("{path}?from=0")).await?;
+    assert_eq!(lines_of(&first.body), vec![0, 1, 2, 3]);
+    assert_eq!(first.body["end"], 4);
+    // An earlier line gains a newline in place (same size), then a line is appended.
+    let rewritten = text.replacen("Step 1xx", "Step 1x\n", 1);
+    assert_eq!(rewritten.len(), text.len());
+    std::fs::write(&live, &rewritten)?;
+    append(&live, &prompt("Step 4"))?;
+    let next = get(&w, &alice, &format!("{path}?from=4")).await?;
+    assert_eq!(
+        lines_of(&next.body),
+        vec![4],
+        "read on from the last read's end"
+    );
+    assert_eq!(next.body["end"], 5);
+    Ok(())
+}

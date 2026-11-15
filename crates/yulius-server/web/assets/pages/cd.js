@@ -11,7 +11,7 @@
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
-import { relLong, dateTime } from '../format.js';
+import { relLong, dateTime, shortSha } from '../format.js';
 import { allows } from '../status.js';
 import { replaceQuietly, href } from '../router.js';
 import { loader } from './common.js';
@@ -47,7 +47,6 @@ const SHOWN_RELEASES = 3;
 
 /** A deploy's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
-const shortSha = (sha) => String(sha || '').slice(0, 7);
 /** A release id short enough for a button or a toast: past 16 characters, its first 12 and "…" (SPEC-419). */
 const shortRelease = (id) => (String(id).length > 16 ? `${String(id).slice(0, 12)}…` : String(id));
 /** Whether an environment or a run is of the production stage (SPEC-257). */
@@ -68,6 +67,11 @@ const openLabel = (run) => `Open the ${word(run.environment)} ${kindWord(run)} a
 // The deploy whose view was left last, per sandbox: the list it goes back to puts the keyboard on
 // its card (SPEC-238 review round 1).
 const leftRun = new Map();
+
+// A deploy or rollback the server answered after the CD page that asked for it went (#1171): the
+// CD page shown now for that sandbox reads again at once instead of at its next idle poll, which
+// could show the earlier run for half a minute. Detail: the sandbox id.
+const deployAnswered = new EventTarget();
 
 /** What a person asks an agent when CD is set up through the harness. */
 const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and scripts/cd/ (skill infra-bootstrap, step 3).
@@ -110,6 +114,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     return () => { destroyed = true; if (shown) shown.stop(); leftRun.set(sandbox.id, shownRun); };
   }
   section.append(host);
+  const onAnswered = (event) => { if (event.detail === sandbox.id && !destroyed) reload({ quiet: true }); };
+  deployAnswered.addEventListener('answered', onAnswered);
 
   const reload = loader(host, 'CD', () => ctx.api.get(`${base}/cd`), (overview) => {
     schedule(overview);
@@ -319,7 +325,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     toast(`Starting the rollback of ${where} to ${to}${to.endsWith('…') ? '' : '…'}`);
     try {
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
-      if (destroyed) return;
+      if (destroyed) {
+        deployAnswered.dispatchEvent(new CustomEvent('answered', { detail: sandbox.id }));
+        return;
+      }
       reload({ quiet: true });
       toast(`Rolling ${where} back to ${shortRelease(release.release)}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
@@ -385,8 +394,12 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/deploy`, body);
       starting.stop();
-      // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
-      if (destroyed) return;
+      // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens
+      // there; a CD page shown again for this sandbox reads it.
+      if (destroyed) {
+        deployAnswered.dispatchEvent(new CustomEvent('answered', { detail: sandbox.id }));
+        return;
+      }
       reload({ quiet: true });
       // Production that proves its rollback on dev first answers with dev's deploy (SPEC-438).
       const proving = run.environment !== env.name;
@@ -545,5 +558,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     });
   }
 
-  return () => { destroyed = true; clearTimeout(timer); if (shown) shown.stop(); };
+  return () => {
+    destroyed = true;
+    clearTimeout(timer);
+    deployAnswered.removeEventListener('answered', onAnswered);
+    if (shown) shown.stop();
+  };
 }

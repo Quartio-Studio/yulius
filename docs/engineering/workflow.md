@@ -2,7 +2,8 @@
 
 The goal is a verified user outcome, with enough durable context for the next
 engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry point.
-[Git delivery](git.md) defines dev/main branches, author self-merges and post-merge gates.
+[Git delivery](git.md) defines dev/main branches, delivery through `delivery_merge` and post-merge
+gates.
 
 0. **Primitives:** skills, personas, instructions and hooks follow
    [the primitive standard](primitives.md); a primitive change is reviewed like code.
@@ -13,7 +14,7 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
 2. **Specify:** features and fixes get a spec; research, questions, docs and chores
    do not (SPEC-001 DSC-013). Attach stable requirement IDs, input/output and lifecycle
    contracts, acceptance scenarios and affected boundaries. Record assumptions and
-   unresolved product choices; use the [spec template](../../.ai/templates/spec.md).
+   unresolved product choices; start from the [spec template](../../.ai/templates/spec.md).
    Plan all the known work as steps of similar effort, each a slice that leaves the code
    working, and finish them one at a time (STP-006/007, STP-009).
 3. **Implement:** build a complete slice, preserving existing behavior. Keep an
@@ -29,10 +30,10 @@ engineer or agent to continue. Use [AGENTS.md](../../AGENTS.md) as the entry poi
    review in a fresh session too: a reviewer with no shared context (a subagent given
    only the diff range and the spec), read-only; fix each finding in the change's own
    code test-first, never deferring it ([Review output](#review-output)).
-6. **Deliver and hand off:** for authorized delivery, follow the Git sequence through
-   verified dev and main merges, without waiting for reviewer approval. Report
-   changed behavior, exact evidence and unresolved limits. Update
-   the spec state only when its scope is proven. Use the handoff template for
+6. **Deliver and hand off:** for authorized delivery, follow the [Git sequence](git.md) to a
+   verified merge into dev (`delivery_merge` with the reviewed head); promotion to main is a
+   person's. Report changed behavior, exact evidence and unresolved limits. Update the spec
+   state only when its scope is proven. Use the handoff template for
    sustained work; keep private logs in ignored `.ai/runs/`.
 
 A failing check is either a product defect, test defect, infrastructure failure or

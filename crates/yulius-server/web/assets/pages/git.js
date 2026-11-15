@@ -1,31 +1,29 @@
 // Git page (GIT-001/002, DLV-001..005, UI-025): delivery at a glance, as a presentation layer.
-// Agents merge, deploy and release as part of their workflow, governed by the delivery profile;
-// this page only shows where things are. Top to bottom: how this project ships (one sentence from
-// the profile), what is live and what is waiting to go live, what is stuck, where every task is on
-// the way to production (a board with columns from the profile), and recent activity. Its only
-// controls are harmless: refresh, links to GitHub, deploy output, a task's delivery details and,
-// for administrators, the delivery profile. Reads degrade: Git/GitHub problems arrive as `notes`,
-// not errors; check results the GitHub App may not read arrive as `checks_access`, one quiet line
-// for instance administrators (#111).
+// Agents merge and deploy the integration environments, governed by the delivery profile, and a
+// person releases on the CD page (ADR-0110); this page only shows where things are. Top to bottom:
+// how this project ships (one sentence from the profile), what is live and what is waiting to go
+// live, what is stuck, where every task is on the way to production (a board with columns from the
+// profile), and recent activity. Its only controls are harmless: refresh, links to GitHub, deploy
+// output, a task's delivery details and, for administrators, the delivery profile. Reads degrade:
+// Git/GitHub problems arrive as `notes`, not errors; check results the GitHub App may not read
+// arrive as `checks_access`, one quiet line for instance administrators (#111).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf } from '../dom.js';
-import { relShort, dateTime, plural } from '../format.js';
+import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf, prChip, prChecks } from '../dom.js';
+import { relShort, dateTime, plural, shortSha } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href, currentLocation } from '../router.js';
-import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer, UNKNOWN_CHECKS } from '../actions.js';
+import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
 import { productionProtectionCard, watchProductionProtection, PROTECTION_ID } from './gitprotection.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
-const CHECK_TEXT = { success: 'checks passed', failure: 'checks failing', pending: 'checks running', unknown: 'checks unknown' };
 // A task's worktree when it is not there (the overview's `worktree`, SPEC-343); `present` opens.
 const WORKTREE_TEXT = { not_created: 'No worktree yet', gone: 'Worktree gone' };
 /** Why a task's Git overview row has no changes view to open (no worktree), or null when it has one. */
 export const worktreeMissing = (row) => WORKTREE_TEXT[row.worktree] || null;
-const CHECK_ICON = { success: ['check', 'ok'], failure: ['x', 'danger'], pending: ['clock', 'warn'] };
 
 /** Environments of a profile, split by where they run. */
 function environments(profile) {
@@ -36,16 +34,33 @@ function environments(profile) {
 const ago = (iso) => { const rel = relShort(iso); return rel === 'now' ? 'just now' : `${rel} ago`; };
 const listNames = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
 
+/**
+ * What a card in the review column says: ready to merge, what an open pull request's checks
+ * say (none says nothing: "In review"), or "In review".
+ */
+export function reviewLine(pr, next) {
+  if (next.includes('merge')) return 'Ready to merge';
+  const checks = prChecks(pr);
+  if (!checks || pr.checks === 'none') return 'In review';
+  return checks.text[0].toUpperCase() + checks.text.slice(1);
+}
+
 /** "How this project ships", in one or two plain sentences generated from the profile. */
 export function profileSentence(profile) {
   const int = profile.integration_branch || 'the integration branch';
   const prod = profile.production_branch || 'production';
   const envs = environments(profile);
   const checks = profile.require_checks === false ? 'Checks don’t block merging.' : 'Merges wait for green checks.';
-  const agents = 'Agents merge and release as part of their workflow; this page shows where things are.';
-  if (profile.auto_promote) return `Merging a pull request into ${int} puts it live on ${prod} right away. ${checks} ${agents}`;
+  const checked = listNames(envs.integration.map((e) => e.name));
+  const work = envs.integration.length ? `Agents merge and deploy ${checked}` : 'Agents merge';
+  if (profile.auto_promote) {
+    const when = envs.integration.length ? `once it passed ${checked}` : 'right away';
+    const then = envs.integration.length ? ' then' : '';
+    return `Merging a pull request into ${int} puts it live on ${prod} ${when}. ${checks} ${work}; ${BRAND.name} releases each merge${then}. This page shows where things are.`;
+  }
+  const agents = `${work}; a person releases on the CD page. This page shows where things are.`;
   let text = `Merged work collects on ${int}`;
-  if (envs.integration.length) text += `, is checked on ${listNames(envs.integration.map((e) => e.name))}`;
+  if (envs.integration.length) text += `, is checked on ${checked}`;
   text += `, then is released to ${prod}`;
   if (envs.production.length) text += ` and verified on ${listNames(envs.production.map((e) => e.name))}`;
   return `${text}. ${checks} ${agents}`;
@@ -59,17 +74,6 @@ function columnOf(delivery, profile) {
   if (stage === 'env_done') return environments(profile).integration.some((e) => e.name === delivery.environment) ? 'waiting' : 'live';
   if (stage === 'promoted' || stage === 'production_done') return 'live';
   return 'built';
-}
-
-/** Pull request chip: "PR #N" (a bare #N is a task, SPEC-122) and checks in Claude's colours (merged violet). */
-function prChip(pr) {
-  if (!pr) return null;
-  const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
-  const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
-  const title = pr.state === 'open' && pr.checks === 'unknown' ? `${label}. ${UNKNOWN_CHECKS}` : label;
-  const name = `PR #${pr.number}, pull request, ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? `, ${CHECK_TEXT[pr.checks]}` : ''}`;
-  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': name },
-    `PR #${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
 /** The board's columns for a delivery profile. */
@@ -363,7 +367,7 @@ export function mountGitPage(ctx, sandbox) {
     if (item.column === 'built') {
       line = item.info ? [statusMark(item.info, 12), ` ${item.info.label}`] : 'Being built';
     } else if (item.column === 'review') {
-      line = next.includes('merge') ? 'Ready to merge' : pr && CHECK_TEXT[pr.checks] ? CHECK_TEXT[pr.checks][0].toUpperCase() + CHECK_TEXT[pr.checks].slice(1) : 'In review';
+      line = reviewLine(pr, next);
     } else if (item.column === 'waiting') {
       const env = next.find((a) => a.startsWith('run_env:') || a.startsWith('confirm_env:'));
       line = env ? `${env.slice(env.indexOf(':') + 1)}: ${env.startsWith('run_env:') ? 'waiting to be deployed' : 'waiting to be verified'}` : next.includes('promote') ? 'Ready to release' : d.stage === 'env_done' ? `Verified on ${d.environment}` : 'Merged';
@@ -385,7 +389,7 @@ export function mountGitPage(ctx, sandbox) {
       h('div', { class: 'dl-card-title' }, title, stuck ? h('span', { class: 'dl-dot', title: 'Checks failing' }, h('span', { class: 'sr-only' }, 'Checks failing')) : null),
       h('div', { class: 'dl-card-line' }, line),
       noWorktree ? h('div', { class: 'dl-card-line' }, noWorktree) : null,
-      h('div', { class: 'dl-card-meta' }, prChip(pr), files,
+      h('div', { class: 'dl-card-meta' }, pr ? prChip(pr) : null, files,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Details') : null));
   }
 
@@ -409,7 +413,7 @@ export function mountGitPage(ctx, sandbox) {
             e.run.kind === 'manual' ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openRunViewer(ctx, sb(), e.run.run_id, e.run.environment) }, 'Output')]
           : [h('span', { class: 'muted' }, icon('branch', { size: 14 })),
             h('span', { class: 'dl-event-text' }, e.commit.subject, h('span', { class: 'muted' }, ` · ${e.commit.author}`)),
-            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, String(e.commit.sha).slice(0, 7)) : h('code', { class: 'xs' }, String(e.commit.sha).slice(0, 7))])))
+            commitUrl(e.commit.sha) ? h('a', { class: 'mono xs', href: commitUrl(e.commit.sha), target: '_blank', rel: 'noopener noreferrer' }, shortSha(e.commit.sha)) : h('code', { class: 'xs' }, shortSha(e.commit.sha))])))
         : h('p', { class: 'dl-empty' }, 'No deploys or commits yet.'),
       events.length > shown.length ? h('button', { type: 'button', class: 'link-btn small', onClick: () => { showAllActivity = true; render(); } }, `Show ${events.length - shown.length} more`) : null);
   }
@@ -501,7 +505,7 @@ async function openProfileEditor(ctx, sandbox) {
       h('label', { class: 'check' }, autoPromote, h('span', null, `Release automatically after each merge through ${BRAND.name} (continuous, like Studio)`)),
       h('label', { class: 'check' }, requireChecks, h('span', null, 'Merges wait for green checks')),
       h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Environments'), envHost),
-      h('p', { class: 'muted xs' }, 'Agents follow this profile when they merge, deploy and release. Environment commands are shell text run on the server (/bin/sh -c in the sandbox clone). Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),
+      h('p', { class: 'muted xs' }, 'Agents follow this profile when they merge and deploy. Environment commands are shell text run on the server (/bin/sh -c in the run’s own copy of the stage branch’s files, without Git, contained as a CD run). Every reader of this sandbox can see them: keep secrets out. Changing any setting of a named preset makes the profile “custom”.')),
     actions: [
       { label: 'Cancel', value: false },
       { label: 'Save profile', kind: 'primary', run: async () => {

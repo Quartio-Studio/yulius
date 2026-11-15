@@ -278,8 +278,6 @@ pub struct UsageSnapshot {
     /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
     /// newest line (MET-001). `None` before the first turn.
     pub active_ms: Option<u64>,
-    /// When the turn in progress started, if one is.
-    pub turn_open_since: Option<Timestamp>,
 }
 
 /// Which lines of a session transcript a watch reads (SPEC-087 MET-002).

@@ -9,6 +9,7 @@
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, openModal } from './dom.js';
+import { limitSize } from './format.js';
 
 /** The server's limit when it does not say (`/api/me` → `instance.upload_max_bytes`). */
 const DEFAULT_LIMIT = 1024 * 1024 * 1024;
@@ -31,20 +32,6 @@ const SUMMARY_MS = 4000;
 export function dragHasFiles(event) {
   const types = event.dataTransfer && event.dataTransfer.types;
   return Boolean(types) && [...types].includes('Files');
-}
-
-/** `512 KB`, `3.4 MB`, `1 GB` (binary units, as the server's limit). */
-export function formatSize(bytes) {
-  if (bytes >= 1024 * 1024 * 1024) {
-    const gb = bytes / (1024 * 1024 * 1024);
-    return `${gb >= 10 || Number.isInteger(gb) ? Math.round(gb) : gb.toFixed(1)} GB`;
-  }
-  if (bytes >= 1024 * 1024) {
-    const mb = bytes / (1024 * 1024);
-    return `${mb >= 10 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${bytes} bytes`;
 }
 
 /** A path as typed into a shell: as it is when it needs no quoting, else in single quotes. */
@@ -377,7 +364,7 @@ export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, ca
     let jobs = [];
     for (const item of files) {
       const path = joinPath(dir, item.path);
-      if (item.file.size > limit) status.error(`${path}: ${formatSize(item.file.size)} is larger than the upload limit of ${formatSize(limit)}.`);
+      if (item.file.size > limit) status.error(`${path}: ${limitSize(item.file.size)} is larger than the upload limit of ${limitSize(limit)}.`);
       else jobs.push({ file: item.file, path, overwrite: false });
     }
     if (!jobs.length) { status.end(files.length ? 'Nothing was added.' : 'The drop held no files.'); return; }
@@ -611,7 +598,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     const limit = uploadLimit(ctx);
     const jobs = [];
     for (const item of files) {
-      if (item.file.size > limit) status.error(`${item.path}: ${formatSize(item.file.size)} is larger than the upload limit of ${formatSize(limit)}.`);
+      if (item.file.size > limit) status.error(`${item.path}: ${limitSize(item.file.size)} is larger than the upload limit of ${limitSize(limit)}.`);
       else jobs.push({ file: item.file, path: item.path, send: upload });
     }
     if (!jobs.length) { status.end(files.length || folders ? 'Nothing was sent.' : 'The drop held no files.'); return; }

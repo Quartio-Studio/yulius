@@ -31,7 +31,7 @@ special case `#N done`.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | RUL-001 | A rule is text: atoms `#N` or `#N <state>` with states `done` (default; alias `finished`), `merged`, `ended` (stopped, failed, closed or deleted), joined by `and`, `or`, `not` (also `&&`, `\|\|`, `!`) and parentheses; `not` binds tightest, then `and`, then `or`. | `yulius-domain` rule tests |
-| RUL-002 | A rule is refused with a message naming the problem when it is empty, longer than 500 characters, deeper than 8 levels, has more than 16 atoms, or is malformed. | rule tests |
+| RUL-002 | A rule is refused with a message naming the problem when it is empty, longer than 500 characters (1400 since SPEC-487 CHN-005, room for 64 tasks), deeper than 8 levels, has more than 16 atoms (64 since SPEC-487 CHN-005; the web editor builds 16), or is malformed. | rule tests |
 | RUL-003 | Evaluation is three-valued: a task that has not ended and is not in the asked state makes its atom unknown. The task starts when the rule is true, waits while unknown, and needs a person (reason shown) when it is false for good. | rule tests, chain tests |
 | RUL-004 | Every task named by a rule must exist in the same sandbox, and must not be the task itself. | API test |
 | RUL-005 | A rule is evaluated again whenever any task it names changes, and on the background tick. | integration test |

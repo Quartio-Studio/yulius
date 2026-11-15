@@ -31,12 +31,13 @@ fn err(context: &str, cause: impl std::fmt::Display) -> CaError {
 
 /// Civil date of `days` after 1970-01-01 (proleptic Gregorian).
 fn civil(days: i64) -> (i32, u8, u8) {
-    let (y, m, d) = yulius_app::auth::civil_from_days(days);
-    (
-        i32::try_from(y).unwrap_or(1970),
-        u8::try_from(m).unwrap_or(1),
-        u8::try_from(d).unwrap_or(1),
-    )
+    yulius_domain::cron::CivilDate::from_days(days).map_or((1970, 1, 1), |date| {
+        (
+            i32::try_from(date.year()).unwrap_or(1970),
+            date.month(),
+            date.day(),
+        )
+    })
 }
 
 fn today() -> i64 {

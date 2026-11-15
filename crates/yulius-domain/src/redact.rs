@@ -549,6 +549,44 @@ pub fn stateless_installation_token_len(body: &str) -> Option<usize> {
     Some(end)
 }
 
+/// GitHub's token prefixes; `ghs_` first, so a stateless installation token is removed whole
+/// before another prefix found inside its base64url payload or signature could cut it.
+const GITHUB_TOKEN_PREFIXES: [&str; 6] = ["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
+
+/// `text` with every GitHub token literal (`ghs_…`, `ghp_…`, `github_pat_…` and the rest)
+/// replaced by `replacement`: a stateless installation token (`ghs_<APPID>_<JWT>`) through its
+/// signature ([`stateless_installation_token_len`]), any other through its `[A-Za-z0-9_]` run;
+/// a bare prefix stays. The one scrub Git's and GitHub's adapters share (SPEC-483 slice 29),
+/// each with rules of its own around it.
+#[must_use]
+pub fn scrub_github_tokens(text: &str, replacement: &str) -> String {
+    let mut out = text.to_owned();
+    for prefix in GITHUB_TOKEN_PREFIXES {
+        let mut from = 0;
+        while let Some(found) = out[from..].find(prefix) {
+            let start = from + found;
+            let tail = &out[start + prefix.len()..];
+            let stateless = if prefix == INSTALLATION_TOKEN_PREFIX {
+                stateless_installation_token_len(tail)
+            } else {
+                None
+            };
+            let len = stateless.unwrap_or_else(|| {
+                tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len())
+            });
+            if len == 0 {
+                // A bare prefix: search on after it.
+                from = start + prefix.len();
+                continue;
+            }
+            out.replace_range(start..start + prefix.len() + len, replacement);
+            from = start + replacement.len();
+        }
+    }
+    out
+}
+
 /// One pass over word starts: provider tokens by prefix (dispatched on the first byte) and
 /// `Bearer`/`Basic` authorization values.
 fn detect_tokens(text: &str, spans: &mut Vec<Span>) {
@@ -1066,6 +1104,26 @@ fn is_env_style_line(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 29 (QC4): the one scrub of GitHub tokens Git's and GitHub's adapters share.
+    #[test]
+    fn github_tokens_are_replaced_whole_by_one_scrub() {
+        let stateless = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIxghu_AB-{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "PAYLOADSECRET".repeat(3),
+            "SIGNATURESECRET_-gho_x".repeat(3)
+        );
+        let text = format!(
+            "a ghp_abc123 b gho_X c ghu_Y d ghr_Z e github_pat_11A_b2 f {stateless}. g ghs_ h ghs_ok"
+        );
+        assert_eq!(
+            scrub_github_tokens(&text, "[x]"),
+            "a [x] b [x] c [x] d [x] e [x] f [x]. g ghs_ h [x]"
+        );
+        assert_eq!(scrub_github_tokens("nothing here", "[x]"), "nothing here");
+        assert_eq!(scrub_github_tokens("ghs_", "[x]"), "ghs_");
+    }
 
     fn redacted(text: &str) -> String {
         redact(text).map_or_else(|| text.to_owned(), |r| r.text)

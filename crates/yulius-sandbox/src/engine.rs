@@ -44,7 +44,8 @@ pub struct EngineView {
     pub sandbox_dir: String,
     /// The engine's storage (`sysroots/<sandbox>/docker`).
     pub storage: String,
-    /// The engine's cgroup (`sandboxes/<sandbox>/engine`), its cgroup namespace's root.
+    /// The engine's cgroup (`sandboxes/<sandbox>/engine/inside`), its cgroup namespace's root,
+    /// below the group that holds its limits (SPEC-483 C4).
     pub cgroup: String,
 }
 

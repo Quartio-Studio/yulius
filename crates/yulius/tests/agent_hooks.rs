@@ -886,7 +886,6 @@ async fn install_app(f: &Fixture) -> TestResult {
         client_id: "Iv1.test".into(),
         client_secret: "secret".into(),
         private_key_pem: "pem".into(),
-        webhook_secret: None,
     };
     let sealed =
         f.h.app

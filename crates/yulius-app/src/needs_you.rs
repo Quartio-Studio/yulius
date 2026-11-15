@@ -107,10 +107,13 @@ struct Args {
     resolved: bool,
 }
 
-/// One line of at most `max` characters: control characters become spaces, the rest is trimmed.
+/// One line of at most `max` characters: control characters become spaces, characters that
+/// hide or reverse text are dropped (as in a flag's reason: the words reach people and the
+/// Superagent, SPEC-487 QST-001), the rest is trimmed.
 fn line(text: &str, max: usize, what: &str) -> AppResult<Option<String>> {
     let clean: String = text
         .chars()
+        .filter(|c| !crate::attention::hidden_format(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let clean = clean.trim();
@@ -267,6 +270,14 @@ mod tests {
         );
         assert_eq!(line("   ", 200, "action").ok().flatten(), None);
         assert!(line(&"a".repeat(201), 200, "action").is_err());
+        // What hides or reverses text is dropped (SPEC-487 QST-001): the request reaches the
+        // Superagent in tasks_list.
+        assert_eq!(
+            line("Approve\u{202e} the \u{200b}budget\u{e0041}", 200, "action")
+                .ok()
+                .flatten(),
+            Some("Approve the budget".to_owned())
+        );
     }
 
     #[test]

@@ -54,6 +54,9 @@ pub struct AppConfig {
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
+    /// How long a switch waits for the session it asked to end before that session's host is
+    /// terminated.
+    pub switch_end_ms: u64,
     /// How long a sandbox shell or the Superagent asked to end gets to exit before its host is
     /// terminated ([`crate::shells::SHELL_EXIT_WAIT`], SPEC-146 SHE-001). Tests shorten it.
     pub shell_exit_ms: u64,
@@ -67,6 +70,10 @@ pub struct AppConfig {
     /// How long a person gets to answer Claude Code's folder-trust prompt before the task is
     /// flagged ([`crate::supervisor::TRUST_ANSWER_TIMEOUT`], SPEC-106 OTR-002). Tests shorten it.
     pub trust_answer_ms: u64,
+    /// How long the compaction of a full session waits for a person's possible draft to leave
+    /// the prompt box before it is typed all the same
+    /// ([`crate::context_full::COMPACT_DRAFT_HOLD`], SPEC-483 TYP-001). Tests shorten it.
+    pub compact_hold_ms: u64,
     /// How long Claude Code gets to record a goal given as the launch prompt once its session
     /// reads input, before the task is flagged (the sum of the typed goal's submit waits,
     /// SPEC-117 ONE-001). Tests shorten it.
@@ -150,10 +157,14 @@ impl AppConfig {
                     + yulius_domain::task::STOP_KILL_WAIT_MS,
             )
             .unwrap_or(20_000),
+            switch_end_ms: u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS / 2)
+                .unwrap_or(60_000),
             shell_exit_ms: u64::try_from(crate::shells::SHELL_EXIT_WAIT.as_millis())
                 .unwrap_or(10_000),
             goal_ready_ms: u64::try_from(crate::supervisor::GOAL_READY_TIMEOUT.as_millis())
                 .unwrap_or(90_000),
+            compact_hold_ms: u64::try_from(crate::context_full::COMPACT_DRAFT_HOLD.as_millis())
+                .unwrap_or(600_000),
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
                 .unwrap_or(300_000),
             launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),
@@ -221,6 +232,10 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// CLI device sign-in starts per client key (rate limiting, #169).
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Where each watched transcript's reads go on (SPEC-483 slice 36): a poll reads only what
+    /// was written since; bounded by [`crate::session_docs::MAX_TRANSCRIPT_CURSORS`].
+    pub(crate) transcript_cursors:
+        Mutex<HashMap<std::path::PathBuf, crate::transcripts::ReadCursor>>,
     /// GitHub sign-in starts per client key in the last minute (SPEC-483 A4).
     pub(crate) github_starts: Mutex<HashMap<String, Vec<i64>>>,
     /// Looks at and joins through playground guest links per client key (SPEC-410 GST-002).
@@ -292,11 +307,21 @@ pub struct App {
     pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
+    /// What the pull request watch told each task, as its file has it (SPEC-444 PRN-007); read
+    /// from the file on first use.
+    pub(crate) pr_told: crate::pr_watch::ToldCache,
+    /// The armed merges saved before this server started were put back
+    /// (`App::restore_armed_merges`): until then their file answers (SPEC-487 CHN-001).
+    pub(crate) armed_restored: std::sync::atomic::AtomicBool,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
     pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
     /// The Superagents' requests to start tasks in other sandboxes, waiting for their person
     /// (SPEC-335).
     pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
+    /// The Superagents' scheduled checks (SPEC-487 CHK-001).
+    pub(crate) superagent_checks: crate::superagent_checks::SuperagentChecks,
+    /// Missing abilities reported in the last hour (SPEC-487 ABL-004).
+    pub(crate) ability_reports: crate::ability_reports::AbilityReports,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
     pub(crate) supertask_holds: crate::supertask::Holds,
     /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
@@ -334,6 +359,7 @@ impl App {
             events,
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
+            transcript_cursors: Mutex::new(HashMap::new()),
             github_starts: Mutex::new(HashMap::new()),
             guest_attempts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
@@ -365,8 +391,12 @@ impl App {
             isolation: OnceLock::new(),
             agent_cli: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
+            pr_told: crate::pr_watch::ToldCache::default(),
+            armed_restored: std::sync::atomic::AtomicBool::new(false),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
+            superagent_checks: crate::superagent_checks::SuperagentChecks::default(),
+            ability_reports: crate::ability_reports::AbilityReports::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
             leftovers: crate::leftovers::LeftoverState::default(),

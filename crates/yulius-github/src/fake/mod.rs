@@ -411,7 +411,6 @@ impl FakeGitHub {
             client_secret: Secret::new(FAKE_CLIENT_SECRET),
             private_key_pem: Secret::new(FAKE_APP_KEY_PEM),
             slug: FAKE_APP_SLUG.to_owned(),
-            webhook_secret: None,
         }
     }
 

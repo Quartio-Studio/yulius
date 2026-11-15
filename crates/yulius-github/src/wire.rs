@@ -113,8 +113,6 @@ pub(crate) struct WireManifestConversion {
     pub(crate) slug: String,
     pub(crate) client_id: String,
     pub(crate) client_secret: String,
-    #[serde(default)]
-    pub(crate) webhook_secret: Option<String>,
     pub(crate) pem: String,
 }
 

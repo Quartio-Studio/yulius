@@ -160,7 +160,7 @@ async fn task_numbers_and_status_cas() -> R {
         .transition_task(
             &a.id,
             Some(TaskStatus::Starting),
-            TaskStatus::Failed(yulius_domain::task::FailReason::StartTimeout),
+            TaskStatus::Failed(yulius_domain::task::FailReason::SpawnError),
             None,
             Timestamp(31),
         )
@@ -723,6 +723,83 @@ async fn a_stretch_write_applies_only_to_the_state_it_read() -> R {
     Ok(())
 }
 
+/// SPEC-490 OWN-009: a hand-over on request records who gave control, who takes the task back
+/// only while they are that giver; handing on records the new giver, handing back to the giver
+/// and a pass past an absent owner record nobody.
+#[tokio::test]
+async fn the_giver_takes_a_task_back_until_control_moves_again() -> R {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, alice) = seed(&store).await?;
+    for (id, login) in [("u2", "bob"), ("u3", "carol")] {
+        store.insert_user(&user(id, Some(login), false)?).await?;
+    }
+    let (bob, carol) = (UserId::parse("u2")?, UserId::parse("u3")?);
+    let t = store.insert_task(&task("t1", &sid, &alice)?).await?;
+    assert_eq!(store.control_from(&t.id).await?, None);
+    let hand = |from: UserId, to: UserId, at: i64| {
+        let (store, id) = (&store, t.id.clone());
+        async move {
+            assert!(store.request_control(&id, &to, Timestamp(at)).await?);
+            store.pass_control(&id, &from, &to, Timestamp(at + 1)).await
+        }
+    };
+    assert!(hand(alice.clone(), bob.clone(), 10).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(alice.clone()));
+    // Only the giver, from the owner seen; a request waiting meanwhile goes with it.
+    assert!(store.request_control(&t.id, &carol, Timestamp(15)).await?);
+    assert!(
+        !store
+            .take_back_control(&t.id, &bob, &carol, Timestamp(16))
+            .await?
+    );
+    assert!(
+        !store
+            .take_back_control(&t.id, &carol, &alice, Timestamp(16))
+            .await?
+    );
+    assert!(
+        store
+            .take_back_control(&t.id, &bob, &alice, Timestamp(17))
+            .await?
+    );
+    let back = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(
+        (back.owner.clone(), back.updated_at),
+        (alice.clone(), Timestamp(17))
+    );
+    assert_eq!(store.control_from(&t.id).await?, None);
+    assert_eq!(store.control_request(&t.id).await?, None);
+    assert!(
+        !store
+            .take_back_control(&t.id, &alice, &alice, Timestamp(18))
+            .await?
+    );
+
+    // Handed on: the new giver is the one who handed it on.
+    assert!(hand(alice.clone(), bob.clone(), 20).await?);
+    assert!(hand(bob.clone(), carol.clone(), 30).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(bob.clone()));
+    assert!(
+        !store
+            .take_back_control(&t.id, &carol, &alice, Timestamp(32))
+            .await?
+    );
+    // Handed back to its giver: nobody can take it back.
+    assert!(hand(carol.clone(), bob.clone(), 40).await?);
+    assert_eq!(store.control_from(&t.id).await?, None);
+    // Past an absent owner: nobody either.
+    assert!(hand(bob.clone(), alice.clone(), 50).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(bob.clone()));
+    assert!(
+        store
+            .take_control(&t.id, &alice, &carol, Timestamp(60))
+            .await?
+    );
+    assert_eq!(store.control_from(&t.id).await?, None);
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]
@@ -1090,7 +1167,7 @@ async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
 }
 
 #[tokio::test]
-async fn messages_inbox_read_tracking_and_steps_history() -> R {
+async fn task_messages_and_steps_history() -> R {
     let store = SqliteStore::open_in_memory()?;
     let (sid, uid) = seed(&store).await?;
     let a = store.insert_task(&task("t1", &sid, &uid)?).await?;
@@ -1109,16 +1186,11 @@ async fn messages_inbox_read_tracking_and_steps_history() -> R {
     store
         .insert_message(&msg, std::slice::from_ref(&b.id))
         .await?;
-    assert_eq!(store.unread_count(&b.id).await?, 1);
-    assert_eq!(store.unread_count(&a.id).await?, 0);
-    assert_eq!(store.mark_delivered(&b.id, Timestamp(61)).await?, 1);
     assert_eq!(
-        store.inbox(&b.id, true, 10).await?.len(),
-        1,
-        "delivered is not read"
+        store.task_messages(&b.id, 10).await?,
+        std::slice::from_ref(&msg),
+        "the recipient's export has it"
     );
-    assert_eq!(store.mark_read(&b.id, Timestamp(62)).await?, 1);
-    assert!(store.inbox(&b.id, true, 10).await?.is_empty());
     assert_eq!(
         store.task_messages(&a.id, 10).await?.len(),
         1,
@@ -1596,6 +1668,321 @@ async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound
             .await?
     );
     assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    Ok(())
+}
+
+/// SPEC-487 TCT-002: the request of a task that has not started is replaced by one conditional
+/// update: only while it is still the text that was read (a message queued meanwhile is not
+/// overwritten), and never once the task is past waiting or has a run.
+#[tokio::test]
+async fn a_prompt_is_replaced_only_while_unstarted_and_as_it_was_read() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    // `starting` (the record's status) is past waiting.
+    assert!(
+        !store
+            .replace_unstarted_prompt(&t.id, "p", "new", Timestamp(20))
+            .await?
+    );
+    for (i, waiting) in [
+        TaskStatus::Queued,
+        TaskStatus::Chained,
+        TaskStatus::Prepared,
+        TaskStatus::WaitingCapacity,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        store
+            .transition_task(&t.id, None, waiting, None, Timestamp(21))
+            .await?;
+        let (old, new) = (format!("p{i}"), format!("p{}", i + 1));
+        let old = if i == 0 { "p".to_owned() } else { old };
+        assert!(
+            store
+                .replace_unstarted_prompt(&t.id, &old, &new, Timestamp(22))
+                .await?,
+            "{waiting:?}"
+        );
+    }
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p4");
+    // A message joined the request since it was read: nothing is overwritten.
+    assert!(
+        store
+            .append_unstarted_prompt(&t.id, "+m", 64, Timestamp(23))
+            .await?
+    );
+    assert!(
+        !store
+            .replace_unstarted_prompt(&t.id, "p4", "other", Timestamp(24))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p4+m");
+    // A run makes it started, whatever its status.
+    store.insert_attempt(&attempt("a1", &t.id, 1)?).await?;
+    assert!(
+        !store
+            .replace_unstarted_prompt(&t.id, "p4+m", "late", Timestamp(25))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p4+m");
+    // So does a provider session (an imported session waiting for its first run here).
+    let imported = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    store
+        .transition_task(&imported.id, None, TaskStatus::Queued, None, Timestamp(21))
+        .await?;
+    store
+        .upsert_provider_session(&yulius_app::model::ProviderSessionRecord {
+            id: "ps-1".into(),
+            sandbox_id: sid.clone(),
+            task_id: imported.id.clone(),
+            harness: Harness::ClaudeCode,
+            session_id: "session-1".into(),
+            transcript_ref: None,
+            origin: "imported".into(),
+            first_seen: Timestamp(21),
+            last_seen: Timestamp(21),
+        })
+        .await?;
+    assert!(
+        !store
+            .replace_unstarted_prompt(&imported.id, "p", "late", Timestamp(26))
+            .await?
+    );
+    assert_eq!(store.task(&imported.id).await?.ok_or("task")?.prompt, "p");
+    Ok(())
+}
+
+/// SPEC-487 TCT-003 (review round 1, F5 and F10): two named tasks that share a millisecond
+/// still get the order asked for, both ways, and a task not named that is queued a
+/// millisecond later stays behind both: the queue's order has a second key (the order the
+/// tasks were created in), so a place shared after the swap moves nobody else's task forward.
+#[tokio::test]
+async fn queued_tasks_that_share_a_millisecond_take_the_order_asked_for() -> R {
+    use yulius_app::model::{QueuedStart, QueuedStartKind};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let mut ids = Vec::new();
+    // t0 is created first and queued last: its place, not its age, is what counts.
+    for (name, at) in [("t0", 101), ("t1", 100), ("t2", 100), ("t3", 101)] {
+        let t = store.insert_task(&task(name, &sid, &uid)?).await?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Fresh,
+            prompt: None,
+            account_id: None,
+        };
+        assert!(
+            store
+                .queue_task(&t.id, TaskStatus::Starting, &start, Timestamp(at))
+                .await?
+        );
+        ids.push(t.id);
+    }
+    let queue = |store: &SqliteStore| {
+        let store = store.clone();
+        async move {
+            Ok::<_, AppError>(
+                store
+                    .tasks_with_status(&[TaskStatus::Queued])
+                    .await?
+                    .into_iter()
+                    .map(|t| t.id.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    assert_eq!(queue(&store).await?, ["t1", "t2", "t0", "t3"]);
+    assert!(
+        store
+            .reorder_queued(&[ids[2].clone(), ids[1].clone()], Timestamp(500))
+            .await?
+    );
+    assert_eq!(queue(&store).await?, ["t2", "t1", "t0", "t3"]);
+    assert!(
+        store
+            .reorder_queued(&[ids[1].clone(), ids[2].clone()], Timestamp(501))
+            .await?
+    );
+    assert_eq!(queue(&store).await?, ["t1", "t2", "t0", "t3"]);
+    // All four share one place: the order asked for still holds, with the others between
+    // as they were.
+    for id in &ids {
+        store
+            .transition_task(
+                id,
+                Some(TaskStatus::Queued),
+                TaskStatus::Queued,
+                None,
+                Timestamp(900),
+            )
+            .await?;
+    }
+    assert_eq!(queue(&store).await?, ["t0", "t1", "t2", "t3"]);
+    assert!(
+        store
+            .reorder_queued(&[ids[3].clone(), ids[0].clone()], Timestamp(901))
+            .await?
+    );
+    assert_eq!(queue(&store).await?, ["t3", "t1", "t2", "t0"]);
+    Ok(())
+}
+
+/// SPEC-487 TCT-003: queued tasks take, in the order given, the places they hold among
+/// themselves; a task not named keeps its place between them, each stored start still names
+/// its task's place, and nothing changes when one of them is not queued.
+#[tokio::test]
+async fn queued_tasks_swap_the_places_they_hold() -> R {
+    use yulius_app::model::{QueuedStart, QueuedStartKind};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let mut ids = Vec::new();
+    for (i, name) in ["t1", "t2", "t3", "t4"].into_iter().enumerate() {
+        let t = store.insert_task(&task(name, &sid, &uid)?).await?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Fresh,
+            prompt: Some(format!("start of {name}")),
+            account_id: None,
+        };
+        let at = Timestamp(100 + i64::try_from(i)? * 10);
+        assert!(
+            store
+                .queue_task(&t.id, TaskStatus::Starting, &start, at)
+                .await?
+        );
+        ids.push(t.id);
+    }
+    let queue = |store: &SqliteStore| {
+        let store = store.clone();
+        async move {
+            Ok::<_, AppError>(
+                store
+                    .tasks_with_status(&[TaskStatus::Queued])
+                    .await?
+                    .into_iter()
+                    .map(|t| (t.id.as_str().to_owned(), t.queued_at.map(|at| at.0)))
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    // t4 first, then t1; t2 and t3 are not named and stay where they are.
+    assert!(
+        store
+            .reorder_queued(&[ids[3].clone(), ids[0].clone()], Timestamp(500))
+            .await?
+    );
+    assert_eq!(
+        queue(&store).await?,
+        vec![
+            ("t4".to_owned(), Some(100)),
+            ("t2".to_owned(), Some(110)),
+            ("t3".to_owned(), Some(120)),
+            ("t1".to_owned(), Some(130)),
+        ]
+    );
+    for (id, name) in ids.iter().zip(["t1", "t2", "t3", "t4"]) {
+        assert_eq!(
+            store.queued_start(id).await?.and_then(|start| start.prompt),
+            Some(format!("start of {name}")),
+            "{name} keeps the start it was to make"
+        );
+    }
+    // One of them left the queue: nothing moves.
+    store
+        .transition_task(&ids[1], None, TaskStatus::Starting, None, Timestamp(501))
+        .await?;
+    assert!(
+        !store
+            .reorder_queued(
+                &[ids[0].clone(), ids[1].clone(), ids[3].clone()],
+                Timestamp(502)
+            )
+            .await?
+    );
+    assert_eq!(
+        queue(&store).await?,
+        vec![
+            ("t4".to_owned(), Some(100)),
+            ("t3".to_owned(), Some(120)),
+            ("t1".to_owned(), Some(130)),
+        ]
+    );
+    Ok(())
+}
+
+/// SPEC-487 TCT-003 (review round 2, R2-2): an order changes the tasks it names. Tasks that
+/// stand before the first named one are not written at all, also when they share a place;
+/// one behind that has to move by a millisecond to keep its slot does not read as updated.
+#[tokio::test]
+async fn an_order_leaves_the_tasks_it_does_not_name_as_they_were() -> R {
+    use yulius_app::model::{QueuedStart, QueuedStartKind};
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let mut ids = Vec::new();
+    // Two tied at the head, two named ones tied behind them, one more tied with those.
+    for (name, at) in [
+        ("h1", 50),
+        ("h2", 50),
+        ("t1", 100),
+        ("t2", 100),
+        ("t3", 100),
+    ] {
+        let t = store.insert_task(&task(name, &sid, &uid)?).await?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Fresh,
+            prompt: Some(format!("start of {name}")),
+            account_id: None,
+        };
+        assert!(
+            store
+                .queue_task(&t.id, TaskStatus::Starting, &start, Timestamp(at))
+                .await?
+        );
+        ids.push(t.id);
+    }
+    let read = |store: &SqliteStore| {
+        let store = store.clone();
+        async move {
+            Ok::<_, AppError>(
+                store
+                    .tasks_with_status(&[TaskStatus::Queued])
+                    .await?
+                    .into_iter()
+                    .map(|t| {
+                        (
+                            t.id.as_str().to_owned(),
+                            t.queued_at.map(|at| at.0),
+                            t.updated_at.0,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    assert!(
+        store
+            .reorder_queued(&[ids[3].clone(), ids[2].clone()], Timestamp(500))
+            .await?
+    );
+    assert_eq!(
+        read(&store).await?,
+        vec![
+            ("h1".to_owned(), Some(50), 50),
+            ("h2".to_owned(), Some(50), 50),
+            // It holds the place it is to have already: nothing of it is written.
+            ("t2".to_owned(), Some(100), 100),
+            ("t1".to_owned(), Some(101), 500),
+            // Not named: moved by milliseconds behind them, and not updated.
+            ("t3".to_owned(), Some(102), 100),
+        ]
+    );
+    for (id, name) in ids.iter().zip(["h1", "h2", "t1", "t2", "t3"]) {
+        assert_eq!(
+            store.queued_start(id).await?.and_then(|start| start.prompt),
+            Some(format!("start of {name}")),
+            "{name} keeps the start it was to make"
+        );
+    }
     Ok(())
 }
 

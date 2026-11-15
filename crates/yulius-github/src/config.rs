@@ -27,8 +27,6 @@ pub struct AppCredentials {
     pub private_key_pem: Secret,
     /// App slug (used for the installation URL).
     pub slug: String,
-    /// Webhook secret; `None` because Yulius registers no webhook.
-    pub webhook_secret: Option<Secret>,
 }
 
 /// Retry bounds for idempotent GET requests (SPEC-002 §9).

@@ -238,6 +238,40 @@ async fn signed_in_account(
     Ok(())
 }
 
+/// SPEC-483 SGN-002: the background round asks Claude for the address only of a subscription that
+/// works. One that needs a new sign-in is not asked, whether it reads `relogin` or `error`: its
+/// credential is the one Claude refused or the one a sign-in did not replace.
+#[tokio::test]
+async fn the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in() -> TestResult {
+    let profile = Arc::new(FakeProfile::default());
+    let h = harness_with(HarnessOptions {
+        usage: Some(profile.clone()),
+        ..HarnessOptions::default()
+    })?;
+    signed_in_account(&h, "a-works", "old-with-email", None).await?;
+    for (id, credential, status) in [
+        ("a-error", "old-no-email", AccountStatus::Error),
+        ("a-relogin", "old-bad-email", AccountStatus::Relogin),
+    ] {
+        signed_in_account(&h, id, credential, None).await?;
+        h.store
+            .set_account_state(&AccountId::parse(id)?, status, None, None, Timestamp(2))
+            .await?;
+    }
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    let works = h.store.account(&AccountId::parse("a-works")?).await?;
+    assert_eq!(
+        works.and_then(|record| record.email).as_deref(),
+        Some("pawel@example.com")
+    );
+    for (id, credential) in [("a-error", "old-no-email"), ("a-relogin", "old-bad-email")] {
+        assert_eq!(profile.calls(credential), 0, "{id}");
+        let record = h.store.account(&AccountId::parse(id)?).await?.ok_or(id)?;
+        assert_eq!(record.email_checked_at, None, "{id}");
+    }
+    Ok(())
+}
+
 /// SUB-003: a sign-in stores the email Claude's profile gives for the new credential; a later
 /// sign-in whose profile is refused drops it (it may be another Claude account), and the sign-in
 /// itself succeeds either way.

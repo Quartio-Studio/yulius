@@ -17,14 +17,9 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
-use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::sandboxes::CreateSandbox;
 use yulius_contracts::api::secrets::{AgentSecretPatch, AgentSecretView, HostRequestAnswer};
-use yulius_contracts::api::tasks::ContinueTask;
-use yulius_contracts::api::variables::ProjectVariableInput;
-use yulius_contracts::mcp::{
-    RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
-};
+use yulius_contracts::mcp::{RpcRequest, RpcResponse, ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{Action, TokenScope};
 
@@ -32,9 +27,11 @@ use crate::auth::{AuthContext, count_client_attempt};
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::manage::TaskChange;
-use crate::mcp::{STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors};
+use crate::mcp::{
+    PROJECT_TOOLS, STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors, initialize_result,
+};
 use crate::model::SandboxRecord;
+use crate::person_tools::{record, str_arg, tool};
 use crate::vault::{Holder, Revealed, SecretUser};
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
@@ -74,6 +71,19 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("task_pause", Reach::Project, Action::Work),
     ("task_unpause", Reach::Project, Action::Work),
     ("task_start_now", Reach::Project, Action::Work),
+    ("task_edit", Reach::Project, Action::Work),
+    ("task_close", Reach::Project, Action::Work),
+    ("tasks_reorder", Reach::Project, Action::Work),
+    ("tasks_bulk", Reach::Project, Action::Work),
+    ("task_question_dismiss", Reach::Project, Action::Work),
+    ("task_held_prompt", Reach::Project, Action::Work),
+    ("task_merge", Reach::Project, Action::Work),
+    ("subscriptions", Reach::Project, Action::View),
+    ("task_switch", Reach::Project, Action::Work),
+    ("task_model", Reach::Project, Action::Work),
+    ("instance", Reach::Project, Action::View),
+    ("merge_queue", Reach::Project, Action::View),
+    ("ci_prioritize", Reach::Project, Action::Work),
     ("task_archive", Reach::Project, Action::Work),
     ("task_delete", Reach::Project, Action::Work),
     ("task_update", Reach::Project, Action::Work),
@@ -86,6 +96,10 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("ci_cancel", Reach::Project, Action::Work),
     ("cd_status", Reach::Project, Action::View),
     ("cd_deploy", Reach::Project, Action::Work),
+    ("cd_rollback", Reach::Project, Action::Work),
+    ("task_screen", Reach::Project, Action::View),
+    ("task_usage", Reach::Project, Action::View),
+    ("checkout", Reach::Project, Action::View),
     ("project_files", Reach::Project, Action::View),
     ("project_file_read", Reach::Project, Action::View),
     ("project_change", Reach::Project, Action::Work),
@@ -122,30 +136,7 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
 
 /// Tools that run in a task of their own, to their end and their audit, even when the caller goes
 /// away.
-const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge"];
-
-/// The Superagent's tools the remote MCP serves as they are, with `project` added.
-const SHARED_TOOLS: &[&str] = &[
-    "tasks_list",
-    "task_get",
-    "task_create",
-    "task_message",
-    "task_stop",
-    "task_archive",
-    "task_delete",
-    "task_update",
-    "attachments_trash",
-    "sessions_search",
-    "session_read",
-    "automations_list",
-    "automation_create",
-    "automation_update",
-    "automation_delete",
-    "automation_run_now",
-    "automation_template_enable",
-    "workflows_list",
-    "secrets_list",
-];
+const SPAWNED_TOOLS: &[&str] = &["project_change", "change_merge", "tasks_bulk"];
 
 fn remote_tool(name: &str) -> Option<(Reach, Action)> {
     REMOTE_TOOLS
@@ -196,10 +187,6 @@ impl RemoteCaller {
     }
 }
 
-fn schema(properties: Value, required: &[&str]) -> Value {
-    json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
-}
-
 /// The `project` argument's schema.
 fn project_property() -> Value {
     json!({"type": "string", "description": "The project: owner/name as projects_list shows it (or its slug or id)"})
@@ -218,21 +205,8 @@ fn with_project(mut descriptor: ToolDescriptor) -> ToolDescriptor {
     descriptor
 }
 
-fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> ToolDescriptor {
-    ToolDescriptor {
-        name: name.into(),
-        description: description.into(),
-        input_schema: schema(properties, required),
-    }
-}
-
 /// Descriptors of the tools only the remote MCP serves.
 fn own_descriptors() -> Vec<ToolDescriptor> {
-    let task_ref = json!({
-        "task_id": {"type": "string", "description": "Task id"},
-        "number": {"type": "integer", "description": "Task number within the project"}
-    });
-    let run = json!({"run_id": {"type": "string", "description": "A run id from ci_runs"}});
     let instance = vec![
         tool(
             "projects_list",
@@ -271,72 +245,6 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             "Skip onboarding, as Skip on the project page (admin): waiting tasks start at once. Only when the person asks.",
             json!({}),
             &[],
-        ),
-        tool(
-            "task_delivery",
-            "A task's delivery: its pull request, the checks at its head, review and merge state and what comes next.",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_restart",
-            "Restart a task that is not running (stopped, failed, done or waiting for the person), as Continue in the web UI: its session continues where it was. A running task must be stopped first (task_stop).",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_pause",
-            "Pause a running task, as Pause in the web UI (its process is suspended, nothing is lost).",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_unpause",
-            "Resume a paused task, as Resume in the web UI.",
-            task_ref.clone(),
-            &[],
-        ),
-        tool(
-            "task_start_now",
-            "Start now a task that waits (prepared, scheduled, after another task or a start rule), as Start now in the web UI.",
-            task_ref,
-            &[],
-        ),
-        tool(
-            "ci_runs",
-            "The project's Yulius CI: the jobs in force and where they come from, and the latest runs (branch or pull request, commit, state, jobs).",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "ci_run",
-            "One CI run: its jobs with state and time, and for each job that failed its failing output.",
-            run.clone(),
-            &["run_id"],
-        ),
-        tool(
-            "ci_rerun",
-            "Run the CI again for the commit of a finished run.",
-            run.clone(),
-            &["run_id"],
-        ),
-        tool(
-            "ci_cancel",
-            "Cancel a queued or running CI run.",
-            run,
-            &["run_id"],
-        ),
-        tool(
-            "cd_status",
-            "The project's CD (deployment): dev and production as yulius.toml defines them, what is deployed, the secrets they need and the recent runs; with run_id, one run with its output.",
-            json!({"run_id": {"type": "string", "description": "A run id, to read its output"}}),
-            &[],
-        ),
-        tool(
-            "cd_deploy",
-            "Deploy a dev-stage environment (dev, or another [cd.<name>] cd_status lists with stage dev): Yulius runs its deploy and verify commands from the integration branch head. Production and production-stage environments are deployed only by a person on the CD page.",
-            json!({"environment": {"type": "string", "description": "dev or another dev-stage environment's name"}}),
-            &["environment"],
         ),
         tool(
             "project_files",
@@ -403,42 +311,21 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             json!({"secret": {"type": "string", "description": "Secret NAME from secrets_list"}}),
             &["secret"],
         ),
-        tool(
-            "variables_list",
-            "The project's variables (SPEC-275): its non-secret values (regions, environment names, account and project ids, base URLs, contact addresses) with their descriptions, in plain. Every task run of the project has them in its environment.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            "variables_set",
-            "Create or change project variables, in plain: non-secret values only, never a key, token or password (those are agent secrets: `yulius secrets import`). A name that is an agent secret of the project is refused. An absent description keeps the stored one. Audited without values.",
-            json!({
-                "variables": {
-                    "type": "array",
-                    "description": "At most 200",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "NAME, like an environment variable"},
-                            "value": {"type": "string", "description": "One line, at most 4 KiB"},
-                            "description": {"type": "string", "description": "What it is"}
-                        },
-                        "required": ["name", "value"]
-                    }
-                }
-            }),
-            &["variables"],
-        ),
-        tool(
-            "variable_delete",
-            "Delete a project variable by name. Audited.",
-            json!({"name": {"type": "string", "description": "Variable NAME from variables_list"}}),
-            &["name"],
-        ),
     ];
     instance
         .into_iter()
-        .chain(project.into_iter().map(with_project))
+        .chain(
+            project
+                .into_iter()
+                .chain(
+                    crate::person_tools::descriptors()
+                        .into_iter()
+                        .filter(|tool| {
+                            !crate::person_tools::SUPERAGENT_ONLY.contains(&tool.name.as_str())
+                        }),
+                )
+                .map(with_project),
+        )
         .collect()
 }
 
@@ -460,7 +347,8 @@ pub(crate) fn project_descriptors(names: &[&str]) -> Vec<ToolDescriptor> {
 /// The tools a token of `scope` is served by `tools/list` (RMT-011).
 #[must_use]
 pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
-    let shared = project_descriptors(SHARED_TOOLS);
+    // The Superagent's tools the remote MCP serves as they are, with `project` added.
+    let shared = project_descriptors(&[PROJECT_TOOLS, &["task_message"]].concat());
     let mut tools: Vec<ToolDescriptor> = own_descriptors().into_iter().chain(shared).collect();
     tools.retain(|t| remote_tool(&t.name).is_some_and(|(_, action)| scope.allows(action)));
     tools.sort_by_key(|t| {
@@ -477,14 +365,6 @@ fn without(args: &Value, key: &str) -> Value {
     let mut map: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
     map.remove(key);
     Value::Object(map)
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
-    args.get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Invalid(format!("missing string argument `{key}`")))
 }
 
 fn strings_arg(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
@@ -505,10 +385,6 @@ fn strings_arg(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
     }
 }
 
-fn record<T: serde::Serialize>(value: &T) -> AppResult<Value> {
-    serde_json::to_value(value).map_err(AppError::internal)
-}
-
 impl App {
     /// Handles one JSON-RPC message of the remote MCP (`POST /mcp` on the public listener) from
     /// `caller` ([`App::remote_caller`]); `None` for a notification.
@@ -520,28 +396,18 @@ impl App {
         let id = request.id.clone()?;
         let result = match request.method.as_str() {
             "initialize" => {
-                let requested = request
-                    .params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let version = SUPPORTED_PROTOCOL_VERSIONS
-                    .iter()
-                    .find(|v| **v == requested)
-                    .copied()
-                    .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]);
-                json!({
-                    "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": if caller.superagent.is_some() {
+                let mut result = initialize_result(
+                    &request.params,
+                    if caller.superagent.is_some() {
                         crate::global_superagent::GLOBAL_INSTRUCTIONS
                     } else {
                         REMOTE_INSTRUCTIONS
                     },
-                    // Who the token acts for, for `yulius remote status`.
-                    "_meta": {"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()},
-                })
+                );
+                // Who the token acts for, for `yulius remote status`.
+                result["_meta"] =
+                    json!({"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()});
+                result
             }
             "ping" => json!({}),
             "tools/list" => json!({"tools": if caller.superagent.is_some() {
@@ -836,40 +702,8 @@ impl App {
         let sid = sandbox.id.as_str();
         match name {
             // The Superagent's own tools (RMT-013).
-            "tasks_list" => self.tool_tasks_list(project, args).await,
-            "task_get" => self.tool_task_get(project, args).await,
-            "task_create" => self.tool_task_create(project, args).await,
+            name if PROJECT_TOOLS.contains(&name) => self.project_tool(project, name, args).await,
             "task_message" => self.tool_task_message(project, args).await,
-            "task_stop" => self.tool_task_change(project, args, TaskChange::Stop).await,
-            "task_archive" => {
-                let archived = match args.get("archived") {
-                    None | Some(Value::Null) => true,
-                    Some(Value::Bool(archived)) => *archived,
-                    Some(_) => {
-                        return Err(AppError::Invalid("`archived` must be true or false".into()));
-                    }
-                };
-                self.tool_task_change(project, args, TaskChange::Archive(archived))
-                    .await
-            }
-            "task_delete" => {
-                self.tool_task_change(project, args, TaskChange::Delete)
-                    .await
-            }
-            "task_update" => self.tool_task_update(project, args).await,
-            "attachments_trash" => self.tool_attachments_trash(project, args).await,
-            "sessions_search" => self.tool_sessions_search(project, args).await,
-            "session_read" => self.tool_session_read(project, args).await,
-            "automations_list" => self.tool_automations_list(project).await,
-            "automation_create" => self.tool_automation_create(project, args).await,
-            "automation_update" => self.tool_automation_update(project, args).await,
-            "automation_delete" => self.tool_automation_delete(project, args).await,
-            "automation_run_now" => self.tool_automation_run_now(project, args).await,
-            "automation_template_enable" => {
-                self.tool_automation_template_enable(project, args).await
-            }
-            "workflows_list" => self.tool_workflows_list(project).await,
-            "secrets_list" => self.tool_secrets_list(project).await,
             // What the web UI's routes do, for the person (RMT-020..027).
             "project_get" => {
                 let view = self.get_sandbox(ctx, sid).await?;
@@ -894,74 +728,45 @@ impl App {
                 record(&self.approve_onboarding(ctx, sid, notes).await?)
             }
             "onboarding_skip" => record(&self.skip_onboarding(ctx, sid).await?),
-            "task_delivery" => {
-                let task = self.agent_task_ref(project, args).await?;
-                record(&self.task_delivery(ctx, task.id.as_str()).await?)
-            }
-            "task_restart" | "task_pause" | "task_unpause" | "task_start_now" => {
-                let task = self.agent_task_ref(project, args).await?;
-                let id = task.id.as_str();
-                let summary = match name {
-                    "task_restart" => self
-                        .continue_task(ctx, id, &ContinueTask { account_id: None })
-                        .await
-                        .map_err(|err| match err {
-                            AppError::Conflict(why) if why.starts_with("the task is") => {
-                                AppError::Conflict(format!(
-                                    "{why}: stop it first (task_stop), then restart it"
-                                ))
-                            }
-                            other => other,
-                        })?,
-                    "task_pause" => self.pause_task_for_person(ctx, id).await?,
-                    "task_unpause" => self.resume_task_for_person(ctx, id).await?,
-                    _ => self.start_chained_now(ctx, id).await?,
-                };
-                Ok(json!({"task": record(&summary)?}))
-            }
-            "ci_runs" => record(&self.ci_overview(ctx, sid).await?),
-            "ci_run" => record(
-                &self
-                    .ci_run_detail(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "ci_rerun" => record(
-                &self
-                    .ci_rerun_run(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "ci_cancel" => record(
-                &self
-                    .ci_cancel_run(ctx, sid, str_arg(args, "run_id")?)
-                    .await?,
-            ),
-            "cd_status" => match args.get("run_id").and_then(Value::as_str) {
-                Some(run) => record(&self.cd_run_detail(ctx, sid, run).await?),
-                None => record(&self.cd_overview(ctx, sid).await?),
-            },
-            "cd_deploy" => {
-                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?).ok_or_else(
-                    || AppError::Invalid("environment is dev or another [cd.<name>]".into()),
-                )?;
-                // A laptop's agent deploys dev-stage environments only (SPEC-257); without a
-                // typed confirmation a production-stage one is refused by the deploy anyway.
-                let production = env == "prod"
-                    || self.cd_overview(ctx, sid).await.is_ok_and(|cd| {
-                        cd.environments
-                            .iter()
-                            .any(|e| e.name == env && e.stage == "prod")
-                    });
-                if production {
-                    return Err(AppError::Forbidden(
-                        "only a person deploys production, on the project's CD page".into(),
-                    ));
+            // One call for many tasks takes long (a message is typed into each session): it
+            // runs to its last task and its audit even when the caller goes away, as the
+            // Superagent's does (SPEC-487 TCT-005).
+            "tasks_bulk" => {
+                let (app, owner, who, place, as_project, input, tool) = (
+                    Arc::clone(self),
+                    caller.clone(),
+                    ctx.clone(),
+                    sandbox.clone(),
+                    project.clone(),
+                    args.clone(),
+                    name.to_owned(),
+                );
+                let task = tokio::spawn(
+                    async move {
+                        let outcome = app
+                            .person_project_tool(&who, &as_project, &place, &tool, &input)
+                            .await;
+                        app.audit_remote(&owner, &tool, Some(&place.id), outcome.is_ok())
+                            .await;
+                        outcome
+                    }
+                    .in_current_span(),
+                );
+                match task.await {
+                    Ok(outcome) => outcome,
+                    // It panicked or was cancelled before its own audit: audit the failure here.
+                    Err(err) => {
+                        self.audit_remote(caller, name, Some(&sandbox.id), false)
+                            .await;
+                        Err(AppError::internal(err))
+                    }
                 }
-                let req = CdDeploy {
-                    confirm: None,
-                    expect: None,
-                    confirm_ms: None,
-                };
-                record(&self.cd_deploy(ctx, sid, &env, &req).await?)
+            }
+            // What a person does on the project's pages, shared with their Superagent in the
+            // sandbox (SPEC-487).
+            name if crate::person_tools::action(name).is_some() => {
+                self.person_project_tool(ctx, project, sandbox, name, args)
+                    .await
             }
             "project_files" => self.remote_files(sandbox, args).await,
             "project_file_read" => self.remote_file_read(sandbox, args).await,
@@ -1080,23 +885,6 @@ impl App {
                 self.delete_agent_secret(ctx, &own.id).await?;
                 Ok(json!({"deleted": own.name}))
             }
-            // Project variables (SPEC-275 VAR-005): plain values, shown as they are.
-            "variables_list" => record(&self.project_variables(ctx, sid).await?),
-            "variables_set" => {
-                let inputs: Vec<ProjectVariableInput> =
-                    serde_json::from_value(args.get("variables").cloned().unwrap_or(Value::Null))
-                        .map_err(|e| {
-                        AppError::Invalid(format!(
-                            "`variables` must be a list of {{name, value, description?}}: {e}"
-                        ))
-                    })?;
-                record(&self.set_project_variables(ctx, sid, &inputs, false).await?)
-            }
-            "variable_delete" => {
-                let variable = str_arg(args, "name")?;
-                self.delete_project_variable(ctx, sid, variable).await?;
-                Ok(json!({"deleted": variable}))
-            }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         }
     }
@@ -1105,6 +893,23 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-487 SAR-001 (review of slice 2, F8): the person's project tools are one list. Each
+    /// is a project tool of the remote MCP with the same action (its scope check and audit
+    /// follow it), and is served to the Superagent in the sandbox.
+    #[test]
+    fn every_persons_project_tool_is_served_by_both_callers_with_one_action() {
+        for (name, action) in crate::person_tools::PERSON_TOOLS {
+            // The Superagent's only (SPEC-487 INS-004): no token's agent updates Yulius.
+            let remote = (!crate::person_tools::SUPERAGENT_ONLY.contains(name))
+                .then_some((Reach::Project, *action));
+            assert_eq!(remote_tool(name), remote, "`{name}` in REMOTE_TOOLS");
+            assert!(
+                crate::mcp::COCKPIT_TOOLS.contains(name),
+                "`{name}` in COCKPIT_TOOLS"
+            );
+        }
+    }
 
     #[test]
     fn every_remote_tool_is_described_once_and_project_tools_take_a_project() {

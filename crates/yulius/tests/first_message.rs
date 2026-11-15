@@ -1144,6 +1144,254 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
     Ok(())
 }
 
+/// SPEC-483 TYP-002: a person starts to type just before Yulius types a resumed session's
+/// `/goal` (the opening turn is over and nobody had typed; Yulius may wait for the typing mark
+/// there). Asked again with the mark held, their key keeps the goal out, and the task says that
+/// it has no goal, as when they typed earlier.
+#[test]
+fn a_key_just_before_the_goal_keeps_it_out_and_is_said() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        {
+            let (app, key, id, person) = (app.clone(), id.clone(), id.clone(), ctx.user.id.clone());
+            yulius_app::race::on(
+                yulius_app::race::Point::LineReady,
+                Path::new(key.as_str()),
+                move || app.record_typing(&id, &person),
+            );
+        }
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n
+                    .contains("Someone typed in the terminal before Yulius set the task's goal")),
+            "{said:?}"
+        );
+        assert!(!screen(&app, &id).contains("GOAL SET"), "no goal was typed");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-002: while Yulius types a resumed session's `/goal` (the line is in the prompt
+/// box, its Enter not sent yet), a message for the task is refused as while another message is
+/// being typed, and the goal is set as it was typed.
+#[test]
+fn nothing_is_typed_between_the_goal_and_its_enter() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let record = app.deps.store.task(&id).await?.ok_or("task")?;
+        let refused = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let refused = refused.clone();
+            let caller = yulius_app::coordination::ProjectCaller {
+                sandbox: record.sandbox_id.clone(),
+                user: ctx.user.id.clone(),
+                task: None,
+                channel: yulius_app::coordination::Channel::Superagent,
+                actor: "cockpit:admin".into(),
+                detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+            };
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineTyped,
+                Path::new(key.as_str()),
+                move || {
+                    let answer = tokio::task::block_in_place(|| {
+                        handle.block_on(app.tool_task_message(
+                            &caller,
+                            &serde_json::json!({"task_id": id.as_str(), "text": "one more thing"}),
+                        ))
+                    });
+                    if let Ok(mut slot) = refused.lock() {
+                        *slot = Some(answer.map(|_| ()).map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        wait_for("the typed goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        let answer = refused.lock().map_err(|_| "poisoned")?.clone();
+        let answer = answer.ok_or("no message was tried while the goal waited for its Enter")?;
+        assert!(
+            matches!(&answer, Err(why) if why.contains("is being typed")),
+            "{answer:?}"
+        );
+        assert!(!screen(&app, &id).contains("one more thing"));
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The run directory's marker of a `/goal` Yulius still has to type (SPEC-483 RST-002).
+fn typed_goal_marker(run_dir: &str) -> PathBuf {
+    Path::new(run_dir).join("typed-goal-pending")
+}
+
+/// SPEC-483 RST-002: Yulius restarts while it still has to type a resumed session's `/goal`
+/// (the session's opening turn runs). The new server has no typist for it; it waits that turn
+/// out, watches whether Claude Code recorded a goal and, as it did not, flags the task and says
+/// why, instead of leaving a goal task idle without a goal and without a word. The flag comes
+/// after the opening turn's end, whose Stop would otherwise take it away (the bound here, 3 s,
+/// is long over when the 12 s turn ends).
+#[test]
+fn a_goal_still_to_be_typed_at_a_restart_is_flagged() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert!(typed_goal_marker(&attempt.run_dir).is_file());
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(&data, &fake, opening_turn(), port, probe, |config| {
+            config.launch_goal_ms = 3_000;
+            config.goal_ready_ms = 4_000;
+        })
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        // The opening turn ends under the new server: its Stop is answered.
+        let stop_answered = Path::new(&attempt.run_dir).join("stop-answered");
+        wait_for(
+            "the opening turn's end",
+            Duration::from_secs(60),
+            || async { stop_answered.exists() },
+        )
+        .await?;
+        // Not flagged inside the turn: the watch's time starts at the turn's end.
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        assert!(notices(&mut watch).iter().all(|n| !n.contains("goal")));
+        wait_for("the flag", Duration::from_secs(45), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("Yulius restarted before it set this task's goal")),
+            "{said:?}"
+        );
+        // Flagged once: no later restart flags it again.
+        let marker = typed_goal_marker(&attempt.run_dir);
+        wait_for("the marker's removal", Duration::from_secs(10), || async {
+            !marker.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 RST-002: Claude Code recorded the typed goal, and the server stopped before it
+/// removed the marker. The new server's watch finds the goal in the run's transcript: no flag,
+/// and the marker goes.
+#[test]
+fn a_typed_goal_recorded_before_a_restart_is_not_flagged() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id, marker) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let marker = typed_goal_marker(&attempt.run_dir);
+        wait_for("the typed goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        wait_for("the marker's removal", Duration::from_secs(20), || async {
+            !marker.exists()
+        })
+        .await?;
+        // What a server stopped between the goal's record and that removal leaves.
+        std::fs::write(&marker, b"")?;
+        Ok::<_, BoxError>((port, id, marker))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_with(&data, &fake, opening_turn(), port, probe, |config| {
+            config.launch_goal_ms = 3_000;
+            config.goal_ready_ms = 4_000;
+        })
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        wait_for("the marker's removal", Duration::from_secs(30), || async {
+            !marker.exists()
+        })
+        .await?;
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let said = notices(&mut watch);
+        assert!(!said.iter().any(|n| n.contains("goal")), "{said:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 RST-002: a goal Yulius typed and Claude Code took leaves no marker, so no later
+/// server watches it or flags the task.
+#[test]
+fn a_typed_goal_that_was_taken_leaves_no_marker() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, _ctx, _attach) = goal_in_a_continued_turn(&app, &data).await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let marker = typed_goal_marker(&attempt.run_dir);
+        assert!(marker.is_file());
+        wait_for("the typed goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        wait_for("the marker's removal", Duration::from_secs(20), || async {
+            !marker.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// The run directory's marker of a launch `/goal` not confirmed yet (SPEC-146 GWR-001).
 fn launch_goal_marker(run_dir: &str) -> PathBuf {
     Path::new(run_dir).join("launch-goal-pending")

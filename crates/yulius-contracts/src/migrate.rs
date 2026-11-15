@@ -98,15 +98,6 @@ pub struct MoveRequest {
 }
 
 impl MoveRequest {
-    /// Whether `other` asks about the same move: the same target, port, URL and disks.
-    #[must_use]
-    pub fn same_values(&self, other: &Values) -> bool {
-        self.target == other.target
-            && self.ssh_port == other.ssh_port
-            && self.public_url == other.public_url
-            && self.data_disks == other.data_disks
-    }
-
     /// Its values.
     #[must_use]
     pub fn values(&self) -> Values {
@@ -269,11 +260,7 @@ mod tests {
         assert_eq!(json["action"], "move");
         let back: MoveHelperStatus = serde_json::from_value(json)?;
         assert_eq!(back, status);
-        assert!(request.same_values(&back.values));
-        assert!(!request.same_values(&Values {
-            ssh_port: Some(2222),
-            ..request.values()
-        }));
+        assert_eq!(back.values, request.values());
         Ok(())
     }
 }

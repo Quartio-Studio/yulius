@@ -15,6 +15,7 @@ use yulius_app::auth::{
 use yulius_app::error::AppError;
 use yulius_app::model::{SandboxRecord, UserRecord};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore, UserStore};
+use yulius_contracts::api::auth::DeviceStatus;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::TaskStatus;
@@ -1006,7 +1007,7 @@ async fn a_second_device_approval_leaves_no_token() -> TestResult {
     );
     assert_eq!(live_tokens(&h, &bob).await?, bob_before);
     let got = h.app.device_poll(&grant.device_code).await?;
-    assert_eq!(got.status, "approved");
+    assert_eq!(got.status, DeviceStatus::Approved);
     assert!(
         got.token.is_some(),
         "the first approval's token reaches the CLI"
@@ -1081,7 +1082,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     .await?;
     assert_eq!(approve.status, StatusCode::NO_CONTENT);
     let got = h.app.device_poll(&consumed.device_code).await?;
-    assert_eq!(got.status, "approved");
+    assert_eq!(got.status, DeviceStatus::Approved);
 
     h.app.purge_device_grants().await?;
     assert!(
@@ -1092,11 +1093,11 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     );
     assert_eq!(
         h.app.device_poll(&pending.device_code).await?.status,
-        "pending"
+        DeviceStatus::Pending
     );
 
     h.clock.0.fetch_add(
-        i64::from(pending.expires_in_s) * 1000,
+        i64::try_from(pending.expires_in_s)? * 1000,
         std::sync::atomic::Ordering::SeqCst,
     );
     h.app.purge_device_grants().await?;
@@ -1108,7 +1109,7 @@ async fn device_grants_disappear_within_one_purge() -> TestResult {
     );
     assert_eq!(
         h.app.device_poll(&pending.device_code).await?.status,
-        "expired"
+        DeviceStatus::Expired
     );
     Ok(())
 }
@@ -1169,8 +1170,9 @@ async fn allowlisted_origins_get_cors_and_websockets() -> TestResult {
 }
 
 /// #56: every public response carries the baseline security headers (no framing at all, not
-/// even by Yulius itself — BRW-008 —, no MIME sniffing, no referrer to other origins) and the
-/// server's tag, which the preview proxy uses to refuse showing Yulius inside itself.
+/// even by Yulius itself — BRW-008 —, a script and style policy, no MIME sniffing, no referrer
+/// to other origins) and the server's tag, which the preview proxy uses to refuse showing Yulius
+/// inside itself.
 #[tokio::test]
 async fn public_responses_carry_security_headers() -> TestResult {
     use tower::ServiceExt;
@@ -1194,9 +1196,18 @@ async fn public_responses_carry_security_headers() -> TestResult {
                 .map(str::to_owned)
         };
         assert_eq!(header("x-frame-options").as_deref(), Some("DENY"), "{path}");
+        // W1b of SPEC-483: scripts, styles, fonts, images, media, connections and workers only
+        // from Yulius itself (the editor's workers, pasted images and attached recordings are
+        // `blob:`, icons `data:`), no plugins, frames or `<base>`, and nothing may frame Yulius.
+        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1, F1).
         assert_eq!(
             header("content-security-policy").as_deref(),
-            Some("frame-ancestors 'none'"),
+            Some(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+                 img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; \
+                 connect-src 'self'; worker-src 'self' blob:; frame-src 'none'; \
+                 object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            ),
             "{path}"
         );
         assert_eq!(
@@ -1613,8 +1624,28 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         "{}",
         content.body
     );
-    // Changing someone's task is theirs alone, also for the superadmin (SPEC-070): it acts on
-    // GitHub as them.
+    // Steering someone's task is theirs alone, also for the superadmin (SPEC-070, SPEC-490
+    // OWN-004): it acts on GitHub as them. Putting it away is open to whoever may work in the
+    // project (OWN-002).
+    let continued = call(
+        &h.router,
+        Method::POST,
+        "/api/tasks/t2/continue",
+        Some(json!({})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(
+        continued.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        continued.body
+    );
+    assert!(
+        continued.body.to_string().contains("Ask them for control"),
+        "{}",
+        continued.body
+    );
     let archived = call(
         &h.router,
         Method::POST,
@@ -1623,12 +1654,8 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         &admin,
     )
     .await?;
-    assert_eq!(archived.status, StatusCode::FORBIDDEN, "{}", archived.body);
-    assert!(
-        archived.body.to_string().contains("Ask them for control"),
-        "{}",
-        archived.body
-    );
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.body);
+    assert_eq!(archived.body["owner"]["login"], "alice");
 
     // Nothing was mirrored from GitHub for the superadmin.
     let superadmin = h.store.superadmin().await?.ok_or("superadmin")?;

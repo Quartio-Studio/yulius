@@ -105,8 +105,8 @@ impl App {
     }
 
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
-    /// count what the sidebar lists (#147, #170). Ended tasks are answered without reading the
-    /// store.
+    /// count what the sidebar lists (#147, #170). Of an ended task only whether it is the
+    /// onboarding task its sandbox waits for is read.
     ///
     /// # Errors
     /// Store failures.
@@ -115,10 +115,13 @@ impl App {
         task: &TaskRecord,
         requested: &HashSet<String>,
     ) -> AppResult<TaskGroup> {
-        if task.status.is_resting() || task.status == TaskStatus::Stopping {
-            return Ok(TaskGroup::Ended);
-        }
         let store = &self.deps.store;
+        if task.status.is_resting() || task.status == TaskStatus::Stopping {
+            let mut facts = AttentionFacts::new(task.status, task.activity);
+            facts.awaits_start_onboarding =
+                self.is_awaited_onboarding(task).await? && !store.has_attempts(&task.id).await?;
+            return Ok(facts.group());
+        }
         let held_prompt = store.pending_hold(&task.id).await?.is_some();
         let chain_blocked = task.status == TaskStatus::Chained
             && store
@@ -131,7 +134,7 @@ impl App {
                 .is_some_and(yulius_domain::task::Activity::is_idle);
         // The pull request, the plan and the goal matter only after a finished turn: with no step
         // open and no unfinished goal, an idle agent answered (SPEC-429).
-        let (pull, plan_open) = if finished {
+        let (pull, plan_open, spec_unfinished) = if finished {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                 Some(observed) => observed,
                 // Not read since the server started: a merge recorded earlier is still known.
@@ -142,9 +145,9 @@ impl App {
                     .map(|_| PullSignal::Merged),
             };
             let plan_open = plan_open(&store.steps(&task.id).await?);
-            (pull, plan_open)
+            (pull, plan_open, self.spec_unfinished(&task.id).await)
         } else {
-            (None, false)
+            (None, false, false)
         };
         Ok(AttentionFacts {
             status: task.status,
@@ -153,13 +156,18 @@ impl App {
             browser_request: requested.contains(task.id.as_str()),
             chain_blocked,
             plan_open,
+            spec_unfinished,
             goal_unfinished: finished && self.goal_unfinished(&task.id),
             background_shells: finished
                 && self
                     .background_shells_of(&task.id)
                     .is_some_and(|count| count > 0),
-            yulius_wait: finished && self.agent_waits_on_yulius(&task.id),
+            yulius_wait: finished
+                && (self.agent_waits_on_yulius(&task.id) || self.pr_news_due(task).await),
             pull,
+            paused: self.is_paused(task).await,
+            awaits_start_onboarding: false,
+            merge_armed: finished && self.merge_is_armed(&task.id),
         }
         .group())
     }
@@ -167,7 +175,7 @@ impl App {
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),
     /// read from its tabs (none while the browser does not run: its requests went with it), or
     /// through `needs_you` (SPEC-134 CDT-004).
-    async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
+    pub(crate) async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
         let mut requested: HashSet<String> = match self.deps.browser.running(sandbox).await {
             Some(session) => session
                 .tabs()
@@ -204,6 +212,38 @@ impl App {
             .map_err(|_| crate::error::AppError::NotFound)?;
         let (record, level) = self.require_for(ctx, &id, Action::View).await?;
         self.sandbox_view(&record, level).await
+    }
+}
+
+impl App {
+    /// Whether the task's spec, as Yulius last read it, says that its work is not finished
+    /// (SPEC-491 DON-004): the task's own record that work it declared is left, however
+    /// complete its plan reads. A task without a spec, or whose spec was never read, declares
+    /// its work by its steps alone; a status that cannot be read counts as none.
+    pub(crate) async fn spec_unfinished(&self, task: &yulius_domain::ids::TaskId) -> bool {
+        use yulius_domain::spec_format::SpecStatus;
+        matches!(
+            self.deps.store.spec_status(task).await,
+            Ok(Some(status)) if SpecStatus::parse(&status).is_some_and(SpecStatus::work_left)
+        )
+    }
+
+    /// Keeps what the task's spec says of its work, whenever Yulius reads the spec (DON-004);
+    /// `None` when the task has no spec (any more). A change is published to the pages that show
+    /// the task. A failed write is logged and changes nothing.
+    pub(crate) async fn note_spec_status(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        status: Option<yulius_domain::spec_format::SpecStatus>,
+    ) {
+        let status = status.map(yulius_domain::spec_format::SpecStatus::as_str);
+        match self.deps.store.set_spec_status(task, status).await {
+            Ok(true) => self.publish_task(task).await,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(task = %task, error = %err, "keeping the spec's status failed");
+            }
+        }
     }
 }
 

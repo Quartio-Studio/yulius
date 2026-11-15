@@ -4,13 +4,12 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::http::header::AUTHORIZATION;
 use yulius_app::error::AppError;
 use yulius_app::leftovers::Selection;
 use yulius_contracts::api::leftovers::{DeleteLeftoversRequest, LeftoversView};
 
 use crate::AppState;
-use crate::auth::Auth;
+use crate::auth::{Auth, bearer};
 use crate::error::ApiResult;
 
 /// `GET /api/admin/leftovers` (LFT-010).
@@ -34,11 +33,7 @@ pub async fn delete(
 
 /// The CLI's key from `Authorization: Bearer <key>`, checked against the server's.
 pub(crate) fn cli_key(app: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
-    let presented = headers
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
+    let presented = bearer(headers).unwrap_or_default();
     if app.leftovers_key_matches(presented) {
         Ok(())
     } else {

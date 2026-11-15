@@ -1,7 +1,10 @@
 //! Task and attempt state machines (SPEC-002 §6.1, §6.2).
 //!
-//! Every nonterminal state has an owner, an exit trigger and a timeout; the timeouts are
-//! constants here and enforced by the application supervisor.
+//! Every nonterminal state has an owner and an exit trigger. [`TaskStatus::apply`] is the table of
+//! the changes events cause, from which the supervisor, the capacity controller and a waiting
+//! task's start changes take the next status; a start that fails and a switch that ends without
+//! its new run are written as their outcome directly (`failed_*`, `stopped_switch_failed`), and a
+//! run lost while its switch was ending it goes through the table (`Lost(SwitchTimeout)`).
 
 /// Why a task's live run ended without a normal close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,8 +31,6 @@ pub enum StopReason {
 pub enum FailReason {
     /// The process could not be spawned.
     SpawnError,
-    /// The process did not report running in time.
-    StartTimeout,
     /// Preconditions failed (worktree, credentials, capacity rejection).
     Precondition,
     /// No Claude account was usable to run it (SPEC-246 CLA-005).
@@ -41,7 +42,7 @@ pub enum FailReason {
 pub enum TaskStatus {
     /// Waiting for a free session slot. Owner: scheduler.
     Queued,
-    /// Process spawn in progress. Owner: supervisor. Timeout: [`START_TIMEOUT_MS`].
+    /// Process spawn in progress. Owner: supervisor.
     Starting,
     /// Agent process alive. Owner: supervisor.
     Running,
@@ -110,8 +111,6 @@ pub enum TaskEvent {
     CapacityGranted,
     /// The process host reported the agent running.
     Spawned,
-    /// Spawning failed or timed out.
-    StartFailed(FailReason),
     /// The agent process exited; `normal` when it exited cleanly on the user's request.
     Exited {
         /// Clean exit (status 0, not signalled).
@@ -127,8 +126,6 @@ pub enum TaskEvent {
     SwitchStarted,
     /// The replacement run is live.
     SwitchCompleted,
-    /// The switch failed or timed out.
-    SwitchAborted(StopReason),
     /// No account has capacity right now.
     CapacityExhausted,
     /// Capacity returned on the account a paused live run already uses.
@@ -161,8 +158,6 @@ pub struct TransitionError {
     pub event: TaskEvent,
 }
 
-/// Spawn must report running within this time.
-pub const START_TIMEOUT_MS: i64 = 30_000;
 /// Maximum total duration of an account/provider switch.
 pub const SWITCH_TIMEOUT_MS: i64 = 120_000;
 /// Graceful interrupt period before SIGTERM.
@@ -220,7 +215,6 @@ impl TaskStatus {
             (S::Chained | S::Prepared, E::ChainChosen) => S::Chained,
             (S::Chained | S::Prepared, E::PreparedChosen) => S::Prepared,
             (S::Starting, E::Spawned) => S::Running,
-            (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
             (S::Running, E::Exited { normal: true }) => S::Closed,
             (S::Running | S::Starting, E::Exited { normal: false }) => {
@@ -240,7 +234,6 @@ impl TaskStatus {
             (S::WaitingCapacity, E::Exited { normal: false }) => S::Stopped(StopReason::Crashed),
             (S::WaitingCapacity, E::Lost(reason)) => S::Stopped(reason),
             (S::Switching, E::SwitchCompleted) => S::Running,
-            (S::Switching, E::SwitchAborted(reason)) => S::Stopped(reason),
             (S::WaitingCapacity, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
             (S::Stopping, E::Reaped | E::Exited { .. } | E::Killed) => {
                 S::Stopped(StopReason::Cancelled)
@@ -292,7 +285,6 @@ impl TaskStatus {
             Self::Stopped(StopReason::SwitchTimeout) => "stopped_switch_timeout",
             Self::Stopped(StopReason::ServerLost) => "stopped_server_lost",
             Self::Failed(FailReason::SpawnError) => "failed_spawn_error",
-            Self::Failed(FailReason::StartTimeout) => "failed_start_timeout",
             Self::Failed(FailReason::Precondition) => "failed_precondition",
             Self::Failed(FailReason::NoAccount) => "failed_no_account",
             Self::Chained => "chained",
@@ -311,7 +303,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 20] = [
+pub const ALL_STATUSES: [TaskStatus; 19] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -327,7 +319,6 @@ pub const ALL_STATUSES: [TaskStatus; 20] = [
     TaskStatus::Stopped(StopReason::SwitchTimeout),
     TaskStatus::Stopped(StopReason::ServerLost),
     TaskStatus::Failed(FailReason::SpawnError),
-    TaskStatus::Failed(FailReason::StartTimeout),
     TaskStatus::Failed(FailReason::Precondition),
     TaskStatus::Failed(FailReason::NoAccount),
     TaskStatus::Chained,
@@ -380,10 +371,13 @@ impl Activity {
 /// What a task's pull request says (SPEC-001 GIT-001), as the Git overview last read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PullSignal {
-    /// Open with checks green, or with none required: tested.
+    /// Open, in no conflict with its base, with checks green or none required: tested.
     Tested,
     /// Open while its checks run or cannot be read.
     InReview,
+    /// Open with checks green or none required, and in conflict with its base: it cannot merge
+    /// as it is, so it is not tested (SPEC-491 DON-001).
+    Conflicting,
     /// Open with failing checks.
     Failing,
     /// Open while Yulius CI could not run its checks (disk, a timeout, the host): not the code
@@ -394,12 +388,16 @@ pub enum PullSignal {
 }
 
 impl PullSignal {
-    /// From a pull request's `state` and `checks` wire names (`PullView`); `None` for a closed
-    /// pull request, which says nothing about the task.
+    /// From a pull request's `state` and `checks` wire names (`PullView`) and whether it
+    /// conflicts with its base; `None` for a closed pull request, which says nothing about the
+    /// task. The one reading of "tested" (SPEC-491 DON-001): the sidebar's counts, the Git
+    /// overview and `task_is_done` (chains, start rules) all ask it. `checks` is `none` only
+    /// where the project requires none (DON-002: the caller says `pending` otherwise).
     #[must_use]
-    pub fn from_wire(state: &str, checks: &str) -> Option<Self> {
+    pub fn from_wire(state: &str, checks: &str, conflicts: bool) -> Option<Self> {
         match (state, checks) {
             ("merged", _) => Some(Self::Merged),
+            ("open", "success" | "none") if conflicts => Some(Self::Conflicting),
             ("open", "success" | "none") => Some(Self::Tested),
             ("open", "failure") => Some(Self::Failing),
             ("open", "error") => Some(Self::Errored),
@@ -425,16 +423,29 @@ pub struct AttentionFacts {
     pub chain_blocked: bool,
     /// The task has a plan with steps not done or skipped yet (STP-001).
     pub plan_open: bool,
+    /// The task's spec says its work is not finished (`status` other than `done` or
+    /// `abandoned`): work it declared is left, however complete its plan reads (SPEC-491
+    /// DON-004).
+    pub spec_unfinished: bool,
     /// Claude Code last recorded the session's goal as set, not met or failed: the goal's work
     /// is unfinished (SPEC-429 ANS-002). A met or cleared goal is not.
     pub goal_unfinished: bool,
     /// The idle agent left background shells running: it wakes by itself when they report.
     pub background_shells: bool,
-    /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge): it
-    /// goes on by itself when Yulius has news (SPEC-085 STT-002).
+    /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge), or
+    /// Yulius has news of its pull request for it (an armed merge, a merge not said yet;
+    /// SPEC-487 CHN-001): it goes on by itself when Yulius has news (SPEC-085 STT-002).
     pub yulius_wait: bool,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
+    /// Its live run is paused by a person or held by an update (SPEC-191): it does nothing until
+    /// it resumes.
+    pub paused: bool,
+    /// A closed task that never ran and is the onboarding task its pending sandbox waits for:
+    /// it starts with Start onboarding (SPEC-153 OLC-006).
+    pub awaits_start_onboarding: bool,
+    /// The idle agent's merge is armed: Yulius merges it and tells the agent (SPEC-487 CHN-001).
+    pub merge_armed: bool,
 }
 
 /// A task's group in the web UI's sidebar (SPEC-001 UI-050). Home's cards and the sandbox tabs
@@ -456,35 +467,73 @@ pub enum TaskGroup {
 }
 
 impl AttentionFacts {
+    /// The facts of a task in `status` with `activity` and nothing else known.
+    #[must_use]
+    pub fn new(status: TaskStatus, activity: Option<Activity>) -> Self {
+        Self {
+            status,
+            activity,
+            held_prompt: false,
+            browser_request: false,
+            chain_blocked: false,
+            plan_open: false,
+            spec_unfinished: false,
+            goal_unfinished: false,
+            background_shells: false,
+            yulius_wait: false,
+            pull: None,
+            paused: false,
+            awaits_start_onboarding: false,
+            merge_armed: false,
+        }
+    }
+
     /// The task's sidebar group: the one rule of `taskInfo` in the web UI's `status.js`.
     ///
-    /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
-    /// browser request needs you. After a finished turn the pull request speaks: failing checks
-    /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
-    /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
-    /// could not run keeps it Working (In review); with the plan complete, background shells
+    /// The onboarding task a pending sandbox waits for is Queued (it starts with Start onboarding);
+    /// any other task being stopped or ended is Ended, whatever else holds. A run paused by a
+    /// person or an update is Working, whatever it waited for (SPEC-191). A held prompt or a
+    /// pending browser request needs you. A finished turn whose merge is armed is Working, an
+    /// achieved goal's too (SPEC-487 CHN-001). After a finished turn the pull request speaks:
+    /// failing checks need you once the agent stopped (SPEC-085 STT-003: while its background work
+    /// runs or it waits in `yulius wait` it goes on by itself, and the task is Working), a CI run
+    /// that could not run keeps it Working (In review); with no declared work left (the plan
+    /// complete and the spec, if any, not saying otherwise: SPEC-491 DON-004), background shells
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
-    /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
-    /// merged pull request makes it Done. Otherwise the task's own state: a
-    /// permission prompt needs you, and so does "Your turn", an idle agent with steps open or an
-    /// unfinished goal (unless the agent's background shells still run or it waits in
-    /// `yulius wait`: it goes on by itself); an idle agent with neither answered and is Done
-    /// ("Answered", SPEC-429), as is an achieved goal; a
-    /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
-    /// the rest is Working.
+    /// armed merge), checks still running or a conflict with its base (In review) keep it
+    /// Working, and otherwise a tested or merged pull request makes it Done. Otherwise the task's own state: a permission prompt needs
+    /// you, and so does "Your turn", an idle agent with declared work left or an unfinished goal (unless
+    /// the agent's background shells still run or it waits in `yulius wait`: it goes on by itself);
+    /// an idle agent with neither answered and is Done ("Answered", SPEC-429), as is an achieved
+    /// goal; a queued, chained or prepared task is Queued (a chain whose predecessor ended
+    /// otherwise needs you), and the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
         use TaskGroup as G;
+        if self.awaits_start_onboarding && self.status == TaskStatus::Closed {
+            return G::Queued;
+        }
         if self.status.is_resting() || self.status == TaskStatus::Stopping {
             return G::Ended;
+        }
+        // A paused run does nothing until it resumes, whatever it waited for (SPEC-191).
+        if self.paused {
+            return G::Working;
         }
         if self.held_prompt || self.browser_request {
             return G::NeedsYou;
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
+        // Yulius merges it and tells its agent, an achieved goal's too (SPEC-487 CHN-001).
+        if finished && self.merge_armed {
+            return G::Working;
+        }
         // The idle agent goes on by itself: its background work wakes it, or Yulius does.
         let goes_on = self.background_shells || self.yulius_wait;
+        // Work the task declared is left: steps of its plan, or a spec that does not say done
+        // (SPEC-491 DON-004).
+        let work_left = self.plan_open || self.spec_unfinished;
         if finished && let Some(pull) = self.pull {
             if pull == PullSignal::Failing {
                 return if goes_on { G::Working } else { G::NeedsYou };
@@ -493,13 +542,16 @@ impl AttentionFacts {
             if pull == PullSignal::Errored {
                 return G::Working;
             }
-            if !self.plan_open {
+            if !work_left {
                 return if self.background_shells {
                     G::Working
                 } else if self.activity == Some(Activity::Done) {
                     G::Done
-                } else if self.yulius_wait || pull == PullSignal::InReview {
-                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003).
+                } else if self.yulius_wait
+                    || matches!(pull, PullSignal::InReview | PullSignal::Conflicting)
+                {
+                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003), or
+                    // is told of the conflict by the pull request watch (SPEC-491 DON-003).
                     G::Working
                 } else {
                     G::Done
@@ -511,7 +563,7 @@ impl AttentionFacts {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
                 Some(Activity::Waiting) if self.yulius_wait => G::Working,
                 // Stopped with work left: the person's turn (SPEC-429 ANS-002).
-                Some(Activity::Waiting) if self.plan_open || self.goal_unfinished => G::NeedsYou,
+                Some(Activity::Waiting) if work_left || self.goal_unfinished => G::NeedsYou,
                 // Answered: nothing open and nothing asked (ANS-001).
                 Some(Activity::Waiting) => G::Done,
                 Some(Activity::NeedsAttention) => G::NeedsYou,
@@ -745,10 +797,6 @@ mod tests {
             s.apply(TaskEvent::CapacityExhausted)?,
             TaskStatus::WaitingCapacity
         );
-        assert_eq!(
-            s.apply(TaskEvent::SwitchAborted(StopReason::SwitchTimeout))?,
-            TaskStatus::Stopped(StopReason::SwitchTimeout)
-        );
         assert!(TaskStatus::Closed.apply(TaskEvent::SwitchStarted).is_err());
         Ok(())
     }
@@ -868,18 +916,7 @@ mod tests {
     }
 
     fn facts(status: TaskStatus, activity: Option<Activity>) -> AttentionFacts {
-        AttentionFacts {
-            status,
-            activity,
-            held_prompt: false,
-            browser_request: false,
-            chain_blocked: false,
-            plan_open: false,
-            goal_unfinished: false,
-            background_shells: false,
-            yulius_wait: false,
-            pull: None,
-        }
+        AttentionFacts::new(status, activity)
     }
 
     /// SPEC-085 STT-002, STT-003 (task #63 on 2026-10-13: "Needs you" with failing checks while
@@ -1063,7 +1100,7 @@ mod tests {
         };
         assert!(with(A::Waiting, P::Failing, false).needs_you());
         assert!(with(A::Done, P::Failing, false).needs_you());
-        for pull in [P::Tested, P::InReview, P::Merged] {
+        for pull in [P::Tested, P::InReview, P::Conflicting, P::Merged] {
             assert!(!with(A::Waiting, pull, false).needs_you(), "{pull:?}");
             // Open plan steps keep it out of Done: the task's own state shows (#139).
             assert!(
@@ -1149,6 +1186,48 @@ mod tests {
             };
             assert_eq!(held.group(), G::NeedsYou, "{status:?}");
         }
+        // SPEC-483 GRP-001: a run paused by a person or an update does nothing until it resumes:
+        // Working, whatever it was doing or waiting for, as the sidebar shows it (SPEC-191).
+        for status in [TaskStatus::Running, TaskStatus::Switching] {
+            for activity in [A::NeedsAttention, A::Waiting, A::Done, A::Working] {
+                let paused = AttentionFacts {
+                    paused: true,
+                    held_prompt: true,
+                    browser_request: true,
+                    plan_open: true,
+                    pull: Some(P::Failing),
+                    ..facts(status, Some(activity))
+                };
+                assert_eq!(paused.group(), G::Working, "{status:?} {activity:?}");
+            }
+        }
+        // A stop asked for still ends it.
+        let stopping = AttentionFacts {
+            paused: true,
+            ..facts(TaskStatus::Stopping, None)
+        };
+        assert_eq!(stopping.group(), G::Ended);
+        // SPEC-483 GRP-002: the onboarding task a pending sandbox waits for is in line, as a
+        // prepared task waiting for Start now is; any other closed task has ended.
+        let onboarding = AttentionFacts {
+            awaits_start_onboarding: true,
+            ..facts(TaskStatus::Closed, None)
+        };
+        assert_eq!(onboarding.group(), G::Queued);
+        // SPEC-483 GRP-003: a finished turn whose merge is armed is not Done, an achieved goal
+        // neither: Yulius merges it and tells its agent (SPEC-487 CHN-001).
+        for activity in [A::Done, A::Waiting] {
+            for pull in [None, Some(P::Tested), Some(P::InReview), Some(P::Merged)] {
+                let armed = AttentionFacts {
+                    merge_armed: true,
+                    yulius_wait: true,
+                    pull,
+                    ..running(Some(activity))
+                };
+                assert_eq!(armed.group(), G::Working, "{activity:?} {pull:?}");
+            }
+        }
+
         // After a finished turn the pull request speaks (#35, #139).
         let with = |activity, pull, plan_open| AttentionFacts {
             pull: Some(pull),
@@ -1168,7 +1247,39 @@ mod tests {
             G::Done,
             "an achieved goal"
         );
+        // SPEC-491 DON-003: a pull request that conflicts with its base is not tested. Its
+        // agent is told by the watch, so it is In review; an achieved goal stays Done, and with
+        // steps open the task's own state shows.
+        assert_eq!(with(A::Waiting, P::Conflicting, false).group(), G::Working);
+        assert_eq!(with(A::Done, P::Conflicting, false).group(), G::Done);
+        assert_eq!(with(A::Waiting, P::Conflicting, true).group(), G::NeedsYou);
         assert_eq!(with(A::Waiting, P::Tested, true).group(), G::NeedsYou);
+        // SPEC-491 DON-004: a spec that does not say done is work left, as open steps are: a
+        // tested or merged pull request does not make the task Done, an idle agent without a
+        // pull request did not just answer, and an achieved goal stays Done.
+        let declared = |facts: AttentionFacts| AttentionFacts {
+            spec_unfinished: true,
+            ..facts
+        };
+        for pull in [P::Tested, P::Merged, P::InReview, P::Conflicting] {
+            assert_eq!(
+                declared(with(A::Waiting, pull, false)).group(),
+                G::NeedsYou,
+                "{pull:?}"
+            );
+            assert_eq!(
+                declared(with(A::Done, pull, false)).group(),
+                G::Done,
+                "{pull:?}"
+            );
+        }
+        assert_eq!(declared(running(Some(A::Waiting))).group(), G::NeedsYou);
+        assert_eq!(declared(running(Some(A::Working))).group(), G::Working);
+        let waits = AttentionFacts {
+            yulius_wait: true,
+            ..declared(with(A::Waiting, P::Merged, false))
+        };
+        assert_eq!(waits.group(), G::Working, "Yulius has news for it");
         let shells = AttentionFacts {
             background_shells: true,
             ..with(A::Waiting, P::Tested, false)
@@ -1255,35 +1366,33 @@ mod tests {
 
     #[test]
     fn pull_signals_from_wire_names() {
-        assert_eq!(
-            PullSignal::from_wire("merged", "none"),
-            Some(PullSignal::Merged)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "success"),
-            Some(PullSignal::Tested)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "none"),
-            Some(PullSignal::Tested)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "failure"),
-            Some(PullSignal::Failing)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "pending"),
-            Some(PullSignal::InReview)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "unknown"),
-            Some(PullSignal::InReview)
-        );
-        assert_eq!(
-            PullSignal::from_wire("open", "error"),
-            Some(PullSignal::Errored)
-        );
-        assert_eq!(PullSignal::from_wire("closed", "none"), None);
+        use PullSignal as P;
+        let cases = [
+            ("merged", "none", false, Some(P::Merged)),
+            ("open", "success", false, Some(P::Tested)),
+            ("open", "none", false, Some(P::Tested)),
+            ("open", "failure", false, Some(P::Failing)),
+            ("open", "pending", false, Some(P::InReview)),
+            ("open", "unknown", false, Some(P::InReview)),
+            ("open", "error", false, Some(P::Errored)),
+            ("closed", "none", false, None),
+            // SPEC-491 DON-001: a pull request that conflicts with its base is not tested,
+            // whatever its checks say; what its checks say otherwise stays what it reads.
+            ("open", "success", true, Some(P::Conflicting)),
+            ("open", "none", true, Some(P::Conflicting)),
+            ("open", "failure", true, Some(P::Failing)),
+            ("open", "error", true, Some(P::Errored)),
+            ("open", "pending", true, Some(P::InReview)),
+            ("merged", "none", true, Some(P::Merged)),
+            ("closed", "success", true, None),
+        ];
+        for (state, checks, conflicts, signal) in cases {
+            assert_eq!(
+                P::from_wire(state, checks, conflicts),
+                signal,
+                "{state} {checks} conflicts={conflicts}"
+            );
+        }
     }
 
     #[test]

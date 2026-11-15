@@ -25,10 +25,3 @@ pub struct UserRef {
     /// GitHub login (or `superadmin`).
     pub login: String,
 }
-
-/// Generic acknowledgement with an optional identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdResponse {
-    /// Identifier of the created or affected object.
-    pub id: String,
-}

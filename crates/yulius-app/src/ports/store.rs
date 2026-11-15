@@ -13,7 +13,7 @@ use crate::error::AppResult;
 use crate::model::{
     AccountChange, AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess,
     ControlRequest, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord,
-    GitHubTokenRecord, InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
+    GitHubTokenRecord, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
     ProviderSessionRecord, RecordReservation, RecountOutcome, RunFacts, SandboxRecord,
     ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
     WebSessionRecord,
@@ -350,6 +350,20 @@ pub trait TaskStore: Send + Sync {
         reason: Option<&crate::attention::AttentionRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Queues the task `id`, which must read `expected`, and keeps how it is to start, in one
+    /// step (SPEC-483 QST-001): [`Self::transition_task`] to `queued` and the start. `false`,
+    /// and nothing changed, when the task no longer reads `expected`.
+    async fn queue_task(
+        &self,
+        id: &TaskId,
+        expected: TaskStatus,
+        start: &crate::model::QueuedStart,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// How the queued task `id` is to start, as kept since it was queued this time. None for a
+    /// task that is not queued, was queued without a start, or whose kept start is of an
+    /// earlier wait in the queue.
+    async fn queued_start(&self, id: &TaskId) -> AppResult<Option<crate::model::QueuedStart>>;
     /// The reason of the flag a running task reads now (SPEC-472), the one written when that
     /// flag was raised, and when it was raised. None for a task that reads no flag, for a flag
     /// raised without a reason and for a reason of an earlier flag.
@@ -412,7 +426,8 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Passes control of `task` from `from` to `to`, whose request waits, and drops the request,
     /// in one statement: false (and nothing changes) unless `from` still owns the task and `to`'s
-    /// request still waits.
+    /// request still waits. `from` becomes the giver who may take it back, unless `to` is the
+    /// giver recorded (it is handed back): then nobody is (SPEC-490 OWN-009).
     async fn pass_control(
         &self,
         task: &TaskId,
@@ -420,9 +435,21 @@ pub trait TaskStore: Send + Sync {
         to: &UserId,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Who handed `task` over on request and may take it back (SPEC-490 OWN-009), if anyone.
+    async fn control_from(&self, task: &TaskId) -> AppResult<Option<UserId>>;
+    /// Gives `task` back from `owner` to `giver`, who handed it over, and drops any request and
+    /// the giver, in one statement: false unless `owner` still owns it and `giver` is still the
+    /// one recorded (SPEC-490 OWN-009).
+    async fn take_back_control(
+        &self,
+        task: &TaskId,
+        owner: &UserId,
+        giver: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Passes control of `task` from `from`, an owner who can no longer act, to `to` whatever
     /// request waits, and drops that request, in one statement: false unless `from` still owns
-    /// the task (SPEC-070 R5).
+    /// the task (SPEC-070 R5). Nobody can take it back afterwards.
     async fn take_control(
         &self,
         task: &TaskId,
@@ -441,6 +468,26 @@ pub trait TaskStore: Send + Sync {
         max_bytes: usize,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Replaces the prompt of a task that has never started (SPEC-487 TCT-002), under the rule
+    /// of [`Self::append_unstarted_prompt`] and only while the prompt is still `expected`: one
+    /// statement, so a start either follows it (and reads the new prompt) or makes it fail, and
+    /// a message queued into the request meanwhile is never overwritten. Returns whether it
+    /// replaced.
+    async fn replace_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        expected: &str,
+        prompt: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Gives the queued tasks `order` the queue slots they hold among themselves, in that
+    /// order (SPEC-487 TCT-003): the earliest slot to the first; every other queued task keeps
+    /// its slot. One transaction; nothing changes and false is returned unless every one of
+    /// them is `queued`. Without ties only the named tasks' places change; where tasks shared
+    /// a millisecond, the places from the first named slot on are spread a millisecond apart,
+    /// in the order the queue then has, other tasks' included (their `updated_at` stays). A
+    /// task's stored start (`queued_start`) keeps naming its place.
+    async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool>;
     /// Appends `addition` to the prompt of a task created resting that never ran (SPEC-256
     /// LOB-005: the onboarding task before Start onboarding): it is `closed` with no attempt and no
     /// provider session, the prompt does not hold `addition` already, and it stays within
@@ -613,14 +660,6 @@ pub trait AccountStore: Send + Sync {
         last_error: Option<&str>,
         at: Timestamp,
     ) -> AppResult<()>;
-    /// Records an account's last error only, leaving its status and usage as they are now
-    /// (a failed usage request must not write back an older copy, #72).
-    async fn set_account_error(
-        &self,
-        id: &AccountId,
-        last_error: &str,
-        at: Timestamp,
-    ) -> AppResult<()>;
     /// Records a note about reading an account's usage (`usage: …`) as its last error unless
     /// another error is there: a sign-in or re-login error stays (ROT-009).
     async fn set_usage_error(&self, id: &AccountId, note: &str, at: Timestamp) -> AppResult<()>;
@@ -652,6 +691,12 @@ pub trait CoordinationStore: Send + Sync {
     /// [`Self::update_step`]), so a plan that grew later can say so (SPEC-484 PLN-009). `None`
     /// while no step is finished, and for an unknown task.
     async fn plan_first_steps(&self, task: &TaskId) -> AppResult<Option<u32>>;
+    /// Keeps what the task's spec says of its work, the `status` of its frontmatter as written
+    /// (SPEC-491 DON-004); `None` when the spec names none. Returns whether it changed.
+    async fn set_spec_status(&self, task: &TaskId, status: Option<&str>) -> AppResult<bool>;
+    /// What the task's spec said of its work when Yulius last read it. `None` for a task without
+    /// a spec, one whose spec was never read, and an unknown task.
+    async fn spec_status(&self, task: &TaskId) -> AppResult<Option<String>>;
     /// When each step of a task last started and finished, from `step_events`.
     async fn step_timings(&self, task: &TaskId) -> AppResult<Vec<crate::model::StepTiming>>;
     /// Updates one step and records an event; `NotFound` if absent.
@@ -663,25 +708,13 @@ pub trait CoordinationStore: Send + Sync {
         actor: &str,
         at: Timestamp,
     ) -> AppResult<StepRecord>;
-    /// Inserts a message and receipts for the recipients.
+    /// Inserts a message and receipts for the recipients. Nothing in the product writes messages
+    /// since SPEC-028; tests seed the old rows a project's export still carries.
     async fn insert_message(&self, message: &MessageRecord, recipients: &[TaskId])
     -> AppResult<()>;
-    /// Messages addressed to a task (history: nothing writes messages since SPEC-028),
-    /// newest last.
-    async fn inbox(
-        &self,
-        task: &TaskId,
-        unread_only: bool,
-        limit: u32,
-    ) -> AppResult<Vec<InboxEntry>>;
-    /// Marks messages delivered (hook context) for a task.
-    async fn mark_delivered(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
-    /// Marks messages read for a task.
-    async fn mark_read(&self, task: &TaskId, at: Timestamp) -> AppResult<u32>;
-    /// Unread count for a task.
-    async fn unread_count(&self, task: &TaskId) -> AppResult<u32>;
-    /// Messages of a sandbox involving a task (sent or received), newest last.
-    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<InboxEntry>>;
+    /// Messages of a sandbox involving a task (sent or received), newest last: history, for a
+    /// project's export.
+    async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
     /// Inserts a scope claim.
     async fn insert_claim(&self, claim: &ScopeClaimRecord) -> AppResult<()>;
     /// Active claims of a sandbox.

@@ -58,6 +58,10 @@ pub struct TaskSummary {
     /// A person's request for control that waits for the owner's answer (SPEC-070), or null.
     #[serde(default)]
     pub control_request: Option<ControlRequestView>,
+    /// Who handed the task over on request and may take it back without asking (SPEC-490
+    /// OWN-009), or null.
+    #[serde(default)]
+    pub control_from: Option<UserRef>,
     /// Creation time.
     pub created_at: String,
     /// Last change of anything (title, owner, archive, status …).
@@ -105,15 +109,26 @@ pub struct TaskSummary {
     #[serde(default)]
     pub background_shells_since: Option<String>,
     /// While the agent is idle: it waits in `yulius wait` for its checks, its delivery or an
-    /// armed merge (not counted in `background_shells`, SPEC-050 DSK-102). It goes on by itself
-    /// when Yulius has news, so the task is not the person's turn (SPEC-085 STT-002).
+    /// armed merge (not counted in `background_shells`, SPEC-050 DSK-102), or Yulius has news of
+    /// its pull request for it without such a wait: a merge is armed, or its merge or how an
+    /// armed merge ended is not said yet (SPEC-487 CHN-001). It goes on by itself
+    /// when Yulius has news, so the task is neither Done nor the person's turn (SPEC-085 STT-002).
     #[serde(default)]
     pub yulius_wait: bool,
+    /// While the agent is idle: its merge is armed, so Yulius merges it and tells the agent; the
+    /// task is not Done, an achieved goal neither (SPEC-487 CHN-001, SPEC-483 GRP-003).
+    #[serde(default)]
+    pub merge_armed: bool,
     /// While the agent is idle: Claude Code last recorded its goal as set, not met or failed, so
     /// the agent that stopped left work unfinished and it is the person's turn. Without it, or an
     /// open plan, an idle agent answered (SPEC-429).
     #[serde(default)]
     pub goal_unfinished: bool,
+    /// While the agent is idle: the task's spec says its work is not finished (`status` other
+    /// than `done` or `abandoned`), so work it declared is left, however complete its plan
+    /// reads: the task is not Done, whatever its pull request says (SPEC-491 DON-004).
+    #[serde(default)]
+    pub spec_unfinished: bool,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

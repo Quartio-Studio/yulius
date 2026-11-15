@@ -6,8 +6,8 @@ use yulius_app::attention::AttentionRecord;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord, PersonPause,
-    ProviderSessionRecord, RecountOutcome, RunFacts, SwitchDecisionRecord, TaskMode, TaskOrigin,
-    TaskRecord, TaskTimes,
+    ProviderSessionRecord, QueuedStart, QueuedStartKind, RecountOutcome, RunFacts,
+    SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord, TaskTimes,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -16,6 +16,46 @@ use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
+
+/// The status change of [`TaskStore::transition_task`], with its bookkeeping. A task that
+/// leaves the queue loses the start kept for its wait (SPEC-483 QST-001): a held prompt stays
+/// in the database no longer than a pause's continuation does. `closed_at` is the time of the
+/// close the task is in, `NULL` while it is not closed (SPEC-483 CLT-001). `release_scheduled`
+/// (intake.rs) repeats the bookkeeping for prepared → queued.
+fn transition(
+    c: &rusqlite::Connection,
+    id: &str,
+    expected: Option<TaskStatus>,
+    next: TaskStatus,
+    activity: Option<Activity>,
+    at: Timestamp,
+) -> AppResult<bool> {
+    let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
+    let n = c
+        .execute(
+            "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
+             state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT ?2 THEN ?3 ELSE state_at END, \
+             working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
+               OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
+               WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
+             closed_at = CASE WHEN ?1 != 'closed' THEN NULL WHEN status = 'closed' THEN \
+               COALESCE(closed_at, ?3) ELSE ?3 END, \
+             queued_at = CASE WHEN ?4 IS NOT NULL THEN ?4 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
+             queued_start = CASE WHEN ?1 = 'queued' THEN queued_start ELSE NULL END, \
+             gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
+             WHERE id = ?5 AND (?6 IS NULL OR status = ?6)",
+            params![
+                next.as_str(),
+                activity.map(Activity::as_str),
+                at.0,
+                queued,
+                id,
+                expected.map(TaskStatus::as_str)
+            ],
+        )
+        .map_err(db)?;
+    Ok(n == 1)
+}
 
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
@@ -299,7 +339,9 @@ impl TaskStore for SqliteStore {
             .collect::<Vec<_>>()
             .join(", ");
         self.tasks_query(
-            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at)"),
+            // Tasks that share a place (queued in the same millisecond) keep the order
+            // they were created in: the queue's order is one order, whoever reads it.
+            format!("SELECT {TASK_COLS} FROM tasks WHERE status IN ({marks}) ORDER BY COALESCE(queued_at, created_at), rowid"),
             statuses.iter().map(|s| s.as_str().to_owned()).collect(),
         )
         .await
@@ -314,33 +356,38 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
-        // `release_scheduled` (intake.rs) repeats this bookkeeping for prepared → queued.
+        self.call(move |c| transition(c, &id, expected, next, activity, at))
+            .await
+    }
+
+    async fn queue_task(
+        &self,
+        id: &TaskId,
+        expected: TaskStatus,
+        start: &QueuedStart,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let start = start.clone();
         self.call(move |c| {
-            let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
-            let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
-            let n = c
-                .execute(
-                    "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
-                     state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT ?2 THEN ?3 ELSE state_at END, \
-                     working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
-                       OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
-                       WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
-                     closed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE closed_at END, \
-                     queued_at = CASE WHEN ?5 IS NOT NULL THEN ?5 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
-                     gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
-                     WHERE id = ?6 AND (?7 IS NULL OR status = ?7)",
-                    params![
-                        next.as_str(),
-                        activity.map(Activity::as_str),
-                        at.0,
-                        closed,
-                        queued,
-                        id,
-                        expected.map(TaskStatus::as_str)
-                    ],
-                )
-                .map_err(db)?;
-            Ok(n == 1)
+            // One transaction: a task is never queued without the start it was to make.
+            let tx = c.transaction().map_err(db)?;
+            if !transition(&tx, &id, Some(expected), TaskStatus::Queued, None, at)? {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE tasks SET queued_start = json_object('kind', ?2, 'prompt', ?3, \
+                 'account', ?4, 'at', queued_at) WHERE id = ?1",
+                params![
+                    id,
+                    start.kind.as_str(),
+                    start.prompt,
+                    start.account_id.as_ref().map(AccountId::as_str)
+                ],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -464,6 +511,40 @@ impl TaskStore for SqliteStore {
             Ok(n == 1)
         })
         .await
+    }
+
+    async fn queued_start(&self, id: &TaskId) -> AppResult<Option<QueuedStart>> {
+        let id = id.as_str().to_owned();
+        let row: Option<(String, Option<String>, Option<String>)> = self
+            .call(move |c| {
+                c.query_row(
+                    // CASE orders the checks: a row that is not JSON gives no start, not an
+                    // error. The start is the task's while it is queued since it was written.
+                    "SELECT json_extract(queued_start, '$.kind'), \
+                       json_extract(queued_start, '$.prompt'), \
+                       json_extract(queued_start, '$.account') \
+                     FROM tasks WHERE id = ?1 AND status = 'queued' \
+                     AND CASE WHEN json_valid(queued_start) \
+                       THEN json_extract(queued_start, '$.at') END = queued_at \
+                     AND json_type(queued_start, '$.kind') = 'text'",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(db)
+            })
+            .await?;
+        // A kind or a subscription id of another shape (a newer Yulius wrote it) gives none.
+        Ok(row.and_then(|(kind, prompt, account)| {
+            Some(QueuedStart {
+                kind: QueuedStartKind::parse(&kind)?,
+                prompt,
+                account_id: match account {
+                    Some(account) => Some(AccountId::parse(&account).ok()?),
+                    None => None,
+                },
+            })
+        }))
     }
 
     async fn task_attention(&self, id: &TaskId) -> AppResult<Option<(AttentionRecord, Timestamp)>> {
@@ -761,7 +842,8 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
-                     control_requested_at = NULL, updated_at = ?4 \
+                     control_requested_at = NULL, updated_at = ?4, \
+                     control_from = CASE WHEN control_from = ?3 THEN NULL ELSE ?2 END \
                      WHERE id = ?1 AND owner_id = ?2 AND control_requested_by = ?3",
                     params![id, from, to, at.0],
                 )
@@ -787,9 +869,53 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
-                     control_requested_at = NULL, updated_at = ?4 \
+                     control_requested_at = NULL, updated_at = ?4, control_from = NULL \
                      WHERE id = ?1 AND owner_id = ?2",
                     params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn control_from(&self, task: &TaskId) -> AppResult<Option<UserId>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let from: Option<Option<String>> = c
+                .query_row(
+                    "SELECT control_from FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            from.flatten()
+                .map(|from| UserId::parse(&from).map_err(|_| AppError::internal("bad user id")))
+                .transpose()
+        })
+        .await
+    }
+
+    async fn take_back_control(
+        &self,
+        task: &TaskId,
+        owner: &UserId,
+        giver: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, owner, giver) = (
+            task.as_str().to_owned(),
+            owner.as_str().to_owned(),
+            giver.as_str().to_owned(),
+        );
+        self.call_access(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_from = NULL, \
+                     control_requested_by = NULL, control_requested_at = NULL, updated_at = ?4 \
+                     WHERE id = ?1 AND owner_id = ?2 AND control_from = ?3",
+                    params![id, owner, giver, at.0],
                 )
                 .map_err(db)?;
             Ok(n == 1)
@@ -852,6 +978,120 @@ impl TaskStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn replace_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        expected: &str,
+        prompt: &str,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, expected, prompt) = (
+            id.as_str().to_owned(),
+            expected.to_owned(),
+            prompt.to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET prompt = ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6, ?7) AND prompt = ?8 \
+                     AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
+                     AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3)",
+                    params![
+                        prompt,
+                        at.0,
+                        id,
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Chained.as_str(),
+                        TaskStatus::WaitingCapacity.as_str(),
+                        TaskStatus::Prepared.as_str(),
+                        expected
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn reorder_queued(&self, order: &[TaskId], at: Timestamp) -> AppResult<bool> {
+        let order: Vec<String> = order.iter().map(|id| id.as_str().to_owned()).collect();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            // The whole queue as it is read (`tasks_with_status`): each task with its place.
+            let mut queue: Vec<(String, i64)> = Vec::new();
+            {
+                let mut read = tx
+                    .prepare(
+                        "SELECT id, COALESCE(queued_at, created_at) FROM tasks \
+                         WHERE status = 'queued' ORDER BY COALESCE(queued_at, created_at), rowid",
+                    )
+                    .map_err(db)?;
+                let rows = read
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(db)?;
+                for row in rows {
+                    queue.push(row.map_err(db)?);
+                }
+            }
+            // The slots the named tasks hold, earliest first; each must be in the queue.
+            let mut slots = Vec::with_capacity(order.len());
+            for id in &order {
+                let Some(slot) = queue.iter().position(|(queued, _)| queued == id) else {
+                    return Ok(false);
+                };
+                slots.push(slot);
+            }
+            slots.sort_unstable();
+            // The queue asked for: the named tasks in their slots in the order given, every
+            // other task where it was.
+            let mut wanted: Vec<&str> = queue.iter().map(|(id, _)| id.as_str()).collect();
+            for (slot, id) in slots.iter().zip(&order) {
+                wanted[*slot] = id;
+            }
+            // From the first named slot on, each slot keeps its place, moved after the one
+            // before it where two shared a millisecond or the creation order would decide
+            // otherwise: places are told apart by time alone, so the order written is the
+            // order read. Without ties only the named tasks change; what stands before the
+            // first named slot is never touched.
+            let first = slots.first().copied().unwrap_or(0);
+            // A task before the first named slot that shares its place stays in front of it.
+            let mut last = match first.checked_sub(1) {
+                Some(before) => queue[before].1,
+                None => i64::MIN,
+            };
+            for (slot, id) in wanted.iter().enumerate().skip(first) {
+                let place = queue[slot].1.max(last.saturating_add(1));
+                last = place;
+                let held = queue
+                    .iter()
+                    .find(|(queued, _)| queued == id)
+                    .map(|(_, place)| *place);
+                if held == Some(place) {
+                    continue;
+                }
+                // The stored start is the task's while its `at` is its place (`queued_start`):
+                // it moves with the place. The right-hand sides read the row as it was.
+                // A task the call did not name was not changed by anyone: its place moves by
+                // milliseconds to keep the order, and it does not read as updated.
+                let named = order.iter().any(|named| named == id);
+                tx.execute(
+                    "UPDATE tasks SET queued_at = ?2, \
+                       updated_at = CASE WHEN ?4 THEN ?3 ELSE updated_at END, \
+                       queued_start = CASE WHEN json_valid(queued_start) \
+                         AND json_extract(queued_start, '$.at') = queued_at \
+                         THEN json_set(queued_start, '$.at', ?2) ELSE queued_start END \
+                     WHERE id = ?1 AND status = 'queued'",
+                    params![id, place, at.0, named],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -1467,6 +1707,50 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// SPEC-483 CLT-001: `closed_at` is the time of the close the task is in. It is set when
+    /// the task is closed, kept while it stays closed, and cleared when it is taken up again.
+    #[tokio::test]
+    async fn a_close_time_is_the_close_the_task_is_in() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 100, 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let closed_at =
+            || async { Ok::<_, AppError>(store.task(&task).await?.and_then(|t| t.closed_at)) };
+        let to = |next: TaskStatus, at: i64| {
+            let (store, task) = (&store, &task);
+            async move {
+                store
+                    .transition_task(task, None, next, None, Timestamp(at))
+                    .await
+            }
+        };
+        assert!(to(TaskStatus::Closed, 200).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(200)));
+        // Closed again (an archive, a repeated close): still the close of 200.
+        assert!(to(TaskStatus::Closed, 300).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(200)));
+        // Continued: no longer closed, so no close time.
+        assert!(to(TaskStatus::Starting, 400).await?);
+        assert_eq!(closed_at().await?, None);
+        assert!(to(TaskStatus::Queued, 450).await?);
+        assert_eq!(closed_at().await?, None);
+        // Closed once more: the new close.
+        assert!(to(TaskStatus::Closed, 500).await?);
+        assert_eq!(closed_at().await?, Some(Timestamp(500)));
+        Ok(())
+    }
 
     /// SPEC-472 ATN-001: a row whose reason is not JSON, or is JSON of another shape, gives no
     /// reason instead of an error; a reason without a kind is none.

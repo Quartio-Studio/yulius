@@ -33,7 +33,8 @@ in the page.
 ## Consequences
 
 Picking a rule needs no typing and cannot be malformed: at most 16 conditions, the server's
-limit. A picked task that is archived or deleted before the task is created stays in the rule as
+limit (the editor's own since [ADR-0328](0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md):
+the server takes 64). A picked task that is archived or deleted before the task is created stays in the rule as
 "#N (archived or removed)" (the server then refuses a deleted one with a clear message) rather
 than being dropped unseen. The composer can express only flat
 `and`/`or` rules over `done`, `merged` and `ended`; rules with `not` or mixed operators come

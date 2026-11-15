@@ -5,10 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::common::UserRef;
 
-/// `task`: the Claude Code session of a Yulius task. `imported`: a session someone uploaded
-/// from their computer with `yulius onboard`.
-pub const SESSION_KINDS: [&str; 2] = ["task", "imported"];
-
 /// A session in lists and search results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDoc {

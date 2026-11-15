@@ -309,7 +309,6 @@ impl GitHubPort for FakeGitHub {
             client_id: "Iv1.test".into(),
             client_secret: "secret".into(),
             private_key_pem: "pem".into(),
-            webhook_secret: None,
         })
     }
     async fn create_issue(

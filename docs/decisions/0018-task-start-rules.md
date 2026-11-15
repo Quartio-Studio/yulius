@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Extends [0012](0012-task-intake-and-chains.md); specified in
-[SPEC-017](../../.ai/specs/SPEC-017-task-start-rules.md).
+[SPEC-017](../../.ai/specs/SPEC-017-task-start-rules.md). What `#N done` waits for, and the
+bounds of a rule, are amended by
+[0328](0328-a-task-is-not-done-while-yulius-has-pull-request-news-for-it.md).
 
 ## Context
 

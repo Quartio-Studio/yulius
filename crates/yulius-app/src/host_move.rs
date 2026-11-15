@@ -49,10 +49,14 @@ impl MoveReport {
     }
 }
 
-/// The mark's facts; a mark that cannot be read is still a mark.
+/// The mark's facts; `None` without a mark. A mark that cannot be read, or is not JSON or not
+/// even text, is still a mark (SPEC-483 MOV-002), as [`App::paused_before_a_move`] sees it.
 fn read_mark(path: &Path) -> Option<MoveReport> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let facts = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+    if !path.exists() {
+        return None;
+    }
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let facts = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default();
     let url = |key: &str| facts.get(key).and_then(|v| v.as_str()).map(str::to_owned);
     Some(MoveReport {
         version: 1,

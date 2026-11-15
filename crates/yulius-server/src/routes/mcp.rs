@@ -9,15 +9,7 @@ use axum::response::{IntoResponse, Response};
 use yulius_contracts::mcp::RpcRequest;
 
 use crate::AppState;
-
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-}
+use crate::auth::bearer;
 
 pub async fn post(
     State(app): State<AppState>,

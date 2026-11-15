@@ -151,6 +151,26 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0056_plan_first_steps.sql"),
+    // Schema version 57 (SPEC-483 QA1). The file is 0057, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0057_queued_start.sql"),
+    // Schema version 58 (SPEC-483 CLT-002). The file is 0058, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0058_closed_at_only_when_closed.sql"),
+    // Schema version 59 (SPEC-491). The file is 0060, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0060_task_spec_status.sql"),
+    // Schema version 60 (SPEC-490 OWN-009). The file is 0059, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0059_task_control_from.sql"),
+    // Schema version 61 (SPEC-483 EFF-001). The file is 0061, the number `record_number` gave
+    // this task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0061_capacity_window_indexes.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -390,6 +410,71 @@ pub(crate) fn to_u32(value: i64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 35 (review): a schema version is a position in [`MIGRATIONS`] and a
+    /// database records it, so a migration added before the end would give an existing version
+    /// a different migration: databases at that version would run the one after it again.
+    /// The latest versions keep their files; a new one goes at the end.
+    #[test]
+    fn the_latest_schema_versions_keep_their_migrations() {
+        let pinned = [
+            (57, include_str!("migrations/0057_queued_start.sql")),
+            (
+                58,
+                include_str!("migrations/0058_closed_at_only_when_closed.sql"),
+            ),
+            (59, include_str!("migrations/0060_task_spec_status.sql")),
+            (60, include_str!("migrations/0059_task_control_from.sql")),
+            (
+                61,
+                include_str!("migrations/0061_capacity_window_indexes.sql"),
+            ),
+        ];
+        for (version, sql) in pinned {
+            assert_eq!(
+                MIGRATIONS.get(version - 1),
+                Some(&sql),
+                "schema version {version}"
+            );
+        }
+        assert_eq!(MIGRATIONS.len(), 61, "a new migration is pinned here too");
+    }
+
+    /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of
+    /// their window through an index, never a scan of every run ever recorded. The plans are
+    /// those of a database without statistics, as the store's are: nothing runs `ANALYZE`, and
+    /// without statistics a populated database plans as an empty one (review of slice 35).
+    #[tokio::test]
+    async fn the_capacity_views_read_their_window_through_an_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteStore::open_in_memory()?;
+        for sql in [
+            crate::capacity::TOKEN_RUNS_SQL.to_owned(),
+            crate::capacity::pauses_since_sql(crate::capacity::PAUSE_COLS),
+            crate::accounts::ACCOUNT_TOKENS_SQL.to_owned(),
+        ] {
+            let plan: Vec<String> = store
+                .call(move |c| {
+                    let mut statement = c
+                        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                        .map_err(db)?;
+                    let details = statement
+                        .query_map([0_i64], |r| r.get::<_, String>(3))
+                        .map_err(db)?
+                        .collect::<Result<Vec<String>, _>>()
+                        .map_err(db)?;
+                    Ok(details)
+                })
+                .await?;
+            for step in &plan {
+                assert!(
+                    !(step.starts_with("SCAN a") || step.starts_with("SCAN capacity_pauses")),
+                    "{step} in {plan:?}"
+                );
+            }
+        }
+        Ok(())
+    }
 
     /// A version-2 database (deployed before the Claude-only change) keeps its rows when
     /// version 3 drops the harness-switching columns.
@@ -735,6 +820,32 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-490 OWN-009: a task of a version-58 database (handed over before the column existed)
+    /// has nobody who may take it back.
+    #[tokio::test]
+    async fn version_fifty_eight_tasks_have_no_giver() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store::TaskStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v58.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..58] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 58)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1), ('u2', 'V', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, owner_id, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 'u2', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = yulius_domain::ids::TaskId::parse("t1")?;
+        assert_eq!(store.control_from(&task).await?, None);
+        Ok(())
+    }
+
     /// SPEC-482 FBK-005: a run records the model it was launched with; the runs of a version-53
     /// database have none, and the column round-trips.
     #[tokio::test]
@@ -819,7 +930,225 @@ mod tests {
             )
             .await?;
         assert_eq!(store.plan_first_steps(&task).await?, Some(3));
-        assert_eq!(schema_version(), 56);
+        Ok(())
+    }
+
+    /// SPEC-491 DON-004: a version-58 database gets the column; what a task's spec says of its
+    /// work is kept and read back, a write that changes nothing says so, and a task whose spec
+    /// was never read has none.
+    #[tokio::test]
+    async fn a_task_keeps_what_its_spec_says_of_its_work() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::ports::store::CoordinationStore as _;
+        use yulius_domain::ids::TaskId;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v58.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..58] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 58)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'waiting', 'ui', 'u1', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = TaskId::parse("t1")?;
+        assert_eq!(store.spec_status(&task).await?, None);
+        assert!(store.set_spec_status(&task, Some("in-progress")).await?);
+        assert!(!store.set_spec_status(&task, Some("in-progress")).await?);
+        assert_eq!(
+            store.spec_status(&task).await?.as_deref(),
+            Some("in-progress")
+        );
+        assert!(store.set_spec_status(&task, Some("done")).await?);
+        assert_eq!(store.spec_status(&task).await?.as_deref(), Some("done"));
+        assert!(store.set_spec_status(&task, None).await?);
+        assert_eq!(store.spec_status(&task).await?, None);
+        assert_eq!(store.spec_status(&TaskId::parse("gone")?).await?, None);
+        Ok(())
+    }
+
+    /// SPEC-483 CLT-002: a version-57 database loses the close time of tasks that are not
+    /// closed (continued since, or created chained or prepared with one); a closed task keeps it.
+    #[test]
+    fn a_task_that_is_not_closed_loses_its_old_close_time() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v57.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..57] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 57)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, closed_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 1, 500, 300),
+                   ('t2', 's1', 2, 'T', 'p', 'claude', 'chained', NULL, 'ui', 'u1', 1, 500, 1),
+                   ('t3', 's1', 3, 'T', 'p', 'claude', 'closed', NULL, 'ui', 'u1', 1, 500, 400);",
+            )?;
+        }
+        drop(SqliteStore::open(&path)?);
+        let raw = rusqlite::Connection::open(&path)?;
+        let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(
+            version,
+            schema_version(),
+            "the version-57 database was migrated"
+        );
+        let mut rows = raw.prepare("SELECT id, closed_at FROM tasks ORDER BY id")?;
+        let closed: Vec<(String, Option<i64>)> = rows
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            closed,
+            [
+                ("t1".into(), None),
+                ("t2".into(), None),
+                ("t3".into(), Some(400))
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-483 QST-001: a task is queued with how it is to start, in one step. The start is
+    /// read while the task waits, and is gone from the row once it left the queue; one written
+    /// by hand that this build cannot read gives none.
+    #[tokio::test]
+    async fn a_queued_task_keeps_its_start_while_it_waits() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::model::{QueuedStart, QueuedStartKind};
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::{AccountId, TaskId};
+        use yulius_domain::task::{StopReason, TaskStatus};
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v56.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..56] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 56)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('t1', 's1', 1, 'T', 'p', 'claude', 'waiting_capacity', NULL, 'ui', 'u1', 1, 500);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let raw = rusqlite::Connection::open(&path)?;
+        let version: u32 = raw.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(
+            version,
+            schema_version(),
+            "the version-56 database was migrated"
+        );
+        let kept = |raw: &rusqlite::Connection| -> rusqlite::Result<Option<String>> {
+            raw.query_row(
+                "SELECT queued_start FROM tasks WHERE id = 't1'",
+                [],
+                |row| row.get(0),
+            )
+        };
+        let task = TaskId::parse("t1")?;
+        let start = QueuedStart {
+            kind: QueuedStartKind::Resume,
+            prompt: Some("go on\nwith \"this\" and null".into()),
+            account_id: Some(AccountId::parse("a-chosen")?),
+        };
+        // Not in the status it was read in: nothing changes.
+        assert!(
+            !store
+                .queue_task(&task, TaskStatus::Running, &start, Timestamp(550))
+                .await?
+        );
+        let row = |raw: &rusqlite::Connection| -> rusqlite::Result<(String, Option<i64>)> {
+            raw.query_row(
+                "SELECT status, queued_at FROM tasks WHERE id = 't1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        };
+        assert_eq!(row(&raw)?, ("waiting_capacity".to_owned(), None));
+        assert_eq!(kept(&raw)?, None);
+
+        assert!(
+            store
+                .queue_task(&task, TaskStatus::WaitingCapacity, &start, Timestamp(600))
+                .await?
+        );
+        assert_eq!(row(&raw)?, ("queued".to_owned(), Some(600)));
+        assert_eq!(store.queued_start(&task).await?, Some(start.clone()));
+
+        // A start this build cannot read (another kind, a subscription id of another shape,
+        // no JSON at all) is none, not an error.
+        for unreadable in [
+            r#"{"kind":"later","prompt":null,"account":null,"at":600}"#,
+            r#"{"kind":"resume","prompt":null,"account":"not an id","at":600}"#,
+            r#"{"kind":7,"prompt":null,"account":null,"at":600}"#,
+            "not json",
+        ] {
+            raw.execute(
+                "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+                [unreadable],
+            )?;
+            assert_eq!(store.queued_start(&task).await?, None, "{unreadable}");
+        }
+        // One of an earlier wait (another `at`) is not this wait's.
+        raw.execute(
+            "UPDATE tasks SET queued_start = ?1 WHERE id = 't1'",
+            [r#"{"kind":"after_limit","prompt":null,"account":null,"at":599}"#],
+        )?;
+        assert_eq!(store.queued_start(&task).await?, None);
+
+        // It leaves the queue (stopped): the start is gone from the row, held prompt and all.
+        let stopped = TaskStatus::Stopped(StopReason::Cancelled);
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(TaskStatus::Queued),
+                    stopped,
+                    None,
+                    Timestamp(700)
+                )
+                .await?
+        );
+        assert_eq!(kept(&raw)?, None);
+        assert_eq!(store.queued_start(&task).await?, None);
+        // Queued again with another start: that one is its start.
+        let plain = QueuedStart {
+            kind: QueuedStartKind::AfterLimit,
+            prompt: None,
+            account_id: None,
+        };
+        assert!(
+            store
+                .queue_task(&task, stopped, &plain, Timestamp(800))
+                .await?
+        );
+        assert_eq!(store.queued_start(&task).await?, Some(plain));
+        assert!(
+            store
+                .transition_task(
+                    &task,
+                    Some(TaskStatus::Queued),
+                    TaskStatus::Starting,
+                    None,
+                    Timestamp(900)
+                )
+                .await?
+        );
+        assert_eq!(kept(&raw)?, None, "launched: nothing is kept");
         Ok(())
     }
 

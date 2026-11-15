@@ -50,7 +50,8 @@ yulius remote status                             # who the token acts for, and i
 `~/.config/yulius/remote-credentials.json` (readable only by you). This file is separate from
 the token of `yulius login`; `yulius onboard` and `yulius secrets import` use that one when you
 have it, else this one. Inside a GitHub checkout,
-`--project` defaults to its `origin`. Pass `--project owner/name` anywhere else.
+`--project` defaults to its `origin`. Pass `--project owner/name` (or set `YULIUS_PROJECT`)
+anywhere else; `--server` (`YULIUS_SERVER`) picks the instance when several are stored.
 
 **When the instance moves to another URL** the CLI follows by itself (SPEC-466): the old URL
 answers with a redirect that says it is a move (`X-Yulius-Moved-To`), and `yulius remote` and its
@@ -245,6 +246,17 @@ the Secrets page's Variables tab, or `yulius vars`.
 | "Run #13 after #12" | `task_update` (a task that has not started) | `yulius remote call task_update '{"number": 13, "after_task": 12}'` |
 | "Get back #13's deleted screenshots" | `attachments_trash` (`restore`, `into`) | `yulius remote call attachments_trash '{"restore": 13, "into": 14}'` |
 | "Pause #12" / "resume it" / "start #13 now" | `task_pause`, `task_unpause`, `task_start_now` | `yulius remote call task_pause '{"number": 12}'` |
+| "Rename #12" / "change what #13 will do" (not started) | `task_edit` | `yulius remote call task_edit '{"number": 13, "prompt": "…"}'` |
+| "Run #14 before #12" (both queued) | `tasks_reorder` | `yulius remote call tasks_reorder '{"numbers": [14, 12]}'` |
+| "Pause all my tasks" / "stop everything" / "tell all tasks …" | `tasks_bulk` | `yulius remote call tasks_bulk '{"do": "pause", "all": true}'` |
+| "What is waiting for me, and why?" | `tasks_list` with `scope: needs_you` | `yulius remote call tasks_list '{"scope": "needs_you"}'` |
+| "What is #12 doing right now?" | `session_read` with `tail: true` | `yulius remote call session_read '{"task_number": 12, "tail": true}'` |
+| "Tell #12 the answer is yes" / "that request is settled" / "send the held prompt of #12" | `task_message`, `task_question_dismiss`, `task_held_prompt` | `yulius remote call task_question_dismiss '{"number": 12}'` |
+| "Merge #12" / "why isn't #12 merging?" / "what's in the merge queue?" | `task_merge`, `task_delivery` (`merge`), `merge_queue` | `yulius remote call task_merge '{"number": 12}'` |
+| "Which subscription is #12 on?" / "move it to Team Max" / "use Sonnet for #12" | `task_get`, `subscriptions`, `task_switch`, `task_model` | `yulius remote call task_switch '{"number": 12, "subscription": "Team Max"}'` |
+| "Is Yulius up to date?" / "is the server loaded?" | `instance` (updating and restarting are the Superagent's, for a superadmin) | `yulius remote call instance '{}'` |
+| "Run #12's checks first" | `ci_prioritize` | `yulius remote call ci_prioritize '{"run_id": "…"}'` |
+| "Close out #12, it is merged" | `task_close` | `yulius remote call task_close '{"number": 12}'` |
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |
 | "Every night, update the docs" | `automation_create`, `automations_list`, … | `yulius remote call automation_create '{…}'` |

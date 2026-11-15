@@ -451,27 +451,8 @@ impl AccountUsage {
         self
     }
 
-    fn windows(&self) -> impl Iterator<Item = &UsageWindow> {
-        self.binding_windows(ModelFamily::Any)
-    }
-
-    /// Highest reported window percentage, ignoring reset times; `None` when no window
-    /// percentage is known.
-    #[must_use]
-    pub fn max_used_percent(&self) -> Option<f64> {
-        self.windows()
-            .filter_map(UsageWindow::known_percent)
-            .reduce(f64::max)
-    }
-
-    /// Highest window percentage still applying at `now` (reset windows count as 0);
-    /// `None` when no window percentage is known.
-    #[must_use]
-    pub fn current_used_percent(&self, now: Timestamp) -> Option<f64> {
-        self.current_used_percent_for(now, ModelFamily::Any)
-    }
-
-    /// [`Self::current_used_percent`] over the windows binding `family`.
+    /// Highest percentage still applying at `now` (reset windows count as 0) of the windows
+    /// binding `family`; `None` when no window percentage is known.
     #[must_use]
     pub fn current_used_percent_for(&self, now: Timestamp, family: ModelFamily) -> Option<f64> {
         self.binding_windows(family)
@@ -501,22 +482,9 @@ impl AccountUsage {
                 .is_some_and(|p| p >= threshold)
     }
 
-    /// `true` when the snapshot contains a reached limit or a window whose known reset time has
-    /// passed, so the snapshot overstates current usage.
-    #[must_use]
-    pub fn window_reset(&self, now: Timestamp) -> bool {
-        (self.limit_reached && self.limit_resets_at.is_some_and(|at| at <= now))
-            || self.windows().any(|w| w.is_reset(now))
-    }
-
-    /// When the account stops being exhausted: the latest reset among all causes still in
-    /// effect at `now`. `None` when it is not exhausted or a blocking cause has no known reset.
-    #[must_use]
-    pub fn available_at(&self, now: Timestamp, threshold: f64) -> Option<Timestamp> {
-        self.available_at_for(now, threshold, ModelFamily::Any)
-    }
-
-    /// [`Self::available_at`] for a task of `family`.
+    /// When the account stops being exhausted for a task of `family`: the latest reset among
+    /// all causes still in effect at `now`. `None` when it is not exhausted or a blocking cause
+    /// has no known reset.
     #[must_use]
     pub fn available_at_for(
         &self,
@@ -568,12 +536,6 @@ impl TokenUsage {
         cache_write: None,
     };
 
-    /// `true` when no field is known.
-    #[must_use]
-    pub fn is_unknown(&self) -> bool {
-        *self == Self::UNKNOWN
-    }
-
     /// Field-wise sum. A field is known only when it is known on both sides and the sum does
     /// not overflow; otherwise it becomes unknown (never silently saturated or zeroed).
     #[must_use]
@@ -587,19 +549,6 @@ impl TokenUsage {
             cache_read: add(self.cache_read, other.cache_read),
             cache_write: add(self.cache_write, other.cache_write),
         }
-    }
-
-    /// Sum of the known fields, or `None` when every field is unknown or the sum overflows.
-    #[must_use]
-    pub fn known_total(&self) -> Option<u64> {
-        let mut total: Option<u64> = None;
-        for value in [self.input, self.output, self.cache_read, self.cache_write]
-            .into_iter()
-            .flatten()
-        {
-            total = Some(total.unwrap_or(0).checked_add(value)?);
-        }
-        total
     }
 }
 
@@ -620,11 +569,9 @@ mod tests {
     #[test]
     fn unknown_usage_is_neither_exhausted_nor_zero() {
         let usage = AccountUsage::default();
-        assert_eq!(usage.max_used_percent(), None);
-        assert_eq!(usage.current_used_percent(NOW), None);
+        assert_eq!(usage.current_used_percent_for(NOW, ModelFamily::Any), None);
         assert!(!usage.exhausted(NOW, 99.0));
-        assert!(!usage.window_reset(NOW));
-        assert_eq!(usage.available_at(NOW, 99.0), None);
+        assert_eq!(usage.available_at_for(NOW, 99.0, ModelFamily::Any), None);
     }
 
     #[test]
@@ -634,15 +581,19 @@ mod tests {
             secondary: Some(window(Some(40.0), Some(9_000_000))),
             ..AccountUsage::default()
         };
-        assert_eq!(usage.max_used_percent(), Some(99.0));
         assert!(usage.exhausted(NOW, 99.0));
         assert!(!usage.exhausted(NOW, 99.5));
-        assert_eq!(usage.available_at(NOW, 99.0), Some(Timestamp(2_000_000)));
+        assert_eq!(
+            usage.available_at_for(NOW, 99.0, ModelFamily::Any),
+            Some(Timestamp(2_000_000))
+        );
         // After the primary window resets it no longer counts.
         let later = Timestamp(2_000_000);
         assert!(!usage.exhausted(later, 99.0));
-        assert!(usage.window_reset(later));
-        assert_eq!(usage.current_used_percent(later), Some(40.0));
+        assert_eq!(
+            usage.current_used_percent_for(later, ModelFamily::Any),
+            Some(40.0)
+        );
     }
 
     #[test]
@@ -654,7 +605,10 @@ mod tests {
         };
         assert!(usage.limit_in_effect(NOW));
         assert!(usage.exhausted(NOW, 99.0));
-        assert_eq!(usage.available_at(NOW, 99.0), Some(Timestamp(1_500_000)));
+        assert_eq!(
+            usage.available_at_for(NOW, 99.0, ModelFamily::Any),
+            Some(Timestamp(1_500_000))
+        );
         assert!(!usage.exhausted(Timestamp(1_500_000), 99.0));
 
         let unknown_reset = AccountUsage {
@@ -662,7 +616,10 @@ mod tests {
             ..AccountUsage::default()
         };
         assert!(unknown_reset.exhausted(Timestamp(i64::MAX), 99.0));
-        assert_eq!(unknown_reset.available_at(NOW, 99.0), None);
+        assert_eq!(
+            unknown_reset.available_at_for(NOW, 99.0, ModelFamily::Any),
+            None
+        );
     }
 
     fn model_limit(family: Option<ModelFamily>, resets_at: Option<i64>) -> ReportedLimit {
@@ -1376,13 +1333,19 @@ mod tests {
             secondary: Some(window(Some(100.0), Some(5_000_000))),
             ..AccountUsage::default()
         };
-        assert_eq!(both.available_at(NOW, 99.0), Some(Timestamp(5_000_000)));
+        assert_eq!(
+            both.available_at_for(NOW, 99.0, ModelFamily::Any),
+            Some(Timestamp(5_000_000))
+        );
         let one_unknown = AccountUsage {
             primary: Some(window(Some(100.0), Some(2_000_000))),
             secondary: Some(window(Some(100.0), None)),
             ..AccountUsage::default()
         };
-        assert_eq!(one_unknown.available_at(NOW, 99.0), None);
+        assert_eq!(
+            one_unknown.available_at_for(NOW, 99.0, ModelFamily::Any),
+            None
+        );
     }
 
     #[test]
@@ -1391,7 +1354,7 @@ mod tests {
             primary: Some(window(Some(f64::NAN), None)),
             ..AccountUsage::default()
         };
-        assert_eq!(usage.max_used_percent(), None);
+        assert_eq!(usage.current_used_percent_for(NOW, ModelFamily::Any), None);
         assert!(!usage.exhausted(NOW, 99.0));
     }
 
@@ -1408,9 +1371,7 @@ mod tests {
         assert_eq!(sum.cache_read, Some(200));
         assert_eq!(sum.cache_write, None);
         assert_eq!(known.checked_add(TokenUsage::UNKNOWN), TokenUsage::UNKNOWN);
-        assert!(TokenUsage::default().is_unknown());
-        assert_eq!(TokenUsage::UNKNOWN.known_total(), None);
-        assert_eq!(known.known_total(), Some(115));
+        assert_eq!(TokenUsage::default(), TokenUsage::UNKNOWN);
     }
 
     #[test]
@@ -1424,6 +1385,5 @@ mod tests {
         let sum = big.checked_add(big);
         assert_eq!(sum.input, None);
         assert_eq!(sum.output, Some(2));
-        assert_eq!(big.known_total(), None);
     }
 }

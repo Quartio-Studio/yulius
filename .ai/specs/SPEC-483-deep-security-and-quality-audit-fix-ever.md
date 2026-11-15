@@ -1,11 +1,11 @@
 ---
 yulius-task: 1fb06e11-08e1-4c37-90d0-3219e19122ad
-status: in-progress
+status: done
 ---
 
 # SPEC-483: Deep security and quality audit: fix what it finds
 
-Status: in-progress
+Status: done
 Date: 2026-11-13
 Owner: Yulius task #465
 Scope authorization: the request of task #465: "Execute a deep security and quality audit and fix
@@ -50,14 +50,26 @@ no code path reaches; documents, texts shown to agents and people, and code that
   10. the host's own Git in a clone its agents write (G1): merged, pull request #1251;
   11. production secrets decided once (V6): slice 12 of the Plan: merged, pull request #1253;
   12. delivery and CI decided once (D4-D6, QB1): D4 is slice 13 of the Plan (merged, pull
-      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16;
-  13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3);
-  14. documents and shipped texts against the code (P1-P14, QB9);
-  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7);
-  16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4);
-  17. efficiency (QA8, QB5, QC1, QC6);
+      request #1254), D5 slice 14 (merged, #1257), D6 slice 15 (merged, #1263), QB1 slice 16 (merged, #1265);
+  13. lifecycles decided once (QA1-QA7, E6, E7, QC8, W2, W3, D8): QA5 and QA7 are slice 17
+      of the Plan (merged, pull request #1268), QA2 slice 18 (merged, #1271), QA1 slice 19
+      (merged, #1272), QA3 and QA4 slice 20 (merged, #1274), QA6 slice 21
+      (merged, #1276), E6, E7 and QC8 slice 22 (merged, #1277), W2, W3 and D8 slice 23
+      (merged, #1279);
+  14. documents and shipped texts against the code (P1-P14, QB9): what Yulius ships and shows
+      (P1, P5-P7, P9-P13, P15) is slice 26 (merged, #1283), the repository's own instruction
+      documents (P2-P4, P14, QB9) slice 27 (merged, #1284);
+  15. dead code (W7, D7, E5, QA9, QB4, QB6, QC2, QC5, QC7): W7, D7 and E5 are slice 24 (merged,
+      #1281), the rest slice 25 (merged, #1282);
+  16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
+      #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
+      #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33
+      (merged, #1300), QB2 slice 34 (merged, #1305);
+  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35 (merged, #1306), QB5 slice 36 (merged,
+      #1309), QA8 and QC6 slice 37 (merged, #1313);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
-      changes of their own, taken out of slice 9, which is one concern;
+      changes of their own, taken out of slice 9, which is one concern: W1b is slice 38
+      (merged, #1317), C4 slice 39 (merged, #1318);
   19. the connection that carries the server's token in a clone its agents configure (G2,
       found in slice 10): taken as slice 11 of the Plan (the earlier number 11, V6, follows
       it): merged, pull request #1252;
@@ -370,6 +382,396 @@ no code path reaches; documents, texts shown to agents and people, and code that
   error) kept an agent's wait going to its deadline, 90 minutes by default, and then told
   it "When it restarts, Yulius wakes this task" although Yulius never stopped.
 
+### Slice 17: what a switch may end
+
+- **QA5 (medium).** "Would a restart of this session lose background work" was asked in
+  four places and answered in two ways when the look at the processes gave no answer (it
+  timed out under load, or the process table could not be read). Disk hygiene, the restart
+  on a newer Claude Code and the queue's rule take "not known" as work running. The turn's
+  end that moves a session to another subscription took it as none
+  (`shells_running_now`: `== Some(true)`) and ended the session, with the build, gate or
+  review the agent had left running.
+- **QA7 (medium).** A switch waits for the session it asked to end, half of the switch's
+  two minutes. When that time passed it called `terminate`, threw the answer away, wrote
+  the run down as lost itself and started the new session. A host that could not be
+  terminated left two agents in one worktree on one conversation. A host that could be
+  left the switch's own intent in the task's slot (the next run's end would have been taken
+  for a switch: "switched", and the task left running with no run), and raced the run's
+  reader: whichever recorded the loss first decided whether a new session started.
+  Everywhere else a run whose host had to be killed goes through one path
+  (`terminate_then_mark_lost`, SPEC-065 END-001), and a switch whose old run is lost starts
+  none (SPEC-250 STW-006).
+
+### Slice 18: a subscription that needs a new sign-in
+
+- **QA2 (medium).** "This subscription works" was written four times (`ok` or `limited`:
+  the pool's input, the capacity loop, the agent gate, the login failure) and "this one
+  needs a sign-in" three more (`relogin` or `pending_login`: the usage round, the e-mail
+  round, the usage write), and the two were not each other's opposite: `error` was in
+  neither. A subscription Claude had refused (`relogin`, credential kept) whose new
+  sign-in then failed or timed out became `error`; the background round asked `error` for
+  its usage, a reading stored `ok`, and tasks were placed on the refused subscription
+  again, each losing a turn to the refusal. The administration page had the rule a fifth
+  and a sixth time, and asked an `error` subscription for its usage by itself.
+
+### Slice 19: the start that waits in the queue
+
+- **QA1 (medium).** "How the next run starts" (a new session or a resume, the prompt or
+  continuation it types, a resume past a usage limit, the subscription asked for) was only
+  the arguments of `start_run`. A start that met the session limit, a supertask's hold or
+  an update's hold made the task `queued` and dropped them; the queue then started every
+  task as a plain resume (or a plain new session) on the pool's choice. A task paused at a
+  usage limit that became resumable while every slot was taken came back as a plain
+  resume: the transcript not stepped back, the interrupted turn not continued, so a
+  prompt-mode task sat at the limit's error reading Working. A person's held prompt
+  carried by a pause was lost without a word. And "Continue on…" a chosen subscription
+  ran on the pool's choice, against SPEC-447 MOV-002 ("never lands elsewhere unsaid").
+
+### Slice 20: what a restart forgot about a run
+
+- **QA3 (medium).** Whose personal MCP servers a live run was started with was only in the
+  server's memory (`TaskRuntime::personal_mcp_of`). SPEC-332 MSC-009 restarts such a run
+  when control passes, "so the previous owner's credential never stays with the new
+  owner", and lets only its owner message it meanwhile. After a restart of Yulius (every
+  update) the reattached run held the same servers and nothing knew: a hand-over restarted
+  nothing, and the new owner typed into a session whose MCP configuration carried the
+  previous owner's bearer.
+- **QA4 (medium).** A resumed goal session (a switch, Continue, a resume past a limit)
+  gets its `/goal` typed once its opening turn ended, by a task of the server (up to five
+  minutes later). A restart in that time left the reattached session with no goal, no
+  typist and no word: a goal task idled as "your turn". The same gap for a goal given as
+  the launch prompt was closed with a mark in the run directory (SPEC-146).
+
+### Slice 21: who may type into a session
+
+- **QA6 (medium).** "May Yulius type into the session now" had three rules. A message
+  (a person's, a pull request's news, the wake after an outage) is kept out while a
+  person's draft may sit in the prompt box, however old, and while another message is
+  being typed (SPEC-480, `type_into_session`). `/compact` and the line that wakes a
+  compacted session asked only whether a person typed since the refusal, and the goal's
+  typist only whether one typed since the run was attached; neither took the one-typist
+  mark. A person who typed their next instruction while the turn ran had a draft in the
+  box from before the refusal: `/compact …` was appended to it and Enter pressed, the
+  draft was submitted garbled (what DRF-001 forbids), refused again, and the episode
+  stayed "compacting" until it fell to a fresh session. And a message could land in the
+  300 ms between a typist's line and its Enter.
+
+### Slice 22: what a move's report, a move's mark and a close time say
+
+- **E6 (medium).** The move helper's report was read into a string, "running", "lost",
+  "ended" or "refused", matched with catch-all arms, and "lost" (the report says running
+  and is more than 60 s old) meant three things: no move for `move_in_flight`, so an
+  update or a restart could stop the server (SPEC-470 MVB-023 forbids it); a stopped
+  move for `movable`, so the card offered to continue it; and a recorded move for
+  `recorded`, which offered Abort. A helper still copying, whose report write waits
+  behind a saturated disk, was all three. The helper's oneshot unit is `activating`
+  while its command runs, and systemd already answers one question about the path unit.
+  The helper's `run_command` also said the server tells an earlier run's checklist "by its
+  time"; it does so by the request id since SPEC-470's last slice.
+- **E7 (low).** `host_move::read_mark` read the move's mark as UTF-8 text and gave up
+  when it was not: `paused_before_a_move` saw the mark (`exists()`), `revive_after_move`
+  did nothing, so the lost tasks stayed lost and the mark stayed for every later start,
+  against its own comment ("a mark that cannot be read is still a mark").
+- **QC8 (low).** `tasks.closed_at` was set at every change to `closed` and never
+  cleared: a task continued after a close kept its old close time, which the analytics
+  export shows as "Closed" and the project list as `closed_at_ms`; a repeated close moved
+  it. A task created without a start but chained or prepared (no caller does so today)
+  got one too.
+
+### Slice 23: one rule for a task's group, and an edit refused for lack of access
+
+- **W2 (medium).** The sidebar's rule (`status.js`) and the server's (`AttentionFacts::group`,
+  which Home's cards, the project tabs and the page title count) disagreed twice. A run paused
+  by a person or by an update is Paused under Working in the sidebar whatever it waited for
+  (SPEC-191: "It counts in the Working group"); the server had no pause fact, so a paused task
+  that had a permission prompt, "Your turn", a held prompt or a browser request was counted as
+  needing you. And the onboarding task of a `pending` sandbox, listed in the sidebar's Working
+  group as "Waits for Start onboarding", was a closed task to the server and counted nowhere.
+  The mock counts with the sidebar's rule, so no e2e test could see it.
+- **D8 (medium), the case left.** SPEC-487 CHN-001 (#1270) made a merge that is armed keep an
+  idle task out of Done, through `yulius_wait`; an achieved goal (`activity: done`) still
+  came first, in the server's rule, in both "is it done" functions of `delivery.rs` and in the
+  sidebar. An agent whose goal was judged achieved after it armed its merge was Done: a task
+  chained after it started before the merge, and archiving it closed it, which ends the armed
+  merge (slice 15) with a reason typed to nobody.
+- **W3 (medium).** `livedoc.js` answered a refused edit (403: the person may no longer change
+  the folder, such as a worktree whose owner changed) by setting `readOnly` and keeping the
+  edit: the file read Unsaved for good, the page asked before every unload, more typing
+  piled up unsent, a close waited its full 10 s and dropped it, and `readOnly`, never reset,
+  had no reader.
+
+### Slice 24: what nothing reaches
+
+- **E5 (low).** ADR-15 removed the browser panel's frames: previews open in their own window
+  (`browser.js`, `window.open(…, 'noopener')`), and no Yulius page has a `message` listener.
+  The preview proxy still appended a bridge script to every proxied HTML document (which
+  posted the page's address to a parent that does not exist), and for that fetched every
+  document uncompressed (`Accept-Encoding` removed) and dropped its `Content-Length`; it
+  removed the app's `X-Frame-Options` and `frame-ancestors` and allowed the Yulius origin to
+  frame previews. The landing page told of "cookies in frames".
+- **D7 (low).** `webhook_secret` was copied from the App manifest's answer into the stored App
+  configuration and into `AppCredentials`; Yulius has no webhook route and reads it nowhere.
+- **W7 (low).** `linkify` and `URL_RE` (`dom.js`), `kindLabel` (`stages.js`) and the style
+  rules `.card-head`, `.card-body`, `.space-bottom`, `.input-priority`, `.group-needs
+  .tl-what`, `.release-list` (and its `ul`), `.release-head`, the phone rule of `.hbar` and
+  `.term-tab-add` had no user (`.st-blocked` and `.tone-stopped-abnormal`, also reported, are
+  built from a status and a tone, so they stay).
+- **W8 (low, review of slice 23).** A live document whose rejoin is refused for lack of access
+  tried again every second for as long as the file stayed open.
+
+### Slice 25: Rust code nothing reaches
+
+Each item was searched again by name over `crates/`, `e2e/`, `tools/` and `scripts/` before it
+went; two of the auditors' items had gained a user since and stay.
+
+- **QC5 (task state machine).** `TaskEvent::StartFailed` and `SwitchAborted` were never fired
+  (the supervisor writes a failed start and an aborted switch as their outcome directly, and
+  takes every other change from `apply`), `FailReason::StartTimeout` and
+  `START_TIMEOUT_MS` never written or enforced (the ptyhost's own spawn timeout ends a start
+  as `failed_spawn_error`), and the module doc promised timeouts "enforced by the
+  supervisor". `StopReason::SwitchTimeout`, also reported, is written since slice 17.
+- **QC2 (contracts).** `UiEvent::SandboxUpdated` (never published) and its web handler,
+  `IdResponse`, `SESSION_KINDS`, `CiRunDetail`, five import path constants and two path
+  helpers, `DeviceApproveRequest`, `MoveRequest::same_values`, the hook reason `RESUME`, the
+  hook input's `permission_mode` and the hook output's `systemMessage`, `continue`,
+  `stopReason` and `suppressOutput`.
+- **QC2 (domain).** `agent_cli::KEEP`, `Nudge::is_pace`, `spec_slug` (production calls
+  `slug_or`), the usage helpers without a model family (`max_used_percent`, `window_reset`,
+  `known_total`, the wrappers `current_used_percent` and `available_at`) and
+  `TokenUsage::is_unknown` (tests only; they compare with `TokenUsage::UNKNOWN`).
+  `scope::pattern_matches` stays: the tests of `patterns_overlap` check it against it path by
+  path.
+- **QC7.** "Rotate now" without an account (`Trigger::Manual { account: None }`) was never
+  asked; its branch and `Refusal::NoCandidate` were reached by tests only.
+- **QA9.** The message inbox readers (`inbox`, `mark_delivered`, `mark_read`,
+  `unread_count`; nothing writes messages since SPEC-028), `set_account_error` (tests only),
+  `UsageSnapshot::turn_open_since` (written, never read) and `end_turn`'s unused time.
+  `insert_message` stays as the only way tests seed the old rows a project's export carries.
+- **QB4.** `retire_legacy_workflows` ran at every start for the two workflows seeded before
+  the catalog (2026-10-07..10); every instance started since 2026-10-11 has retired them.
+  The shutdown's CPU un-split, reported with it, also resets the sandboxes' CPU weights for
+  whatever runs next (SPEC-362 CSW-004): it stays, with a true comment.
+- **QB6.** `parse_port_range`, the `axum` feature `macros` and the `tower-http` features
+  `trace` and `limit`, the routers' unused `App` argument, `SkillSource::is_bundled` and
+  `same_repository`. `YULIUS_CD_KIND`, passed to every CD run and read by nothing in this
+  repository, is documented instead: a project's deploy script may read it.
+- Kept, as the audit's notes allowed: the write-only columns `step_events.from_status` and
+  `vault_enabled.enabled_by`/`enabled_at` (who and when, for a person reading the database;
+  dropping a column needs a migration for no behaviour).
+
+### Slice 26: what Yulius ships and shows
+
+- **P1 (medium).** The goal's Done sentence ("never promote to `main` unless asked"), the
+  definition of done ("**Never promote to `main`** or deploy to production unless the request
+  asks for it") and the merge news ("Do not promote unless the task asks for it") told an
+  agent that promotion was its job when the task asked; ADR-0110 rejected exactly that
+  ("Agents promote when their task asks"), the briefing says production is a person's, and an
+  agent has no tool for it. `cd::production_instruction`, the rule that keeps such wording out
+  of the shipped workflows, did not cover these texts.
+- **P5, P6 (medium).** The Docs workflow said documentation needs "no independent review",
+  and the delivery skill "usually" none; `delivery_merge` takes only a head an independent
+  review approved. The Chore workflow said "merge on green, deploy, verify"; everywhere else a
+  merge deploys nothing and dev is deployed only when asked.
+- **P7, P11 (medium).** The Git page and the delivery dialog said agents "merge and release"
+  (the CD page of the same project: production is always deployed by a person); the profile
+  dialog said environment commands run "in the sandbox clone" (ADR-0175: a run reads its own
+  checkout). With `auto_promote` Yulius itself releases each merge, which `docs/product.md`'s
+  absolute "always a person's" left out.
+- **P9 (medium).** The delivery skill's "Machine-checked gates" table listed an issue link, a
+  size, a test diff and a draft flag that nothing checks, and told the agent the pull request
+  body links the issue (`Fixes #N`), which the body Yulius writes never does.
+- **P10 (medium).** Already right: the promotion route's row was corrected with P8 in slice 4.
+- **P12 (medium).** The merge guard refused a hand merge because it "does not end your goal's
+  delivery"; since SPEC-441 MQ-009 a merge at a green head counts whoever made it.
+- **P13 (medium).** The briefing said to merge the integration branch "only for a conflict";
+  the skill it names, and the review rule (an approval is of the exact head), say before the
+  review too.
+- **P15 (low).** `docs/api.md` listed the error code `unavailable` (503); no error kind or route
+  produces it.
+
+
+### Slice 27: the repository's own instructions
+
+- **P2, P3 (medium).** The documents AGENTS.md routes to (`docs/engineering/git.md`,
+  `workflow.md`, the `yulius-git` skill, the pull request template) told the author to
+  self-review and `gh pr merge` their own pull request, to poll checks, and gave four rules for
+  promotion, among them "complete the full sequence through `main` after each finished
+  feature" and "promote only when the task asks". Yulius refuses a hand merge, takes only a
+  reviewed head, and leaves promotion to a person (ADR-0110). `git.md` also named the old
+  repository (`Quartio-Studio/yulius-v2`) and a branch rule "checked by hand until #223".
+- **P4 (medium).** The spec template the documents route to (`.ai/templates/spec.md`) had the
+  sections and statuses of the first product specs ("Status: proposed", Problem and evidence,
+  Scope …); `spec_check` and `delivery_merge` refuse that form. `specifications.md` and
+  AGENTS.md said a routine fix needs no spec; the Fix workflow and the briefing require one.
+- **P14 (low).** `docs/engineering/architecture.md`, `development.md` and
+  `runtime-contracts.md` still described a workspace with only the task runner and no doctest
+  target.
+- **QB9 (low).** Undocumented: `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX`,
+  `YULIUS_CHROMIUM` as a variable, `YULIUS_PROJECT`, `POST /internal/agent/wait`, and that
+  `[commands] test`, `lint` and `build` are for agents to read, and `--shell` /
+  `YULIUS_SHELL` (now in `docs/operations.md`'s sandbox isolation section).
+- **Slice 26's review leftovers.** The Git page's sentences named integration environments a
+  profile may not have; the delivery skill dropped the way to close an issue on a project
+  whose integration branch is the default, and lacked the `auto_promote` exception; SPEC-001
+  GIT-002 and UI-025, SPEC-441 MQ-011 and the web and skills READMEs still said agents release
+  or merge the integration branch only for a conflict; wraps and test comments.
+
+### Slice 28: one way in the web UI
+
+- **W4 (low).** The five editors (automation, MCP server, workflow, new skill, skill) each kept
+  their own unsaved-changes guard: a `beforeunload` handler and a capturing click handler on
+  `a[data-route]` links. Back and Forward (`popstate`, `hashchange`) and a navigation by code
+  (`navigate()`, from a breadcrumb button or a palette command) left without asking, and the
+  work was lost.
+- **W5 (low).** The pull request chip was drawn three ways (`dom.js` for the sidebar and the
+  Tasks list, the Git page, the delivery strip) from three tables of what checks say: a
+  failure read "checks failed" in two and "checks failing" in the third, and unknown checks
+  were explained in one. The delivery strip's chip drew no icon for unknown checks and its
+  table had no wording of its own for an unknown state.
+- **W6 (low).** The upload limit's wording (`formatSize` in `filedrop.js`, the server's
+  `human_size`) and a commit's short form (four copies of `slice(0, 7)`, two saying
+  "unknown" without one) were written in each page; the editor's "too large" message gave
+  kilobytes whatever the size.
+- **R3-1 (minor, own code of slice 27, from its third review round).** `paragraphs()` in
+  `scripts/check_repository.py` ended a block only at a blank line or a list item, so a
+  heading, a table row and a fence joined the text around them: "## Promote" followed by "when
+  the task asks for it, open needs_you." was refused, so was a table whose rows together read
+  "promote … when the task asks", and a heading ending in "No" negated a `gh pr merge` on the
+  next line. Slice 27 merged with it at the round limit (its third round approved); it is
+  fixed here, in the first change after it (ADR-0141).
+
+### Slice 29: one reader of a bearer token, one GitHub-token scrub
+
+- **QB8 (low).** Five readers of `Authorization: Bearer` in the server (`routes/mcp.rs`,
+  `routes/internal.rs`, `routes/secrets.rs`, `routes/leftovers.rs` and the `Auth` extractor in
+  `auth.rs`): four trimmed the token, the leftovers key did not. The welcome page of a sandbox's
+  browser and its refresh route wrote the same port list twice.
+- **QC4 (low).** Git's (`yulius-git/src/redact.rs`) and GitHub's (`yulius-github/src/error.rs`)
+  adapters each kept the token prefixes and the loop that removes GitHub token literals; the
+  fix of #424 (a stateless installation token removed whole) and its two review rounds had to
+  land in both.
+- **The spec's size.** This file neared its bound of 256 KiB (244 KB): the evidence of slices
+  21 to 28, all merged, moved to `evidence/SPEC-483-slices-21-28.md` word for word, as slices 1
+  to 20 did.
+
+### Slice 30: a cancelled waiting task and the queue
+
+- **Q30 (low, #1278).** A stop of a task that waits (`queued`, `chained`, `prepared`, waiting
+  for capacity) ended with a pass of the queue, for any task, though only a supertask's cancel
+  frees anything (SUP-005: it held the project's queue); the delete path drains only for a
+  supertask. In a world with free sessions and tasks seeded as waiting (the tests'), a bulk stop
+  of two waiting tasks let the pass start the second before the stop reached it: the flaky
+  `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely` (#1278, failed in slices 23
+  and 29). In production a task waits because no session is free, so the extra pass started
+  nothing (a first comment on #1278 said otherwise and was corrected).
+
+### Slice 31: one reader of RFC 3339 time
+
+- **QC3 (low).** Four RFC 3339 readers (`yulius-github/src/time.rs`, `yulius-harness/src/time.rs`,
+  `yulius-import/src/time.rs`, `yulius-app/src/imports.rs`) took different inputs: GitHub's took
+  `2026-02-31` (as 3 March), unpadded fields and a second 60 as one more second, and dropped the
+  fraction; the app's refused a space between date and time and any offset's hours went
+  unchecked. Five more copies of the calendar conversion (GitHub, transcripts, imports,
+  analytics, the app's `civil_from_days` that the egress certificate authority borrowed) stood
+  beside the domain's `CivilDate`.
+
+### Slice 32: one contract of the CLI's sign-in
+
+- **QB3 (low).** The device sign-in's start and poll were defined twice in the contracts crate:
+  `api::auth` (the server's: seconds as `u32`, the poll's state a free string taken from the
+  stored grant, a derived `Debug` that prints the token) and `import` (the CLI's: `u64`, an enum
+  of four states, a `Debug` that hides the token). A stored state the CLI does not know would have
+  broken `yulius login` with an unreadable answer, and nothing tied the two at compile time.
+- **Slice 31's review nits.** Its Decisions misstated what changed for the app's reader and left
+  out the import reader's change; a test case was refused by the length check before the padding
+  it names; the formatter's doc claimed a round trip for every year.
+
+### Slice 33: one dispatch of the Superagent's tools
+
+- **QB7 (low).** The Yulius MCP (`mcp.rs` `mcp_call`, for a task's agent and the Superagent) and
+  the remote MCP (`remote.rs` `remote_project_tool`) each held the arms of the same 18 project
+  tools and the parsing of `task_archive`'s `archived`, and each answered `initialize` with its
+  own copy of the version negotiation; the remote MCP kept a third list of the names
+  (`SHARED_TOOLS`). A tool added to one dispatch and not the other is listed by `tools/list` and
+  answers "unknown tool". `sandbox_task_create` re-typed `task_create`'s arguments by hand and
+  lost the descriptions of `model` and `effort`.
+- **Slice 32's review nits.** The two "unpadded" timestamp cases are refused by the separator
+  check (said in the test now); the Evidence's "a sequential test cannot reach" the
+  consumed-grant check was too strong (a test store could); and, pre-existing, the device
+  sign-in's `DeviceStart` and `DevicePollRequest` printed the polling code, which fetches the
+  token until it expires, in their derived `Debug`.
+
+### Slice 34: one reader of a sandbox's way to Yulius
+
+- **QB2 (low).** Five clients inside a sandbox (`credential_get` and `agent_post` in
+  `yulius-git/src/credential.rs`, `agent_call`, and the hook and redaction clients' `forward`
+  and `post_internal` in `yulius-harness/src/hook_client.rs`) each read `YULIUS_URL` and
+  `YULIUS_TASK_TOKEN`, checked the token and parsed the URL, with two parsers that differed:
+  the Git one took a non-ASCII path and mapped `localhost` to 127.0.0.1, the hook one refused a
+  non-printable path and asked the name resolver for `localhost`. `yulius wait`, `yulius tool`
+  and the MCP bridge reach Yulius through the Git one. The variables' names were written in
+  three places.
+- **Slice 33's review nits.** Two lines past the width, a missing blank line, a test doc that
+  named its scope without the reason.
+
+### Slice 35: the capacity views read their window through indexes
+
+- **QC1 (low).** The capacity view (`token_runs`, `pauses_since`, `GET /api/capacity`, which any
+  signed-in person's dashboard loads) and the accounts view (`account_tokens`, twice) read the
+  runs and pauses of a window (since a time) with conditions on `attempts.ended_at`,
+  `attempts.started_at` and `capacity_pauses.ended_at`, none of them indexed, and neither table
+  is pruned: every load scanned every run and pause ever recorded, on the store's one thread.
+- **Slice 34's review nits.** Two spec lines past the width; the new `::1` tests could, rarely,
+  meet another test's listener on 127.0.0.1 at the same port and fail.
+
+### Slice 36: a watcher reads only what was written since
+
+- **QB5 (medium).** Watching a live task polls its transcript every 1.5 s (`watchview.js`
+  `WATCH_POLL_MS`) from the line its last read ended at (`task_transcript`, `from`). Each poll
+  opened the transcript at byte 0, read every earlier line and JSON-parsed every one holding a
+  tool call, to know the dotenv files read before the page (their results are redacted), then
+  answered the few new lines. A long session's transcript is tens of megabytes: each watcher
+  cost a full read and parse of it every 1.5 s, growing with the session's length.
+- **Slice 35's review nit.** A Test plan line past the width, which its Evidence said was
+  wrapped.
+
+### Slice 37: a project's task list reads the project once
+
+- **QA8, QC6 (medium).** `list_tasks` (`GET /api/sandboxes/{id}/tasks`) builds each task's
+  summary with its own store reads, each a hop to the store's one thread. Measured with a
+  temporary counter and timer (release build): 0 tasks 4 calls; 50 tasks 688 calls, 11 ms; 200
+  tasks 2 738 calls, 88 ms: about 14 calls a task, and a cost that grew faster than the list.
+  The growth came from every queued task's summary reading the project's whole task list (every
+  task with its prompt) again to find the supertasks that hold it (`supertask_holders`): a list
+  with many queued tasks cost the square of its length. The pass of the queue (`drain_queue_now`,
+  every 60 s and on some seventeen events) did the same for every queued task.
+
+### Slice 38: the web UI runs under a strict content security policy
+
+- **W1b (low).** Every public response carried `Content-Security-Policy: frame-ancestors
+  'none'` and nothing else: no source list for scripts, styles, fonts, images, connections,
+  workers, plugins, `<base>` or form targets. The UI inserts data only as text and attributes
+  (`dom.js`), so no injection is known; one slip there or in a vendored file would have run as
+  the signed-in person. What the UI loads (read from its code): everything from its own origin
+  (fonts self-hosted, no CDN), Monaco's workers from `blob:` URLs, pasted and attached images as
+  `blob:` and `data:`, Monaco's icon font as `data:`, `<style>` elements that xterm and Monaco
+  add, the WebSocket and fetches to the same host; no iframe (previews open in new windows), no
+  inline script (`boot.js` is a file). Monaco's loader and the shader library check whether
+  `eval` works and fall back when it does not. The e2e suite runs the UI from `e2e/serve.py`,
+  which sent no policy, and its page check (`instrument()`) fails a test on uncaught errors and
+  `console.error` only: the browser merely logs a refused load, so no test would have seen one.
+
+### Slice 39: the engine runs below the group that holds its limits
+
+- **C4 (low).** The engine's cgroup, `sandboxes/<sandbox>/engine`, held its limits and was the
+  root of its cgroup namespace and its `/sys/fs/cgroup`. Root in the sandbox's user namespace is
+  the service user, which owns every file of the delegated tree; `nsdelegate` refuses writes to
+  the writer's own namespace root only. A process of the engine (in practice a privileged
+  container any Docker caller in the sandbox may run, CI jobs included) that moves to a child
+  group and starts a cgroup namespace there may write `engine/pids.max` and `engine/cpu.weight`:
+  the 3/8 task cap that keeps agents a quarter (SPEC-268 PID-002) and the CPU split are gone
+  inside the sandbox (its own limits, one group up, hold).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -671,6 +1073,273 @@ no code path reaches; documents, texts shown to agents and people, and code that
   is answered differently on purpose, by its own route: a guest link that ended is 410
   (SPEC-410). The routes that answer without a body log a failure inside Yulius as the
   others do (`error::bare_status`).
+- **SWT-001** A turn's end that would move the session to another subscription takes a look
+  at the background work that gives no answer as work running: the session stays, the Stop
+  is answered as on a subscription that stays, and a later turn's end moves it. No caller
+  of the two looks (`background_work_now`, `background_or_wait_now`) reads "not known" as
+  "none". The session that stays for it is logged; a host whose look never answers moves
+  no session at a turn's end (a move at a usage limit does not ask).
+- **SWT-002** A switch whose old run does not end within `switch_end_ms` (half of the
+  switch's two minutes) gives the run up and terminates its host. The switch starts no
+  new run, is recorded `failed`, and the task rests as `stopped_switch_timeout` (SPEC-002's
+  state machine), whoever records the run's end first: the switch, the run's reader that
+  sees the host go, or the run's own exit. The task's end intent says the run was given up
+  (`EndIntent::SwitchTimeout`), set in the step in which the switch sees that the run's end
+  is still its own. A run whose end is already being recorded when the wait runs out is
+  waited for once more and the switch goes on. A host that cannot be terminated leaves
+  the run the task's live run (END-001): no session starts beside it, the task is
+  `running` again, the switch is recorded `failed`, the task says in its terminal and to a
+  person that the session could not be ended, and the next turn's end does not try the
+  switch again within the cooldown; a run that ended by itself meanwhile rests the task
+  instead, as `stopped_switch_timeout` from either status, and an end that is being
+  recorded then is waited for before the run is asked about. No intent of the switch stays
+  in the task's slot. A run that ends by itself before the switch has claimed its end
+  (the task already reads `switching`) ends the task as it does without a switch, and the
+  switch gives way. A stop that lands after the switch gave the run up rests the task
+  too; whether it then reads `stopped_switch_timeout`, `stopped_lost` or
+  `stopped_cancelled` follows who recorded the run's end. At a server start a task found
+  `switching` with a run that ended while Yulius was down lost its switch with the
+  server: it rests as `stopped_server_lost` and is among the tasks a move brings back, as
+  one found with no run is.
+- **SGN-001** A failed sign-in leaves a subscription that needs a new one (`relogin`) as
+  it is, with the reason it had. One that works keeps its status with a note (as before);
+  only a first sign-in that fails makes an `error`. Why a sign-in failed is told to its
+  viewers in its `exit` frame (`cause`), also to one who opens it after it ended, and the
+  sign-in's dialog shows that reason, never the subscription's own error. The write reads
+  the status and writes it back under the lock of every other status write.
+- **SGN-002** A subscription works while it is `ok` or `limited`
+  (`AccountStatus::healthy`), and that is the one rule: tasks are placed only on one that
+  works, only such a one is asked for its usage or its e-mail address by the background
+  rounds, and a usage reading that arrives for any other stores its figures and leaves
+  its status and its reason. Every other status ends with a sign-in that succeeds, and
+  with nothing else. The web UI has the same rule once (`works` and `needsSignIn` in
+  `usage.js`): the administration page offers and makes a reading for the subscriptions
+  that work and offers a sign-in for the others, and the pool's panel and the "run on"
+  menu call the others "needs a new sign-in".
+- **QST-001** A start that has to wait in the queue is kept with its task
+  (`tasks.queued_start`: the kind of start, its prompt, and the subscription when a person
+  chose it), written in one step with the task's change to `queued`, and whoever starts
+  the queued task later starts it as that start was to be; a task queued without one
+  starts as before. The kept start is the task's only while it waits: the change that
+  takes the task out of the queue removes it from the row. It survives a restart of
+  Yulius. The pool's own choice of a subscription for a paused task is not kept: the pool
+  chooses again when the slot frees. A subscription a person chose that would be refused
+  when the task's turn comes (at its limit, needing a sign-in, removed) is given up: the
+  pool places the task and its terminal says "The subscription chosen for this task
+  cannot take it now, so Yulius chose one."
+- **QST-002** A paused task's pause ends when its start is made (its run has a
+  subscription) or waits in the queue, not before: a start that is refused (the queue is
+  full) or finds no capacity after all leaves the pause open, with its kind and
+  continuation, and the pool's next round tries again.
+- **RST-001** A run started with its owner's personal MCP servers says so in its run
+  directory (`personal-mcp-of`: the owner's id); a launch that cannot write it fails. A
+  restarted server reads it for a run it reattaches, so the rules of SPEC-332 MSC-009
+  hold across a restart: only that person messages the session, and a hand-over restarts
+  it with the new owner's servers. A reattached run whose mark names someone who is not
+  the task's holder (a hand-over's restart the old server did not finish) is restarted at
+  once. A mark that exists and cannot be read counts as none and is logged.
+- **RST-002** A `/goal` Yulius still has to type is marked in the run directory
+  (`typed-goal-pending`, written before the spawn; it says whether the session opens with
+  a turn) until the typist ends with an outcome: the goal recorded, the task flagged, or
+  the prompt box left to a person who typed. A restarted server watches a reattached run
+  that still has the mark, as it watches a launch goal: a goal Claude Code recorded
+  before the restart ends the watch (the mark goes, nothing is said); otherwise, after
+  `launch_goal_ms`, the task is flagged with "Yulius restarted before it set this task's
+  goal" and the mark goes, so it is said once. A session whose opening turn has not ended
+  (the mark says it opens with one, and no Stop of the run was answered) gets that turn
+  back: its Stop ends it as it is, as before the restart, and the watch's time starts
+  there, so the flag is not raised inside the turn and taken away by its end. A folder
+  trust dialog still unanswered tells the person to type the goal after answering it.
+- **TYP-001** A line of Yulius's own for a full session is not typed behind what may sit
+  in the prompt box (`has_draft`: any key, a person's or a message Yulius typed, since the
+  last prompt sent from the box; Yulius sees keys, not the box, so a key that left no text
+  counts too). A prompt a person typed and sent is no draft: its submit emptied the box,
+  and the session it filled is compacted. For `/compact <focus>` the compaction is held:
+  the task reads Needs your action with the reason and what to do (send what was typed,
+  or clear it and send any prompt), and its terminal says so. When its person types, the
+  session is theirs as after any key since the refusal: the flag ends and the task waits
+  for them; the prompt they send then meets the full context and is compacted in its
+  turn. The hold lasts at most `compact_hold_ms` (ten minutes); then Yulius types its
+  command all the same, the flag ends and the task works on (a task nobody watches must
+  not wait for good for a key that left nothing). With nothing in the box the session is
+  compacted. With text there the command goes out behind it as a prompt, which the full
+  context refuses: that refusal is the compaction's failure, and the task continues in a
+  fresh session at once; the flag's action and the terminal say this beforehand. The flag
+  ends with the hold however it ends (its person types, the command is typed, the run
+  ends, the terminal never goes quiet), and a hold cut by a restart of Yulius is taken up
+  again by the new server. The Enter of a line Yulius typed empties the box, whatever was
+  in it (Claude Code may run no prompt hook for a command: 2.1.292 ran none for
+  `/compact`), so a key from before it keeps nothing out afterwards. The line that wakes a compacted session is not typed behind a
+  draft (a key typed while the session was compacted): the terminal says that the
+  session was not told to carry on and what to do, and the task waits for its person. A
+  person who types after the refusal owns the session as before ("Yulius leaves the full
+  session to you").
+- **TYP-002** From a line Yulius types to its Enter, nothing else is typed into the
+  session by Yulius: a message, `/compact` and its wake-up line, and the goal hold the
+  run's one typing mark for that time; the goal holds it until Claude Code took it or its
+  tries are over, since a submit the TUI dropped leaves the line in the box. A message
+  that comes then is refused as while another message is being typed; a line of Yulius's
+  own waits for the mark, at most 5 s, is typed then, and first asks again, with the mark
+  held, whether a person typed meanwhile (a goal kept out that way says so, as one kept
+  out by an earlier key does). Not under the mark: a person's own keys, the
+  first message Yulius types (it has its own, which keeps keys and messages out), and the
+  Enter of "Send anyway".
+- **MOV-001** What the move helper's last run is doing is one of four states, matched
+  exhaustively: running, lost, ended, refused. A report that says running is believed
+  while it is at most 60 s old; an older one is lost only when systemd says the helper's
+  service (`<server unit stem>-migrate.service`) is `inactive` or `failed`, and is
+  running while systemd says it still runs (`activating`, `active`, `deactivating`,
+  `reloading`) or cannot say. Systemd is asked only of such a silent report, each time;
+  once it says the service ended, the report is read again (a helper writes its last
+  report before its service ends, so one that ended between the two reads is ended, not
+  lost). While running, no update or restart starts and nothing continues the move; once
+  lost, a move can be continued or aborted as before.
+- **MOV-002** A move's mark that exists is a mark, whatever its bytes: the first start
+  that finds it queues the lost tasks and removes it.
+- **CLT-001** A task's `closed_at` is the time of the close the task is in: set when it is
+  closed (or created closed), kept while it stays closed, `NULL` from the change that
+  takes it out of `closed`.
+- **CLT-002** Migration 0058 (schema version 58) clears `closed_at` of every task that is
+  not closed.
+- **GRP-001** A run paused by a person or by an update (the pause the task's view shows) is
+  in the Working group whatever it waits for: permission prompt, "Your turn", held prompt,
+  browser request, failing checks. A stop asked for still makes it Ended.
+- **GRP-002** The onboarding task a `pending` sandbox waits for (closed, never run) is in
+  the Working group and counted in line (`counts.queued`), by the server and the sidebar.
+- **GRP-003** A finished turn whose merge is armed is in the Working group, an achieved
+  goal's too: the task's view says `merge_armed`, the list reads "Waiting for checks or
+  merge", a task chained after it waits, a supertask waits for it, and archiving it is
+  refused (the merge stays armed). This narrows SPEC-487 CHN-003 ("an achieved goal is Done
+  as before") by the armed merge alone.
+- **LVE-001** An edit the server refuses as `forbidden` (403) gives the typing up: the tab's
+  text is the document's as it had it, nothing of the tab's waits (not saved, not busy, the
+  tab not marked modified, a close ends at once), typing is not kept, teammates' steps since
+  are caught up once (a refused catch-up asks nothing more), the Editor makes the file
+  read-only and says "Read-only: you can no longer change this folder". Only a successful join
+  (the file opened again) makes it writable again. A 403 for a stale session token
+  (`csrf_invalid`) is not a refusal of access: the edit is sent again.
+- **PRV-001** A proxied response reaches the browser with its body, `Content-Length` and
+  `Content-Encoding` as the app sent them (the browser's `Accept-Encoding` reaches the app);
+  the app's `X-Frame-Options` and CSP are kept (loopback sources mapped) and
+  `frame-ancestors 'self'` is added; `/__yulius/bridge.js` is gone (404); the proxy's own
+  pages carry no script and the same framing rule.
+- **GHA-001** The stored GitHub App configuration and the App's credentials hold no webhook
+  secret; a stored configuration that still names one parses as before.
+- **DOC-001** The repository's spec template, its task id filled in, is a spec `validate_spec`
+  accepts; the spec workflow, AGENTS.md and the `yulius-spec` skill say features and fixes get
+  one in that form.
+- **DOC-002** No instruction an agent follows in the repository (AGENTS.md, CLAUDE.md,
+  README.md, the pull request template, `docs/engineering/`, the repository skills, every
+  catalog skill file, the catalog workflows and automations, the templates) tells it to run
+  `gh pr merge` (other than "`gh pr merge` is refused"), to self- or author-merge, to promote
+  when asked or "and promote", or to poll (`gh pr checks --watch`); wrapped text is read by
+  paragraph, and negated text ("never", "not") is not refused. `scripts/check_repository.py`
+  refuses it. They describe delivery as Yulius does it: a reviewed head, `delivery_merge`, the
+  merge queue, `yulius wait`, promotion by a person on the CD page.
+- **SHP-001** Nothing Yulius types into a session tells an agent to promote: the goal, the
+  definition of done (short and full, and the request file) and the merge news pass
+  `cd::production_instruction`; they say promotion is not the agent's (a person's, to be asked
+  with `needs_you`, or automatic where the delivery profile says so).
+- **SHP-002** The Chore workflow, like Feature and Fix, deploys dev only when asked
+  (`cd_deploy`) and leaves production to a person.
+- **SHP-003** The Docs workflow and the delivery skill say a merge needs the independent review
+  `delivery_merge` asks for, documentation too.
+- **SHP-004** The Git page says agents merge and deploy the integration environments and a
+  person releases on the CD page (with `auto_promote`: Yulius releases each merge once they
+  pass); the delivery dialog says the same; the profile dialog says environment commands run
+  in the run's own copy of the stage branch's files, without Git.
+- **SHP-005** The guard's refusal of a hand merge says it skips the queue's order, its test on
+  the current base and the merge's own checks; the delivery skill says `Fixes #N` closes an
+  issue only for a merge into the repository's default branch, and to close it by hand
+  otherwise; the briefing says to merge the integration branch before the review
+  or for a conflict; the skill's gate table says which gate the merge tool checks and which
+  the review; `docs/api.md` lists only error codes a route produces.
+- **DED-001** Removing the items of slice 25 changes no behaviour a person or an agent sees:
+  the gate and the whole e2e suite pass with them gone, the API and its event stream keep
+  every field they sent; a workflow row seeded before the catalog that an instance still holds
+  is hidden by its default (`wf-feature`) or listed as a custom workflow (`wf-quick-task`), as
+  `docs/operations.md` says.
+- **LVE-002** A rejoin refused for lack of access (`forbidden`) is not tried again and gives
+  the typing up as a refused edit does (LVE-001): the document stays read-only, with nothing
+  waiting, until the file is opened again.
+- **ONE-001** A page with unsaved work asks before it is left, by one guard in the router: a
+  link, a navigation by code, Back and Forward each ask; leaving on the answer goes where the
+  person was going, staying keeps the page and its address, and either way the tab's history
+  is what the browser made of the move (no entry added or lost); closing or reloading the tab
+  gets the browser's own question. The guard ends with the page (its `destroy`), not with a
+  Leave the page outlives (a way out to its own address), and only one is set at a time.
+- **ONE-002** Every pull request chip and line says its checks from one table: "checks passed",
+  "checks failing", "checks running", "checks unknown" (with why), "no checks", for an open
+  pull request only.
+- **ONE-003** An upload limit and the editor's "too large" message use the server's wording of
+  a size (`human_size`: a whole unit, else one decimal cut); a commit's short form is its first
+  seven characters, or the page's own word without one, everywhere the web UI shows one.
+- **DOC-003** The instruction check reads a heading, a table row and each line of a fence as a
+  block of its own, never joined to the text around it.
+- **ONE-004** Every route reads a bearer token one way: the value of `Authorization` after
+  `Bearer `, trimmed; another scheme or an unreadable value is no token. The welcome page and
+  its refresh draw the port list by one function.
+- **ONE-005** Git's and GitHub's adapters remove GitHub token literals by one function of the
+  domain (`scrub_github_tokens`): every prefix, a stateless installation token whole, a bare
+  prefix kept; each adapter keeps its own rules around it (URL user information, `Bearer`,
+  `password=` lines for Git; known values, JWTs and the length bound for GitHub).
+- **QUE-001** Cancelling a task that waits drains the queue only when it was a supertask (its
+  hold on the project ends, SUP-005); any other waiting task frees no session and starts no
+  pass, so a bulk stop of waiting tasks stops each of them.
+- **ONE-006** Every crate reads RFC 3339 time with `yulius_domain::time::parse_rfc3339` and the
+  same inputs: `YYYY-MM-DDTHH:MM:SS` (`T`, `t` or a space between), an optional fraction, then
+  `Z`, `z` or `±HH:MM`; every field padded, the day within its month, the offset within a day,
+  a fraction cut to milliseconds, a leap second read as `:59`; and converts days and dates with
+  `CivilDate`.
+- **ONE-007** The device sign-in's start and poll have one contract, which the server sends and
+  the CLI reads: the poll's state is `pending`, `approved`, `denied` or `expired` (a consumed
+  grant, or a state the CLI does not know, is `expired`), and its `Debug` hides the token.
+- **ONE-008** Every MCP of Yulius dispatches the shared project tools (`PROJECT_TOOLS`) by one
+  function and answers `initialize` by one; every tool the remote MCP lists is dispatched; a
+  task asked for in another sandbox takes `model` and `effort` as `task_create` describes them.
+  The device sign-in's `Debug` hides the polling code as it hides the token.
+- **ONE-009** Every client in a sandbox reads its way to Yulius by one function
+  (`AgentEndpoint::from_env`): `YULIUS_URL` plain HTTP, printable ASCII, no user information,
+  query or fragment, to a literal loopback address or `localhost` (127.0.0.1 then ::1, no name
+  lookup), IPv6 only in brackets, a port of digits, and a non-empty printable
+  `YULIUS_TASK_TOKEN`; each keeps its own way of reading answers and says the one message of
+  each error, and connects to the first address that takes the connection before the one
+  deadline (trying the next never stretches it).
+- **EFF-001** The runs and pauses of a window are read through indexes on `attempts.ended_at`,
+  `attempts.started_at` and `capacity_pauses.ended_at` (migration 0061, schema version 61,
+  after every version `dev` had): no query of the
+  capacity or accounts view scans either table; the pauses come in the same order as before
+  (by start, then id).
+- **EFF-002** A poll that goes on from where the last read of the same transcript ended reads
+  from that byte on, with the dotenv calls seen before it, and answers what a read from the
+  start answers; where it ended is kept by the server (never sent to the reader, whose own
+  state could leave a dotenv read out), for at most 256 transcripts at once (two watchers keep
+  the farther point), used only in the same file (device and inode), while still at a line's
+  start and at or before the asked line, and forgotten when a transcript is rewritten in place
+  (`reindex_session`).
+- **EFF-003** A project's task list reads the project's tasks once and hands them to every
+  summary: a queued task's holders are found among them, so the list costs a fixed number of
+  store reads a task, whatever its length; a pass of the queue reads each project once for all
+  its queued tasks; a single task's summary, and a start's own check, read the project as
+  before.
+- **CSP-001** Every public response without a policy of its own carries the one policy of
+  `crates/yulius-server/src/content-security-policy.txt`: everything from Yulius itself,
+  `blob:` and `data:` images, `blob:` media, `data:` fonts and `blob:` workers, inline styles,
+  no inline or evaluated script, no frames, plugins or `<base>`, and no framing; forms may post
+  elsewhere (the GitHub App's manifest goes to GitHub). The e2e server sends the same file (a
+  brand lab page, mock only, may also load Google Fonts), and every e2e test fails on a load the
+  page itself is refused (not one in a tab it opens or in a worker). Routes with a stricter
+  policy (preview pages, attachments) keep theirs.
+- **CGR-003** A sandbox's Docker engine runs in, and sees as its `/sys/fs/cgroup`, the group
+  `engine/inside`, the root of its cgroup namespace; its limits (the task cap of SPEC-268
+  PID-002, its CPU weight) stay on `engine`, out of its view, and `cpu` and `pids` pass down
+  to `inside` as they reached the engine before (`--pids-limit` works in containers, `--cpus`
+  fails in runc's threaded mode as before). A start after a restart that pruned them makes
+  both groups again (nothing above). An engine group an engine of the old layout left threaded
+  is made plain again (its emptied leftovers removed) once no process runs in it but below
+  `inside` and its `cgroup.procs` can be read; an old engine still running there is left alone.
+  A container is a populated group below the engine's root (`cgroup.events`), also where runc
+  made it threaded.
 
 ## Plan
 
@@ -692,7 +1361,30 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 13: a run again tests a commit with the jobs the scheduler gives it, by one rule for all who ask (merged, #1254)
 - [x] Slice 14: a promotion asks what every merge asks about the checks at a commit, by one answer (merged, #1257)
 - [x] Slice 15: an armed merge lives and ends with the run that armed it, by one rule in a pass and at a start (merged, #1263)
-- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it
+- [x] Slice 16: the agents' own listener answers an error with the status every other route gives it (merged, #1265)
+- [x] Slice 17: a switch ends no work it cannot answer for, and starts no session beside one it could not end (merged, #1268)
+- [x] Slice 18: a subscription that needs a new sign-in stays out of the pool until one succeeds (merged, #1271)
+- [x] Slice 19: a start that has to wait in the queue keeps how it was to start (merged, #1272)
+- [x] Slice 20: what a run was started with is still known after a restart of Yulius (merged, #1274)
+- [x] Slice 21: Yulius types into a session by one rule, whatever it types (merged, #1276)
+- [x] Slice 22: a move's report, a move's mark and a task's close time each mean one thing (merged, #1277)
+- [x] Slice 23: Home, the tabs and the sidebar count a task by one rule, and a refused edit leaves nothing unsaved (merged, #1279)
+- [x] Slice 24: what nothing reaches goes: the preview bridge, the webhook secret, dead web exports and styles (merged, #1281)
+- [x] Slice 25: Rust code nothing reaches goes: dead events, helpers, store methods, a one-shot shim and unused features (merged, #1282)
+- [x] Slice 26: what Yulius ships and shows says what the code does: typed texts, workflows, a skill, the Git page, the guard, the briefing (merged, #1283)
+- [x] Slice 27: the repository's own instructions deliver, specify and describe the code as it is (merged, #1284)
+- [x] Slice 28: the web UI asks about unsaved work on every way out, and says checks, sizes and commits one way (merged, #1287)
+- [x] Slice 29: one reader of a bearer token and one GitHub-token scrub, and the spec's merged evidence moved out (merged, #1290)
+- [x] Slice 30: a cancelled waiting task starts the queue only when it was a supertask (merged, #1295)
+- [x] Slice 31: one reader of RFC 3339 time, the calendar from the domain (merged, #1296)
+- [x] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read (merged, #1297)
+- [x] Slice 33: one dispatch of the shared project tools and one handshake for every MCP (merged, #1300)
+- [x] Slice 34: one reader of a sandbox's way to Yulius for every client in it (merged, #1305)
+- [x] Slice 35: the capacity and accounts views read their window through indexes (merged, #1306)
+- [x] Slice 36: a watcher's poll reads only what was written since (merged, #1309)
+- [x] Slice 37: a project's task list reads the project once (merged, #1313)
+- [x] Slice 38: the web UI runs under a strict content security policy (merged, #1317)
+- [x] Slice 39: a sandbox's Docker engine runs below the group that holds its limits (merged, #1318)
 
 ## Acceptance criteria
 
@@ -1068,13 +1760,303 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-92** `status_for` gives each kind of application error the status of STS-001.
 - **AC-93** No line of a file under `crates/yulius-server/src/routes` is a `match` arm from
   an `AppError` kind to a `StatusCode` (the two tables that had such arms are gone).
-- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
-  says the run ended, not that the branch moved. With the armed pull request merged by a
-  person, a commit past the armed head and the task closed: the pass says "merged".
 - **AC-94** The existing tests of the hooks, the Git credential helper, `yulius wait` and
   the remote MCP endpoint pass unchanged; `yulius wait` against a listener that answers
   500 ends after a few tries with "HTTP 500" (as before: now what Yulius answers for a
   failure of its own).
+- **AC-95** With a merge armed, a commit past the armed head and the task closed: the pass
+  says the run ended, not that the branch moved. With the armed pull request merged by a
+  person, a commit past the armed head and the task closed: the pass says "merged".
+- **AC-96** A goal task on a subscription at its threshold, a second one with room, and a
+  look at the background work that gives no answer: at the turn's end the task has one run
+  and is done. Once the look answers, the next turn's end moves the session to the second
+  subscription.
+- **AC-97** A switch of a task whose session does not hear the request to end and whose
+  host cannot be terminated ends with "the session could not be ended, so it was not
+  switched": the task has its one run, live; it is `running` and reads Needs your action
+  with "Yulius could not end this session" and "Stop the task to try again."; the switch
+  is recorded `failed`, its terminal
+  says "The session was not switched: it could not be ended.", and switches cool down. A
+  session that leaves by itself afterwards ends as `exited` and closes the task (no intent
+  of the switch was left for it).
+- **AC-98** A switch of a task whose session does not hear the request to end and whose
+  host can be terminated ends with "the session did not end in time during the switch": the task
+  has its one run, lost, and is `stopped_switch_timeout`; the switch is recorded `failed`.
+- **AC-99** The same outcome when the run's reader records the loss before the switch
+  does (the host is killed after the switch gave the run up, before it terminates it), and
+  when the run exits by itself at that moment (its end is recorded `switch_timeout`), also
+  when the host then cannot be terminated: nothing says a session could not be ended.
+- **AC-100** A run whose end is being recorded when the switch's wait runs out (held
+  after its recorder took the switch's intent) is switched: the old run ended `switched`,
+  the new run is live, the task runs.
+- **AC-101** A session that leaves by itself after its task became `switching`, before
+  the switch claims the run's end: the task is `closed` with its one run `exited`, the
+  switch ends with "the task was closed during the switch", and nothing says a session
+  did not end in time.
+- **AC-102** A run whose agent died and whose end is being recorded (its recorder holds
+  the given-up intent) when the kill is refused and the task is put back to `running`:
+  the switch waits for the record; the task is `stopped_switch_timeout`, its run ended
+  `switch_timeout`, and nothing says a session could not be ended.
+- **AC-103** A start that finds a `switching` task whose run ended while Yulius was down
+  rests it as `stopped_server_lost` (a running one whose session left is `closed`, as
+  before); with the mark of a host move the task is queued again.
+- **AC-104** A subscription that signed in, was refused by Claude (`relogin` with
+  Claude's words) and whose next sign-in fails: its status is `relogin` and its error
+  Claude's words; the ended sign-in's `exit` frame is `error`, the exit code and "the
+  sign-in ended without producing a token (exit code 2)" as `cause`.
+- **AC-105** A subscription with a credential that reads `error`, and one that reads
+  `relogin`: a background usage round stores nothing for it; a reading an administrator
+  asks for answers 200 with the status unchanged, stores the usage and keeps the reason.
+- **AC-106** With one subscription that works and has no address yet, one in `error` and
+  one in `relogin`, a background round stores the first one's address and asks Claude
+  nothing about the two others.
+- **AC-107** On the Subscriptions page with every subscription but one in `error`,
+  "Refresh all" says "Usage read again for 1 subscription." and one request was made.
+- **AC-108** On the Subscriptions page a sign-in of the refused subscription that fails
+  says "Sign-in failed" with "The sign-in ended without producing a token" and without
+  Claude's refusal; the card then still shows the refusal and "Sign in again", and the
+  subscription reads `relogin`.
+- **AC-109** With one session slot: a task paused at a usage limit without a process
+  becomes resumable while another task holds the slot; the pool's round queues it. While
+  it waits the subscription the pool had chosen fills up and another frees. When the slot
+  frees, the task's new run is a native resume without a prompt that continues the
+  interrupted turn, no transcript still holds the limit's record, and it runs on the
+  subscription that is free then.
+- **AC-110** With one session slot held and the pool preferring another subscription, a
+  stopped task continued on a chosen subscription is queued; Yulius restarts (the
+  holder's session lives on); when the slot frees, the task runs on the chosen one.
+- **AC-111** In the store: a task that no longer reads the status it was read in is not
+  queued and nothing is kept; a kept start is read back as written (a prompt with a line
+  break, quotes and the word null, a subscription id); one this build cannot read (another
+  kind, a subscription id of another shape, no JSON) or of an earlier wait gives none;
+  after the task left the queue the column is empty, and a task queued again has the
+  start of that wait. A database of schema version 56 opens at 57.
+- **AC-112** With the slot held, a stopped task continued on a chosen subscription that
+  then fills to 100 % while the task waits: when the slot frees the task runs on the
+  other subscription and its terminal says that the chosen one could not take it; it is
+  not failed.
+- **AC-113** With one slot held and a queue of one place taken, a task paused at a usage
+  limit without a process that becomes resumable keeps its `limit` pause through the
+  pool's round and stays `waiting_capacity`; once the queue has room the next round
+  queues it and its pause ends; when its turn comes it resumes past the limit.
+- **AC-114** A task's run holds its owner's personal MCP server, which is then turned
+  off (so only the run's own record says it holds it); Yulius restarts and reattaches the
+  run. Another person's message to the task is refused for the MCP servers, and when
+  control passes to that person the run is resumed.
+- **AC-115** Yulius restarts while a continued goal session is in its opening turn of
+  12 s (the run directory holds `typed-goal-pending`), with a watch of 3 s: after that
+  turn's Stop was answered the new server flags the task with "Yulius restarted before it
+  set this task's goal", and the mark is removed.
+- **AC-117** A reattached run whose `personal-mcp-of` names another person than the
+  task's owner is restarted by the new server (a second run, a resume).
+- **AC-118** With an agent whose prompts reach Yulius's hooks, a person types a prompt at
+  the task's terminal and sends it, and the full context refuses it: the session is
+  compacted.
+- **AC-119** A message for the task that comes while `/compact` is in the prompt box and
+  its Enter not sent is refused with "is being typed", nothing of it reaches the session,
+  and the session is compacted. The same while a resumed session's `/goal` is in the box:
+  the message is refused and the goal is set. The same after the Enter of a goal whose
+  submit the TUI dropped.
+- **AC-120** The same person types on while that prompt's turn runs and sends nothing;
+  the refusal comes: the task reads Needs your action with "The session's context is
+  full, and Yulius does not compact it yet: …" and "Send what you typed in the terminal,
+  or clear it and send any prompt: …", the terminal says that Yulius holds the
+  compaction, and no compaction is typed. They type on: the terminal says the session is
+  left to them, the task reads Your turn and still nothing is typed. They send it: the
+  session is compacted.
+- **AC-121** With a hold of 3 s and a key that left no text, the task is flagged, nothing
+  is typed at first, then the session is compacted, the flag is gone and the session is
+  told to carry on. With real text in the box, the task gets a fresh session (a second
+  run, new) within the test's minute, and the terminal says "Compacting did not help (the
+  command was sent with text left in the prompt box)".
+- **AC-125** A compaction is held and flagged; Yulius restarts; the new server (hold 3 s)
+  takes the recovery up again and the task goes on (a second run).
+- **AC-126** A compaction is held for a key that left no text; a prompt hook for a
+  command reaches Yulius (the box is emptied, no turn starts): Yulius types its command,
+  and at that moment the task no longer reads Needs your action; the session is
+  compacted.
+- **AC-122** A reattached run that holds another person's servers and sits at a usage
+  limit is restarted past the limit (a resume that continues the interrupted turn, no
+  limit record left in a transcript).
+- **AC-123** A key of the task's person at the moment Yulius is about to type `/compact`
+  (quiet terminal, nobody typed, the typing mark not taken yet) keeps the command out:
+  the terminal says the session is left to them and the task reads Your turn. The same
+  key before a resumed session's `/goal` keeps the goal out, and the task reads Needs
+  your action with "Someone typed in the terminal before Yulius set the task's goal".
+- **AC-124** A key typed right after the Enter of Yulius's `/compact`: the session is
+  compacted, the terminal says "Yulius did not tell the session to carry on: …", the task
+  reads Your turn, and the line that wakes a compacted session is not typed.
+- **AC-116** A typed goal that Claude Code took removes the mark; with the mark put back
+  by hand and a restart, the new server removes it and flags nothing.
+- **AC-127** A move whose report is 60 s old reads running and systemd is not asked; at
+  60 001 ms, with the helper's service still running or systemd silent, it reads running,
+  the card offers only Abort, a move is refused as running, and Update now and Restart are
+  refused with "is being moved to another host"; once systemd says the service ended it
+  reads lost, Plan, Move and Abort are offered and an update starts. A helper that writes
+  its last report (ended well) and ends just as systemd is asked reads ended, and Move is
+  not offered.
+- **AC-128** Systemd's `ActiveState` of the helper's service: `activating`, `active`,
+  `deactivating` and `reloading` are running, `inactive` and `failed` ended, anything else
+  or no answer unknown; outside a unit there is no helper to run.
+- **AC-129** A move's mark of bytes that are not text: the next start queues the lost task
+  and removes the mark, and the report says 2 queued.
+- **AC-130** A running task closed at 200, closed again at 300, continued at 400, queued
+  at 450 and closed at 500 has the close times 200, 200, none, none, 500; a version-57
+  database's running and chained tasks lose their close time, a closed one keeps it.
+- **AC-131** A running task with a permission prompt counts 1 needing you; paused by its
+  owner it counts 1 working and none needing you; resumed, 1 needing you again. In the
+  sidebar's rule a paused task with a permission prompt or a held prompt reads Paused,
+  counted working.
+- **AC-132** A `pending` sandbox with its onboarding task waiting for Start onboarding and a
+  task chained after it counts 2 in line, none working, none needing you; the sidebar's
+  counter says the same of the onboarding task.
+- **AC-133** An armed, green pull request whose task's goal is then achieved: the chained
+  task stays chained, the task's view says `merge_armed: true`, the project counts it
+  working, archiving it answers 409 and it stays running with the merge armed. The sidebar
+  reads "Waiting for checks or merge" with and without the pull request; an achieved goal
+  without an armed merge is still "Done · PR #7". A supertask created then is held by it.
+- **AC-134** A live document whose edit is refused with 403 has the server's text back, is
+  read-only, saved and not busy; typing more sends nothing; close ends within a second; a new
+  join clears the read-only state. A refusal as `csrf_invalid` sends the edit again and the
+  document stays writable. When the catch-up is refused too, the text is the document's, the
+  document is read-only and not busy, and after 1.5 s nothing more was asked (one join, one
+  catch-up). In the Editor the status says "Read-only: you can no longer change this folder",
+  the editor is read-only, the text is the file's and the tab reads `notes.txt×` (not marked
+  modified).
+- **AC-135** A proxied document arrives byte for byte with its length; the app's
+  `X-Frame-Options: DENY` and its CSP (with `frame-ancestors 'none'`, the WebSocket source
+  mapped) are kept beside `frame-ancestors 'self'`; `/__yulius/bridge.js` answers 404; a
+  gzip document keeps `Content-Encoding: gzip` and its length, and the app saw the
+  browser's `Accept-Encoding: gzip, br`. The proxy's refusal page (the landing's) has the
+  CSP `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'` and no
+  script.
+- **AC-136** A catch-up that says the document ended and a rejoin refused as `forbidden`: the
+  document is read-only and not busy, the text is the document's, and after 2.5 s it asked
+  for no second rejoin. The same when the edit itself meets an ended document (409), its
+  catch-up too, and the rejoin is refused: read-only, saved, not busy, the document's text,
+  one edit, two joins, and a close ends within a second.
+- **AC-137** With slice 25's deletions, `scripts/dev ci` (build, lint, cargo-shear, rustdoc and
+  every test) and the whole e2e suite pass; `TaskStatus` still names every status a run can
+  end in; a manual move names its account.
+- **AC-138** The request file, the short and full definitions of done and the merge news (with
+  and without steps ahead) contain no instruction to promote by `production_instruction`, and
+  say "Promotion to `main` and production deploys are not yours" or "Promotion is not yours
+  to do".
+- **AC-139** The Feature, Fix and Chore workflows name `cd_deploy` and "production is a
+  person's"; the Docs workflow names the independent review and not "no independent review".
+- **AC-140** The Git page of an `auto_promote` project says "Agents merge and deploy the
+  integration environments; Yulius releases each merge once they pass."; the sentence for
+  another profile ends "a person releases on the CD page."; no "Agents merge and release"; the
+  delivery dialog says "a person releases on the CD page"; a refused `gh pr merge` says
+  "skips the queue's order, its test on the current base" and never "does not end".
+- **AC-141** The spec template with a task id filled in validates, with status draft.
+- **AC-142** `delivery_instruction_errors` reports `gh pr merge 12 --squash …`, "squash-merges",
+  "promote only when the task asks" and "Poll live run IDs", and accepts "Merging by hand
+  (`gh pr merge`) is refused", "Promotion … is a person's" and "never poll"; the repository
+  check passes on the repository.
+- **AC-143** The Git page's sentence for a profile with no integration environment says
+  "Agents merge; a person releases on the CD page." (with `auto_promote`: "…right away. …
+  Agents merge; Yulius releases each merge."); with an integration environment "staging":
+  "Agents merge and deploy staging" and, with `auto_promote`, "…once it passed staging. …
+  Yulius releases each merge then."
+- **AC-144** In the workflow editor with an unsaved change, Back asks "Leave without saving?";
+  Cancel keeps the editor, its address and the history's length; asked again, Leave goes back,
+  and Back and Forward then reach the pages around it as before. Forward is asked about too,
+  and after Cancel, Back and Leave go to the page before the editor. The second event hash mode
+  sends for one move changes nothing, also from the tab's first entry. A navigation by code
+  (`navigate()`) asks the same and goes on after Leave; Leave to the address in view keeps the
+  page, and a later change is asked about again (the new skill's page too). Without a change,
+  Back asks nothing, nor does leaving an editor before it has loaded; an address typed over
+  unsaved work in hash mode is put back, and Back and Forward across it keep asking (ONE-001).
+- **AC-145** The chips of an open pull request with failing, passing, running and unknown
+  checks, as a link, a span and a button, say "checks failing", "checks passed", "checks
+  running" and "checks unknown" (with why) in their titles and names (a span's screen-reader
+  text, the strip's label), the same icon and tone in each where it has one; a merged one says
+  no checks; the Git page's review column says "Checks failing", and "In review" for a pull
+  request without checks (ONE-002).
+- **AC-146** `limitSize` words 1 GiB, 1.5 GiB, 12 GiB, 1023 MiB, 3.5 MiB, 300 KiB, 12 bytes,
+  12.5 GiB, 1.99 GiB, 10.5 MiB, 1945 bytes and 10 000 000 000 bytes as "1 GB", "1.5 GB", "12 GB",
+  "1023 MB", "3.5 MB", "300 KB", "12 bytes", "12.5 GB", "1.9 GB", "10.5 MB", "1 KB" and "9.3 GB",
+  as the server does, while `bytes` words a measurement ("3.0 GiB"); `shortSha` gives the first seven
+  characters and '' without a commit (ONE-003).
+- **AC-147** The check refuses neither "## Promote" followed by "when the task asks…", nor a
+  table whose rows say "promote" and "when the task asks", nor two lines of a fence that do
+  together; it refuses a `gh pr merge` under a heading that ends in "No", and a wrapped
+  sentence whose second line starts with an issue number ("#465 when the task asks") (DOC-003).
+
+- **AC-148** `bearer` gives `abc` for `Bearer abc` and `Bearer  abc `, nothing for `Basic abc`,
+  `Bearerabc`, a value that is not text or no header; the leftovers key, the MCP route, the
+  internal routes, the secrets' reveal and the `Auth` extractor all use it (ONE-004). The
+  welcome page and its refresh both say "No dev server is listening" without a listener and
+  link the port with one (ONE-004).
+- **AC-149** `scrub_github_tokens` replaces `ghp_`, `gho_`, `ghu_`, `ghr_`, `github_pat_` and
+  `ghs_` tokens, a stateless installation token that holds another prefix whole, keeps a bare
+  `ghs_`, and leaves text without one unchanged; the adapters' own tests of #424 pass through it
+  (ONE-005).
+
+- **AC-150** A bulk stop of two waiting tasks in a world with free sessions stops both, also with
+  a 300 ms pause after each stop of the bulk loop (before the fix: 3 of 3 failed, the second
+  started and its stop refused); stopping one of two waiting tasks, neither a supertask, leaves
+  the other waiting for a second; a stopped waiting supertask still lets the tasks it held start
+  (QUE-001).
+
+- **AC-151** `parse_rfc3339` reads `1970-01-01T00:00:00Z`, a fraction cut to milliseconds, an
+  offset, `t` and a space as separators and a leap second as `:59`, and refuses `2026-02-31`,
+  `2026-02-30`, month 13, hour 24, an offset `+24:00` or `+0200`, a missing zone, an empty
+  fraction, unpadded fields, a sign before the year and trailing text; `format_rfc3339` reads
+  back; the transcript, GitHub and import tests pass through it (ONE-006).
+
+- **AC-152** The server's device poll says a stored `pending`, `approved` or `denied` grant as
+  that state, a `consumed` one or one of an unknown state as `expired`, on the wire as the
+  lowercase word the CLI reads (`{"status":"denied","token":null}`); the CLI's device tests and
+  the server's sign-in tests pass on the one contract (ONE-007).
+
+- **AC-153** Called with only its project, every tool the remote MCP lists for a person's token
+  answers, none with "unknown tool" (the Global Superagent's browser tools, which this dispatch
+  does not hold, are not called: they would open a browser); `sandbox_task_create`'s `model`
+  and `effort` equal `task_create`'s, each with a description; `DeviceStart` and
+  `DevicePollRequest` show no polling code in `Debug` (ONE-008).
+
+- **AC-154** `http://127.0.0.1:7171/base/` gives that address and the path `/base`; `[::1]`
+  and `localhost` (both loopback addresses) are taken, port 80 when absent; `https`, an empty
+  host, user information, a bad port, a space, a query or a non-ASCII byte in the path are
+  refused as malformed, so are `[127.0.0.1]`, an unbracketed `::1`, a signed port and an empty
+  one, `10.0.0.1`, `0.0.0.0` and a host name as not loopback; a server on ::1 only is reached
+  through `localhost` by the Git and the hook clients; a spent deadline tries no address; an
+  empty or unprintable token and missing variables are refused; `Debug` hides the token; the Git
+  credential, `agent_call`, hook and redaction clients' tests pass through it (ONE-009).
+
+- **AC-155** `EXPLAIN QUERY PLAN` of `token_runs`, `pauses_since` and `account_tokens` names no
+  `SCAN` of `attempts` or `capacity_pauses`; the capacity, accounts and dashboard tests pass,
+  pauses in their order (EFF-001).
+
+- **AC-156** A read from a resume point gives the entries, `end` and `next` a read from the start
+  gives, the dotenv read before the point still redacted; a point past the asked line or off a
+  line's start, or of a file that replaced the transcript (its dotenv read ending exactly at the
+  old point), is read past; through the API, the next poll of a watched transcript reads on
+  from the last read's end (a newline slipped into an earlier line does not renumber what
+  follows); on a 30 MB transcript a poll took 497 ms from the start and 18 µs from the point
+  (EFF-002).
+
+- **AC-157** A project's list gives each queued task the holders its own summary gives (a
+  supertask waiting for a working task, a task waiting for the supertask, a continued one);
+  listing 200 tasks took 31 ms with 2 671 store calls, against 88 ms and 2 738 before (EFF-003).
+- **AC-158** `/`, a UI path, `/api/me`, `/api/setup/status` and `/healthz` carry the policy word
+  for word; the e2e server answers every path with the same file, and a lab page with the two
+  font hosts added; an inline script, an image from elsewhere and `new Function` in the page are
+  refused and each fails the test; a form posted to another site from a tab the page opened is
+  sent and a recording plays from a `blob:` URL (in the e2e suite and in a real Chrome); the
+  whole e2e suite (terminals, the editor, the browser panel, pasted images, the brand lab)
+  passes under it, and a real Chrome on the real server shows setup, Home, Settings, Users,
+  Archived, the design page and a missing sandbox with no refusal (CSP-001).
+- **AC-159** A sandbox's groups give the engine `engine/inside` as its root and its spec binds
+  that group; the task cap is on `engine` and `inside` has no limit of its own; a pruned root is
+  made again with its group, never another group's parent; an idle old engine group loses its
+  leftovers and controllers, a running one keeps them. On a real kernel (Ubuntu 26.04 guest),
+  the old layout lets a nested cgroup namespace (and a privileged container of a real `dockerd`)
+  lift the engine's `pids.max` and `cpu.weight`; the new one does not, a fork past the cap is
+  refused, a real `dockerd` runs containers in it, and an old group settled as above runs them
+  again (CGR-003).
 
 ## Test plan
 
@@ -1252,6 +2234,172 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `yulius` `restart::a_server_failing_every_request_ends_the_wait_after_a_few_tries` and
   the suites of `agent_hooks`, `remote_mcp`, `delivery` (AC-94);
   `delivery::an_armed_merge_ends_with_its_tasks_run` (AC-95, slice 15's rule).
+- Slice 17: `yulius` `task_done::a_switch_waits_while_the_background_work_cannot_be_told`
+  (AC-96), `task_done::a_switch_whose_old_run_cannot_be_ended_starts_no_new_run` (AC-97),
+  `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run` (AC-98),
+  `task_done::a_run_its_switch_gave_up_is_that_switchs_loss_whoever_sees_it_first`,
+  `task_done::a_run_that_exits_as_its_switch_gives_it_up_rests_the_task` and
+  `task_done::a_run_that_exits_before_a_refused_kill_rests_the_task` (AC-99),
+  `task_done::a_run_whose_end_is_being_recorded_as_the_wait_runs_out_is_switched` (AC-100),
+  `task_done::a_run_that_ends_before_its_switch_claims_it_closes_the_task` (AC-101),
+  `task_done::a_run_whose_exit_is_being_recorded_at_a_refused_kill_rests_the_task`
+  (AC-102), on the real session host behind a test host that can drop requests to end,
+  refuse to terminate and leave the look unanswered; the orders are made with pause
+  points (`SwitchDecided`, and three new ones: `RunEndTaken`, `SwitchWaitOver`,
+  `SwitchEndsRun`);
+  `host_move::a_task_left_switching_whose_run_ended_is_lost_to_the_restart` (AC-103), on a
+  host that finds every run ended.
+- Slice 18: `yulius` `accounts::a_failed_sign_in_leaves_a_refused_subscription_needing_one`
+  (AC-104, through the sign-in's own terminal with a scripted host) and
+  `account_usage::a_usage_reading_leaves_a_broken_subscription_broken` (AC-105);
+  `account_email::the_round_asks_no_address_of_a_subscription_that_needs_a_sign_in`
+  (AC-106); e2e `subscriptions.e2e.ts` "a subscription in error is asked for no usage
+  reading" (AC-107) and "a failed sign-in of a refused subscription says its own reason
+  and leaves the refusal on the card" (AC-108); the existing
+  `accounts::failed_logins_record_errors_and_relogin_failures_keep_working_accounts`
+  keeps the two other cases of SGN-001.
+- Slice 19: `yulius` `pool_supervision::a_resume_past_a_limit_that_waits_in_the_queue_is_still_one`
+  (AC-109) and `pool_supervision::a_continue_on_a_chosen_subscription_keeps_it_through_the_queue`
+  (AC-110), with the real session host and one slot; `yulius-store`
+  `tests::a_queued_task_keeps_its_start_while_it_waits` (AC-111); `yulius-app`
+  `supervisor::tests::a_kept_start_comes_back_as_it_was` (every kind, with and without a
+  prompt and a subscription);
+  `pool_supervision::a_chosen_subscription_that_filled_up_while_waiting_is_given_up`
+  (AC-112) and `pool_supervision::a_resume_that_finds_the_queue_full_keeps_its_pause`
+  (AC-113).
+- Slice 20: `yulius`
+  `pool_supervision::a_hand_over_after_a_restart_still_restarts_a_run_with_personal_servers`
+  (AC-114), `first_message::a_goal_still_to_be_typed_at_a_restart_is_flagged` (AC-115),
+  `first_message::a_typed_goal_that_was_taken_leaves_no_marker` and
+  `first_message::a_typed_goal_recorded_before_a_restart_is_not_flagged` (AC-116),
+  `pool_supervision::a_reattached_run_with_another_persons_servers_is_restarted`
+  (AC-117); each restart is a second server on the same data that reattaches the first
+  one's run.
+- Slice 21: `yulius` `context_full::a_persons_own_refused_prompt_is_compacted` (AC-118),
+  `context_full::a_possible_draft_holds_the_compaction_and_its_person_is_told` (AC-120)
+  and `context_full::a_held_compaction_is_typed_once_its_hold_is_over` (AC-121), with a
+  hooked agent and keys typed through the task's terminal;
+  `context_full::nothing_is_typed_between_a_line_of_yulius_and_its_enter`,
+  `first_message::nothing_is_typed_between_the_goal_and_its_enter` and
+  `task_done::nothing_is_typed_while_a_typed_goal_is_not_taken` (AC-119, with pause
+  points after the line and after its Enter, `LineTyped` and `LineEntered`);
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (AC-122);
+  `context_full::a_key_just_before_the_compaction_keeps_it_out` and
+  `first_message::a_key_just_before_the_goal_keeps_it_out_and_is_said` (AC-123, with a
+  pause point before the typing mark, `LineReady`);
+  `context_full::a_draft_typed_during_the_compaction_keeps_the_wake_up_out` (AC-124, the
+  key at the pause point after the Enter, `LineEntered`);
+  `context_full::a_command_sent_behind_real_text_continues_in_a_fresh_session` (AC-121)
+  and `context_full::a_compaction_held_at_a_restart_is_taken_up_again` (AC-125);
+  `context_full::a_hold_whose_box_was_emptied_without_a_key_ends_its_flag` (AC-126, the
+  hook sent by the test with the run's own token).
+- Slice 22: `yulius` `migration::a_silent_helper_is_lost_only_once_its_service_ended`
+  (AC-127, the fake helper says what systemd says and counts the questions),
+  `migration::an_unanswered_request_and_a_silent_helper_are_said` (lost as before when the
+  service ended), `wiring::migrate_files::tests::the_helper_runs_while_systemd_says_its_service_does`
+  (AC-128, a fake `systemctl`), `host_move::a_mark_that_is_not_text_still_brings_the_tasks_back_and_goes`
+  (AC-129); `yulius-store` `tasks::tests::a_close_time_is_the_close_the_task_is_in` and
+  `tests::a_task_that_is_not_closed_loses_its_old_close_time` (AC-130).
+- Slice 23: `yulius-domain` `task::tests::group_follows_the_sidebar_rule` (GRP-001 to
+  GRP-003, every activity and pull request case); `yulius`
+  `task_pause::a_paused_task_is_counted_working_whatever_it_waited_for` (AC-131),
+  `import_server` (the onboarding test's counts, AC-132),
+  `merge_train::an_achieved_goal_with_an_armed_merge_is_not_done` (AC-133); e2e
+  `task-done.e2e.ts` "a paused task, a waiting onboarding task and an armed merge are counted
+  as the server counts them" (the sidebar's rule in the page), `live-editor.e2e.ts` "an edit
+  refused for lack of access gives the text back and leaves nothing waiting" (the document
+  against a scripted server) and "… makes the file read-only in the Editor and says so" (the
+  mock refuses edits on a switch).
+- Slice 24: `yulius`
+  `preview::responses_reach_the_browser_as_the_app_sent_them_at_the_preview_origin` (AC-135,
+  a compressed document added to the fixture app; the test was named for the frames it no
+  longer allows), the handshake test's landing page (AC-135, the proxy's own pages) and the
+  preview proxy's unit test of the CSP rewrite; e2e `live-editor.e2e.ts` (AC-136, the `ended`
+  and `gone` cases); the
+  configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
+  parse); the gate's lint and e2e for the deleted web code.
+- Slice 39: `yulius-sandbox` `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves`,
+  `ci_and_the_engine_leave_the_agents_a_reserve_of_tasks`,
+  `without_the_cpu_controller_there_is_no_split`, `without_the_split_the_leaves_get_no_task_limit`,
+  `a_pruned_leaf_is_restored_under_its_parent`,
+  `an_idle_engine_group_from_before_is_made_plain_again`,
+  `the_engine_root_gets_the_threaded_controllers`,
+  `engine_supervisor::tests::only_processes_below_the_engines_group_are_containers`,
+  `engine_supervisor::tests::a_start_recreates_the_engine_leaf_a_restart_pruned`,
+  `manager::tests::a_kept_engine_front_gets_its_pruned_leaf_back` (AC-159); the kernel's and
+  `dockerd`'s behaviour in an Ubuntu 26.04 QEMU guest (scripts kept in the task's cache).
+- Slice 38: `yulius` `http_auth::public_responses_carry_security_headers` (the policy word for
+  word, AC-158); `scripts/test_e2e_serve.py` (the same file on every answer, the lab's fonts on
+  a lab page only); e2e `content-security-policy.e2e.ts` (the page's policy; refusals fail the
+  test; a form posted elsewhere from a tab the page opened is sent; a recording plays from a
+  `blob:` URL); the whole e2e suite under the policy, with `filedrop.e2e.ts`'s check of an opened file's
+  type reading the blob, not fetching it (the policy refuses `fetch` of a `blob:` URL); a real
+  Chrome on `yulius serve` over CDP (`target/audit/slice38/csp-probe.mjs`).
+- Slice 37: `yulius` `supertask::a_supertask_waits_for_working_tasks_and_holds_its_project`
+  (the list against each summary, AC-157), the task list and supertask tests; a counter and
+  timing probe (not kept).
+- Slice 36: `yulius-app` `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`,
+  `the_farther_point_of_a_file_is_kept`, `a_point_after_an_overlong_line_is_at_the_next_line`,
+  `yulius` `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since` (AC-156),
+  the transcript, watch and session tests; a timing probe (not kept).
+- Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`,
+  `spans::tests::the_pauses_of_a_window_come_in_start_order` and
+  `tests::the_latest_schema_versions_keep_their_migrations` (AC-155); the store's capacity
+  and accounts tests and the `yulius` capacity, accounts and dashboard tests.
+- Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
+  `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
+  `a_spent_deadline_tries_no_address`, `yulius-harness`
+  `hook_client::tests::localhost_reaches_a_server_on_the_second_address` (AC-154); the
+  clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`, `yulius-harness`
+  `hook_client::tests`) and the `yulius` tests of `wait`, `tool`, the MCP bridge and the hooks.
+- Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
+  `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says` and
+  `initialize_speaks_the_asked_version_or_the_newest`,
+  `yulius-contracts` `import::tests::device_poll_wire_and_redaction` (AC-153); the existing
+  MCP, remote MCP and Superagent tests for unchanged behaviour.
+- Slice 32: `yulius-app` `auth::tests::a_device_grant_is_said_as_the_cli_reads_it`, the
+  `yulius` sign-in tests (`http_auth`) and the CLI's `import::device` tests (AC-152).
+- Slice 31: `yulius-domain` `time::tests::one_rfc3339_reader_takes_the_same_inputs_everywhere`
+  and `rfc3339_text_round_trips` (AC-151); the import crate's `time::tests`, GitHub's
+  `time::tests`, the transcripts' and analytics' tests through it.
+- Slice 30: `yulius` `supertask::stopping_a_waiting_task_that_is_no_supertask_starts_no_other`
+  (the regression test), `remote_mcp::a_persons_agent_edits_orders_and_stops_tasks_remotely`
+  (with the probe) and `supertask::stopping_a_queued_supertask_starts_the_tasks_it_held`
+  (AC-150).
+- Slice 29: `yulius-server` `auth::tests::one_bearer_reader_takes_the_trimmed_token_of_a_bearer_header_only`
+  and the routes' tests (AC-148), `yulius` `leftovers::the_loopback_routes_need_the_server_s_key`
+  (a padded key is taken) and `browser::another_authorization_scheme_beside_a_session_cookie_is_refused`; `yulius` `browser::the_welcome_page_names_the_sandbox_and_links_its_listening_ports`,
+  extended to the refresh route without a listener (AC-148); `yulius-domain`
+  `redact::tests::github_tokens_are_replaced_whole_by_one_scrub` and the adapters' tests
+  (`yulius-git` `redact::tests`, `yulius-github` `error::tests`) (AC-149).
+- Slice 28: e2e `workflows.e2e.ts` "unsaved changes are asked about on Back and on navigation
+  by code too" and "Forward from the first page of the tab is asked about and undone once"
+  (AC-144), `places.e2e.ts` "leaving a new skill unsaved for another sandbox goes where that
+  sandbox was left" (a link, through the router's guard) and "a new skill left for its own
+  address still asks about a later change", `workflows.e2e.ts` "an editor left before it has
+  loaded leaves without a question" and "an address typed over unsaved work keeps the history
+  countable", `automations.e2e.ts` "the start chip loads as "Start" when the editor is reached
+  from another page", `pulls.e2e.ts`
+  "every pull request chip says its checks the same way (unit, in the page)" (AC-145),
+  `filedrop.e2e.ts` "sizes from a gibibyte read in GB, as the server words the limit (unit, in
+  the page)" (AC-146); `scripts/test_check_repository.py`
+  `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote`'s heading, table and
+  fence cases, a fence's lines each alone (AC-147).
+- Slice 27: `yulius-domain` `spec_format::tests::the_repository_spec_template_validates`
+  (AC-141); `scripts/test_check_repository.py`
+  `test_instructions_never_tell_an_agent_to_merge_by_hand_or_promote` and the repository check
+  itself (AC-142); e2e `git.e2e.ts` (AC-143, four profiles in the page).
+- Slice 26: `yulius-domain`
+  `request::tests::the_request_file_has_the_request_the_files_and_the_definition_of_done` and
+  `yulius-app` `agent_wait::tests::a_merge_with_steps_ahead_says_the_task_goes_on` (AC-138);
+  `workflows::catalog::tests::no_workflow_tells_agents_to_promote` (AC-139);
+  `yulius-harness` `guard_client::tests::hand_merges_are_refused` and e2e `git.e2e.ts` (AC-140);
+  `briefing::tests::small_input_contains_everything_in_order` (the briefing's Git line).
+- Slice 25: no new test (DED-001: nothing behaves differently). The tests that only exercised
+  a deleted item went with it or now exercise what production calls
+  (`current_used_percent_for`, `available_at_for`, `slug_or`, `set_account_state`,
+  `task_messages`, value equality of a move's values); the gate and the whole e2e suite
+  (AC-137).
 
 ## Decisions
 
@@ -1315,6 +2463,301 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- [ADR-0339](../../docs/decisions/0339-the-engine-runs-below-the-group-that-holds-its-limits.md)
+  (slice 39): the engine in `engine/inside`, its limits one group up; `cpu` and `pids` passed
+  down as before; old engine groups settled when idle; rejected: read-only limit files, refusing
+  privileged containers, dropping the per-leaf caps.
+- [ADR-0338](../../docs/decisions/0338-the-web-ui-runs-under-a-strict-content-security-policy.md)
+  (slice 38): one policy file for the server and the e2e server; inline styles allowed (xterm
+  and Monaco add `<style>` elements, which take no nonce); no nonces, hashes, Trusted Types or
+  report endpoint for now.
+- Slice 37 (no decision record: a refactor). Only the part that grew with the square of the
+  list (in the list and in the queue's pass; a start checks the hold afresh at launch) is taken
+  out: the rest is about 13 store reads a task, each a hop of some 10 µs to the
+  store's thread (31 ms for 200 tasks). Batching every reader of a summary (steps, the live
+  run, chains, times, control requests, the attention and needs-you views, the pause) into
+  per-project queries would rewrite some twenty helpers that the single task's summary and
+  the event stream also use, for a linear cost already within a page load; it is left as it
+  is (ledger QA8, QC6: fixed for the unbounded part, the linear rest measured and kept).
+- Slice 36 (no decision record: a cache). The resume point is the server's, not the
+  reader's: the dotenv calls seen decide what is redacted, and a reader's cursor could be one
+  that leaves a dotenv read out. A transcript is append-only; one stepped back over a usage
+  limit (SPEC-034) is a rewritten copy renamed over it, so a point carries the file's device and
+  inode and is not used on another file; `reindex_session`, which the step-back calls, forgets
+  every point too, but a poll in flight could keep an old point after it (review of slice
+  36), so the identity is the guard. A point whose byte is no longer after a newline is not
+  used either. The map is
+  bounded by clearing it whole past 256 (a read without a point is a read from the start, as
+  before): simpler than an LRU for a cache refilled by the next poll. The tail read (a
+  watcher's first) still reads the whole file: it has no earlier point to go on from.
+- Slice 35 (no decision record: indexes). Indexes rather than pruning: the runs and pauses
+  are the history the dashboard and the accounts page show, and pruning is a product decision
+  this audit does not make. The pauses' two conditions became two branches of a `UNION ALL`
+  (an `OR` made SQLite read the whole table in start order), and the few rows are sorted in
+  Rust rather than by an `ORDER BY`, which made SQLite prefer the same full read. The runs'
+  query keeps its `OR`: SQLite reads both terms through the new index.
+- Slice 34 (no decision record: a refactor). What the clients share is how they find Yulius,
+  not how they read its answers: the Git client decodes chunked bodies, `agent_call` streams with
+  limits, the hook client holds and retries; those stay theirs. The reader is pure and sits in
+  the domain, which both adapter crates use, so neither depends on the other. `localhost`
+  becomes 127.0.0.1 then ::1 without asking the resolver (the sandbox's `/etc/hosts` is not
+  Yulius's), which the hook client did and the Git client half did; the strictest URL rules of
+  the two win (printable ASCII anywhere, no empty host).
+- Slice 33 (no decision record: a refactor). The shared tools live in `mcp.rs` beside the
+  descriptors they share; each dispatch keeps its own order of precedence (the Superagent's
+  person tools come before them, the remote MCP's own tools after), which this slice does not
+  change. `task_message` stays out of the shared set: a task's agent has none, and the
+  Superagent's goes through its caller. `sandbox_task_create` keeps its own wording for the
+  arguments that name the other sandbox's tasks; only `model` and `effort`, which say the same
+  in both, are one definition.
+- Slice 32 (no decision record: a refactor). The CLI's definitions are kept (an enum and a
+  `Debug` that hides the token) and `api::auth` names them, rather than the server's: a state the
+  CLI cannot read is the failure this slice removes. A stored state the CLI does not know reads
+  as expired, so the CLI stops and says so rather than polling on. The server's
+  `DeviceApprove` stays its own: only the browser sends it.
+- Slice 31 (no decision record: a refactor). The reader kept is the strictest, the
+  transcripts': it refuses what no writer of these timestamps sends (GitHub, Claude Code and
+  Yulius write padded UTC with `Z`), so the inputs that change are malformed ones: GitHub's
+  reader now refuses an impossible day, an unpadded or overlong field and a junk fraction, keeps
+  a fraction as milliseconds and reads a leap second as `:59`; the app's takes a space between
+  date and time, refuses an offset beyond a day and reads a leap second as `:59` (it counted one
+  more second); the imports' refuses seconds 61 to 99 (it read them as `:59`); the transcripts'
+  is unchanged (a differential run of the four over 3 million real-shaped inputs, review of
+  slice 31). It sits beside `Timestamp`, on `CivilDate`. The fake agent keeps its own
+  formatter: it stands in for an external program and depends on no Yulius crate.
+- Slice 30 (no decision record: SUP-005 decided it). The pass follows what frees a session or
+  a hold, as the delete path already did, rather than the test seeding its tasks differently:
+  the pass was not needed, and a test world with free sessions is a fair one. The regression
+  test checks for a bounded second that the other task stays waiting: an absence can only be
+  checked for a while, and the check can only miss a pass, never fail without one (the test
+  harness runs no background tick). The test that flaked does not guard the fix: without it, it
+  passes unless the host is loaded (review of slice 30).
+- Slice 29 (no decision record: refactors). The bearer reader trims, as four of the five did:
+  the leftovers key, compared as it came, now takes a key with a stray space as the others
+  take a token. The scheme stays `Bearer` as written (RFC 9110 makes it case-insensitive; no
+  client of Yulius sends another case, and a change of what is accepted is not this slice's).
+  The token scrub lives in the domain next to `stateless_installation_token_len`, which every
+  redactor already shares; the transcripts' redaction keeps its own rules (a `ghp_` needs 36
+  characters there, with a named mark), which serve another purpose.
+- Slice 28 (no decision record: a refactor inside the web UI). The guard lives in the router,
+  which owns every way a page is left, rather than in a helper each page wires to the events.
+  The browser moves before a page hears of Back or Forward, so the router undoes the move and
+  makes it again on Leave: each entry it makes carries its place in the tab's history
+  (`history.state`), which says how far a move went (`history.go(-steps)`, then
+  `history.go(steps)`); the events of its own moves are let by. Putting the address back with a
+  new entry (the first version) added an entry on every answer and sent a later Back to the
+  page Forward had been declined (review of slice 28). An address typed in hash mode makes an
+  entry the router did not label: it is labelled where it stands and the address is put back
+  by a new entry after it. An editor has nothing unsaved until it has loaded. A size keeps two
+  wordings: `limitSize` is the
+  server's wording of a limit (the uploads' messages, which tests on both sides read) and
+  `bytes` the wording of a measurement (`3.0 GiB`); one would change a message the server
+  sends or the disk figures people compare with `df`. "Checks failing" is the wording kept: it
+  is the state while the pull request is open, which is the only time a chip says it.
+- Slice 27 (no decision record: the product decided; its own repository follows). The
+  instructions keep the `git worktree` commands for work by hand and drop the `gh` merge and
+  promotion commands: a person promotes on the CD page, and the hand merge an agent would copy
+  is refused. The check is a list of phrases read by paragraph, not a parser: its test holds
+  the wording AGENTS.md, `git.md` and the pull request template had before this slice and its
+  variants; a new way to say the same needs a review, as before. The `apm` lock keeps the
+  version its last writer used: only the eight hashes of the two skills changed (their content
+  and legacy-map entries; apm-cli 0.35.1 would also have renamed a target).
+- Slice 26 (no decision record: ADR-0110 and SPEC-441 decided; the texts follow). The Docs
+  workflow keeps the review rather than `delivery_merge` waiving it for a documentation-only
+  branch: a wrong instruction to an agent is as costly as wrong code, and the review of a
+  documentation change is short. The pull request body Yulius writes does not guess an issue
+  from the request; the skill tells the agent to add `Fixes #N` or close the issue (an issue
+  named in passing is not the one the work closes). The briefing's added words are paid for by
+  dropping "this worktree is yours" (its budget has no slack).
+- Slice 25 (no decision record): a dead item goes rather than being wired in where the
+  auditors offered both. The two events could have been fired from the supervisor so that
+  `apply` would be the one table of every change; that moves no behaviour, and the two writes
+  of an outcome (a failed start, an aborted switch) are what the slices 17 to 21 tests pin, so
+  they stay direct and the module says which changes go through the table. A seam only tests used
+  goes when a production method sets the same state (`set_account_error` →
+  `set_account_state`); one that is the only way to make the state the export reads stays
+  (`insert_message`).
+- Slice 24 (no decision record: ADR-15 decided that nothing frames a preview; this slice
+  removes what that left). A preview keeps `frame-ancestors 'self'` of Yulius's own rather
+  than only the app's policy: a dev server rarely sets one, and a page that holds a person's
+  preview grant should not be framed by another site; the app's stricter policy and its
+  `X-Frame-Options` are kept, so a stricter app stays stricter. `webhook_secret` is removed
+  rather than kept for a future webhook: a webhook route would need its own secret, set up
+  with it. The deleted web code has no history to keep (it is in Git).
+- Slice 23 (no decision record: SPEC-191, SPEC-153 and SPEC-487 already decided each case;
+  the slice makes the second rule say what the first said). The pause wins over everything
+  but an end, as the sidebar always had it: a paused run cannot answer a prompt or a person
+  until it is resumed, so "Needs you" asked for something that could not be done. The
+  onboarding task is counted in line rather than working, as the sidebar lists it beside the
+  prepared tasks; the sidebar's counter changed, not its group. An armed merge is its own
+  fact (`merge_armed`) rather than "news due" (`yulius_wait`) applied to achieved goals:
+  CHN-003 keeps an achieved goal Done once nothing but news is left, and only the armed merge
+  is work still to come. Archiving such a task is refused by the existing rule for live tasks
+  ("stop the task before archiving it") instead of a new message. A refused edit gives the
+  text back rather than keeping it for a later retry: the refusal is about access, which does
+  not come back by retrying, and the person still sees their file; a new join asks again.
+  The typing is given up in the tab itself (the text it had from the document), not by a
+  catch-up: a person who lost all access to the project gets no catch-up either, and a
+  rejoin loop would make the file writable again for each try (review of slice 23). The
+  awaited onboarding task is now also one of the tasks "after all current tasks" names
+  (`manage.rs`); it counts as done once onboarding stops holding tasks, which they wait for
+  anyway.
+- Slice 22 (no decision record: each fix makes a reading agree with what the code
+  already said). A silent report is lost on systemd's word, not on a longer timeout: the
+  copy may block the report's write for any time, and a longer wait would only delay a
+  person whose helper really died. Systemd's silence counts as running: a move that is
+  held as in flight for nothing costs an update's wait, an update that stops a move
+  costs the move (MVB-023). Asked each time and not kept: only a silent report asks, and
+  its answer must change as soon as the service ends. `FileMoveHelper` takes the server's
+  unit and names both helper units itself (`units::migrate_path_unit`, `migrate_unit`),
+  rather than deriving one name from the other. The stale close times are cleared by a
+  migration rather than left: no reader wants a close time of a task that is not closed.
+- Slice 21 (no decision record: SPEC-480's care for a person's draft, brought to the
+  typists it did not reach). `/compact` typed behind a person's unsent text sent that text
+  as part of a command; that is what happened. The first version of this slice left such
+  a session to its person, as one they type into after the refusal. The review showed
+  what that costs: "a draft" is any key since the last prompt sent from the box (an arrow,
+  Esc, a dialog's answer), a goal task goes on by its Stop hook and never sends a prompt
+  from the box, so one key hours ago would stop every later compaction, with one line in
+  a terminal nobody watches. So the compaction is held, not given up: the task is flagged
+  with the reason and what to do, as a held message's task is (SPEC-480 DRF-006), and
+  after ten minutes the command is typed all the same. With an empty box (the key left
+  nothing: the usual case of a task nobody watches) that compacts the session and keeps
+  its conversation. With real text there the command is no command: it goes out behind
+  the text as a prompt, the full context refuses it, and the task continues in a fresh
+  session, which is where it would have ended anyway; the refusal counts as the
+  compaction's failure at once (the review's second round: left to the compaction's own
+  ten minutes, the texts promised a compaction that could not come). The person was told
+  all of this for ten minutes, in the flag and in the terminal. The other ends were
+  weighed and are worse: waiting for good stops unattended work for a key that left
+  nothing, going to a fresh session without trying loses the conversation also when the
+  box was empty, and clearing the box first (Ctrl-U) clears one line of it. The flag is
+  the hold's: it ends with it on every way out, and a restart of Yulius does not turn a
+  hold into "gave up". Yulius's own Enter empties the box in what Yulius knows, since a
+  hook may not say so for a command; without that the very key the hold was for kept the
+  wake-up out after the compaction. The review went to a fourth look at one change,
+  against the rule of three rounds, as slice 17's did: the third round's only finding
+  above a nit was a regression of this slice's own second-round fix, with its fix named
+  by the reviewer in two lines; a split would have delivered the regression or held back
+  the rest. The rule is not the message's rule (`box_held`: a person's keys, and a
+  minute after their last one): a line for a full session also stays behind a message of
+  Yulius's own whose Enter failed, and does not wait for a person who is only near.
+  The goal's typist keeps its own question (did a person type since the run was
+  attached): a new process starts with an empty box, so it is the same question there.
+  The one typing mark is waited for by Yulius's own lines and never refuses them: a
+  recovery must not depend on a mark that someone forgot to clear; what was asked before
+  the wait is asked again once it is held. The goal keeps the mark until it is taken: the
+  review found that between its tries the line may sit in the box (from before this
+  slice), where a message would be sent with it or erased by the retype. The three waits
+  for a quiet terminal (the goal, the first message, the full session) stay three loops:
+  each asks other things while it waits, and one helper would take five parameters.
+- Slice 20 (no decision record: two more marks of the kind the run directory already
+  holds, `launch-goal-pending`, `session-started`, `person-typed`). The facts belong to
+  one run and are needed only while it lives, so they are files beside it, not columns.
+  For the goal the auditor named two ways: flag at once, or start the typist again. The
+  typist is not started again: a restart cannot tell whether the goal's line was already
+  half typed, and typing `/goal` over it would submit both. Nor is the task flagged at
+  once: the goal may have been taken just before the restart. The new server does what it
+  does for a launch goal (the same watch, with its own mark and its own sentence): the
+  transcript's replay says whether a goal was recorded, and only a task left without one
+  is flagged. The typist became a function that says whether it ended with an outcome,
+  so that the mark is removed in one place; a run that ended, or could not be typed into,
+  keeps it, and has no later server to read it. A launch that cannot write the personal
+  servers' mark fails rather than starts a run the next server knows nothing of; the
+  goal's mark is only logged when it cannot be written, as the launch goal's is.
+  The first version watched from the reattach on, and its flag could come inside the
+  session's opening turn, whose end then set the task back to "your turn" (the review,
+  finding 1). The mark now says whether the session opens with a turn, and a restarted
+  server that finds no answered Stop of the run gives the run that turn back: the same
+  two facts the old server had, read from the run directory, not guessed from the screen.
+  A Stop that was answered by a hold (no capacity) counts as answered; such a run's
+  opening turn then ends through the gates, as every reattached run's did before, and a
+  flag raised before that end can still be taken away by it. The other way round, an
+  opening turn that ended while Yulius was down left no answered Stop (the hook's client
+  got no answer): the new server gives the run a turn that is over, so the flag comes
+  after the opening turn's bound (five minutes) and the bound of the watch, and the
+  session's next Stop ends as an opening turn's does, once (the review's second round, a
+  nit). Telling these apart needs the transcript's replay, which the watch does not wait
+  for.
+- Slice 19 (no decision record: a column and the one function every start goes through).
+  The auditor proposed to leave a paused task paused when it cannot start, so that the
+  pause keeps the start. Not taken: a paused task would then wait beside the queue, not
+  in it, and lose its place to every task queued later; and Continue on a chosen
+  subscription has no pause to keep anything. The queue itself keeps the start instead,
+  in the task's row, read in `start_run_if` under the launch lock: whoever starts a queued
+  task (the queue's pass, with its plain start) gets the kept one, so no caller can forget
+  to ask. It is written with the status in one transaction (`queue_task`) and
+  removed by the status change that takes the task out of the queue, so a held prompt
+  stays in the database no longer than a pause's continuation does (the review, findings
+  1 and 2: the first version only made it unreadable by the task's `queued_at`, and wrote
+  it in a second step). The `queued_at` check stays as a guard. A subscription is kept
+  only when a person chose it (the start of a resting task); the pool's choice for a
+  paused task is a fact of the moment it was made, and keeping it could send the task to
+  a subscription that filled up while it waited. A person's choice can go stale the same
+  way; then the task is not failed, as an immediate Continue on that subscription is
+  refused to the person's face: nobody is there, so the pool places it and the terminal
+  says so (MOV-002 forbids landing elsewhere unsaid, not landing elsewhere). One case
+  keeps no choice: a person's move of a running task whose old session reports a limit as
+  it ends goes on from `waiting_capacity`, and if every slot is taken then, the task
+  queues with the pool's choice (the status read, not the caller, says who chose).
+  The pause of a paused task used to be ended before its start was tried, and a start the
+  full queue refused left the task waiting for capacity with no pause: nothing started it
+  again (the review, from before this slice). The start ends the pause now, where it is
+  made or queued.
+- Slice 18 (no decision record: the comment at the usage write already stated the rule,
+  "a reading never makes a subscription that needs a new sign-in usable again"; the code
+  now has it once). `error` is kept as a status: it is what a first sign-in that failed
+  reads, with no credential. Rows that the old code left `error` with a credential stay
+  so until a sign-in succeeds; no migration turns them into `relogin`: they are out of
+  the pool either way and the page offers the sign-in for both, so it would change a word
+  and nothing else. A failed sign-in of a refused subscription keeps
+  Claude's reason and does not add its own: the card must go on saying why the
+  subscription is out. The sign-in's own reason goes where it belongs, to the sign-in:
+  its `exit` frame carries it (the frame's `cause`, which a task's terminal uses for the
+  limit a run ended at), and the dialog reads it there. The first version of this slice
+  left the dialog reading the subscription's error, which would have named Claude's
+  refusal as the reason the sign-in failed (the review, finding 1).
+- Slice 17 (no decision record: END-001 and SPEC-002's `stopped(switch_timeout)` applied
+  where they were not). After a switch's wait the run that had to be killed ends the
+  switch, and no new session starts. The other way was weighed: go on with the switch once
+  the host is proven gone, which keeps an autonomous task working. It was what the code
+  tried, and three recorders see that run's end (the switch, the run's reader, the run's
+  own exit): going on needs all three to agree that the next run starts, resting needs
+  only that each of them rests the task. A session that ignores its end for a minute after
+  the host's own escalation is broken, and the state machine already had the status for
+  it. The first version of this slice cleared the switch's intent before the kill and so
+  left two orders in which the task stayed `switching` with no run (the review, finding
+  1): the intent slot now says "given up" instead of nothing, each recorder reads it, and
+  a run whose end was already taken is waited for instead of killed. The second round
+  found the order before all of that: a run that ends by itself between the task's change
+  to `switching` and the switch's claim of its end met a status with no way out (before
+  this slice the switch recovered it by starting the next run a minute later). Such an end
+  now ends the task as from `running`, which is what "the task follows its session" says,
+  and the switch finds a resting task. The orders are tested with pause points, as the
+  stop's and the close's are (SPEC-250). The wait is a setting (`switch_end_ms`) only so
+  that tests need not wait a minute. The status's text in the web UI says "Restarting the
+  session took too long": a restart on a newer Claude Code ends there too.
+  The third round found where that new way out reached too far: a start that finds a
+  `switching` task with an ended run records that end through the same recorder, and the
+  task closed as if its session had left. The start rests such a task itself first, as it
+  rests one with no run. The review went to a fourth look at that one change, against the
+  rule of three rounds: the finding was a regression of this slice with its fix named by
+  the reviewer, and a split would have delivered the regression or held back the rest.
+  Left as it is, a nit by the review's word (the mark it called harmless): when a run
+  ends in the window before the switch claims it and the switch reads the status before
+  that end has settled, the switch says "did not end in time" for a task that closed, and
+  leaves its given-up mark in the slot until the task's next launch clears it.
+  A finished (`Done`) task whose idle session is moved and has to be given up rests as
+  stopped, not closed: RBT-001 closes only a running task, and its domain test says why
+  for this very case ("a switch or a stop in flight was cut"); the review asked for
+  `Closed`, which would change that rule for every loss during a switch, not only this
+  one. (A task's activity is cleared when it becomes `switching`, so the question does
+  not even arise in the store: a mutation that asked RBT-001's rule at the exit of a
+  given-up run changed no outcome.)
+  The auditor's third point, the end of a run recorded twice (`finalize_attempt` takes the
+  task's intent before it knows it is the first to record), is not changed: no path
+  records a run's end while its reader still serves it and then starts another run.
+  The test starter takes its two waits as a pair, not a struct: it has two callers.
 - Slice 16 (no decision record): the loopback listener takes the public table as it is,
   422 for an invalid request included; nothing in the repository reads its 400 (the hook
   client takes any 5xx for "try again while held" and any other error for none, the
@@ -1338,7 +2781,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   from it (the review of this slice; a task queued for its first run has armed nothing).
   `Stopping` does not (the run is being ended). That the pull request was merged already
   is asked before the run's end is said: a person's merge does not clear the armed slot.
-  The agent's own   message says what to do; the pull request is not touched.
+  The agent's own message says what to do; the pull request is not touched.
 - Slice 14 (no decision record: DLV-006's rule, "Yulius CI is a project's only CI", given
   one place): the answer is `dlv_checks_at`, and a promotion asks it for the integration
   head, which is the promotion pull request's head too. A fast-forward promotion is held
@@ -1499,7 +2942,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W1 | web UI | The brand lab ships in the binary: `?lab=` injects CSS, which makes a device approval one blind click | high | fixed (slice 4) |
 | D3 | delivery | The merge gate never pins a task pull request's base to the integration branch | high | fixed (slice 4) |
 | P8 | delivery | A production-stage environment run starts for a writer with `confirm: true` (ADR-0110: an administrator typing the slug) | medium | fixed (slice 4) |
-| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 18 |
+| W1b | web UI | The response headers carry no script or style policy (`Content-Security-Policy` is `frame-ancestors 'none'` only) | low | slice 38 |
 | E1 | browser | A viewer's mouse and keys drive a Chrome on the host: file chooser, context menu and DevTools reach host files | critical | fixed (slice 6) |
 | E2 | browser | Browser tools reach other sandboxes' ports, host loopback services and link-local addresses | high | fixed (slice 9) |
 | E3 | browser | `browser_fill_secret` checks a cached URL, then types after waiting for the input lock | high | fixed (slice 7) |
@@ -1513,1056 +2956,253 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | D4 | CI | `ci_rerun` picks other jobs than the run it repeats | medium | fixed (slice 13) |
 | D5 | delivery | "Checks green at this head" has five copies and three rules; a promotion never asks Yulius CI | medium | fixed (slice 14) |
 | D6 | delivery | An armed merge outlives its task's run, and a restart decides it the other way | medium | fixed (slice 15) |
-| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | slice 13 |
-| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | slice 16 |
-| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | slice 13 |
-| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | slice 13 |
-| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | slice 13 |
-| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | slice 13 |
-| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | slice 13 |
-| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | slice 13 |
-| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | slice 13 |
-| E6 | move | A move's report state is a string with three readings of "lost" | medium | slice 13 |
-| E7 | move | An unreadable move mark does nothing and stays | low | slice 13 |
-| QC8 | store | `tasks.closed_at` is never cleared | low | slice 13 |
-| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | slice 13 |
-| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | slice 13 |
-| P1-P7, P9-P14 | documents | Contradictions between documents, shipped texts and code (promotion, hand merges, spec template, docs and chore workflows, UI copy, API table, guard text, briefing, stale engineering documents) | medium | slice 14 |
-| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | slice 14 |
-| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | slice 14 |
-| W7 | web UI | Dead exports and CSS rules | low | slice 15 |
-| D7 | GitHub | `webhook_secret` is stored and never read | low | slice 15 |
-| E5 | previews | The preview bridge has no listener since ADR-15 | low | slice 15 |
-| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | slice 15 |
-| W4, W5, W6 | web UI | The unsaved-changes guard five times, the pull request chip three times, byte and commit formatters | low | slice 16 |
-| QB2, QB3, QB7, QB8 | duplication | Three loopback HTTP clients, the device contract twice, the Superagent's tools dispatched twice, five bearer parsers | low | slice 16 |
-| QC3, QC4 | duplication | RFC 3339 parsing four times with different inputs; the GitHub-token scrub twice | low | slice 16 |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | slice 17 |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 18 |
+| D8 | lifecycle | A task whose agent armed a merge and went idle is grouped Done (the grouping does not know the armed merge); archiving it from there closes it, which ends the armed merge with a reason typed to nobody (review of slice 15) | medium | fixed (slice 23; the case left after SPEC-487 CHN-001: an achieved goal) |
+| QB1 | interface | The internal listener maps errors to statuses by a second table; `yulius wait` reads Yulius's own 502 as an outage | medium | fixed (slice 16) |
+| QA1 | lifecycle | A start that has to queue forgets how it was to start | medium | fixed (slice 19) |
+| QA2 | lifecycle | A failed re-login turns `relogin` into `error`, and the next usage reading into `ok` | medium | fixed (slice 18) |
+| QA3 | lifecycle | After a restart a hand-over no longer restarts a run holding the previous owner's personal MCP servers | medium | fixed (slice 20) |
+| QA4 | lifecycle | The `/goal` still to be typed into a resumed session is lost at a restart | medium | fixed (slice 20) |
+| QA5 | lifecycle | A background probe without an answer means "busy" everywhere but at a subscription switch | medium | fixed (slice 17) |
+| QA6 | lifecycle | "May Yulius type now" has three rules; `/compact` is typed behind a person's draft | medium | fixed (slice 21) |
+| QA7 | lifecycle | A switch that times out records the old run lost without proof | medium | fixed (slice 17) |
+| E6 | move | A move's report state is a string with three readings of "lost" | medium | fixed (slice 22) |
+| E7 | move | An unreadable move mark does nothing and stays | low | fixed (slice 22) |
+| QC8 | store | `tasks.closed_at` is never cleared | low | fixed (slice 22) |
+| W2 | web UI | Sidebar groups (client) and counts (server) decide a paused task differently | medium | fixed (slice 23) |
+| W3 | web UI | A 403 on a live edit leaves the document unsaved for good | medium | fixed (slice 23) |
+| P1, P5-P7, P9-P13 | documents | Shipped texts against the code: promotion "when asked", the Docs workflow's review, the Chore workflow's deploy, UI copy on who releases and where commands run, the skill's "machine-checked" gates and issue link, the promotion row (already right since slice 4), the guard's reason, the briefing's Git line | medium | fixed (slice 26) |
+| P2-P4, P14 | documents | The repository's own instruction documents: hand merges and polling, four promotion rules, a spec template the validator refuses, engineering documents without product code | medium | fixed (slice 27) |
+| QB9 | documents | Undocumented options and routes, stale architecture sentences | low | fixed (slice 27) |
+| R3-1 | documents | The instruction check joins a heading, a table row or a fence to the text around it (review of slice 27, round 3) | low | fixed (slice 28) |
+| P15 | documents | `docs/api.md` lists the error code `unavailable` (503); no error kind and no route produces it (review of slice 16) | low | fixed (slice 26) |
+| W7 | web UI | Dead exports and CSS rules | low | fixed (slice 24) |
+| D7 | GitHub | `webhook_secret` is stored and never read | low | fixed (slice 24) |
+| E5 | previews | The preview bridge has no listener since ADR-15 | low | fixed (slice 24) |
+| W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
+| QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
+| W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
+| QB2 | duplication | Three loopback HTTP clients: five copies of the environment preamble, two URL parsers | low | fixed (slice 34) |
+| QB7 | duplication | The Superagent's tools dispatched twice, the handshake twice | low | fixed (slice 33) |
+| QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | fixed (slice 32) |
+| QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
+| QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
+| QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
+| QA8, QC6 | efficiency | Store round trips per task: a list cost the square of its length (queued tasks re-read the project) | medium | slice 37 |
+| QB5 | efficiency | The watched transcript re-read and re-parsed from byte 0 every 1.5 s | medium | fixed (slice 36) |
+| QC1 | efficiency | The capacity and accounts views scan every run and pause | low | fixed (slice 35) |
+| Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 39 |
 
 ## Evidence
 
-### Slice 1 (2026-11-13)
+The evidence of slices 1 to 20, all merged, is in
+[evidence/SPEC-483-slices-1-20.md](evidence/SPEC-483-slices-1-20.md), of slices 21 to 28 in
+[evidence/SPEC-483-slices-21-28.md](evidence/SPEC-483-slices-21-28.md), and of slices 29 to 37
+in [evidence/SPEC-483-slices-29-37.md](evidence/SPEC-483-slices-29-37.md), all merged, word for
+word as they stood here, each last slice's merge added (this file is bounded at 256 KiB); the
+later slices follow.
 
-- **The defect, on `dev` d044172cb.** A temporary test asked `/internal/scrub/fingerprints` 28
-  times with a run's token, built the 28 equations from `base` and the first needle's `rolling`
-  and solved them modulo 2^61 − 1: `recovered from 28 requests: sk_test_51NzQ9vaultValue8f3a`,
-  the test's 28-character value.
-- **The fix.** `secrets::repeated_fingerprint_requests_answer_the_same_set` (which replaced that
-  test) passes: equal answers, no `base`, no `rolling`.
-- **The old wrapper, for real.** In a checkout of `dev` d044172cb, a temporary test of
-  `yulius-harness` gave the wrapper there the answer and the fingerprint file this server made
-  (dumped from `secrets_scopes::a_starting_server_rewrites_the_fingerprint_files_of_live_runs`):
-  the answer alone: `Unavailable { server: Unusable, file: None }`; with its file: `loaded:
-  version 1 base 0 names ["MY_TOKEN", "SECOND"]`, a text with the raw and the hexadecimal form
-  of one value and a second value came back as `A=[secret:MY_TOKEN] B=[secret:SECOND]
-  hex=[secret:MY_TOKEN]`, and `run_scrub_exec` of `echo run=<value>` printed
-  `run=[secret:MY_TOKEN]` with exit 0.
-- **Speed** (release build, 1 MB of text, a probe test in `yulius-harness`, secrets of 24 to 43
-  characters and every tenth of 3000):
 
-  | Secrets | Needles | `dev` | This change |
-  | --- | --- | --- | --- |
-  | 10 | 60 | 460 ms | 126 ms |
-  | 40 | 240 | 781 ms | 205 ms |
-  | 200 | 1200 | 819 ms | 314 ms |
+### Slice 38 (2026-11-15)
 
-- **The old wrapper's speed on the file it now gets** (the same probe in the checkout of `dev`,
-  `base` 0 and the last byte as its hash): 614 ms, 896 ms and 923 ms for 10, 40 and 200
-  secrets, against 460, 781 and 819 ms with the file it had.
-- **Gate.** `scripts/dev ci` at 106bbb5e1: exit 0; `4112 tests run: 4112 passed, 16 skipped`; doctor, repository check, lint,
-  the macOS compile, cargo-deny, cargo-shear and rustdoc passed. (At 6535968fe, before round 2:
-  exit 0, `4112 tests run: 4112 passed, 16 skipped`.)
+- **What the UI loads**, read from its code and the vendored files: everything from its own
+  origin; Monaco's workers from `blob:` URLs (`editor.main.js` wraps `importScripts` in a blob);
+  `<style>` elements from xterm (3) and Monaco (2); `eval` only as a probe with a fallback in
+  Monaco's loader (to `importScripts`) and the shader library (`EVAL_ALLOWED_IN_ENV`); no
+  iframe, no direct `fetch` beside the API transport; attachments served as images or
+  `application/octet-stream` with `nosniff` and their own `sandbox` policy. The README's older
+  sketch (`connect-src https://*.<host>`, `frame-src 'self' data:`) dated from the iframe
+  preview that the video stream replaced (#108): neither is needed.
+- **Test failing before the fix**: `http_auth::public_responses_carry_security_headers` got
+  `frame-ancestors 'none'`; `scripts/test_e2e_serve.py`'s lab test got the policy unchanged.
+- **A refused load did not fail an e2e test.** With the policy on `serve.py` and the old page
+  check, the whole suite passed while the brand lab's five Google Fonts stylesheets were refused
+  (seen with a CDP probe): the browser only logs a refusal, and `instrument()` counted uncaught
+  errors and `console.error` only. It now records each `securitypolicyviolation`; the lab's two
+  font hosts are allowed on a lab page only.
+- **The whole e2e suite under the policy**, refusals counted: 85 files, 1052 passed, 1 skipped
+  (`target/audit/slice38/e2e-all2.log`). One test had fetched a `blob:` URL itself
+  (`filedrop.e2e.ts`); it now keeps each object URL's blob as it is made.
+- **A real Chrome (157, headless) on a real `yulius serve`** (CDP probe `csp-probe.mjs`,
+  `csp-probe.json`): the header word for word; setup, then Home, Settings, Users, Archived,
+  the design page, sign-in and a missing sandbox with no refusal and no console error (one 401
+  of `/api/me` before setup, expected). Sandbox pages (terminal, editor, browser panel) need a
+  sandbox, which this host cannot make; the e2e suite covers them under the same file.
+- **Mutations** (`mutations.log`, 6 of 6 caught): the server's old header; `'unsafe-eval'
+  'unsafe-inline'` in the file; `serve.py` without the header; the lab's hosts on every page;
+  never on a lab page; the page check without the violation listener.
+- **Gate.** `scripts/dev ci` first failed one test: `preview::yulius_is_never_shown_inside_itself`
+  pinned the old header word for word (`gate.log`); it now checks the policy has
+  `frame-ancestors 'none'` (the whole policy is pinned in `http_auth`). Then at `38023f5f7`:
+  exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped` (`gate2.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review, round 1** (head 4b5e66fdb): request changes, one blocker and four major findings,
-  all in this change's code, all taken:
-  - the rustdoc link to a private function failed the gate: backticks;
-  - "a store error answered an empty set": the guest question is asked with `?`
-    (`matcher_for`), tested with the guests' table dropped;
-  - "the empty set drops redaction of values its runs still hold": a guest playground keeps
-    its MCP servers' values, tested through the wrapper's matcher; `.env` leftovers are stated
-    in the ADR;
-  - "a holder of the set learns more than the ADR says": tags went from 4 to 3 bits with the
-    hexadecimal cases and base64 alphabets folded, two-factor seeds left a run's set, and the
-    ADR tables the search that is left by value shape (16 letters and digits: 2^62);
-  - "live contained sessions stop working after the update": a session from before version 2
-    keeps a file in the old format with `base` 0, proved with the wrapper of `dev`;
-  - minor: the Superagent branch and a failing rewrite are tested, the assertions that could
-    not fail are gone, the launch file equals the endpoint's answer and the salt survives a
-    restart (tests), files are rewritten at a guest's join, SPEC-002 no longer says "the
-    rolling hash", the matcher's corners are tested, this section exists, a failed rewrite
-    empties an old file; nits: `checked_add`, the salt without a silent zero, a window hashed
-    once per length.
-- **Review, round 2** (head cb3b3587a): request changes, one major and seven minor findings in
-  this change's code, all taken; every finding of round 1 confirmed as answered, the ADR's table
-  re-derived by the reviewer:
-  - "the two-factor seed exclusion has no test": the fixture with a seed now shows the run's
-    set leaving the seed alone and Yulius' own redaction replacing it;
-  - "an emptied old-format file loses its format": a failed rewrite leaves a file of this
-    server as it is and turns an older server's into `{"version":1}`; the test fails, heals
-    and fails again;
-  - "the ADR understates the base-0 file": the ADR says what it tells (about the last three
-    characters), for which values, and the search that is left; operations and the change log
-    say to rotate once the sessions from before the update have ended;
-  - "20 random characters is wrong for hex": 20 letters and digits or 32 hexadecimal digits;
-  - "the cache bump at a guest's join sits after a fallible call": moved to the join itself;
-  - the Vidoc ignore's line and comment; the run that cannot be rewritten is seeded first and
-    last; the old wrapper's timing is measured (above);
-  - nits: one `agent_context` call decides the branch, the Plan item says what the code does,
-    the read is bounded, the corner test names the secret, and #1239 tracks the removal of
-    the old format's writer. The Global Superagent has no fingerprint file and no test of
-    that absence.
+- **Review, round 1** (a fresh session, head `9348149d5`): request changes. Two majors, own
+  code, both reproduced by the reviewer in Chrome 157: F1, `form-action 'self'` refused the
+  GitHub App's manifest, which `admin.js` posts to GitHub from a blank tab that inherits the
+  page's policy (onboarding could not connect GitHub; the mock returns before the post, and
+  `instrument()` does not see another tab); F2, no `media-src`, so a recording attached to a
+  draft or a queued message, opened from a `blob:` URL, no longer played. F3 (minor): the
+  docs said every e2e test fails on a refused load, which holds for the page's own document
+  only. Nits: F4, the operations text said styles, fonts and images came from Yulius only; F5,
+  no test pinned the attachments' own policy. Checked and fine: preview hosts answer before the
+  layer, no public HTML with inline script, no same-origin route serving user content as
+  script, the lab exception narrow, the evidence move word for word.
+- **Fixes.** Tests first, both failing for the policy's reason (`e2e-r1-before.log`: "Sending
+  form data to '/settings/apps/new' violates … form-action 'self'"; "Loading media from 'blob:…'
+  violates … default-src 'self'"): a form posted to another origin from a tab the page opened
+  must leave for it, and a WAV from a `blob:` URL must load. The policy drops `form-action`
+  (GitHub's web address is configurable, and `form-action` also checks redirects) and gains
+  `media-src 'self' blob:`; 4 of 4 pass (`e2e-r1-after.log`). The reviewer's own real-Chrome
+  probes against the new file (`probe-r1/`): the manifest POST arrives at the other origin, the
+  audio plays (`readyState` 4) with no refusal. F3: ADR-0338, CSP-001, the web README and the
+  changes entry say the page's own document, and the ADR names the gap (another tab, a worker).
+  F4 reworded. F5: `task_prompt.rs` already pins it (`sandbox` in the attachment's policy,
+  through the router).
+- **After round 1.** The whole e2e suite: 85 files, 1054 passed, 1 skipped (`e2e-all3.log`).
+  `scripts/dev ci` at `b959635c5`: exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped`
+  (`gate3.log`).
 
-### Slice 2 (2026-11-13)
+### Slice 39 (2026-11-15)
 
-- **The defects, each by a test that failed before its fix** (on the code of `dev`):
-  - `a_bwrap_planted_on_the_runs_path_never_starts_a_run`: failed, the stand-in `bwrap` in
-    `<sandbox>/home/.cargo/bin` had left its marker.
-  - `managed_attributes_follow_no_link_an_agent_planted`: failed at its first check, the file
-    outside the repository held `*.png binary` and Yulius's block instead of `kept`.
-  - `the_push_guard_follows_no_link_an_agent_planted`: failed, the file outside the repository
-    held the `pre-push` script instead of `kept`.
-- **After the fix** all three pass, with the 95 tests of `yulius-git` (the guard, the scrub and
-  the union merge among them) and `delivery::the_changes_log_merges_by_union_in_any_repository`.
-- **Gate.** `scripts/dev ci` at 70e27996a (on `dev` b4eaca1e5 merged in): exit 0; `4117 tests
-  run: 4117 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed.
+- **On a real kernel first** (an Ubuntu 26.04 QEMU guest, kernel 7.0, cgroup2 with
+  `nsdelegate`, Yulius's bwrap AppArmor profile; scripts and logs in
+  `target/audit/slice39/guest/`). The old layout, a service user's delegated group with the
+  engine leaf bound into a bwrap user namespace (`--cap-add ALL`, as the engine):
+  - a direct write to the leaf's `pids.max` is refused;
+  - after moving to a child and `unshare -C`, `pids.max` becomes `max` and `cpu.weight` 10000
+    (`c4-repro.log`);
+  - a real `dockerd` in that layout, as root without the user namespace:
+    `docker run --privileged --cgroupns=host … unshare -C` set both too (`c4-privileged.log`).
+
+  The new layout (`engine/inside` bound, the limits on `engine`):
+  - the nested write reaches only `inside`'s own files, and `engine` keeps 30 tasks and weight
+    100;
+  - after the nested process lifts the limit it can see, 60 forks stop at the cap
+    (`engine/pids.events` `max 1`);
+  - the privileged container leaves `pids.max` 200.
+
+  A real `dockerd` runs containers in both layouts, all their tasks counted on `engine`
+  (`c4-dockerd2.log`).
+- **An update's case, found on the guest.** After an old-layout engine has run a container, a
+  new engine in `inside` fails every container ("…/docker/<id>/cgroup.procs: no such file or
+  directory"). runc had made the old subtree threaded (`engine` "domain threaded" with
+  `cpu pids` passed down, `engine/docker` threaded), and a domain child below is "domain
+  invalid" (`c4-upgrade.log`). Removing the emptied `engine/docker` and taking the controllers
+  back makes `engine` "domain" again, and the new engine runs containers (`c4-repair.log`).
+  The code now does this at each preparation and each restore, unless a process runs in the
+  group or below it outside `inside`.
+- **Tests failing before the change**: `a_sandbox_group_splits_into_weighted_leaves` and the
+  other group tests (no `engine_root`), the restore tests (the pruned engine group not made
+  again), `an_idle_engine_group_from_before_is_made_plain_again` ("the leftovers are gone").
+  `yulius-sandbox`: 168 passed.
+- **Mutations** (`target/audit/slice39/mutations.log`, 10 of 10 caught after one more case):
+  - the spec binding `engine`;
+  - the root being `engine` itself;
+  - no settling at preparation;
+  - settling despite a process in the group, or despite a populated child;
+  - settling removing the root;
+  - no controller drop;
+  - no parent restore;
+  - no settling on restore;
+  - a parent restored for any group. This one survived at first; the restore test now also
+    asks that `s1/agents/inside` and `s1/engine2/inside` fail and make nothing.
+- **Shared, not copied.** `lines`, `populated`, `subgroups`, `remove_tree` and the per-controller
+  drop moved from `adopt.rs` to `cgroup.rs` and serve both.
+- **Slice 38's round 2 nits.** The changes sentence and two over-long lines are reworded. The
+  F1 test accepting any cross-origin end state is answered: what the policy decides is whether
+  the tab may leave for the other origin. The reviewer's own probe showed the POST delivered.
+  `subscription-touch.e2e.ts` predates the slice and opens its own browser.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested here.** A joined run (`yulius sandbox-exec` after the holder's namespaces): this
-  sandbox has no holder to join; the refusal of a bare name there is a unit test, and the
-  process host's lookup, which every launch passes first, is tested end to end.
+- **Gate.** `scripts/dev ci` at `0779ed67f`: exit 0; `4456 tests run: 4456 passed (1 slow), 17
+  skipped` (`target/audit/slice39/gate.log`).
+- **Review, round 1** (a fresh session, head `089018f2a`): request changes, two own-code
+  minors.
+  - F1: the claim that no controller passed below the engine's group before was false. My own
+    guest logs showed `[cpu pids]` at the old engine's root, and runc passed them on in threaded
+    mode, so the new layout lost per-container `--pids-limit`.
+  - F2: the opt-in real-host test `isolation.rs` still asserted the engine in `engine`.
+  - Nits: F3, an idle old front's group pruned at the update leads to the front's restart (not
+    in the ADR); F4, an unreadable `cgroup.procs` counted as idle; F5, a race between settling
+    and an old engine's first container; F6, no guest run of an old engine starting beside
+    `inside`; F7, over-long lines.
+  - Pre-existing (major): P1, the idle check read `cgroup.procs` of runc's threaded container
+    groups. That read fails, so an old-layout engine counted as idle and was stopped while its
+    containers ran.
+- **Fixes.** Tests first, failing before (`the_engine_root_gets_the_threaded_controllers`,
+  `only_processes_below_the_engines_group_are_containers` with events only).
+  - F1: settling now passes `cpu` and `pids` down to `inside`, one write each, as the group
+    lists them; `memory` is never passed.
+  - P1: the idle check reads `populated` from `cgroup.events` of the groups below the root.
+  - F4: an unreadable `cgroup.procs` is busy.
+  - F2: `isolation.rs` asserts `engine/inside`.
+  - F3: the ADR names the front's restart.
+  - F7: rewrapped.
+  - F5 is answered: settling runs while the old engine is busy only up to its first container's
+    group. The kernel refuses `rmdir` of a populated group and a controller change that would
+    break a threaded subtree, and the next preparation settles again.
+- **On the guest, with the code's own steps** (`c4-round1.log`, `c4-old-flags.log`):
+  - The old layout on a fresh group: `--pids-limit 50` reaches the container, and `--cpus 0.5`
+    fails in runc ("cannot enter cgroupv2 … with domain controllers -- it is in an invalid
+    state / threaded mode").
+  - The new layout with `cpu pids` passed down: a running container shows `populated 1` below
+    `inside`, and the privileged nested write leaves `pids.max` 200 and `cpu.weight` 100. (Each
+    flag alone, and the new engine after an old one, are shown in round 2's log: this run's
+    containers all carried `--cpus`.)
+  - F6: an old engine started in `engine` while `inside` exists runs containers; settling then
+    leaves it alone ("busy").
+- **Mutations** (`mutations-r1.log`): 16 of 16 caught, the five new ones included (no pass
+  down, `memory` passed, an unlisted controller passed, an unreadable `cgroup.procs` idle, the
+  idle check by `cgroup.procs`).
+- **Gate after round 1.** `scripts/dev ci` at `0e4c8b3d0`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `6caa9f082`): request changes, three own-code
+  minors and a nit.
+  - The round 1 fixes hold. Both questions were checked against the kernel's
+    `cgroup_migrate_vet_dst`: a group that passes only threaded controllers down still takes an
+    old engine, and removing the threaded leftovers before enabling is the right order.
+  - R2-1: the engine's group now passes `cpu` and `pids` down for every sandbox, so the stop's
+    undo of the split (`unsplit_all`, SPEC-053 CPU-205, SPEC-268 PID-003) failed everywhere.
+    Before, it failed only after an engine had run a container.
+  - R2-2: two Evidence claims cited a log that did not show them (each flag alone; containers
+    after an old engine).
+  - R2-3: `docs/operations.md`, ADR-0198 and ADR-0151 still said no controller reaches
+    containers.
+  - R2-4 (nit): the idle check no longer erred toward busy at its bound.
+- **Fixes.** Tests first, both failing before.
+  - R2-1: the stop test now asks that the engine's group give its controllers back, and that a
+    preparation while stopping passes nothing down. `unsplit_all` writes `-pids` and `-cpu` to
+    `engine` before the sandbox's group, and settling waits for a preparation that is not
+    stopping. On the guest (`c4-undo.log`), for a prepared group whose engine never ran:
+    sandbox-first is refused, engine-first succeeds, and the sandbox passes nothing down
+    afterwards. Where an engine ran containers, runc's threaded groups keep the controllers,
+    as they did in the old layout (`c4-round2.log`, the last part, after both engines).
+  - R2-4: past 4096 entries it is busy (test with 4096 empty groups).
+  - R2-2: `c4-round2.log` shows, on a fresh group, beside a running old engine, and after it
+    stopped:
+    - a plain container runs;
+    - `--pids-limit 50` alone gives the container `pids.max 50`;
+    - `--cpus 0.5` alone fails in runc's threaded mode.
 
-### Slice 3 (2026-11-13)
+    The round 1 lines above now say what their log shows.
+  - R2-3: the three docs are corrected, pointing to ADR-0339.
+  - ADR-0339 gains the stop's order and the bound.
+  - Mutations (`mutations-r2.log`): 19 of 19 caught (new: no engine-first undo, settling while
+    stopping, no busy at the bound).
+- **Gate after round 2.** `scripts/dev ci` at `3b4ca452e`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate3.log`).
+- **Review, round 3** (the same session, head `eb85727fb`): approve, no own-code finding open.
+  The race between a front's restore and the stop's two writes was judged acceptable: one stop
+  then keeps the split, which was routine before.
+- **Merged** as pull request #1318 (squash `f7545d4c1` on `dev`), on its own green Yulius CI run.
 
-- **Tests.** The seven tests named in the Test plan pass. Against the code before the fix:
-  `the_push_guard_follows_no_link_an_agent_planted` failed without the comparison of the common
-  directory (run with the comparison switched off: the install into the directory elsewhere was
-  not refused); `managed_attributes_follow_no_link_an_agent_planted` failed on `dev` in slice 2.
-  The transcript, tail, `passwd`, listing, usage and review tests were written with their
-  fixes: on `dev` the readers they cover take a path (`File::open`, `is_file()`,
-  `read_dir(path)`), their FIFO cases would not return, and their link cases read the target;
-  they were not run against `dev`.
-- **Gate.** `scripts/dev ci` at fc7de6a02 (on `dev` 5f581c3f3 merged in): exit 0; `4123 tests
-  run: 4123 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 2** (head 7248a0cec): approve, no blocker or major; its four minor findings
-  and two of its nits are taken in this slice (HRD-006, the test case, the change log's
-  wording, `ok_or_else`, a test that cannot replace its own process); "each new test failed on
-  `dev` first" in the slice 2 Test plan holds for the three tests its Evidence names, not for
-  the two unit tests of functions that are new; the directory is not synced after a rename in
-  `replace_in`, as before the change.
-- **Not tested here.** A sandbox with a real system layer and holder: `system_file_text` is
-  tested on folders laid out like one.
-- **Review of slice 3, round 1** (head cb7da51fc): request changes, two major findings, taken:
-  - "the walk can use up the server's file descriptors" (own code): `MAX_DEPTH` 128, deeper
-    folders counted and not listed, the measurement marked truncated;
-    `usage::tests::folders_nested_deeper_than_the_bound_are_not_listed`;
-  - "one transcript reader still goes by path" (there before): `continue_session` opens the
-    imported transcript with `transcripts::open` and copies its side files through handles;
-    `session_docs::tests::side_files_are_copied_without_following_a_link`;
-  - minor: a transcript that is no regular file reads as none (pages, a task's transcript,
-    `session_read`), not as a 500; `native.exists()` became a no-follow check; the review's
-    anchor (the worktree's folder, above which a link misleads Git first: finding G1) is
-    stated in ADR-0315; nits: path parts below the anchor must be plain names, the change
-    log's long line is wrapped. Left as they are, with the reviewer's reasons: an opaque
-    `upper/etc` without `passwd` shows the base's (a server-built copy); a root is not kept
-    in the hard-link set; a FIFO regression would end in the test runner's timeout.
-- **Gate after round 1.** `scripts/dev ci` at bb4859b97: exit 0; `4125 tests run: 4125
-  passed, 16 skipped`; the other steps passed.
+### Closing (2026-11-15)
 
-### Slice 4 (2026-11-13)
-
-- **Tests failing before their fix.**
-  `delivery::a_pull_request_pointed_at_another_branch_is_never_merged`: with the three checks
-  switched off the armed merge merged the pull request that had been pointed at `main`.
-  `ui_contract::embedded_assets_serve_with_content_types_and_every_import_resolves`: failed
-  while the lab was embedded (`GET /assets/lab.js` answered 200). `yulius-store`
-  `writes_that_change_access_grow_the_access_epoch`: failed at "an API token revocation".
-  `remote_mcp::a_read_token_reads_nothing_above_view_access`: its last route
-  (`superagent/requests`) answered 200 until that function refused a read token; the other
-  seven routes were refused by `require_for`, written before the test. The sign-in tests
-  (`a_github_sign_in_completes_only_in_the_browser_that_started_it`,
-  `github_sign_in_starts_are_limited_per_client`) and the production-stage command's
-  refusals were written with their fixes and not run against `dev`.
-- **Web UI.** `cd e2e && npx e2e run`: `Test Files 84 passed | 1 skipped (85)`, `Tests 1018
-  passed | 1 skipped (1019)`, exit 0, on this slice's tree.
-- **Gate.** `scripts/dev ci` on this slice's tree (the commit after this text names it): exit 0;
-  `4129 tests run: 4129 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
-  cargo-deny, cargo-shear and rustdoc passed.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 3, round 2** (head 5810cc78f): approve, no blocker or major; its three
-  minor findings and two nits are taken in this slice: the bound on an imported session's side
-  files holds across folders (`copy_folder` stops at 0), the depth test no longer assumes a
-  file system where folders take no blocks (run with `TMPDIR` on ext4: passed), one file of an
-  imported session is copied only up to 1 GiB, the side files' path must be plain names, and a
-  folder that cannot be listed is left out.
-- **Not tested here.** A real browser against a real server (the cookie on a top-level
-  navigation back from github.com): the routes are tested through the router with the cookie
-  header set as a browser would.
-
-### Slice 5 (2026-11-13)
-
-- **Tests failing without their fix** (`target/audit/slice5/mutate.py`: one fix switched off,
-  its tests run, the file restored). The unlock (`fresh_to_widen` answering "not needed"):
-  `secrets::a_use_by_use_secret_goes_somewhere_new_only_after_two_factor`,
-  `secrets::agents_request_hosts_and_people_allow_them`,
-  `secrets::agents_bind_the_hosts_of_a_secret_they_set_up` and
-  `remote_mcp::secrets_are_managed_by_name_and_binding_only` failed. The proxy using an empty
-  set instead of refusing: `a_request_whose_answer_cannot_be_checked_for_secrets_is_not_sent`
-  failed. The terminal not withholding: `output_is_withheld_while_agent_secrets_cannot_be_read`
-  failed. `vault_update` without the value in its compare:
-  `an_edit_read_before_a_rotation_does_not_undo_it` failed.
-- **Slice 4's tests, as its reviewer asked** (the same way): the callback not asking for the
-  cookie: `a_github_sign_in_completes_only_in_the_browser_that_started_it` failed; no limit on
-  starts: `github_sign_in_starts_are_limited_per_client` failed; the production-stage command
-  without `may_deploy`: `delivery::a_production_environment_run_starts_in_production_containment`
-  failed.
-- **Web UI.** `cd e2e && npx e2e run` at `7f3379e06` (nothing under `web/` or `e2e/` changed
-  after it): `Test Files 84 passed | 1 skipped (85)`,
-  `Tests 1018 passed | 1 skipped (1019)`, exit 0. (At `78c891dac` one test failed in the whole
-  suite and passed alone: `cd.e2e.ts` "a needs_you decision reads Decide, and an action alone
-  only To do", the known flake under load of issue #1175, in a page this slice does not touch.)
-- **Review of slice 5, round 1** (head 78c891dac): request changes, one major and seven minor
-  findings and two nits, all in this slice's code, all answered in it. Major: the copy budget
-  took a file's stated size, so a file growing while it was copied was not counted (now what
-  is read counts; the test with a file stating 0 failed before). Minor: a secret that never
-  opens made every chunk of output read and open all secrets and log (a retry after a second,
-  one log line; ADR-0317 no longer says it recovers by itself); allowing production deploys
-  was not asked for the code (it is); an answer given without the code because `auto_allow`
-  was on could land after it was switched off (the two store writes compare it); an overtaken
-  team edit answered 404 (409); the app's own failing paths were untested (a Superagent's real
-  terminal and the app's proxy policy with a secret whose key is gone); closing the code
-  dialog was untested (e2e, with "nothing before the code" for `.env`, production and the
-  switch). Nits: a doc comment on the wrong helper; the mock compared hosts as typed.
-- **Review of slice 5, round 2** (head fa200a9ed): request changes, two minor findings and two
-  nits; round 1's answers all verified. Minor: with a withheld screen the supervisor's wait
-  timed out and typed blind, which a withheld folder-trust dialog would have taken as its
-  answer (the wait now types nothing while the screen is withheld and flags the task; ADR-0317
-  corrected); "revoking production needs neither" had no test (a token revokes in
-  `production_secrets_need_their_own_allowance`). Nits: the race guards are tested in the
-  store only (below, "Not tested here"); the copy budget's failing run is not in the mutation
-  log (its test was run and seen failing before the fix was written: "Ok(())" where a refusal
-  was expected); issue #1175 is the flake's own issue (`gh issue view 1175`).
-- **Review of slice 5, round 3** (head f4e864bec): request changes, one minor finding and three
-  nits; round 2's answers verified. Minor: `type_into_session` (messages from agents and
-  Yulius's own) read the trust dialog off the same withheld screen and typed (it refuses now).
-  Nits: a failure at a program's last output stayed "withheld" and flagged a healthy run with
-  the wrong remedy, and after a recovery the screen missed what was dropped (one rule now: a
-  screen with dropped output is unknown until the next whole screen, the wait flags at once
-  and says to stop and continue); ADR-0317 said no run starts meanwhile (one whose own
-  secrets are readable does); the test did not show that nothing was typed (it reads the
-  transcripts now). The round-2 fix had also flagged a goal given at the launch, which is not
-  typed: the launch goal's watch is left as it was.
-- **Gate.** `scripts/dev ci` at `5fde92f16` (round 3's answers; `2021b3604` after round 2:
-  4138 passed; `7f3379e06` after round 1: 4137 passed; `78c891dac` before the reviews: 4134
-  passed): exit 0; `4138 tests run: 4138 passed, 16 skipped`; doctor, repository check, lint,
-  the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
-  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` with the wait's
-  check switched off: "timed out waiting for the flag"; with the message's check switched off:
-  its assertion on the refusal failed.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 4** (head f07fde13c): approve, no blocker or major. Its two minor findings
-  are fixed here (one byte budget for an imported session's transcript and side files; the
-  `busy` text), and of its five nits: tests for the cleared cookie and the plain-HTTP cookie
-  name, two consequences added to ADR-0316, the fail-before-fix runs above; `form_train` is
-  left as it is (Decisions).
-- **Not tested here.** The two races through the app (an `auto_allow` switched off between an
-  answer's read and its write; a second edit of one team secret): the store's compare and the
-  refusal's wording are tested, the interleaving is not. The proxy process end to end with the app's policy failing (the proxy is
-  tested with a policy that has nothing to redact with, the app's policy on its own); a task
-  agent's terminal (the Superagent's goes through the same `scrub_output`). The two-factor
-  dialog over the open edit form is tested in the mock (e2e), not against a real server.
-
-### Slice 6 (2026-11-13)
-
-- **Reproduced on a real browser** (Google Chrome 157.0.8103.50 on Xvfb, this machine, the
-  opt-in test with `YULIUS_TEST_CHROMIUM`): before the fix a click through
-  `BrowserInstance::dispatch_mouse` on a page's file input mapped the window `"Open File"`,
-  1280x800, over the page (`xwininfo -root -tree`), and the test failed with "a native file
-  dialog opened". With the fix and no policy installed: "the host's browser policy is not
-  installed: the click was refused", no window, passed. With the policy written to
-  `/etc/opt/chrome/policies/managed/yulius.json`: "the host's browser policy is in force: the
-  click reached the page" (the page's title turned to "clicked"), no window; then Ctrl+O,
-  Ctrl+S, Ctrl+P, Ctrl+U, F12 and Ctrl+Shift+I through `dispatch_key`: no window shown (GTK
-  keeps one unmapped), no file dialog, no `devtools:`, `view-source:`, `file:` or print page
-  among the targets; and a click on a link to another program's address
-  (`yulius-test-scheme://open`): under the first draft of the policy the page stayed and the
-  address was handed over; with only web addresses allowed the tab shows it blocked; passed.
-- **Probes of the policy on that Chrome.** `Page.navigate` to the marker host:
-  `net::ERR_BLOCKED_BY_ADMINISTRATOR`; to `file:///etc/hostname`: the same; to another
-  `.invalid` host: `net::ERR_NAME_NOT_RESOLVED`. `showOpenFilePicker()`: `NotAllowedError`.
-  With `DeveloperToolsAvailability: 2` in the file `Target.attachToTarget` answered "Not
-  allowed" for every target, so it is left out. The existing real smoke test
-  (`drives_a_real_chromium_when_configured`: load, snapshot, type, click, screenshots, PDF
-  frames) passed with the policy installed.
-- **Tests failing without their fix** (`target/audit/slice6/mutate.py`, ten cases; held tabs
-  dropped and a tab at Chrome's own page dropped fail
-  `browser::tabs_made_while_the_probe_waits_are_listed_and_a_tab_at_chromes_page_stays`): the mouse
-  gate off, the key gate off, typed text ungated, the probe's tab listed:
-  `browser::viewer_clicks_and_keys_wait_for_the_hosts_browser_policy` failed; Chrome's own
-  pages listed: `browser::chromes_own_pages_are_no_tabs` failed; a look-alike hidden by its
-  address: `browser::a_page_cannot_hide_a_window_behind_the_probes_address` failed; host setup
-  writing nothing:
-  `host_setup::tests::the_browser_policy_is_written_where_it_is_missing_or_differs` failed; no
-  flag on a refused message: `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once`
-  failed.
-- **Web UI.** `cd e2e && npx e2e run` at `2c4b50dbd`: `Test Files 84 passed | 1 skipped (85)`,
-  `Tests 1019 passed | 1 skipped (1020)`, exit 0 (nothing under `web/` or `e2e/` changed
-  after it).
-- **Review of slice 6, round 1** (head 53cb2786d): request changes, two major and four minor
-  findings and three nits, all in this slice's code, all answered in it. Major: the update
-  helper's unit could not write the policy directories, so its re-check could never bring a
-  newer policy (the shipped unit lists them, the setup writes a drop-in for a unit from
-  before; test); the probe's tab was hidden by its address, which a page can open (it is
-  known by Chrome's id now; test). Minor: a tab that went to a page of Chrome's own was
-  dropped (only a target created as one is no tab); texts that did not match the code; the
-  real-browser proof covered the file input only (accelerators and a link to another program
-  added, which changed the policy to web addresses only); typed text and releases untested.
-  Nits: a yes stood for the browser's life (asked again after 5 minutes); the probe could
-  hold a viewer's connection (3 seconds at most); another policy file can override a setting
-  (ADR-0318 says so).
-- **Review of slice 6, round 2** (head 0a566a925): request changes, two minor findings and
-  three nits; round 1's answers verified. Minor: the probe's tab could still be listed when
-  Chrome announces it under another address first, or a resync runs meanwhile (every new
-  page no page opened now waits for the id, and the probe's is taken off the list when the
-  id is known); the replay of what waited and "a tab at Chrome's own page stays" were
-  untested (test with a tab made beside the probe and a tab sent to `chrome://settings/`;
-  two more mutations). Nits: the wait for the id survives a dropped probe now (a drop guard)
-  and the tab's creation is timed; a replayed announcement no longer overwrites a newer one;
-  `ws:` and `wss:` are in the policy's allowed addresses (whether the blocklist reaches
-  WebSocket handshakes was not measured).
-- **Gate.** `scripts/dev ci` at `d42465f95` (round 2's answers; `84a173793` after round 1:
-  4147 passed; `53cb2786d` before the reviews: 4145 passed): exit 0; `4148 tests run: 4148
-  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed. Both real-browser tests passed again with the final policy
-  file.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 5, round 4** (head cf2f03a6e): approve, two nits; one is fixed here (the
-  flag on a refused message), one is left with its reason (Decisions).
-- **Not tested here.** That a task flagged for a withheld screen is flagged again after it was
-  stopped and continued (the flag's reset at attach): a start reads the secrets, so a
-  continued task does not start while the secret that withheld the screen is unreadable.
-  The update helper's unit under systemd (its writable paths are tested against the fake
-  host's answer to `systemctl show`). `yulius host setup` on a real host (the item is tested against the fake
-  host; the policy file was written by hand for the real-browser runs, with the content
-  `managed_policy()` gives). Chromium and a snap-packaged Chromium (only Google Chrome is on
-  this machine): the browser is asked itself, so a flavor that reads no policy from these
-  directories refuses viewers' input instead of taking it unlocked. The context menu's
-  entries (Save as, Inspect) were not clicked on the real browser; their accelerators were
-  pressed. That the accelerator check would see a window or page were one to open was not
-  shown (without the policy the keys are refused before they reach Chrome).
-
-### Slice 7 (2026-11-13)
-
-- **Tests failing without their fix** (`target/audit/slice7/mutate.py`, ten cases; the two
-  added after the review: the wrong page asked after the move, no activity entry for a
-  secret gone astray): the page
-  not asked under the lock: `instance::a_secret_is_typed_only_into_a_page_it_may_go_to` and
-  `browser::agents_type_secrets_only_into_pages_of_their_hosts` failed (the secret was typed
-  into `evil.example`); the page it moved to not asked:
-  `instance::a_secret_typed_while_the_page_moves_on_is_reported` failed; navigate, reload and
-  history each without the lock: `instance::a_navigation_waits_for_a_secret_being_typed`
-  failed each time; a later held announcement dropped, a closed tab's announcement kept: the
-  two probe tests failed.
-- **Real browser.** `drives_a_real_chromium_when_configured` (Google Chrome 157, opt-in; it
-  types secrets into a real page and takes screenshots): passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed in this slice; the e2e suite last ran at
-  slice 6 (1019 passed).
-- **Review of slice 7, round 1** (head 48dbe9523): request changes, three minor findings and
-  three nits in this slice's code, and one major finding that was on `dev` before it. Minor:
-  the astray test could not tell which page the rule was asked about (the fake now moves to
-  another site mid-typing and the test asserts both addresses and the host named); the
-  application's answer and activity entry for a secret gone astray were untested (they are,
-  through the MCP tool); "none of them can put another page under the keys" claimed more
-  than a lock on the request gives (ADR-0319 and FSR-002 say what it covers; finding E9).
-  Nits: a typing error no longer hides the astray report; one task owns the probe tab's
-  creation and closes it unless the probe takes it, also when the probe is dropped; the
-  ADR says who waits behind a navigation. The major one, a secret typed into a focused
-  frame of another site, is finding E8 with its own slice.
-- **Gate.** `scripts/dev ci` at `5a89ab57f` (round 1's answers; `0d924205e` before the review:
-  4152 passed): exit 0; `4152 tests run: 4152 passed, 16 skipped`; doctor, repository check,
-  lint, the macOS compile, cargo-deny, cargo-shear and rustdoc passed.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Slice 6's delivery.** Its first CI run failed in one e2e test of a page it does not touch
-  (`notes.e2e.ts` "a failed reload after a teammate's edit backs off": 4 loads counted in a
-  fixed 2.5 s window, at most 3 expected), filed as issue #1246; the run was repeated once at
-  the same head and passed.
-- **Review of slice 6, round 3** (head 70cc7698d): approve, three nits, all answered here.
-- **Not tested here.** The race on a real browser (a slow screenshot, a fill and a navigation
-  at once): the order is tested on the fake with the lock held by a delayed look at the page.
-  A page that redirects by itself while it is typed into, on a real site.
-
-### Slice 8 (2026-11-13)
-
-- **Tests failing without their fix** (`target/audit/slice8/mutate.py`, ten cases, each
-  switched one check off and ran its test): the frames not asked (browser and through the MCP
-  tool), the frames in other processes not asked, frames that cannot be listed typed into:
-  `instance::a_secret_is_not_typed_into_a_frame_of_a_site_it_is_not_for` and
-  `browser::a_secret_is_typed_neither_into_another_sites_frame_nor_a_tab_that_is_leaving`
-  failed; where the tab is going not asked, a navigation given up still standing (each in the
-  browser and through the MCP tool), only a link's navigation counting, a navigation inside
-  the document counting:
-  `instance::a_secret_is_not_typed_into_a_tab_leaving_for_another_site` and the MCP test
-  failed.
-- **Real browser** (Google Chrome 157, opt-in, `YULIUS_TEST_CHROMIUM`): four tests passed.
-  `a_secret_is_not_typed_into_another_sites_frame_in_a_real_chromium`: a page at `127.0.0.2`
-  framing `localhost` with the focus in the frame's field got nothing typed and the answer
-  named `localhost`; with both allowed it was typed. Before the fix the same steps typed the
-  secret into the frame. `a_secret_is_not_typed_into_a_tab_that_is_leaving_in_a_real_chromium`:
-  a fill right after a click on a link to `localhost` (answering after 1.5 s) typed nothing.
-  Measured there with a probe since removed: `Page.getFrameTree` on a new session answered
-  1.52 s after the click with the new address (4.01 s with a 4 s server, also for a link to
-  the same site), so on Chrome 157 the answer is `SecretPageRefused` by slice 7's rule and
-  `SecretPageLeaving` is not reached; the test accepts either and says so.
-- **The gate's first run** at `8d90eacc5` failed in
-  `first_message::a_withheld_screen_gets_nothing_typed_and_flags_the_task` (slice 5's test):
-  reproduced with a 300 ms delay before the typing flag was cleared (the same panic), fixed
-  by ending the typing before the task is flagged, passed with the delay in place, delay
-  removed.
-- **Gate.** `scripts/dev ci` at `2f17216be`: exit 0; `4157 tests run: 4157 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run for this slice.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 7, round 2** (head ec5c5c240): approve; merged as pull request #1247.
-- **Not tested here.** `SecretPageLeaving` on a real browser: Chrome 157 holds its answer
-  during a navigation, so only the fake reaches it. A frame nested in another site's frame
-  in a process of its own on a real Chrome (the fake lists such targets; the real test uses
-  one frame). Chromium builds other than Google Chrome 157.
-- **Review of slice 8, round 1** (head a3320e970): request changes. Own code, all answered
-  test-first:
-  1. (major) the frame check hung on a focus test that failed open for `<object>`, `<embed>`,
-     a frame in a closed shadow root and `<fencedframe>`. Now only a text field of a document
-     the probe read is the page's own; anything else asks the frames; a fenced frame is
-     refused. On Chrome 157, with round 1's gate, the secret was typed into `localhost` in an
-     `object` and in a closed shadow root's frame of a `127.0.0.2` page
-     (`target/audit/slice8/real-chrome-mutations.log`); with the fix both are refused.
-  2. (minor) nothing was asked again between the look and the keys: the document is read
-     again after the focus (a changed one gets nothing typed), where the frames are going is
-     asked last, and a frame that has the focus after the keys is reported
-     (`SecretFrameAstray`, with an activity entry).
-  3. (minor) the record of announced navigations had no bound and only the main frame was
-     asked: `Leaving` holds 256 frames, drops a frame's entry when it is detached, counts
-     nothing older than 30 s and says "not known" past its bound; every frame of the page's
-     tree is asked.
-  4. (minor) untested branches: the fake sends any page event (`emit`); the tests cover
-     `Page.frameRequestedNavigation` and its disposition, `Page.frameNavigated`,
-     `Page.frameDetached`, a frame of the page, an announcement during the look, the 30 s,
-     the bound, a session's end, a page that cannot be read, frames that cannot be told, and
-     the order of focus and look. The last step of the leaving test now does what it says.
-  Nits: skipped events lose the record ("try again" for 30 s); the frame error says what is
-  known ("the focus is not in a field of this page itself, and the page holds a frame of
-  …"); an address without a host is "an unknown site"; ADR-0320 names the page that cannot be
-  read, the address of another program, and the frames inside an out-of-process frame that
-  are not asked. Two lines stay without a test of their own (Decisions say why).
-  Pre-existing (major), finding E10: fixed here (`tool_type_beside_secret`).
-- **Tests failing without their fix, after the review** (`target/audit/slice8/mutate.py`, 28
-  cases, `mutations2.log`): each failed its test: the frames not asked (browser, MCP), round
-  1's gate, a fenced frame typed into, frames in other processes not asked, frames that
-  cannot be listed typed into, a page that cannot be read typed into, the page read before
-  the focus, a page that changed since the look typed into, a frame that took the focus not
-  reported (browser, MCP), where the tab is going not asked (browser, MCP) or asked before
-  the look, only the main frame's way asked, a navigation given up, arrived, or of a detached
-  frame still standing, only a link's navigation counting, a same-document one counting,
-  another tab's counting, the requested navigation not kept, an old announcement standing
-  for ever, nothing lost past the bound, a session's end keeping its frames, lost
-  announcements forgotten at once, and the user name typed without the page rule (E10).
-- **Real browser after the review** (Chrome 157): the four opt-in tests passed; the frame
-  test now also covers an `object`, a closed shadow root's frame that takes the focus by
-  itself, the user name's path, and the page's own field beside a frame (typed).
-- **The gate after the review.** At `c323db624` it failed in
-  `superagent_browser::the_global_superagent_drives_a_named_projects_browser`: the fake's
-  new focus kinds called an unnamed focused password field "other", so a screenshot was
-  refused (a fault of the fake, fixed there). `scripts/dev ci` at `b71c09db1`: exit 0; `4160
-  tests run: 4160 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
-  cargo-deny, cargo-shear and rustdoc passed.
-- **Not tested here, added by the review's answers.** A fenced frame on a real Chrome (the
-  probe names the element; no page with one was built). The loss of announcements on skipped
-  events, end to end (the function is unit-tested).
-- **Review of slice 8, round 2** (head 2c1af3d04): request changes; "All nine round 1
-  findings are answered as the coordinator described, and I checked each in the code." Four
-  new ones in the new code, all answered test-first:
-  1. (minor) an announced address cut to 2048 bytes could read as a host of a wildcard
-     binding (`https://<long>.bank.example@evil.example/`): one too long is kept as no
-     address, which no secret is for.
-  2. (minor) a frame inside a closed shadow root that took the focus during the keys was not
-     reported: after the keys the frames are asked by the rule asked before them (the focus
-     not in a field of the page), and screenshots follow the same condition.
-  3. (nit) an announcement sent a moment before the keys may not have been read: named in
-     ADR-0320 (the report afterwards covers it).
-  4. (nit) more than 256 frames on their way in one tab stopped fills in every tab: the bound
-     and its loss are per tab; skipped events still lose every tab's.
-- **Tests failing without their fix, after round 2** (`mutate.py`, 32 cases,
-  `mutations3.log` and `mutations3b.log`): all 32 failed their tests; new: a cut address
-  kept, one tab's loss not asked, after the keys only a fenced frame reported.
-- **Real browser after round 2** (Chrome 157): the four opt-in tests passed.
-- **The gate after round 2.** `scripts/dev ci` at `20404f5ae`: exit 0; `4161 tests run: 4161
-  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed.
-
-### Slice 9 (2026-11-13)
-
-- **The hole, on a real browser.** With the proxy's switches taken out (the browser as it
-  was), Google Chrome 157 of sandbox `s1` opened `http://localhost:43020/`, a port of sandbox
-  `s2`, and showed its page ("other page";
-  `target/audit/slice9/real-chrome-mutations.log`). With only
-  `--proxy-bypass-list=<-loopback>` taken out the same test failed too: Chrome 157 sends the
-  loopback past a proxy unless told otherwise (also seen with a logging proxy,
-  `probe_proxy.py`: `localhost` reached the origin directly, and through the proxy with the
-  switch).
-- **Real browser, with the fix** (Chrome 157, opt-in, `YULIUS_TEST_CHROMIUM`):
-  `browser_network::a_real_chromium_reaches_its_sandboxes_ports_and_no_other_local_address`
-  passed: its own server by `localhost` and `127.0.0.1` and the welcome page load; another
-  sandbox's port (three spellings), a host service, the internal API, `169.254.169.254` and
-  two HTTPS addresses show none of those pages; a page's `fetch`, images and a WebSocket to
-  them arrived at no server while its own answered. The four tests of `real_chromium.rs`
-  passed as before.
-- **Tests failing without their fix** (`target/audit/slice9/mutate.py`, 18 cases,
-  `mutations.log` and `mutations-b.log`): each failed its tests: every port of the loopback
-  reached, local addresses not refused, every path of Yulius's listener, a tunnel to it, a
-  listener bound to every address not taken as Yulius's, what a name resolved to not asked,
-  the proxy's hop headers sent on; the loopback past the proxy, names resolved by Chrome, UDP
-  past the proxy, a browser started without its proxy, the proxy closed while the browser
-  runs, the proxy outliving its browser (this one survived at first: the test let go of the
-  browser itself; it now holds on to it, as a viewer's session does); every sandbox's ports
-  for every browser, a proxy before the egress proxy runs, the server's browsers left to
-  connect by themselves; and the two answers to slice 8's nits (a long address kept cut, or
-  kept as none).
-- **The gate.** Its first run (at `e57456953`) stopped at rustdoc: a doc comment had ended up
-  on the wrong function. Its second (at `b814ad528`) failed in this slice's own
-  `browser_network::each_browsers_proxy_reaches_its_own_sandboxes_ports`: the test's "service
-  of the host" took a port the system gave, 43013, which lies in the fixture sandbox's range
-  (43000-43019), so the sandbox's browser rightly reached it. Reproduced by putting that
-  server into the range on purpose (the same assertion, `flake-proof.log`); the test now
-  takes a port outside both ranges. `scripts/dev ci` at `b9bd0eb68`: exit 0; `4172 tests
-  run: 4172 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
-  cargo-deny, cargo-shear and rustdoc passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run for this slice.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 8, round 3** (head 4fb8a2eab): "No critical, major or minor own-code
-  finding is open." Approve, two nits, both answered here; merged as pull request #1248 (its
-  first armed merge was refused for a title of 112 characters; retitled, merged at the same
-  head).
-- **Not tested here.** A real server with real sandboxes: the browser of one sandbox against
-  the relayed ports of another on a host (the test's servers stand on the loopback where the
-  relay would listen). WebRTC and QUIC being off (the switches are asserted, their effect is
-  not). A viewer's address bar on a virtual display (it navigates the same Chrome through
-  the same proxy). Chromium builds other than Google Chrome 157. macOS, where the same
-  switches are passed.
-- **Review of slice 9, round 1** (head 9c2af2437): request changes; no critical or major
-  finding. Own code, all answered test-first:
-  1. (minor) the loopback rule took any name that resolved to the loopback, resolved anew for
-     each request: a name's owner could answer a public address for a page and `127.0.0.1`
-     for the page's next request, and the page would read the sandbox's own dev server. The
-     loopback's ports and the welcome page are now reached only by an address or `localhost`.
-  2. (minor) `*.localhost` was asked of the host's resolver, which not every host answers:
-     `localhost` and names below it are the loopback without a resolver.
-  3. (minor) a plain request's wait covered its upload with one fixed bound: it now restarts
-     with every piece of the body sent on (`Progress`, as an agent's).
-  4. (minor) ADR-0320, its index line, FSR-005 and AC-46 still said a long address is kept as
-     none: amended (its site is kept).
-  5. (minor) the share test proved only the browser's own limit: an agent run's tunnel now
-     takes the place and the browser is refused, and the other way round.
-  Nits: the proxies hold the egress proxy weakly (no cycle through the application); the
-  listener backs off on accept errors and closes a connection that sends no request for 60 s;
-  the origin's `Host` and the error texts carry no user and password; the public listener is
-  never reached at its own address, also with its port in the sandbox's range; tunnel by
-  `localhost`, listed and answered hop headers are tested; a refusal with no known ports says
-  so. Pre-existing: ranges that are never given again drift into the system's free ports,
-  where a browser's proxy can take one: issue #1249.
-- **Tests failing without their fix, after the review** (`mutate.py`, 31 cases,
-  `mutations2.log` and `mutations2b.log`): all 31 failed their tests. One reported "passed"
-  in the first run: the script's filter had left the new integration test out; with the
-  filter corrected it failed there too. New: a name that resolved to the loopback reaching
-  the sandbox's port or the welcome page, the test map's answer counted as an address,
-  `localhost` asked of the resolver, the public listener reached, the bound not restarting
-  with the body, a silent server waited for without end, the origin's hop headers coming
-  back, a listed header sent on, a share of the browser's own, unknown ports read as a
-  range, user and password sent on as the host, the proxies keeping the egress proxy alive,
-  the public listener not passed to the proxies.
-- **Real browser after the review** (Chrome 157): the opt-in network test passed.
-- **The gate after the review.** `scripts/dev ci` at `d2b1afed2`: exit 0; `4176 tests run:
-  4176 passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed.
-- **Not tested, named by the review.** How Chrome 157 classes a proxied answer's address
-  space (the fix does not depend on it); WebTransport under a fixed proxy; a managed proxy
-  policy on the host overriding the switches (documented in `docs/operations.md`).
-
-### Slice 10 (2026-11-13)
-
-- **The hole, on the adapter as it was** (`target/audit/slice10/unconfined-proof.log`: the
-  `git_confined` tests with the confinement taken out of the tests' adapter): the server's
-  Git ran the clone's `filter.mine.process`, `core.sshCommand`, `remote.origin.uploadpack`
-  and `remote.origin.receivepack` (four markers); a fetch replaced a file outside the sandbox
-  with Git's `FETCH_HEAD` ("…branch 'main' of …/playgrounds/s1"); a push by the remote's name
-  arrived at another sandbox's origin. By hand, a link at `.git/shallow` gave "fatal: bad
-  shallow line: secret-line-of-the-host".
-- **Confined, by hand first** (`yulius git-confined`, Landlock ABI 8 here): `status`, `log`
-  and an HTTPS `ls-remote` work; a filter's command fails with "cannot exec 'sh -c …':
-  Permission denied"; the linked `FETCH_HEAD` is refused ("cannot open '.git/FETCH_HEAD':
-  Permission denied") and the file outside kept; a local fetch needs the shell ("cannot exec
-  'git-upload-pack …'") and works with it; with the shell, `core.alternateRefsCommand` and
-  `core.sshCommand` through a rewritten address ran, and with the pins they did not
-  ("transport 'ssh' not allowed").
-- **The binary's whole suite, confined.** Every test that uses the real adapter now uses it
-  confined in the server's layout (`support::confined_git`, 45 places). The first such run
-  failed 181 tests and showed what a confined command needed named: destinations of `init`
-  and `clone`, the other folder of local transfers, bundles, a CD export's index, worktree
-  paths, a playground's origin for pushes by the remote's name, import worktrees beside the
-  sandbox's folder. After that: 2134 of 2134 passed.
-- **Tests failing without their fix** (`target/audit/slice10/mutate.py`, 23 cases,
-  `mutations.log`): each failed its tests: Git unconfined, the shell always executable,
-  every program executable, writes not confined, reads not confined, a Git not on `PATH`
-  started by name, a local transfer without its pins (attack test and unit), with the
-  adapter's configuration, without the shell, the shell for every command, what a command
-  names not reached, any folder taken as an origin (attack test and unit), a sandbox's
-  folders being the whole data folder (attack test and unit), import worktrees no sandbox's,
-  a push or a fetch with the own origin by the remote's name, the server's adapter not
-  confined, the doctor passing a host that cannot confine; and the two extras: a request
-  without a body framed as chunked, a withheld screen flagged once per run.
-- **A flaky test of slice 5**, met in this slice's first confined run:
-  `task_message::a_message_kept_out_of_a_withheld_screen_flags_the_task_once` failed 5 of 24
-  runs alone (the task read `Waiting`, or its flag had no reason): the prompt the test typed
-  started a turn of the fake agent, whose states replaced the flag. With a key that starts
-  no turn: 30 of 30. The flag is now raised again after such a replacement (test first:
-  `Waiting` where `NeedsAttention` was expected).
-- **G2, found here** (`urlmatch-proof.log`): with `http.https://github.com/.sslVerify=false`
-  and `.proxy` in the clone's configuration, `git config --get-urlmatch` under the server's
-  command line (`-c http.sslVerify=true -c http.proxy=`) and environment answered `false`
-  and the clone's proxy. Listed, not fixed here.
-- **Gate.** `scripts/dev ci` at `f819929cd`: exit 0; `4188 tests run: 4188 passed, 16
-  skipped`; doctor (with "git confinement: ok"), repository check, lint, the macOS compile,
-  cargo-deny (the new `landlock` crate: MIT OR Apache-2.0), cargo-shear and rustdoc passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Review of slice 9, round 2** (head 72b4a521f): "No critical, major or minor own-code
-  finding is open; two nits." Approve; both nits answered here; merged as pull request #1250.
-- **Not tested here.** A kernel without Landlock (the launcher's refusal is code read, not
-  run: this machine enforces it). A real server with real sandboxes, a relay and GitHub over
-  HTTPS from the confined adapter (HTTPS was run by hand through this sandbox's proxy; the
-  suite's "GitHub" is folders, with the shell). Git builds whose helpers live outside their
-  `exec-path`. macOS, where Git runs unconfined as before.
-
-### Slice 11 (2026-11-13)
-
-- **The hole, on the code as merged in slice 10** (`target/audit/slice11/mutations-b.log`,
-  the courier switched off): with the clone naming a proxy for the remote and no certificate
-  check, the server's fetch connected to that proxy
-  (`git_confined::a_transfer_with_the_token_is_not_shaped_by_the_clone`: "the clone's proxy
-  was asked for the server's connection"). The precedence itself:
-  `target/audit/slice10/urlmatch-proof.log`.
-- **The loader, by hand** (`target/audit/slice10/loader-gadget.log`): a confined bare
-  `git diff` with `diff.external` set to the loader executed a new file of the clone that was
-  a copy of `env` ("added.bin: '/dev/null': Permission denied" is that program trying to run
-  its argument); with `--no-ext-diff --no-textconv` it did not. The adapter's own diff
-  commands carried those options already, so its attack test passed before the change too;
-  the runner now adds them itself (the unit test failed first: "left: [diff, --stat, HEAD]").
-- **Tests failing without their fix** (`target/audit/slice11/mutate.py`, 13 cases,
-  `mutations.log` and `mutations-b.log`): each failed its tests: transfers with the token in
-  the clone as before (alone, and with its configuration given there), a command in a
-  sandbox's folder given the adapter's configuration, a courier's transfer allowed between
-  folders, the courier left behind, the clone not taking the result, no pruning of the
-  clone, a forcing push, no diff options from the runner, the `ssh` transport kept, signing
-  kept, an editor allowed, a sandbox being made given the folder of all sandboxes. One step
-  has no test of its own: the courier learning what the clone has of the remote before it
-  fetches. Without it the fetch still arrives; it only asks GitHub for more than it needs.
-- **The binary's whole suite**: 2246 of 2246 with the courier and the stricter runner; three
-  tests of `yulius-git` whose stand-in Git read its subcommand by position were adjusted to
-  the longer list of constant options.
-- **Slice 10's delivery.** Its first CI run failed in one e2e test of a page it does not
-  touch (`cd.e2e.ts` "a refusal after its view was left is a toast…", the known flake of
-  issue #1171); the run was repeated once at the same head and passed.
-- **Review of slice 10, round 1** (head cdfab7d11): "No critical, major, or minor own-code
-  finding is open — only nits plus the documented, deferred pre-existing G2." Approve; the
-  four nits are answered here; merged as pull request #1251.
-- **Gate.** `scripts/dev ci` at `1f7cee192`: exit 0; `4192 tests run: 4192 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed (the run before it stopped at rustdoc: a public comment linked a private
-  item).
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested here.** A transfer with the real GitHub through a courier (the tests' remote
-  is a folder the address is rewritten to, or an address where nothing listens); how much a
-  courier's fetch asks of a large repository; a proxy that would really read the header
-  (the test's proxy counts connections). macOS and other unconfined Git: unchanged.
-- **Review of slice 11, round 1** (head dda456b3b, request changes; two major, five minor,
-  seven nits, all answered in the slice). The majors, in the reviewer's words: "A confined
-  Git still starts the clone's file through the loader, via `core.askPass` on the
-  `Route::Named` fallback" (reproduced by the reviewer under the launcher) and "Every
-  transfer with GitHub fails when the data folder path is not canonical". What changed for
-  each finding is in Decisions; each has a test that fails without it (below).
-- **G3, by hand** (`target/audit/slice11/lazy-fetch-proof.log`, Git 2.53.0, the launcher of
-  head dda456b3b): with a promisor remote in the clone's configuration whose command for
-  the other side writes a file, a confined push between two folders (the shell allowed) of
-  a commit whose tree no repository has wrote the file; a confined command without the
-  shell could not start the command ("cannot exec … Permission denied"); with
-  `GIT_NO_LAZY_FETCH=1` the push wrote nothing. A fetch into such a clone did not start the
-  command in these tries. **Ubuntu 24.04** (`git-2404-lazy-env.log`, a container with
-  2.43.0-1ubuntu7.4): the variable is honoured there ("with the variable: not-run",
-  "without: /tmp/RAN"), though that Git does not know the option of the same name
-  (`git-2404-lazy.log`), which is why the doctor's probe asks by doing, not by version.
-- **Tests failing without their fix, round 1's answers** (`target/audit/slice11/mutate2.py`,
-  `mutations-c.log`, 17 cases): a program asked for a password; a missing object fetched; a
-  remote without an address named to Git; a clone that writes in a sandbox's folder given
-  the configuration; every `GIT_CONFIG_` variable withheld; the diff flags dropped past the
-  options' end; a signed push left to the clone; the objects allowed anywhere; the
-  sandbox's folders compared as written (the linked data folder); a path of two lines; a
-  listing that borrows objects; a clone made in the sandbox's folder; no note of the
-  default branch; the note made over the clone's own; a `..` part naming a sandbox; a
-  doctor that takes any Git; the first commit made in the sandbox's folder. Each failed its
-  test. The 13 cases of the first round were run again on the new code
-  (`mutations-d.log`): each still fails. Still without a test of its own: what the courier
-  is told the clone has (it only saves the remote work).
-- **Gate after round 1's answers.** `scripts/dev ci` at `7b35303aa`: exit 0; `4197 tests
-  run: 4197 passed, 16 skipped`; doctor, repository check, lint, the macOS compile,
-  cargo-deny, cargo-shear and rustdoc passed (the run before it stopped at rustdoc once
-  more: a public comment linked a private item).
-- **Not tested, round 1's answers.** A clone and a transfer with the real GitHub through a
-  courier (as above); the race of a sandbox's process against a new clone's configuration,
-  which the clone in a courier removes (the reviewer did not reproduce it either); a Git
-  that really lacks `GIT_NO_LAZY_FETCH` (the doctor's test takes the variable away from
-  this machine's Git with a wrapper); whether a fetch, rather than a push, can be made to
-  fetch a missing object (it did not in the tries above; the variable covers both).
-- **Review of slice 11, round 2** (head 99083c33b, request changes): all fourteen findings
-  of round 1 answered; two new major ones, in the reviewer's words: "A push from a
-  sandbox's clone to a folder recurses into submodules, and the shell runs the submodule's
-  own `receivepack` command" (the mechanism from slice 10) and "`clone_through`'s second
-  step lets the shell run a filter raced into the new clone's configuration" (own code of
-  round 1). Both reproduced here before the fix: by hand under the launcher
-  (`target/audit/slice11/n1`: the push wrote the marker, and with the two pins it did not),
-  and by the new tests with their fix switched off (`mutations-e.log`, 8 runs: the push
-  into a submodule with neither key pinned; each pin missing, in the runner's test; a new
-  clone's files checked out by the transfer, three runs of the race, each won by the
-  filter; a new clone's files not checked out at all). Either pin alone switches both of
-  the clone's keys off, as Git reads the command line last; the attack needs both gone.
-- **A mistake of the first try, kept as a fact about the tests:** the stand-in for GitHub
-  allows the shell to every command, so a filter in a clone made through it runs at the
-  checkout whatever the code does; the raced clone is therefore tested from a playground's
-  origin with the adapter as the server builds it, and a clone through a courier takes the
-  same two steps (`copy_without_files`, `check_out_files`).
-- **Gate after round 2's answers.** `scripts/dev ci` at `3e200cfce`: exit 0; `4199 tests run: 4199
-  passed, 16 skipped`; doctor, repository check, lint, the macOS compile, cargo-deny,
-  cargo-shear and rustdoc passed.
-- **Open after round 2:** G5 (the ledger), then meant for the next slice.
-- **Review of slice 11, round 3** (head 6a385ee61, request changes): both findings of round
-  2 answered; one new major one, in the reviewer's words: "a fetch that may start the
-  shell, run in the clone, downloads the clone's `fetch.bundleURI` over HTTP despite
-  `protocol.http(s).allow=never`. On a 401, Git starts the clone's credential helper
-  through `/bin/sh`", in "the clone's fetch from a courier, and the folder fetch". Its
-  fix as proposed (three more pins) is applied as depth; the finding itself is answered by
-  the rule (Decisions, round 3).
-- **The new test against the code of round 2**
-  (`target/audit/slice11/n3-before.log`: the Git crate of head 6a385ee61 under the tests of
-  this head): `git_confined::a_clones_transfer_settings_reach_no_transfer` failed with "the
-  clone's bundle address was connected to", `left: 4`.
-- **Git's part, by hand before the code** (`target/audit/slice11/y`, `sh`; Git 2.53.0): a
-  fetch in a bare repository with `GIT_OBJECT_DIRECTORY` set to another repository's
-  objects wrote the objects there and none into its own; it sent `have` lines for refs
-  written into its `packed-refs`; it made the tag of an old commit that the other side had
-  newly (v2) without a download; `update-ref --no-deref --stdin -z` set, made and deleted
-  refs in one go, a missing ref's deletion included; `checkout -B <branch> --track
-  origin/<branch>` checked the branch out in a repository without a commit, under the same
-  and under another name; with the courier's `shallow` a link to the clone's, a fetch with
-  `--update-shallow` from a shallow repository wrote the clone's `shallow` file through the
-  link, the clone passed `git fsck`, and a second fetch kept it.
-- **Tests failing without their fix, the slice as it is now**
-  (`target/audit/slice11/mutate3.py`, `mutations-f.log`, 41 cases, each failed its test).
-  The rule on the shell: a command in a sandbox's folder given the shell; a transfer
-  between folders made there. The token: a command in a sandbox's folder, and one that
-  writes a new repository into one, given the configuration; every `GIT_CONFIG_` variable
-  withheld; a remote without an address named to Git. Every command: a program asked for a
-  password, a missing object fetched, an editor, a signed push, either submodule key, a
-  credential helper, a bundle address, a negotiating push, the `ssh` transport, signing,
-  the diff options and their copy past the options' end, a command's input not written.
-  The courier: objects anywhere, folders compared as written, a listing on the objects,
-  the courier left behind, no pruning, a dropped branch kept, branches not set, a tag made
-  again, no tag with a fetch, tags with a refresh of the branches, a forcing push, no link
-  to the clone's `shallow`, no `--update-shallow`, no note of the default branch, the note
-  made over the clone's own, the default branch not checked out, a clone made by a
-  transfer in the sandbox's folder. And: a `..` part naming a sandbox, a sandbox without a
-  folder given all sandboxes' folder, a doctor that takes any Git, the first commit made
-  in the sandbox's folder. The earlier scripts (`mutate.py`, `mutate2.py`) are of code
-  that is gone; their cases are in this one where the rule they check still exists.
-- **The binary's and the two crates' suites with the new routing:** `2776 tests run: 2776
-  passed` (`suite-y2.log`); on the first run two failed and showed what the design had
-  missed: a playground made of a shallow upload (the clone was not told where the history
-  ends: the link to its `shallow` file), and this slice's own test of a path that needed
-  one line, a rule that went with the alternates file.
-- **Gate.** `scripts/dev ci` at `1796cd4b2`: exit 0; `4203 tests run: 4203 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Not tested, the slice as it is now.** A transfer with the real GitHub through a courier
-  (the tests' remote is a folder the address is rewritten to, or an address where nothing
-  listens); what the courier is told the clone has (it only saves the remote work: no test
-  fails without it); that the courier's fetch runs no maintenance on the clone's objects
-  (the options are given; Git's automatic maintenance needs thousands of loose objects to
-  start, and no test makes them); a Git that really lacks `GIT_NO_LAZY_FETCH` (the doctor's
-  test takes the variable away from this machine's Git); a repository of SHA-256 objects
-  (the courier is made with the host's default, as a playground's origin is; GitHub has
-  none); macOS and other unconfined Git: unchanged, G2 and G5 stay open there.
-- **Fresh review of the slice as redesigned, round 1** (head 87dc1c353, a reviewer who had
-  not seen the earlier rounds; request changes): the rules held ("The rule on the shell:
-  `command()` gives `--shell` only when the command is not in a sandbox; `run_once` refuses
-  a local transfer in a sandbox"; "No `GIT_CONFIG_*` reaches a command whose folder is a
-  sandbox's"), and five findings in own code, all reproduced by the reviewer but one: "A
-  fetch through a courier fails permanently after a branch on the remote is replaced by
-  one below it (or the reverse)"; "Through the courier's `shallow` link, a sandbox's agent
-  writes files into its playground's origin"; "A shallow clone cannot be fetched when the
-  data folder is reached through a link"; "A failed new clone into a sandbox is never
-  checked out afterwards" (not reproduced, the path read); the ADR's index line of the
-  first design. Five nits, all answered too (Decisions).
-- **Tests failing without their fix, after it** (`mutate3.py`, `mutations-g.log` and
-  `mutations-g2.log`, 50 cases, each failed its test): the 41 before, of which the cases
-  on setting refs are now four (a new branch not made, a moved one not set, a moved one
-  set whatever the clone has by now, the dropped ones in the same step as the new), and:
-  a fetch allowed to write in the folder it takes from, what a command only reads granted
-  for writing, the courier reaching the objects' folder only, a failed clone left, a clone
-  into a folder that holds something, a new clone with only the tags of its branches. One
-  case passed at first and showed a test that could not fail: the shallow clone "behind a
-  link" was under the tests' shared temporary folder, where the link's target is a data
-  folder too; the test now builds a server's adapter whose data folder is the link itself.
-- **The suites after it:** `2776 tests run: 2776 passed` (`suite-y3.log`).
-- **Gate.** `scripts/dev ci` at `099291a12`: exit 0; `4203 tests run: 4203 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Not tested, besides the list above:** a failed clone through the application (the
-  adapter's clone from an address where nothing listens is); a clone with more refs than
-  the runner reads in one answer (16 MiB).
-
-### Slice 12 (2026-11-13)
-
-- **Slice 11's delivery.** Pull request #1252 merged into `dev` at 67ab28d09, whose own
-  Yulius CI run passed; the fresh reviewer approved that head in its second round ("every
-  round-1 finding (R1–R5, N1–N5) is answered"; two nits, answered here: the folders a
-  transfer only reads, and the index line of ADR-0323).
-- **Tests failing without their fix** (`target/audit/slice12/mutate.py`, `mutations.log`, 6
-  cases, each failed its test): an agent run given a production secret; the old hosts
-  kept; their removal not written to the audit log; every secret's hosts removed; a
-  production secret with hosts inserted; what a transfer only reads granted for writing.
-- **The suites:** `2884 tests run: 2884 passed` for the four crates touched
-  (`target/audit/slice12-suite1.log`); the secrets page's e2e file, `30 passed`
-  (`target/audit/slice12-e2e.log`), with the part about a production secret's old hosts
-  removed from it.
-- **Gate.** `scripts/dev ci` at `a05564671`: exit 0; `4205 tests run: 4205 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** Whether any instance holds a production secret with hosts (the migration
-  changes nothing where none does; the audit line shows it where one did); the whole e2e
-  suite (one page's file changed, and its file was run).
-- **Review of slice 12, round 1** (head 3820558c5, request changes; the rule, the migration
-  and the store's check held: "`may_use` is false for cd_prod for every caller", "No write
-  path can make the pair cd_prod + hosts"). Three minor findings, in the reviewer's words:
-  "Two docs still describe the old state"; "Two such call sites still get read-write"
-  (the fetch and the listing by a remote's name); "Several integration assertions can no
-  longer fail for the rule they claim to hold". Five nits. Answered: both documents; both
-  sites, and a test that reads how each command reaches the origin from the launcher's own
-  words; the comments of those assertions say what they show, and AC-74 no longer cites
-  them for the proxy's rule; the doc comment a new test had taken from its neighbour; three
-  stale comments; the audit line as a sentence with a name on the Secrets page; a command
-  without a folder that takes from a sandbox's folder counted as one in it. Left as it is
-  (the fifth nit): the store's compare-and-sets still let a production row keep hosts
-  unchanged; no row has any, and the general rule they are part of (hosts change only
-  against what the editor saw) is not this slice's.
-- **Tests failing without their fix, after the review** (`mutations.log`, now 11 cases, each
-  failed its test): the six above and: a production secret like any other to the proxy
-  (the rule gone for every caller); a fetch, a listing and a clone allowed to write in the
-  folder they take from; a command without a folder that takes from a sandbox's folder
-  counted as none of a sandbox's.
-- **The suites after it:** `2885 tests run: 2885 passed` (`slice12-suite2.log`); the secrets
-  page's e2e file again, `30 passed`.
-- **Gate after it.** `scripts/dev ci` at `19018a164`: exit 0; `4206 tests run: 4206 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed.
-- **Noted, not a defect:** a clone between two folders now copies the objects where it
-  linked them (the source is read-only to the confined Git, and a link needs more); more
-  disk and time for a playground's first clone of a large repository.
-- **Review of slice 12, round 2** (head 5e30be1ed): "None open in own code"; approve. The
-  commit after it ticks this slice in the Plan and adds this line; the reviewer was shown
-  that delta.
-
-### Slice 13 (2026-11-13)
-
-- **Slice 12's delivery.** Pull request #1253 merged into `dev` at 0f04251be, whose own
-  Yulius CI run passed.
-- **The defect, by its test on the code before** (`target/audit/slice13/mutations.log`, the
-  first case, which is the old line of `ci_rerun`):
-  `local_ci::a_run_again_tests_a_pull_request_with_its_own_jobs` failed; the rerun ran the
-  integration branch's `echo plain` and no `added` job.
-- **Tests failing without their fix** (`target/audit/slice13/mutate.py`, 6 cases, each
-  failed its tests): a run again given the integration branch's jobs; a commit's own jobs
-  never applied; a commit that brings CI not tested; own jobs tested while the integration
-  branch's configuration is broken; own jobs without the trusted security job; a branch
-  behind given the jobs it still carries. The fourth and the sixth passed at first: no
-  integration test held those two parts of the rule (the sixth had the unit test of the
-  comparison only); AC-79 and AC-80 are their tests now.
-- **The suites:** `2674 tests run: 2674 passed` for the app and the binary before the two
-  added tests (`target/audit/slice13-suite1.log`); the trains', the playground's and the
-  remote control's tests unchanged.
-- **Gate.** `scripts/dev ci` at `f1279d914`: exit 0; `4209 tests run: 4209 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** A run again of a merge train's run (refused, as before) and of a
-  playground task's run (the rule is the same function; its checks' tests pass, none
-  reruns one); a playground task that changes its jobs while `dev` has a scanning job of
-  its own (the kept security job is tested for a pull request and for a train; the
-  built-in scan is never on in a playground); the reasons a run again gives when nothing
-  tests the commit.
-- **Review of slice 13, round 1** (head d733a7edd, request changes; the scheduler, the train
-  and the remote control "behave exactly as before, and the `ci_rerun` fix does what it
-  claims"). One minor finding in own code, in the reviewer's words: "A playground task that
-  fixes a broken `dev` yulius.toml now merges with no test at all." Answered by the rule
-  itself (`Head::Merged`, Decisions) and AC-82. Four nits answered: the Decisions sentence
-  about the playground's merge base; the reasons a run again gives; two sentences of
-  `docs/changes.md` and `docs/api.md`; a playground test where a task changes a job
-  (AC-81). A sixth point is D5's (the verdict of a head that brings its own jobs before
-  any run exists) and stays with it.
-- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
-  failed its tests): the six above, and a merge not tested while the integration branch's
-  configuration is broken.
-- **Gate after it.** `scripts/dev ci` at `70fd1b606`: exit 0; `4211 tests run: 4211 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed.
-
-### Slice 14 (2026-11-13)
-
-- **Slice 13's delivery.** Pull request #1254 merged into `dev` at e3c85c345. Its first
-  Yulius CI run failed in one test of another area
-  (`task_done::a_stop_settles_a_run_no_server_holds`, "the run's host still runs": the
-  known flake of issue #1190, where this occurrence is noted); the run was repeated once
-  at the same head and passed. Its review approved that head in its second round; the two
-  nits left (a sentence about playgrounds, an arm that cannot be reached) are answered
-  here.
-- **The defects, by their tests on the code before** (`target/audit/slice14/mutations.log`,
-  the first two cases, which are the old code): with the promotion pull request's check
-  gone, `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr` failed; with
-  the fast-forward's check gone,
-  `delivery::product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out` failed
-  (it promoted past a failed run).
-- **Tests failing without their fix** (`target/audit/slice14/mutate.py`, 7 cases, each
-  failed its tests): a promotion pull request reading no checks; a fast-forward promotion
-  reading none; an automatic promotion made to wait for a run of its own; a person's
-  fast-forward going while the checks are pending; GitHub's checks deciding where Yulius
-  CI ran; failing checks allowing what requires them; a commit that brings CI without
-  checks before its first run.
-- **Found before the review, by reading the callers:** the first shape of this slice held
-  every fast-forward to the integration head's own verdict, which an automatic promotion
-  right after a merge can never have (the commit is seconds old): a profile with
-  `auto_promote` and `require_checks` would have stopped promoting. AC-87 is its test.
-- **The suites:** `2680 tests run: 2680 passed` for the app and the binary
-  (`target/audit/slice14-suite2.log`).
-- **Gate.** `scripts/dev ci` at `35a35b810`: exit 0; `4213 tests run: 4213 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** A promotion in a project without Yulius CI whose GitHub checks fail
-  (pending and unreadable are tested, as before); an automatic promotion after an
-  environment's command, as distinct from its confirmation (the same call); the cost of
-  the extra read in a project without CI.
-- **Review of slice 14, round 1** (head acda02182, request changes; "The four call sites
-  that were right before behave as they did, and the promotion checks are mostly right").
-  One minor finding, in the reviewer's words: "the automatic promotion's pending exception
-  covers more cases than the spec says, and one of its outcomes is untested". Answered by
-  the reviewer's second way (Decisions): the rule is said as it holds, for every automatic
-  promotion, and AC-88 shows a failed head stopping one. Two nits answered: CHK-003's
-  wording, and a sentence on `auto_promote` in `docs/api.md`.
-- **Tests failing without their fix, after the review** (`mutations.log`, 8 cases, each
-  failed its tests): the seven above, and an automatic promotion reading no checks.
-- **Gate after it.** `scripts/dev ci` at `ee36e7c2e`: exit 0; `4214 tests run: 4214 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed.
-
-### Slice 15 (2026-11-13)
-
-- **Slice 14's delivery.** Pull request #1257 merged into `dev` (through a merge train of
-  one, at c7626f165), its own Yulius CI run passed; its review approved the head in its
-  second round, and its two cosmetic nits are answered here (a long line in
-  `docs/api.md`, the refusal's reason asserted in AC-88's test).
-- **The defect, by its test on the code before** (`target/audit/slice15/mutations.log`, the
-  first two cases, which are the old code): without the pass's rule,
-  `delivery::an_armed_merge_ends_with_its_tasks_run` failed (a closed task's merge stayed
-  armed and merged); with the start's old rule (`== Running`) it failed for the task
-  waiting for capacity.
-- **Tests failing without their fix** (`target/audit/slice15/mutate.py`, 5 cases, each
-  failed its tests): a pass deciding whatever became of the task; a start restoring only a
-  running task's merge; a start restoring every saved merge; a held run losing its armed
-  merge; a closed task keeping it.
-- **What the rule showed in the tests:** eight delivery tests armed a merge for a task that
-  had a live run in the store and was not running; their fixtures (`live_agent`,
-  `ArmedTask::new`) now make the task running, as a live run is.
-- **The suites:** the app's, the domain's and the binary's with the rule: all passed but
-  nine `workflow_limit`/`task_done` tests that timed out on the fake agent of before the
-  merge of `dev` (rebuilt with `cargo build -p fake-agent`, then 9 of 9 passed; the gate
-  builds it itself).
-- **Gate.** `scripts/dev ci` at `9bf5df124`: exit 0; `4249 tests run: 4249 passed, 16 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** A member of a merge train under test whose task is closed meanwhile (the
-  pass ends its armed merge by the same line; the train's own handling of a member that
-  left is as before); a playground's armed merge for a closed task (the same function).
-- **Review of slice 15, round 1** (head 3c263ef00, request changes). Two minor findings in
-  own code, in the reviewer's words: "a run that is only held can pass through `Queued`,
-  and the rule treats that as ended" (capacity back while every slot is taken; a task
-  revived by a host move) and "a merged pull request is reported as 'dropped'" (a person's
-  merge does not clear the armed slot). Both answered (ARM-001, ARM-002, AC-90). A third,
-  from before this slice with a new effect, is finding D8 of the ledger: a task with an
-  armed merge can be grouped Done, and archiving it there ends the merge unseen; it goes
-  with the lifecycles (the grouping is theirs). Three nits answered: the long line of
-  `docs/api.md`, the reason's sentence asserted in AC-88's test, two doc sentences.
-- **Tests failing without their fix, after the review** (`mutations.log`, 7 cases, each
-  failed its tests): the five above with the predicate's cases split (held, queued,
-  closed), and a merged pull request of an ended task said to be dropped.
-- **Gate after it.** `scripts/dev ci` at `9eec2f02b`: exit 0; `4249 tests run: 4249 passed, 16
-  skipped`; doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and
-  rustdoc passed.
-- **Not tested, besides the list above:** the path that queues a held run (capacity back
-  with every slot taken) end to end; the test sets the state.
-
-### Slice 16 (2026-11-13)
-
-- **Slice 15's delivery.** Pull request #1263 merged into `dev` (through a merge train of
-  one, at 7c20df998), its own Yulius CI run passed; its review approved the head in its
-  second round, and its three nits are answered here (the long line of `docs/api.md`, a
-  long line of this spec, and the order in `merge_armed_task`: of an ended run only what
-  became of its pull request is asked).
-- **Tests failing without their fix** (`target/audit/slice16/mutate.py`, `mutations.log`, 3
-  cases, each failed its test): a failure inside Yulius answered with 502; a table of its
-  own in the loopback listener's routes; one in the remote MCP endpoint's. The third
-  passed at first: the source test looked only for arms that begin with `AppError::`, and
-  the type can be named by its path; it reads any arm that names it now.
-- **The suites:** `2739 tests run: 2739 passed` for the server, the app and the binary
-  (`target/audit/slice16-suite1.log`): hooks, the credential helper, `yulius wait` against
-  a listener that answers 500, the remote MCP endpoint.
-- **Gate.** `scripts/dev ci` at `de1cb8ba0`: exit 0; `4280 tests run: 4280 passed, 17 skipped`;
-  doctor, repository check, lint, the macOS compile, cargo-deny, cargo-shear and rustdoc
-  passed.
-- **Web UI.** Nothing under `web/` or `e2e/` changed; the e2e suite was not run.
-- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
-- **Not tested.** A failure inside Yulius through the listener itself (it needs a store that
-  fails on demand; the mapping and the absence of another are what is tested, and
-  `yulius wait`'s reading of a 500 is); an outside client of the loopback listener that
-  reads its 400 or 502 (none in this repository).
-- **Review, round 1** (a fresh session, read-only, head `2a5f2d4ec`): request changes. One
-  finding in this slice's code, minor: "A behaviour change with no test" (the condition
-  `ended.is_none() &&` in `merge_armed_task`: an ended run is not asked where its branch
-  is). `delivery::an_armed_merge_ends_with_its_tasks_run` now commits past the armed head
-  before the task is closed and again before the pull request is merged by hand, and
-  expects "run ended (closed)" and "merged", never "dropped". One finding from before,
-  minor: "an Internal error is answered without a log line" on the routes of the agents'
-  own clients, where its 500 now ends a `yulius wait`; `bare_status` logs it as the public
-  API does and is what `routes/internal.rs`, `routes/mcp.rs` and `routes/secrets.rs` call.
-  The nits are answered: the source test's comment says what it reads; STS-001 names the
-  guest link's 410; `docs/api.md` speaks of the routes the agents' clients call;
-  `docs/changes.md` says five kinds; the line of this spec is joined; the `unavailable`
-  code that nothing produces is P15 in the ledger.
-- **Tests failing without their fix, after the review** (`mutations.log`, 4 cases, each
-  failed its test): the three above and "an ended run's moved branch is the reason it
-  gives".
-- **Gate after it.** `scripts/dev ci` at `c65fb7087`: exit 0;
-  `4280 tests run: 4280 passed, 17 skipped` (`target/audit/slice16/gate2.log`).
+All 39 slices are merged into `dev`, each on its own green Yulius CI run (#1240 to #1318); every
+finding of the ledger is fixed or answered there. This task promoted nothing to `main`: slices
+1 to 16 (#1240 to #1265) reached it in the owner's promotions #1262 and #1267; slices 17 to 39
+are on `dev` only. What could not be tested is named in each slice's Evidence. The largest gaps:
+- Vidoc is disabled for this project: never run, not passed.
+- A sandbox's real engine under Yulius in a QEMU guest. The guest cannot make real sandboxes:
+  no GitHub App, no Claude. So C4 was proven with the kernel, bwrap and a real `dockerd` by hand.
+- Sandbox pages in a real Chrome against the real server (W1b): they need a sandbox, so only
+  the e2e suite covers them, under the same policy file.

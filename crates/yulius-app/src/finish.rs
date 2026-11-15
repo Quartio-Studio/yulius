@@ -859,7 +859,7 @@ impl App {
         let notice_ms = self.standing_notice_ms(&task).await;
         let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
         match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
-            Some(next) => self.resume_working(&task, next).await,
+            Some(next) => self.resume_working(&task, next, at).await,
             // Working already: the next lines need no look at the store.
             None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
             None => {}
@@ -892,7 +892,12 @@ impl App {
     }
 
     /// The session goes on although the task read idle or flagged: it is `next` (Working).
-    async fn resume_working(self: &Arc<Self>, task: &crate::model::TaskRecord, next: Activity) {
+    async fn resume_working(
+        self: &Arc<Self>,
+        task: &crate::model::TaskRecord,
+        next: Activity,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
         tracing::info!(task = %task.id, was = ?task.activity, "the agent works on: the task is working");
         let runtime = self.runtime(&task.id);
         runtime.background_agents.store(0, Ordering::SeqCst);
@@ -903,6 +908,9 @@ impl App {
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
         }
+        // It went on by itself from idle, by a line written at `at`: when that is after the
+        // pull request watch typed, its news is being answered (SPEC-487 CHN-002).
+        self.pr_news_turn_began(&task.id, at.map(|at| at.0));
         self.keep_working_stretch(&task.id, stretch).await;
     }
 
@@ -952,7 +960,7 @@ impl App {
         {
             // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
             // turn (STA-004).
-            self.resume_working(&task, next).await;
+            self.resume_working(&task, next, at).await;
         }
         let achieved = outcome == GoalOutcome::Met;
         runtime.goal_submitted.store(true, Ordering::SeqCst);
@@ -1096,7 +1104,7 @@ impl App {
             && task.activity != Some(next)
         {
             if task.activity == Some(Activity::Working) {
-                self.runtime(task_id).end_turn(self.now());
+                self.runtime(task_id).end_turn();
             }
             let _ = self
                 .deps
@@ -1160,7 +1168,7 @@ impl App {
         if runtime.goal_retry_armed.load(Ordering::SeqCst) {
             runtime.verdict_stop_ms.clear();
             runtime.resumed_turn.store(false, Ordering::SeqCst);
-            runtime.end_turn(self.now());
+            runtime.end_turn();
             return;
         }
         // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
@@ -1191,7 +1199,7 @@ impl App {
         let working =
             task.status == TaskStatus::Running && task.activity == Some(Activity::Working);
         if working {
-            runtime.end_turn(self.now());
+            runtime.end_turn();
             let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
             if let Err(err) = self.set_task_activity(&task, next).await {
                 tracing::warn!(task = %task_id, error = %err, "could not settle the task");
@@ -1232,7 +1240,7 @@ impl App {
         // prompt of the turn read late does not reopen it.
         runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
-        runtime.end_turn(self.now());
+        runtime.end_turn();
         if let Err(err) = self.settle_clean_turn(&task).await {
             tracing::warn!(task = %task_id, error = %err, "could not settle the task");
         }
@@ -1473,12 +1481,6 @@ impl App {
         }
     }
 
-    /// Whether the task's agent has background work running right now: a fresh probe of its
-    /// shells, or background agents its last turn end said it waits for.
-    pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
-        self.background_work_now(task_id).await == Some(true)
-    }
-
     /// Whether the task's last turn end waits for background agents, or its transcript names
     /// live Monitors or agents launched or resumable and not ended (BGW-004, BGW-006).
     fn background_agents_now(&self, task_id: &TaskId) -> bool {
@@ -1493,8 +1495,9 @@ impl App {
     /// Whether anything of the task's agent runs in the background right now: background agents
     /// its last turn end said it waits for, live Monitors, agents launched or resumable and not
     /// ended (BGW-004, BGW-006), or shells a fresh probe finds (`yulius wait` alone does not
-    /// count, DSK-102). `None` when the probe gives no answer; a task without a live agent
-    /// process has none.
+    /// count, DSK-102). `None` when the probe gives no answer: who asks before ending or
+    /// restarting the session takes that as work running (SPEC-483 SWT-001). A task without a
+    /// live agent process has none.
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self.background_agents_now(task_id) {
             return Some(true);

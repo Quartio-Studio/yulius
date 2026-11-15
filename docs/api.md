@@ -29,8 +29,9 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
   agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
   SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
-  GitHub/provider failure), `unavailable` (503; a local prerequisite such as openvscode-server
-  is missing or disabled, the message says which), `internal` (500).
+  GitHub/provider failure), `internal` (500). A 503 has no such body: it comes from a reverse
+  proxy in front of Yulius, or from the preview proxy's bounds (plain text); the web UI reads it
+  as `unavailable`.
 - Access levels: `read`, `write`, `admin` (SPEC-001 ACC-007). Endpoints note the minimum level.
   The superadmin has `admin` on every sandbox, with or without a GitHub link (ACC-012); everyone
   else has the level GitHub grants, and no GitHub identity means no sandbox.
@@ -99,10 +100,10 @@ The remote MCP's tools are listed by `tools/list` (a `read` token is served thos
 access only). Instance tools: `projects_list`, `repositories_list`, `project_import {repo}`.
 Every other tool takes `project` (`owner/name`, slug or id) and needs, on that project, the
 person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `task_delivery`,
-`sessions_search`, `session_read`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
+`sessions_search`, `session_read`, `merge_queue`, `subscriptions`, `instance`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
 `project_file_read`, `automations_list`, `workflows_list`, `secrets_list`, `variables_list`), work
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
-`task_unpause`, `task_start_now`, `task_update`, `task_archive`, `task_delete`, `attachments_trash`, `ci_rerun`, `ci_cancel`,
+`task_unpause`, `task_start_now`, `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk`, `task_question_dismiss`, `task_held_prompt`, `task_merge`, `ci_prioritize`, `task_switch`, `task_model`, `task_update`, `task_archive`, `task_delete`, `attachments_trash`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
 `secret_update`, `secret_hosts_answer` (neither binds a host of a secret allowed use by use: that needs the person's two-factor code on the Secrets page, ADR-0317), `secret_delete` (the project's own agent secret, SPEC-274), `variables_set`, `variable_delete`) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
@@ -181,12 +182,14 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
 
 The counts are three of the web UI sidebar's groups, by its rule (SPEC-001 UI-050,
 `AttentionFacts::group` in the domain); `counts.running` + `counts.queued` is the sidebar's Working
-group. `counts.queued` counts queued tasks and chains waiting for another task; `counts.running`
-counts the rest of the Working group: running tasks that do not wait for a person (working, kept
-going by the agent's background shells, or a finished turn whose pull request's checks still run
-or whose Yulius CI run could not run),
-starting, switching and paused (`waiting_capacity`) ones. Done tasks, tasks being stopped and ended
-ones count nowhere; the status page's `live_sessions` counts live processes.
+group. `counts.queued` counts queued, chained and prepared tasks and the onboarding task a
+`pending` sandbox waits for (it starts with Start onboarding); `counts.running` counts the rest of
+the Working group: running tasks that do not wait for a person (working, kept going by the
+agent's background shells, a finished turn whose pull request's checks still run or whose Yulius
+CI run could not run, or whose merge is armed, an achieved goal's too), starting, switching and
+paused ones (`waiting_capacity`, and a run paused by a person or an update, whatever it waited
+for: SPEC-483 GRP-001 to GRP-003). Done tasks, tasks being stopped and ended ones count
+nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
 rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
 a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
@@ -196,8 +199,8 @@ pull request of a finished turn whose plan is complete counts as Done or In revi
 a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
 recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
-ended task or one being stopped never counts; a paused or queued one only for a held prompt or a
-browser request.
+ended task or one being stopped never counts; a queued one or one paused for capacity only for a
+held prompt or a browser request; a run paused by a person or an update never.
 
 ## Import (`yulius onboard` / `yulius import`)
 
@@ -302,8 +305,8 @@ diff, that a side was cut or hunks were dropped, so its line counts are not the 
 
 Agents use the same library through the internal MCP: `sessions_search {query, kind?, limit?}`
 (≤ 20 sessions, ≤ 3 passages each, the asking task's own sessions excluded) and `session_read {id |
-task_number, from?, limit?, max_chars?}` (≤ 200 entries, ≤ 100 000 characters, `next_from`), both
-limited to the agent's sandbox.
+task_number, from?, limit?, max_chars?, tail?}` (≤ 200 entries, ≤ 100 000 characters, `next_from`;
+`tail: true` reads the session's end, SPEC-487), both limited to the agent's sandbox.
 
 ## Tasks
 
@@ -324,24 +327,39 @@ limited to the agent's sandbox.
 | GET | `/api/tasks/{tid}/transcript?from=<line>&limit=N&seen=<bytes>&session=<id>` | read | → `TaskTranscript`: the task's latest Claude Code session as the people watching someone else's task read it (SPEC-179). Without `from` the tail: the last `limit` entries (≤ 500, default 200, about 2 MiB of text; `earlier` when entries were left out) and `doc_id`, the session's document; with `from` the entries from that line (`next` when the page is full). `end` is the line after the last complete line (a line still being written waits), `bytes` the transcript's size: a reader continues with `from=end&seen=bytes&session=session_id`, answered without reading the file while that session's size is unchanged. Redacted as session pages are. No session yet: `session_id` null, no entries |
 | POST | `/api/tasks/{tid}/pause` | write | → `TaskSummary`; its owner pauses a `running` task (SPEC-191, ADR-0154): its run is frozen, or held at its turn boundary when it cannot be (`pause.pending` until then); `pause: {"by":"person","user","since","pending"}`; pausing again changes nothing; 409 for any other state; audited `task.paused_by_person`; publishes `task.updated` |
 | POST | `/api/tasks/{tid}/resume` | write | → `TaskSummary`; ends a person's pause and thaws the run (while an update holds the task, the update thaws it); nothing for a task that is not paused; audited `task.resumed_by_person` |
-| POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065); 409 when the task is not live, or when it keeps changing after 4 rounds (SPEC-250) |
+| POST | `/api/tasks/{tid}/stop` | write (anyone, SPEC-490) | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065); 409 when the task is not live, or when it keeps changing after 4 rounds (SPEC-250) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is the subscription a person chose (the task view's "Continue on…", SPEC-447); a subscription that no longer exists is refused (429, "That subscription no longer exists.")); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`: moves a running or waiting (`waiting_capacity`, with or without a process) task to the Claude subscription a person chose, or the pool's best other one without `account_id`, in the same session: past a limit, its first message again, a held prompt typed again, a turn cut mid-way told to go on, nothing typed into an idle one (SPEC-447 MOV-001). A choice is honoured below 100 % of every window binding the model the task would run there: its own, or its fallback while no subscription can run its own (SPEC-482) (the pool's 98 % does not refuse it); 429 with one sentence naming the subscription otherwise ("… needs a new sign-in", "… is at its usage limit"); 409 "Resume the task first." while a person paused it. The task view's subscription button ("Run #N on…") calls it; an ended task's "Continue on…" calls `/continue` with `account_id` |
-| POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
-| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); its attachments stay while another task's request or an automation's prompt names them, otherwise they wait 7 days in the trash (SPEC-396, `attachments_trash`); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
+| POST | `/api/tasks/{tid}/archive` · `/restore` | write (anyone, SPEC-490) | → `TaskSummary` |
+| DELETE | `/api/tasks/{tid}` | write (anyone, SPEC-490) | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); its attachments stay while another task's request or an automation's prompt names them, otherwise they wait 7 days in the trash (SPEC-396, `attachments_trash`); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
 | POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, when the asker can no longer work in the project (the request is dropped), or while a task holding the owner's personal MCP servers is starting or switching (SPEC-332); a live run holding them resumes for the new owner (same conversation and subscription, nothing typed), or stops if it cannot |
+| POST | `/api/tasks/{tid}/control/take-back` | write (the giver) | → `TaskSummary` with the giver as `owner` and `control_from` null; the person who handed the task over on request (`TaskSummary.control_from`) takes it back without asking (SPEC-490 OWN-009, ADR-0331): the task acts on GitHub as them again, its terminal says "Control of this task returned to @a", audited `task.control_taken_back`, and the person it was taken from gets the `task.control_taken_back` event; 409 for the owner; 403 for anyone else (naming the giver) or a giver who can no longer work; 409 when nobody can take it back (never handed over on request, handed back to its giver, or passed from an absent owner) or the task changed meanwhile |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
 
-Every task route marked write also needs the task's owner (SPEC-070): anyone else gets 403 "Task
-#N is @owner's: it acts on GitHub as them. Ask them for control." — also an administrator or the
-superadmin, and the Cockpit's and task agents' `task_stop`, `task_archive` and `task_delete` for
-their person. The terminal opens read-only (`can_write: false`) for anyone but the owner. The
-file API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with
-a `task_id` need the owner too; reading a worktree does not.
+One rule decides what a person does to a task (SPEC-490,
+[ADR-0331](decisions/0331-anyone-tidies-a-task-and-only-its-owners-consent-passes-control.md);
+`yulius_domain::task_access`): **view** needs read access to the project; **tidy** (stop, also
+cancelling a task that waits to start, archive, restore, delete, and the tools' `task_close`)
+needs write access, whoever owns the task; **control** is everything else marked write, and needs
+the task's owner as well (SPEC-070). Anyone else gets 403 "Task #N is @owner's and only they
+steer it: it acts on GitHub as them. Ask them for control on the task's page. You can still
+stop, archive or delete it." — also an administrator or the superadmin, and the tools of a
+Superagent, the remote MCP and a task's agent, each for the person it acts for (`task_message`
+included). A tidy by someone who does not own the task is audited under their login with the
+owner's (`task.stopped`, `task.archived`, `task.unarchived`, `task.closed_by_person`,
+`task.deleted`; detail `{"task","owner"}`), and a stop says "Stopped by @login." in the task's
+terminal. The terminal opens read-only (`can_write: false`) for anyone but the owner. The file
+API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with a
+`task_id` need the owner too; reading a worktree does not. `POST
+/api/sandboxes/{sid}/onboarding/approve` starts the onboarding task, so it needs that task's
+owner once it has run (refused before the repository's first commit); one that never ran
+passes to the person who starts onboarding (audited `task.control_passed`), and a sandbox
+without one gets it created for them. A playground's guest tidies only their own tasks there
+(403 "… a guest stops, archives and deletes only their own tasks on this playground.").
 
 ```json
 TaskSummary = {
@@ -351,6 +369,7 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
+  "control_from": {"login": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14, "first_total?": 4},
   "archived": false, "account_label": "Claude #2|null", "account_id?": "…",
@@ -364,6 +383,7 @@ TaskSummary = {
   "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
   "attention": {"kind":"terminal|yulius","problem|null","action|null","link|null"}|null,   // SPEC-472: why `activity` is `needs_attention`
   "background_shells": "0|1|…|null",
+  "spec_unfinished": false,
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
 ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reason|null"}
@@ -420,6 +440,13 @@ left running (Claude Code's "· 1 shell", probed every 5 s) and the background a
 end said it waits for (`turn_duration.pendingBackgroundAgentCount`, SPEC-032); null when not known.
 The UI shows a `done` task as Done only when no such background work is running ("Working · 1 background task still running"
 otherwise), and applies the same shell condition to Done by a tested pull request.
+`spec_unfinished` is true while the agent is idle and the task's spec, as Yulius last read it,
+says `draft`, `approved` or `in-progress`: work the task declared is left, however complete its
+plan reads, so the task is not Done by its plan and pull request (it reads "Your turn", as with
+open steps; SPEC-491 DON-004). A pull request is tested, for Done, when it is open, its `conflicts`
+is false (Yulius's own merge of its head with the integration branch does not conflict; GitHub's
+flag is asked only where the task has no clone) and its `checks` are `success`, or `none` where the project requires none
+(under a profile with `require_checks` a pull request nothing reported on reads `pending`).
 
 ```json
 TaskDetail = TaskSummary + {
@@ -457,7 +484,7 @@ turn records. A restart or a resume reads the run's own lines again, so they nev
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
 `stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
-`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
+`failed_spawn_error`, `failed_precondition`, `failed_no_account`, `chained`, `prepared`.
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
@@ -490,7 +517,9 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   (`jev`, `default`, or null for a value the request picked) and the workflow's name; it is null
   when nothing was on Auto. Without a Jev key Auto still works, with the defaults.
 - **Chains (TSK-012).** A `chained` task starts by itself (`chained → queued`) when its predecessor
-  is Done: a finished turn and a pull request merged, or open with checks green or none required.
+  is Done: a finished turn, no work it declared left (no open step, and a spec that does not say
+  `draft`, `approved` or `in-progress`) and a pull request merged, or open and tested: in no
+  conflict with its base, with checks green or none required by the project (SPEC-491).
 - **Typed prompts (TSK-013).** The `UserPromptSubmit` hook classifies a person's prompt. `context`
   passes; `new_scope`, `drops_scope` and `redirect` are held. Claude Code shows the reason, and the
   text stays in its input box. The task's `held_prompt` is set and the UI shows the choices:
@@ -594,7 +623,7 @@ GitOverview = {"integration_branch","production_branch","default_branch",
   "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
   "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",
-      "checks":"none|pending|success|failure|unknown"}
+      "checks":"none|pending|success|failure|unknown", "conflicts": false}
 ChecksAccess = {"repo":"owner/name", "missing":["Checks","Commit statuses"],
   "read_from":["check runs","commit statuses","Actions runs"], "message":"…",
   "settings_url":"https://github.com/…/settings/apps/<slug>/permissions|null"}
@@ -749,6 +778,8 @@ exclusive = true            # optional: one run of it (each matrix value apart) 
                             #   sandbox; a later run's job waits for its turn, outside its limit,
                             #   holding no slot (ADR-0279)
 # or, for one job: [commands] gate = "…"   (not both)
+# [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
+#                            lint are set (the briefing says so when one is missing)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
 CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at most 32 variables,
@@ -873,8 +904,10 @@ containment, production in the sandbox's production holder, with its own network
 engine, on the host's read-only system), for at most the CI job
 timeout (plus up to as long again waiting for a held agent state), with the project's variables
 (production: only those its table names), `YULIUS_SANDBOX`, `YULIUS_STATE_<NAME>` for each named
-agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
-`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
+agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name),
+`YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`),
+`YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a
+name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
 allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
@@ -1128,12 +1161,25 @@ write access; every changing call is audited with the caller (`task:<n>`, `cockp
 
 | Tool | Same as | Notes |
 | --- | --- | --- |
-| `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person's draft may sit in its prompt box (they typed there since the box was last empty, however long ago; SPEC-480) or a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
-| `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET /api/sandboxes/{sid}/superagent/requests`, `POST /api/sandboxes/{sid}/superagent/requests/{id}` (the person's answer) | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or `{"outcome":"unanswered"}`; refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call, or `notifications/cancelled` with the call's id, takes its request with it (`{"outcome":"cancelled"}`); `prepared` only when the person asks (SPEC-442) |
+| `task_create` | New task | origin `agent`; at most 20 per project and rolling hour; `after_all_tasks: true` (alone among the start choices) waits for every task of the project with work still coming at the call, stored as the `start_rule` naming them (left out: ended and stopping tasks, tasks the list shows Done or Answered, prepared ones; at most 64 tasks, more is refused; none: it starts now and the `note` says so) (SPEC-487) |
+| `tasks_list`, `task_get` | the task list | each task: `runs_after` (a number, only for a task chained after one task), `start_rule` (the whole rule as stored, while the task waits on it) and `start_blocked` (why a waiting task will not start by itself any more); the text shows `after #N`, ``start rule `…` `` and `will not start by itself: …` (SPEC-487 CHN-004). Each task also says where the task list shows it, `shows` (`needs_you`, `working`, `queued`, `done`, `ended`: the list's own rule), and, only when there is one, why it waits for a person or is held, as its page does (SPEC-487 QST-001): `needs_you` `{action, happened, problem, decision, link, at}` (what its agent asked), `attention` `{kind: terminal \| yulius, problem, action, link}` (the reason of its flag), `held_prompt` `{class, at}` (a typed prompt Yulius held, also for a task that ended, as its card; for the person's own callers, the Cockpit and the remote MCP, also `excerpt`, at most 300 characters, and `typed_by`: a task's agent never gets a held prompt's words) and `pause` `{by: person \| update, user, since, pending}`. `tasks_list {scope: "needs_you"}` lists only the tasks shown under Needs you (QST-002). The text shows `NEEDS ITS PERSON`, `asks its person to do \| decide: …`, `flagged by Yulius: …` or `Claude Code asks in its terminal: …`, `holds a typed prompt (class): "…"` and `paused by @login` |
+| `session_read` (task agents, the Cockpit, the remote MCP) | the Sessions page | `{id \| task_number, from?, limit?, max_chars?, tail?}`; with `tail: true` (not with `from`, 400) the session's end instead of a place in it (SPEC-487 QST-003): the last `limit` entries, fewer when `max_chars` is reached (entries are left out at the front, never at the end), redacted as any read (the whole transcript is read, so a dotenv file read before the tail is still redacted in it); the answer then has `tail: true`, `from` (the first line shown), `earlier` (lines before it exist) and `next_from` (the line after the last one read: where a later read goes on) |
+| `instance`, `instance_update` (the Cockpit; `instance` also the remote MCP with `project`; never task agents; `instance_update` neither through the remote MCP nor for the Global Superagent; SPEC-487 slice 7) | `GET /api/status`, `GET /api/update`; `POST /api/admin/update/check`, `POST /api/admin/update`, `POST /api/admin/restart`, `POST /api/admin/update/cancel` | `instance {}` → `{"status": StatusView, "update": UpdateView}` as the caller may see them. `instance_update {do: check \| update \| restart \| cancel, commit?}` (a superadmin; anyone else 403 "only a superadmin …") → the `UpdateView` after the button's function, with `confirm: true` (the ask is the confirmation) and, for `update`, the offered commit unless `commit` is given (409 "no update is offered now" without one); the functions' refusals pass as they are (no helper, a move or an update under way) |
+| `subscriptions`, `task_switch`, `task_model`; a task's `subscription`, `model`, `effort` (the Cockpit, and the remote MCP with `project`; never task agents; SPEC-487 slice 6) | `GET /api/capacity`; `POST /api/tasks/{tid}/switch`; none for the model | `subscriptions {}` → the Subscriptions panel's `CapacityView` as the caller may see it (ids and live counts for an instance administrator). `tasks_list`/`task_get` add `subscription` (the label of the live run's subscription, null without one), `model` and `effort` (null: the instance's default); the text shows `on subscription "…"`, `model …`, `effort …`. `task_switch {task_id \| number, subscription?}` (the task's owner) → `{"task"}`: the route's Switch, with the subscription named by its label (any case) or id, none for the pool's choice; 400 for a name that is no subscription (naming the ones there are) or two. `task_model {task_id \| number, model?, effort?}` (the task's owner) → `{"task","model","effort","note"}`: stored with the task (`default` or blank: the default; a shape a launch does not take is 400), taken at its session's next start, audited `task.model_changed` |
+| `task_merge`, `merge_queue`, `ci_prioritize`; `task_delivery`'s `merge` (the Cockpit, and the remote MCP with `project`; never task agents; SPEC-487 slice 5) | `POST /api/tasks/{tid}/delivery/merge` for a merge on green; none for the rest (`App::merge_for_person`, `merge_queue_for_person`, `merge_state`, `ci_run_first`) | `task_delivery` adds `merge` `{armed, head?, armed_at?, deciding?, where?, last?: {head, text, armed_by?}}`: whether a merge is armed, the head that is to merge, since when (ms), whether Yulius decides it now, why it has not merged yet (its merge train's sentence or what its last check found) and how the last armed merge ended. `task_merge {task_id \| number}` (the task's owner) → `{"merged": true, "armed": false, "head", "delivery"}` when the checks at the head passed and the branch is up to date (the page's merge, audited `delivery.person.merge`), else `{"merged": false, "armed": true, "head", "checks", "note"}`: the merge of the worktree's head is armed for the person (summary "armed by @login, the task's owner", audited `delivery.person.merge_armed`; the arm keeps who made it, also across a restart), merged by the armed-merge pass under the owner's authority once its checks pass and audited `delivery.person.merge` with the person as actor, kept in its place when asked again, dropped by a new commit; 409 when the checks at the head failed, without an open pull request, for a pull request into another branch, for a task whose run ended, for a head the pull request does not have yet (read from GitHub), and for what the branch policy refuses; a playground's task goes to its Merge. Not served to the Global Superagent. `merge_queue {}` → `{"armed": [{"number","title","owner","pull_request","head","armed_at","deciding"?,"where"?}], "train": null \| {"run","members":[{"task","pull_request","head"}],"merging","left_out":[{"task","pull_request","files"}]}}`, armed merges in the order a train takes them. `ci_prioritize {run_id}` (write) → `{"run","first","queue":[run ids],"note"?}` (`first` false, with a note, when it stopped behind an earlier run of its own commit): the queued run's place becomes a millisecond before its project's earliest queued run, but never before another run of its own commit (other projects' queues untouched; audited `ci.run_prioritized`); 409 for a run that is not queued or first already, 404 for another project's run |
+| `task_question_dismiss`, `task_held_prompt` (the Cockpit, and the remote MCP with `project`; never task agents; SPEC-487 QST-005) | none for the first (`App::dismiss_task_question`); `POST /api/tasks/{tid}/held-prompts/{hid}` for the second | `task_question_dismiss {task_id \| number}` → `{"dismissed": "<what was asked>", "task"}`: ends the task's `needs_you` request (its agent's, or one Yulius opened for it) for the task's owner without a word to the agent, only while it still asks what was read (409 "changed meanwhile" otherwise; audited `task.needs_you.dismissed`); 409 when nothing is asked, naming the flag's reason when the task is flagged (a flag ends when what it says is done; a terminal question is answered in the terminal). `task_held_prompt {task_id \| number, action: send \| dismiss \| parallel \| after}` → the route's answer `{"task","created","note"}`: decides the task's pending held prompt as its card does (`skip_after` and `revert` stay on the page: 400 names the four); 409 "holds no prompt now"; the owner only. From the Cockpit each call is audited `superagent.tool` with the task and, for a held prompt, `do` |
+| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text, with_draft?}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person's draft may sit in its prompt box (they typed there since the box was last empty, however long ago; SPEC-480; with `with_draft: true`, which only the task's owner may pass (403 otherwise), the message is typed behind that text after a blank line and both are submitted as one prompt, which ends the hold, also for a draft from before a restart; 409 while a prompt Yulius held for a decision is pending; SPEC-487 TCT-006, audited with `"with_draft":true`) or a person typed there in the last minute (also with `with_draft`), while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you` (it is how the person's answer to a task's question is passed on, SPEC-487 QST-004); control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET /api/sandboxes/{sid}/superagent/requests`, `POST /api/sandboxes/{sid}/superagent/requests/{id}` (the person's answer) | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or, still unanswered, `{"outcome":"waiting","request":<id>,"note"}`: the request stays on the panel until the person answers it or the Superagent withdraws it, also across a restart (SPEC-487 XRQ-001, XRQ-002, ADR-0333); refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call leaves its request waiting; `notifications/cancelled` with the call's id withdraws it (`{"outcome":"cancelled"}`); `prepared` only when the person asks (SPEC-442) |
+| `ability_report` (the Cockpit and task agents; SPEC-487 slice 11, ADR-0337) | none | `{ability, case, needed_for?}` → `{"kept":true,"file_url","note"}`: audited `ability.reported` (ability, case, who) on the project; `file_url` opens a new issue in `Quartio-Studio/yulius` filled with the report, for the person to submit (nothing is sent by itself); refused (an error result) for an empty or over-long text, invisible characters, a text naming the project (slug, repository, owner) or holding one of its agent secrets, unknown arguments, and past 5 an hour per person |
+| `secret_request_value` (the Cockpit only; SPEC-487 slice 10a, ADR-0336) | as below (`action` `secret`, on the Superagent's own panel; `title` is the secret's name, `prompt` its description, `options.scope`) | `{name, description?, scope?: "sandbox" \| "personal"}`: a request as `person_ask` is (waits, `waiting`, `sandbox_requests`, withdraw; no amend); refused before anyone is asked for a name that is not capitals, digits and underscores starting with a capital, another scope, a description over 500 characters, unknown arguments. Approved with the value typed on the panel: `{"outcome":"approved","secret":<name>,"stored":"created"\|"updated","note"}`, never the value |
+| `superagent_checks`, `superagent_check_set`, `superagent_check_delete` (the Cockpit only; SPEC-487 slice 9b, ADR-0335) | none | `superagent_checks` → `{"checks":[{"name","every_minutes","prompt","next_at","last_run_at"}]}` (pre-allowed). `superagent_check_set {name, every_minutes, prompt}` creates or replaces the check of that name (a name of 1 to 60 characters on one line, 5 to 1440 minutes, a prompt of 1 to 2048 bytes, no invisible characters, unknown arguments 400; at most 10, 429 past them) → `{"check","next_at","note"}`; `superagent_check_delete {name}` → `{"deleted"}` (404 for a name it has none of). Audited `superagent.check` `{"action","check"}`, never the prompt. A due check is typed into the Superagent's idle session as `Yulius check "<name>" (every N minutes …):` and its prompt; a Superagent that is not running is started for it |
+| `cd_deploy` and `cd_rollback` of a production-stage environment, `promote`, `onboarding_start` (the Cockpit only; SPEC-487 slice 8b, ADR-0334) | as below (`action` `deploy`, `rollback`, `promote`, `onboard`, on the Superagent's own panel) | a request as `person_ask` is (waits, `waiting`, `sandbox_requests`, withdraw; no amend): `cd_deploy {environment}`, `cd_rollback {environment, release?, part?}`, `promote {}`, `onboarding_start {notes?}`. Refused before anyone is asked: a person who is no administrator of the project (a release), an environment the project does not define, a dev-stage one (it runs at once instead), onboarding that does not wait to start, unknown arguments (such a refusal runs no tool and writes no audit row; the CD page audits each run). Approved with the project's slug typed (a release) or a click (onboarding), it runs `POST …/cd/{env}/deploy`, `…/rollback`, `…/delivery/promote` or `…/onboarding/approve` as the person who answered: `{"outcome":"approved","run"\|"promotion"\|"onboarding",…}`, or that route's refusal |
+| `sandbox_tasks_list`, `sandbox_requests`, `sandbox_request_amend`, `sandbox_request_withdraw`, `person_ask` (the Cockpit only; SPEC-487 slice 8a, ADR-0333) | as above (an `ask` request is listed on the Superagent's own panel) | `sandbox_tasks_list {sandbox, …tasks_list's filters}` → `tasks_list`'s answer for another sandbox the person can work in, without asking (pre-allowed; its own sandbox is refused, naming `tasks_list`). `sandbox_requests` → `{"waiting":[{"request","action","sandbox","task","asked_at"}],"answered":[{"request","action","sandbox","task","outcome":{…the call's answer},"answered_at"}]}`: the Superagent's own, newest first, the 20 latest outcomes (pre-allowed). `sandbox_request_amend {request, prompt \| text \| question, title?, …start options}` replaces what a waiting create, message or question asks, checked as a new request is (empty, invisible characters, unknown arguments: 400), keeping its id and taking the next `revision`; audited `amended` without its text; an update or stop is refused (withdraw it and ask again). `sandbox_request_withdraw {request}` → `{"outcome":"withdrawn"}`, audited `withdrawn`, its outcome kept as a cancelled call's is. Another Superagent's request: 404. `person_ask {question}` (1 to 4096 bytes, no invisible characters) waits on the Superagent's own panel as a request does: `{"outcome":"approved","answer":"yes"}`, `{"outcome":"declined","answer":"no"}` or `waiting`; nothing runs on it |
 | `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message`, `sandbox_task_stop` (the Cockpit only; SPEC-442, ADR-0286) | as above | each `{sandbox, task_id \| number, …}` names a task of another sandbox the person can work in. `sandbox_task_get` → `task_get`'s answer, without asking (pre-allowed, not audited). The others are requests as `sandbox_task_create` is (the same bound, wait, panel and outcomes): `sandbox_task_update {…, after_task?, start_rule?, supertask?, prepared?, start_at?}` (none of them: start it now) runs `task_update` there on approval, `sandbox_task_message {…, text}` `task_message` (`delivered`: `queued` or `sent`, labelled as the person's), `sandbox_task_stop` `task_stop`; refused at once for its own sandbox, one the person cannot work in or a task not in it (not found), unknown arguments, an empty or over-long text and invisible characters, and for an update also a task that started and a start New task refuses (an unknown `after_task`, a bad rule or time); an update's `false` flags and blank texts are dropped before asking. No cross-sandbox delete or archive exists |
-| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted`; `task_delete` → `{"deleted":{"task_id","number","attachments":{"kept_for":[numbers],"kept_for_automations":[names],"trash":{"task_id","number","deleted_at","restorable_until","files"},"not_moved":true}}}` (each only when it applies; `not_moved`: the folder stayed where it is because the move to the trash failed or settling stopped before it, an `attachments` or `tasks` link never being looked behind, a `tasks` folder that cannot be opened or the tasks unreadable, SPEC-397): its attachment folder stays while a remaining task's request or an automation's prompt names `attachments/tasks/<id>/` (`kept_for`, `kept_for_automations`), otherwise it waits 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396) |
-| `task_update` (SPEC-396; also the remote MCP) | `PUT /api/tasks/{tid}/start` (SPEC-126) | by `task_id` or `number`; `after_task`, `start_rule`, `supertask`, `prepared`, `start_at` as `task_create` takes them (none: start now); only a `chained` or `prepared` task; → `{"task"}`; audited `task.start_changed` |
+| `task_delivery`, `task_restart`, `task_pause`, `task_unpause`, `task_start_now`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `cd_status`, `cd_deploy`, `cd_rollback` (SPEC-487 slice 8b), `variables_list`, `task_screen`, `task_usage`, `checkout` (slice 10b), `variables_set`, `variable_delete` (slice 11; Configure) (the Cockpit, and the remote MCP with `project`; never task agents, which keep their own `ci_rerun`, `cd_status` and `cd_deploy`; SPEC-487, ADR-0330) | `GET /api/tasks/{tid}/delivery`, `POST /api/tasks/{tid}/continue`, `…/pause`, `…/resume`, `…/start-now`, `GET /api/sandboxes/{sid}/ci`, `…/ci/runs/{rid}`, `POST …/rerun`, `…/cancel`, `GET /api/sandboxes/{sid}/cd`, `POST …/cd/{env}/deploy`, `POST …/cd/{env}/rollback`, `GET /api/sandboxes/{sid}/variables`, the task's terminal, `GET /api/analytics/tasks` | by `task_id` or `number`, `run_id`, `environment`; each is that route's function with the person's rights at the call (view to read, write to change, and the function's own checks: a task is changed by its owner only); `task_restart` on a task that runs answers "stop it first (task_stop), then restart it", on one that waits in a chain or prepared "task_start_now starts it now", on a queued one or one waiting for capacity that it goes on by itself, on the onboarding of a project that has not started it that a person starts it on the project's page; `task_screen {task_id \| number, lines?}` → `{"task","status","screen_from":"live"\|"starting"\|"last run"\|"none","screen","last_run":{"state","exit_code","exit_reason","started_at","ended_at"}}` (the page's terminal, redacted; at most 200 lines); `task_usage {number?, from?, to?}` → `{"period","tokens","tokens_by_model","tasks":[…the Dashboard's task rows, the most tokens first, at most 50]}` (the tasks created in the period; default the last 7 days); `checkout` → `{"branch","integration_branch","behind","ahead","fetched_at","note"}` (as last fetched; `fetched_at` is when that remote branch last moved in this checkout, else the last fetch of anything; 409 when not cloned or the remote branch was never fetched); `cd_deploy` and `cd_rollback {environment, release?, part?}` take dev-stage environments only ("only a person deploys production, on the project's CD page"; "only a person rolls production back, …"), but from the Superagent a production-stage one is a request on its panel (next row); from the Cockpit a call runs to its end even when the client went away, and a tool that changes something is audited `superagent.tool` `{"tool","ok","task"\|"run"\|"environment",…}` with actor `cockpit:<login>`, refused calls included (the task, run or environment only when the argument has the shape of one: never other text of the call); the reading ones (`task_delivery`, `ci_runs`, `ci_run`, `cd_status`, `variables_list`) are pre-allowed |
+| `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk` (the Cockpit, and the remote MCP with `project`; never task agents; SPEC-487 slice 3) | none: a person's functions without a page yet (`App::edit_task`, `close_task_for_person`, `reorder_queue`, `bulk_tasks`), each with the person's write access checked at the call and a task steered by its owner only (`task_close` and a named `tasks_bulk` stop are tidy: anyone's task, SPEC-490) | `task_edit {task_id \| number, title?, prompt?}` → `{"task","previous_prompt"?}`: `title` is 1 to 120 characters on one line (the branch and pull request keep theirs; audited `task.renamed`); `prompt` replaces the whole request of a task that has not started (queued, chained, prepared or waiting for capacity, and never ran), in one conditional update, only while the request is still the one read ("changed meanwhile: read it again" otherwise), files attached to the old request that the new text does not mention follow it as `@'/path'` lines, `previous_prompt` is all of the old text (audited `task.request_replaced`, sizes only); a started task answers 409 "has started … task_message"; both are checked before either is written. `task_close {task_id \| number}` → `{"task","note"}`: a running task whose agent is idle is shut down gracefully and ends `closed` (audited `task.closed_by_person`); background shells end with the session; 409 for one in a turn ("wait for its turn to end, or stop it"; a turn in progress counts whatever the activity reads), for one Yulius still has pull request news for (a merge armed or not told yet: it goes on by itself), for one that has not started, one that waits with a session of its own (queued again, or held for capacity: "goes on by itself") and one that has ended. `tasks_reorder {numbers}` (2 to 100, each once) → `{"queue":[{"number","title","owner"}]}`: the person's queued tasks take the slots they hold among themselves in that order, every other task keeps its slot (tasks that shared a millisecond are spread a millisecond apart from the first named slot on, and a task not named does not read as updated; audited `tasks.reordered`); 409 and nothing changed when one is not queued, 403 for another person's. `tasks_bulk {do: stop \| pause \| unpause \| message, numbers \| all: true, text?}` → `{"do","done":[{"number","title","delivered"?}],"refused":[{"number","title"?,"why"}],"others_left_alone"?,"not_reached"?}`: each task gets what `task_stop`, `task_pause`, `task_unpause` or `task_message` does, with its checks and its audit, one after the other (a stop takes the waiting tasks first; an `unpause` of a task nobody paused is refused "is not paused by a person"); the call runs to its last task and its audit even when the client went away, through the remote MCP too; `all` is every task of the person's own the action applies to (stop: not ended; pause: running; unpause: paused by a person; message: running or not started), other people's counted in `others_left_alone`; at most 100 tasks a call (`not_reached` says how many were beyond). From the Cockpit each call is audited `superagent.tool` with `task`, or `tasks` (the numbers, or `"all"`) and `do`, never a title, a request or a message |
+| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; any task of the project, whoever owns it (SPEC-490: the audit then names its `owner`); never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted`; `task_delete` → `{"deleted":{"task_id","number","attachments":{"kept_for":[numbers],"kept_for_automations":[names],"trash":{"task_id","number","deleted_at","restorable_until","files"},"not_moved":true}}}` (each only when it applies; `not_moved`: the folder stayed where it is because the move to the trash failed or settling stopped before it, an `attachments` or `tasks` link never being looked behind, a `tasks` folder that cannot be opened or the tasks unreadable, SPEC-397): its attachment folder stays while a remaining task's request or an automation's prompt names `attachments/tasks/<id>/` (`kept_for`, `kept_for_automations`), otherwise it waits 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396) |
+| `task_update` (SPEC-396; also the remote MCP) | `PUT /api/tasks/{tid}/start` (SPEC-126) | by `task_id` or `number`; `after_task`, `start_rule`, `after_all_tasks` (the task itself and tasks waiting on it left out), `supertask`, `prepared`, `start_at` as `task_create` takes them (none: start now); only a `chained` or `prepared` task; → `{"task"}`; audited `task.start_changed` |
 | `attachments_trash` (SPEC-396) | none | → `{"trash":[{"task_id","number","deleted_at","restorable_until","files"}],"note"}`, entries older than 7 days removed first; `{restore: id \| number, into?: number}` (write access) moves that entry's regular files into the `into` task's attachments (the caller's own task by default; the Superagent and the remote MCP name it) under free names → `"restored":{"into","paths","left_in_trash"?}`; the entry goes once empty (a folder or a file it could not move keeps it); at most 100 old entries removed a round; audited `attachment.restored` (also the remote MCP) |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -1244,10 +1290,10 @@ resolves to nothing, the run gets the server without that variable or token.
   - On a preview origin, `/__yulius/` is the proxy's: `handshake` (trades the token for the
     `__Host-yulius_preview` cookie — `yulius_preview` over HTTP —, host-only, `HttpOnly`,
     `SameSite=Lax`, 12 h; then 303 to `landing`), `landing?to` (303 to `to` when the cookie
-    stuck, else an explanation), `bridge.js` (the script appended to proxied documents),
-    `ping` (204, reachability), `denied`. Any other request needs the grant cookie: a GET
-    navigation without one gets 302 to `/api/previews/authorize`, anything else 401. Grants are
-    re-checked against the Yulius session and write access every 30 s and live in memory.
+    stuck, else an explanation), `ping` (204, reachability), `denied`. Any other request needs
+    the grant cookie: a GET navigation without one gets 302 to `/api/previews/authorize`,
+    anything else 401. Grants are re-checked against the Yulius session and write access every
+    30 s and live in memory.
   - Refused: a host that names no sandbox (404), a port outside the sandbox's range or one of
     Yulius's own (403), credentialed requests and WebSockets from other origins than the
     preview itself and the same sandbox's other previews (403; navigations from anywhere are
@@ -1255,16 +1301,15 @@ resolves to nothing, the run gets the server without that variable or token.
   - Forwarded to `127.0.0.1:<port>` (HTTP/1.1, WebSocket upgrades spliced, bodies streamed):
     `Host: localhost:<port>`; `Origin` and `Referer` of the sandbox's previews become
     `http://localhost:<port>`; the grant and Yulius cookies, hop-by-hop and `X-Forwarded-*`
-    headers are removed; documents are requested without compression.
-  - Responses: `X-Frame-Options`, `Strict-Transport-Security` and every CSP `frame-ancestors` are
-    removed and `Content-Security-Policy: frame-ancestors 'self' <public URL>` added;
-    `http(s)`/`ws(s)` URLs on the VM's loopback with a sandbox port in `Location`,
-    `Content-Location`, `Refresh`, `Link`, `Access-Control-Allow-Origin` and CSP sources point at
-    the preview origins; `Set-Cookie` loses `Domain` (and gains `Secure` over HTTPS); HTML
-    documents get `<script src="/__yulius/bridge.js" async>` appended. The bridge posts
-    `{"source":"yulius-preview","type":"location","href","title","back","forward"}` (and
-    `type: "f6"`) to the public URL's origin only and accepts `{"source":"yulius","type":
-    "back|forward|reload|hello"}` only from the window that frames it.
+    headers are removed; `Accept-Encoding` is passed as the browser sent it.
+  - Responses: bodies pass unchanged, with their `Content-Length` and `Content-Encoding`.
+    `Strict-Transport-Security` is removed; the app's `X-Frame-Options` and CSP are kept and
+    `Content-Security-Policy: frame-ancestors 'self'` is added (nothing frames a preview: the
+    browser panel opens it in its own window, ADR-15; SPEC-483 PRV-001 removed the script that
+    reported a framed preview's address to Yulius); `http(s)`/`ws(s)` URLs on the VM's loopback
+    with a sandbox port in `Location`, `Content-Location`, `Refresh`, `Link`,
+    `Access-Control-Allow-Origin` and CSP sources point at the preview origins; `Set-Cookie`
+    loses `Domain` (and gains `Secure` over HTTPS).
   - Bounds: connect 5 s, response head 120 s, 512 requests awaiting a head and 256 WebSockets
     (503 beyond).
 - `GET /internal/preview-tls?domain=<host>` on the internal (loopback) listener: the `ask`
@@ -1418,7 +1463,13 @@ resolves to nothing, the run gets the server without that variable or token.
     `automation_template_enable`, `workflows_list`, `sessions_search`, `session_read` and the vault
     tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts`,
     `secret_request_copy` (SPEC-440) and `secret_create_from_file`, and `sandboxes_list`, `sandbox_task_create` (SPEC-335),
-    `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and `sandbox_task_stop` (SPEC-442)
+    `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and `sandbox_task_stop` (SPEC-442),
+    `sandbox_tasks_list`, `sandbox_requests`, `sandbox_request_amend`, `sandbox_request_withdraw` and
+    `person_ask` (SPEC-487 slice 8a), `promote` and `onboarding_start` (slice 8b), and the person's project tools (SPEC-487, ADR-0330; `person_tools::PERSON_TOOLS`, the ones the
+    remote MCP serves with `project`): `task_delivery`, `task_restart`, `task_pause`,
+    `task_unpause`, `task_start_now`, `task_edit`, `task_close`, `tasks_reorder`, `tasks_bulk`,
+    `task_question_dismiss`, `task_held_prompt`, `task_merge`, `merge_queue`, `subscriptions`,
+    `task_switch`, `task_model`, `instance`, `instance_update`, `ci_runs`, `ci_run`, `ci_rerun`, `ci_cancel`, `ci_prioritize`, `cd_status`, `cd_deploy`, `cd_rollback` and `variables_list`
     (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
@@ -1431,25 +1482,35 @@ resolves to nothing, the run gets the server without that variable or token.
   - `POST /api/sandboxes/{sid}/cockpit/restart` (write) → 200 `Shell`: ends the caller's running
     Superagent (its viewers get `switched`) and starts it again in place, resuming its newest
     conversation, as `POST …/cockpit` would; starts one when none runs. 409 when its process could
-    not be ended (it keeps running). A request it was waiting on ends with it (SPEC-355).
+    not be ended (it keeps running). A request it was waiting on stays on the panel (SPEC-487 XRQ-001).
   - `GET /api/sandboxes/{sid}/superagent/requests` → 200 `[{"id","action","sandbox":{"id","slug",
     "repository"},"task":{"number","title","status"}|null,"starts_now","title"|null,"prompt"|null,
-    "options":{…the start options set},"ends_at"}]`: the caller's own requests of their Superagent
-    in `sid` about another sandbox, oldest first, while its call waits (SPEC-335, ADR-0227);
+    "options":{…the start options set},"asked_at","revision"}]`: the caller's own requests of their Superagent
+    in `sid`, oldest first, until answered or withdrawn (SPEC-335, ADR-0227; SPEC-487, ADR-0333);
     another person's are never listed. `action` is `create`, `update`, `message` or `stop`
-    (SPEC-442, ADR-0286); all but a create name their `task`, as it is now; a message's text is its
+    (SPEC-442, ADR-0286), or `ask`: a decision the Superagent leaves to its person (`person_ask`),
+    its question the `prompt` and its `sandbox` the Superagent's own; or `deploy`, `rollback`,
+    `promote` or `onboard` (SPEC-487 REL-001, ADR-0334), on its own sandbox too, with the
+    `environment`, `release` and `part` given in `options` and onboarding's hand-over as
+    its `prompt`; all but a create name their `task`, as it is now; a message's text is its
     `prompt`, an update's start arguments its `options`, exactly as they will run, and `starts_now`
     says the update starts the task now (no start option, or `supertask`).
-  - `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": true|false}` → 200: approved,
+  - `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": true|false, "revision"?, "confirm"?, "value"?}` → 200
+    (409 when `revision`, 0 when left out, is not the request's: the Superagent amended it since
+    the card was drawn, SPEC-487; 422 when approving a `deploy`, `rollback` or `promote` whose
+    `confirm` is not the project's slug, trimmed, and the request keeps waiting, ADR-0334; 422
+    when approving a `secret` without a `value` the vault would store, checked as the Secrets
+    page checks a pasted value, and the request keeps waiting, ADR-0336): approved,
     `{"outcome":"approved","sandbox":<slug>,"task":{…},"note"}` (the task created, changed,
     messaged — with `delivered` — or stopped in the target as `task_create`, `task_update`,
-    `task_message` or `task_stop` would, for the person); declined, `{"outcome":"declined","note"}`.
+    `task_message` or `task_stop` would, for the person); declined, `{"outcome":"declined","note"}`;
+    an `ask` answers `{"outcome":"approved","answer":"yes"}` or `{"outcome":"declined","answer":"no"}`.
     A browser session only (403 for every API token); 404 for another person's request or one no
     longer waiting; on approval the refusals of that tool (write access rechecked). Audited
     `superagent.cross_task` in both sandboxes (on the target with `from_sandbox`, on the source
     with `to_sandbox`; `action`, the task's `number` and the outcome: `approved`, `failed`,
-    `declined`; `expired` when nobody answered, `cancelled` when the Superagent's client sent
-    `notifications/cancelled` for the call; never the prompt or message; SPEC-442).
+    `declined`; `withdrawn` by the Superagent, `cancelled` when its client sent
+    `notifications/cancelled` for the call; never the prompt or message; SPEC-442, SPEC-487).
     A usage limit Claude Code records in its conversation after it started is recorded on its
     subscription, and the Cockpit starts again on one with capacity, resuming the conversation
     stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` (SPEC-074). The old
@@ -1476,7 +1537,7 @@ resolves to nothing, the run gets the server without that variable or token.
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
-    sandbox's `GET …/shells`. `change_merge` is withheld too.
+    sandbox's `GET …/shells`. `change_merge` is withheld too, and so is `task_merge` (SPEC-487 MRG-005); `instance_update` is the sandbox Superagent's only (INS-004).
   - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
     pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
     as other attachments (streamed, the upload limit, a free safe name) in its own folder,
@@ -1530,7 +1591,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
 | GET | `/api/admin/instance/address` | superadmin | → `InstanceAddress` `{"public_url", "github": GitHubCallback\|null, "moved": {"from\|null", "to\|null", "at", "queued", "left", "failed"}\|null}` (SPEC-466): `github` is whether GitHub accepts the instance's sign-in callback, `null` without a GitHub App: `{"state": "registered\|missing\|unknown", "reason\|null", "callback_url", "homepage_url", "settings_url", "checked_at\|null"}` (`reason`: why the answer is unknown; `settings_url`: the App's settings page, `https://github.com/organizations/<owner>/settings/apps/<slug>` or `https://github.com/settings/apps/<slug>`). `moved` is what the first start after `yulius instance migrate` recorded (`moved.json`): the old and new URL, when, and the tasks put back in the queue, left stopped and not queued. Reading an answer that is not "registered" and due makes the server ask GitHub again in the background: 30 s after the last answer, and once eleven answers in a row said the same twice as long with each further one, up to 4 minutes; a demand (`…/check`, `/internal/github-callback`) or a changed answer makes it 30 s again. A GitHub sign-in that completes makes the answer `registered` without a question: GitHub exchanged a code for the callback |
 | POST | `/api/admin/instance/address/check` | superadmin | asks GitHub now → `InstanceAddress` |
-| GET | `/api/admin/instance/migration` | superadmin | → `MigrationView` (SPEC-470): a move to another host asked from Settings → Instance, computed from the root move helper's files on every read and stored nowhere. `{"public_url", "helper_installed", "update_running", "request": {"id", "action", "state": "requested"\|"unanswered", "requested_at"}\|null, "run": MigrationRun\|null, "move": MigrationMove\|null, "arrived": {"id", "target", "from"\|null, "to"\|null, "finished_at", "lines"}\|null, "can": {"plan", "move", "abort"}}`. `helper_installed`: systemd says the helper's path unit waits (asked at most every 10 s). `request`: written and not taken by the helper yet (`unanswered` after 20 s; from 5 s on a read writes the same request again, because a change of the file that comes while the helper ends another run starts nothing; a request the helper took, or one older than 15 minutes, is removed; no copy of the data directory takes it along). `MigrationRun` = the helper's report: `{"id", "action": "plan"\|"move"\|"abort", "target"\|null, "ssh_port"\|null, "public_url"\|null, "data_disks", "state": "running"\|"ended"\|"refused"\|"lost", "exit_code"\|null, "error"\|null, "started_at", "updated_at", "ended_at"\|null}` (`lost`: running, and its heartbeat is more than 60 s old; `exit_code`: the command's, 0 nothing failed, 1 a step failed, 2 refused before anything changed, `null` when a signal ended it; `error`: why the helper refused, or the command's last words when it ended before its checklist). `MigrationMove` = the command's status: `{"id", "target", "phase": "Plan"\|"Prepare"\|"Copy"\|"Cutover"\|"Finish"\|"Abort"\|"done"\|"aborted", "lines": [{"name", "outcome": "ok"\|"changed"\|"manual"\|"failed", "detail"}], "public_key"\|null, "new_url"\|null, "updated_at", "by_command", "earlier"}` (`public_key`: the one-time key's public line while a person has to add it to root's `authorized_keys` on the new host; `by_command`: written after the helper's last run ended, that is by `yulius instance migrate` run on the host; `earlier`: neither the command line's nor the helper's last run's own. A run's own checklist is the one that names its request (the helper passes the request's id to the command, which writes it into its status); any other one that was not written after that run ended is `earlier`: the move that is recorded, or the last one when its phase is `done` or `aborted`, never what that run found. While a run has written no checklist of its own, an earlier one is not shown: `move` is `null`). `arrived`: the finished checklist of the move that brought the instance to this host. `can`: what a `POST` would accept now |
+| GET | `/api/admin/instance/migration` | superadmin | → `MigrationView` (SPEC-470): a move to another host asked from Settings → Instance, computed from the root move helper's files on every read and stored nowhere. `{"public_url", "helper_installed", "update_running", "request": {"id", "action", "state": "requested"\|"unanswered", "requested_at"}\|null, "run": MigrationRun\|null, "move": MigrationMove\|null, "arrived": {"id", "target", "from"\|null, "to"\|null, "finished_at", "lines"}\|null, "can": {"plan", "move", "abort"}}`. `helper_installed`: systemd says the helper's path unit waits (asked at most every 10 s). `request`: written and not taken by the helper yet (`unanswered` after 20 s; from 5 s on a read writes the same request again, because a change of the file that comes while the helper ends another run starts nothing; a request the helper took, or one older than 15 minutes, is removed; no copy of the data directory takes it along). `MigrationRun` = the helper's report: `{"id", "action": "plan"\|"move"\|"abort", "target"\|null, "ssh_port"\|null, "public_url"\|null, "data_disks", "state": "running"\|"ended"\|"refused"\|"lost", "exit_code"\|null, "error"\|null, "started_at", "updated_at", "ended_at"\|null}` (`running` also while the heartbeat is more than 60 s old and systemd says the helper's service still runs, or cannot say: a move is in flight and no update or restart starts; `lost`: running, its heartbeat more than 60 s old, and systemd says the helper's service ended (SPEC-483 MOV-001); `exit_code`: the command's, 0 nothing failed, 1 a step failed, 2 refused before anything changed, `null` when a signal ended it; `error`: why the helper refused, or the command's last words when it ended before its checklist). `MigrationMove` = the command's status: `{"id", "target", "phase": "Plan"\|"Prepare"\|"Copy"\|"Cutover"\|"Finish"\|"Abort"\|"done"\|"aborted", "lines": [{"name", "outcome": "ok"\|"changed"\|"manual"\|"failed", "detail"}], "public_key"\|null, "new_url"\|null, "updated_at", "by_command", "earlier"}` (`public_key`: the one-time key's public line while a person has to add it to root's `authorized_keys` on the new host; `by_command`: written after the helper's last run ended, that is by `yulius instance migrate` run on the host; `earlier`: neither the command line's nor the helper's last run's own. A run's own checklist is the one that names its request (the helper passes the request's id to the command, which writes it into its status); any other one that was not written after that run ended is `earlier`: the move that is recorded, or the last one when its phase is `done` or `aborted`, never what that run found. While a run has written no checklist of its own, an earlier one is not shown: `move` is `null`). `arrived`: the finished checklist of the move that brought the instance to this host. `can`: what a `POST` would accept now |
 | POST | `/api/admin/instance/migration` | superadmin | `{"action": "plan"\|"move"\|"abort", "target", "ssh_port" (22), "public_url"\|null, "data_disks": […], "confirm"}` → 202 `MigrationView`: writes the request for the root helper (`<data>/migrate/request.json`), which runs `yulius instance migrate --no-sign-in`: its plan, the move (`--yes`) or `--abort`, reaching the new host with the move's one-time key alone, never as root signs in. 422 for a value outside the rules (`target` is `root@host` or `host` as ssh takes it, `ssh_port` 1–65535, `public_url` `https://host` with nothing after it, at most two different `data_disks` under `/dev/`; an abort names none of them) and for a `move` whose `confirm` is not the target's host; 409 without the helper, while an update or restart runs, while a request waits or a run is in flight (an `abort` may arrive during a plan or a move: it stops it), for a `move` unless the helper's last run was a plan of the same values that ended without a failed line and without a key to add at most an hour ago (or a move of the same values that stopped: it is continued), and for an `abort` with nothing recorded. Audited `migration.planned`, `migration.started`, `migration.aborted` (the actor, the host, the request's id and values) before the request is written, and `migration.unwritten` when it then cannot be. Asks are taken one at a time. While a request waits or a run is in flight, `POST /api/admin/update` and `/api/admin/restart` answer 409 |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
@@ -1625,12 +1686,13 @@ temporary config directory in a server-owned PTY 500 columns
 wide so tokens and URLs never wrap. It uses the terminal protocol above: `resize` and
 `take_control` only re-send `state` (the size is fixed), `input` is forwarded while the login
 runs. `state.status` is `running`, then `ok|error|cancelled`; the `exit` frame carries the same
-status and the CLI's exit code. Output is masked before it reaches any viewer (Claude tokens
+status, the CLI's exit code and, for `error`, why the sign-in failed (`cause`). Output is masked before it reaches any viewer (Claude tokens
 become `sk-ant-oat01-[REDACTED]`). On exit the credential (the Claude token from the output) is sealed
 into the account (`ok`, `account.updated`), and the temporary directory
-is overwritten and removed. A login that ends without a credential sets `error` with a message;
-an account that still holds a working credential keeps its status and records
-`re-login failed: …`. Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
+is overwritten and removed. A first login that ends without a credential sets `error` with a
+message; an account that still holds a working credential keeps its status and records
+`re-login failed: …`; one that needs a new sign-in (`relogin`) stays so with the reason it had
+(the failed login's own reason is in its `exit` frame). Bounds: one login per account, 8 at once (`capacity`), 16 viewers per
 login, 15-minute timeout (the process is stopped), finished logins stay viewable for 10 minutes.
 Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
 (`claude setup-token` does after 500 ms); one still running then is stopped and the token sealed,
@@ -1672,7 +1734,7 @@ AnalyticsSummary = {
 Tokens = {"runs": 3, "tasks": 2, "input": 100, "output": 50, "cache_read": 10,
           "cache_write": null, "unknown_usage_runs": 2}
 TaskRow = {"task_id","sandbox","number","title","status","origin","harness","harnesses",
-  "models","accounts","created_at","closed_at|null","attempts","wall_ms","active_ms|null",
+  "models","accounts","created_at","closed_at|null (the close the task is in; null while not closed)","attempts","wall_ms","active_ms|null",
   "input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null",
   "unknown_usage_runs","switches","feedback":"correct|incorrect|null","feedback_correct",
   "feedback_incorrect"}
@@ -1847,9 +1909,9 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 
 ## UI event stream
 
-`WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
+`WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.control_taken_back","task_id","sandbox_id","number","title","by"}` (only to the person a task was taken back from, SPEC-490 OWN-010), `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`,
-`{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
+`{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
@@ -1912,6 +1974,13 @@ boundary and the client sends the same request again after `Retry-After` seconds
 2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
+
+`POST /internal/agent/wait` (the run's task token), what `yulius wait` blocks on (SPEC-011):
+body `{"head": "<sha>"|null, "since": WaitState|null, "timeout_secs": n|null}`; answers a
+`WaitState` (`{"head", "checks": "none|queued|running|passed|failed|error|cancelled",
+"checks_detail", "stage", "merge_armed", "merge_outcome", "merge_outcome_head",
+"push_problem", …}`) once it differs from `since`, or when the timeout (default 50 s, at most
+55 s) passed.
 
 Every route of the loopback listener that the agents' own clients call (hooks, `yulius wait`'s
 `/internal/agent/wait`, the Git credential helper, the scrub fingerprints) answers an application

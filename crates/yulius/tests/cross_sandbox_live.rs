@@ -48,8 +48,13 @@ async fn approved(
     .await?;
     let listed = app.superagent_requests(person, source).await?;
     let id = listed[0]["id"].as_str().ok_or("id")?;
-    app.superagent_request_answer(person, source, id, true)
-        .await?;
+    app.superagent_request_answer(
+        person,
+        source,
+        id,
+        &yulius_app::cross_sandbox::RequestAnswer::approve(),
+    )
+    .await?;
     Ok(call.await??)
 }
 

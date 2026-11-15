@@ -138,16 +138,19 @@ impl FakeRemote for Origin {
     }
 }
 
+/// The spec of a task that finished its work: `done`, every Plan item ticked, Evidence (a task
+/// whose spec does not say done is not Done, SPEC-491 DON-004).
 fn valid_spec(task: &str) -> String {
     format!(
-        "---\nyulius-task: {task}\nstatus: in-progress\n---\n# Change {task}\n\n\
+        "---\nyulius-task: {task}\nstatus: done\n---\n# Change {task}\n\n\
          ## Goal\nShip change {task}.\n\n\
          ## Context\nParallel tasks deliver at once.\n\n\
          ## Requirements\n- It lands.\n\n\
          ## Plan\n- [x] Write the spec\n- [x] Make the change\n\n\
          ## Acceptance criteria\n- It is merged.\n\n\
          ## Test plan\n- The merge train test.\n\n\
-         ## Decisions\n- None yet.\n"
+         ## Decisions\n- None yet.\n\n\
+         ## Evidence\n- The gate: passed.\n"
     )
 }
 
@@ -1884,5 +1887,659 @@ async fn uncommitted_changes_leave_nothing_to_decide() -> TestResult {
     assert!(!app.decidable_in(&sandbox).await, "uncommitted");
     std::fs::remove_file(worktree.join("draft.txt"))?;
     assert!(app.decidable_in(&sandbox).await, "ready for a candidate");
+    Ok(())
+}
+
+/// SPEC-487 CHN-001 (13 November 2026: #469 was started "after #465" at 19:57:02, while #465's
+/// green pull request #1257 waited, armed, in the merge queue): a task chained after one whose
+/// pull request is green and armed stays waiting, since Yulius will merge it and tell its agent,
+/// and the task list reads the same; it starts once that pull request is merged.
+#[tokio::test]
+async fn a_task_chained_after_an_armed_green_pull_request_waits_for_its_merge() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    let status = || status_of_task(&f, &next);
+
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // Its turn ended, its plan is complete and its pull request is tested: what read Done.
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status().await,
+        Some(TaskStatus::Chained),
+        "the merge is still to come"
+    );
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(
+        shown.body["yulius_wait"], true,
+        "it goes on by itself: {}",
+        shown.body
+    );
+    // SPEC-487 TCT-004 (review of slice 3, R2-1): its owner cannot close it out meanwhile.
+    // A close would end the task with its pull request tested and its plan complete, which
+    // reads Done for a closed task, and the chained task would start before the merge.
+    {
+        let record = TaskStore::task(&f.h.store, &first).await?.ok_or("t1")?;
+        let owner = yulius_app::ports::store::UserStore::user(&f.h.store, &record.owner)
+            .await?
+            .ok_or("owner")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: owner,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let refused = app.close_task_for_person(&ctx, "t1").await.err();
+        assert!(
+            matches!(&refused, Some(yulius_app::error::AppError::Conflict(why))
+                if why.contains("goes on by itself") && why.contains("chained after it wait")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            TaskStore::task(&f.h.store, &first).await?.map(|t| t.status),
+            Some(TaskStatus::Running)
+        );
+        app.advance_chains(&first).await;
+        assert_eq!(status().await, Some(TaskStatus::Chained));
+    }
+
+    f.decide_until(&app, || async { f.merged(&app, 1).await })
+        .await?;
+    app.advance_chains(&first).await;
+    assert_ne!(
+        status().await,
+        Some(TaskStatus::Chained),
+        "merged: it starts"
+    );
+    Ok(())
+}
+
+/// SPEC-491 DON-001, DON-003 (14 November 2026: #474 was started "after #465" at 18:20:13, while
+/// #465's pull request #1287 had passed at its head and, since `dev` moved at 18:16:56,
+/// conflicted with it): a pull request whose head conflicts with the integration branch, as
+/// Yulius's own clone has it, is not tested, whatever its run said. Its task is not Done, the
+/// task chained after it waits, and the Git overview and the counts say so; once its agent
+/// merged the integration branch in and the new head passed, the chained task starts.
+#[tokio::test]
+async fn a_task_chained_after_a_green_pull_request_that_conflicts_waits() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("shared.txt", "mine\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    // A task that waits on a start rule naming it asks the same question.
+    let number = TaskStore::task(&f.h.store, &first)
+        .await?
+        .ok_or("t1")?
+        .number;
+    let ruled = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "after change 1", "start_rule": format!("#{number} done")})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(ruled.body["status"], "chained", "{}", ruled.body);
+    let ruled = TaskId::parse(ruled.body["id"].as_str().ok_or("id")?)?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` moves in the same file, and Yulius's clone learns of it.
+    f.advance_dev("shared.txt")?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+
+    app.advance_chains(&first).await;
+    app.advance_all_chains().await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its pull request cannot merge"
+    );
+    assert_eq!(
+        status_of_task(&f, &ruled).await,
+        Some(TaskStatus::Chained),
+        "`#1 done` is false"
+    );
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(
+        (&pr["checks"], &pr["conflicts"]),
+        (&json!("success"), &json!(true)),
+        "{}",
+        overview.body
+    );
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["running"], 1,
+        "in review, not Done: {}",
+        sandbox.body
+    );
+
+    // Its agent merges `dev` in, Yulius pushes at the turn's end, and the new head passes.
+    assert!(git_ok(&worktree, &["merge", "-q", "origin/dev"]).is_none());
+    std::fs::write(worktree.join("shared.txt"), "mine\nother\n")?;
+    git(&worktree, &["add", "-A"])?;
+    git(&worktree, &["commit", "-q", "--no-edit"])?;
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("t1")?;
+    app.sync_steps_from_spec(&task).await?;
+    app.auto_open_pr(&first).await;
+    let merged_head = git(&worktree, &["rev-parse", "HEAD"])?;
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "feat/1-train"])?,
+        merged_head,
+        "pushed: {}",
+        f.wait(1, &worktree).await?
+    );
+    f.record_passed(&app, 1, &merged_head).await?;
+    app.advance_chains(&first).await;
+    app.advance_all_chains().await;
+    for waiting in [&next, &ruled] {
+        assert_ne!(
+            status_of_task(&f, waiting).await,
+            Some(TaskStatus::Chained),
+            "it merges cleanly and is tested: it starts"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-491 DON-001 (review of SPEC-491, M1): GitHub knows nothing of the union rule Yulius gives
+/// the changes log, so two pull requests that each add an entry at its top read "not mergeable"
+/// there while Yulius's own merge resolves them. Where the clone answers, it decides: the pull
+/// request is tested, the overview says no conflict, and the task chained after it starts.
+#[tokio::test]
+async fn github_s_flag_does_not_hold_a_pull_request_the_clone_merges() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // `dev` gains another entry at the top of the changes log: a union merge, not a conflict.
+    let other = tempfile::tempdir()?;
+    let clone = other.path().join("c");
+    git(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            f.integration,
+            f.origin.to_str().ok_or("path")?,
+            clone.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::write(
+        clone.join("CHANGES.md"),
+        "# Changes\n\n- another\n- first\n",
+    )?;
+    git(&clone, &["commit", "-q", "-am", "another entry"])?;
+    git(
+        &clone,
+        &["push", "-q", "origin", &format!("HEAD:{}", f.integration)],
+    )?;
+    git(&f.repo, &["fetch", "-q", "origin"])?;
+    // GitHub, which merges without that rule, calls it not mergeable.
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+    {
+        pull.mergeable = Some(false);
+    }
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/git",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let pr = overview.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|task| task["task_id"] == "t1"))
+        .map(|task| &task["pr"])
+        .ok_or("t1 in the overview")?;
+    assert_eq!(pr["conflicts"], false, "{}", overview.body);
+    app.advance_chains(&first).await;
+    assert_ne!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "the clone merges it: tested, and the chained task starts"
+    );
+    Ok(())
+}
+
+/// SPEC-483 GRP-003 (finding D8): an agent that armed its merge and whose goal was then judged
+/// achieved is not Done while the merge is armed: a task chained after it waits, a supertask
+/// waits for it, Home counts it as working, and archiving it is refused (it would have ended the
+/// armed merge, said to nobody); the merge stays armed.
+#[tokio::test]
+async fn an_achieved_goal_with_an_armed_merge_is_not_done() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let first = TaskId::parse("t1")?;
+    let next = chained_after_t1(&f).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    assert!(
+        f.h.store
+            .transition_task(
+                &first,
+                Some(TaskStatus::Running),
+                TaskStatus::Running,
+                Some(Activity::Done),
+                Timestamp(10),
+            )
+            .await?
+    );
+    app.advance_chains(&first).await;
+    assert_eq!(status_of_task(&f, &next).await, Some(TaskStatus::Chained));
+    // A supertask waits for it too.
+    let supertask = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "harden", "supertask": true})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(supertask.body["status"], "queued", "{}", supertask.body);
+    let held = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/tasks/{}", supertask.body["id"].as_str().ok_or("id")?),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(held.body["held_by"], json!([1]), "{}", held.body);
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(shown.body["merge_armed"], true, "{}", shown.body);
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        (
+            sandbox.body["counts"]["running"].as_u64(),
+            sandbox.body["counts"]["queued"].as_u64()
+        ),
+        (Some(1), Some(2)),
+        "t1 working; the chained task and the supertask in line: {}",
+        sandbox.body
+    );
+    let archived = call(
+        &f.h.router,
+        Method::POST,
+        "/api/tasks/t1/archive",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(archived.status, StatusCode::CONFLICT, "{}", archived.body);
+    assert_eq!(status_of_task(&f, &first).await, Some(TaskStatus::Running));
+    let shown = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    assert_eq!(
+        shown.body["merge_armed"], true,
+        "still armed: {}",
+        shown.body
+    );
+    Ok(())
+}
+
+/// The owner of task `t<n>` (alice), as the functions of the pages take a person.
+async fn owner_ctx(f: &Fixture, n: u32) -> BoxResult<yulius_app::auth::AuthContext> {
+    let record = TaskStore::task(&f.h.store, &TaskId::parse(&format!("t{n}"))?)
+        .await?
+        .ok_or("task")?;
+    let user = UserStore::user(&f.h.store, &record.owner)
+        .await?
+        .ok_or("owner")?;
+    Ok(yulius_app::auth::AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// SPEC-487 MRG-001 to MRG-003 (wall 4: "arm/re-arm merge, why a green PR is not merging"): a
+/// person merges their task's pull request through their agent as the page's Merge does; while
+/// its checks run, the merge is armed for them at the branch's head and merges once they pass.
+/// Meanwhile the task's delivery and the project's merge queue say where it stands; afterwards,
+/// how it ended. A head whose checks failed is refused with that reason.
+#[tokio::test]
+async fn a_person_merges_their_tasks_pull_request_when_its_checks_pass() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    let ctx = owner_ctx(&f, 1).await?;
+
+    // Nothing armed yet.
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    assert_eq!(queue["armed"], json!([]), "{queue}");
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(state["armed"], false, "{state}");
+
+    // Its checks have not run: armed for the person, at the branch's head.
+    let armed = app.merge_for_person(&ctx, "t1").await?;
+    assert_eq!(
+        (&armed["merged"], &armed["armed"]),
+        (&json!(false), &json!(true)),
+        "{armed}"
+    );
+    assert_eq!(armed["head"], head, "{armed}");
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(
+        (&state["armed"], &state["head"]),
+        (&json!(true), &json!(head)),
+        "{state}"
+    );
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    let listed = queue["armed"].as_array().ok_or("armed")?;
+    assert_eq!(listed.len(), 1, "{queue}");
+    assert_eq!(
+        (
+            &listed[0]["number"],
+            &listed[0]["head"],
+            &listed[0]["owner"]
+        ),
+        (&json!(1), &json!(head), &json!("alice")),
+        "{queue}"
+    );
+    // Asked again, it keeps its place.
+    let again = app.merge_for_person(&ctx, "t1").await?;
+    assert!(
+        again["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("keeps its place")),
+        "{again}"
+    );
+    // Audited under the person's name.
+    assert_eq!(
+        yulius_app::ports::store::AuditStore::audit_details(
+            &f.h.store,
+            "t1",
+            "delivery.person.merge_armed",
+            10
+        )
+        .await?
+        .len(),
+        1
+    );
+
+    // Its checks pass: Yulius merges it, and its delivery says so.
+    f.record_passed(&app, 1, &head).await?;
+    f.decide_until(&app, || async { f.merged(&app, 1).await })
+        .await?;
+    let state = app.merge_state_for_person(&ctx, "t1").await?;
+    assert_eq!(state["armed"], false, "{state}");
+    assert!(
+        state["last"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("merged")),
+        "{state}"
+    );
+    let queue = app.merge_queue_for_person(&ctx, &f.sandbox).await?;
+    assert_eq!(queue["armed"], json!([]), "{queue}");
+    // The merge is the person's, not a reviewed agent's: under their name, and said so
+    // (review of slice 5, F2).
+    let merged: Vec<(String, String, String)> =
+        yulius_app::ports::store_ext::AutomationStore::automation_audit(&f.h.store, "app#1", 100)
+            .await?
+            .into_iter()
+            .map(|entry| (entry.action, entry.actor, entry.detail.unwrap_or_default()))
+            .collect();
+    assert!(
+        merged
+            .iter()
+            .any(|(action, actor, detail)| action == "delivery.person.merge"
+                && actor == "alice"
+                && detail.contains("armed by its owner")
+                && !detail.contains("reviewed independently")),
+        "{merged:?}"
+    );
+    assert!(
+        !merged
+            .iter()
+            .any(|(action, _, _)| action == "delivery.agent.merge"),
+        "{merged:?}"
+    );
+    assert_eq!(state["last"]["armed_by"], "alice", "{state}");
+
+    // A head whose checks failed is not armed: the reason is said.
+    let second = f.task(2, &[("b.txt", "y\n")]).await?;
+    let failed = git(&second, &["rev-parse", "HEAD"])?;
+    f.record_run(&app, 2, &failed, RunState::Failed).await?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 2).await?, "t2")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why)) if why.contains("failed")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t2").await?["armed"],
+        false
+    );
+
+    // A task whose run ended keeps no armed merge: it is not armed for nothing (F1).
+    let third = f.task(3, &[("c.txt", "z\n")]).await?;
+    let third_head = git(&third, &["rev-parse", "HEAD"])?;
+    TaskStore::transition_task(
+        &f.h.store,
+        &TaskId::parse("t3")?,
+        None,
+        TaskStatus::Closed,
+        None,
+        app.now(),
+    )
+    .await?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 3).await?, "t3")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why))
+            if why.contains("has ended") && why.contains("its checks pass")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t3").await?["armed"],
+        false
+    );
+    // Once its checks passed it merges at once, as the page's Merge does, and nothing is left
+    // armed (F6).
+    f.record_passed(&app, 3, &third_head).await?;
+    let merged = app.merge_for_person(&owner_ctx(&f, 3).await?, "t3").await?;
+    assert_eq!(
+        (&merged["merged"], &merged["armed"]),
+        (&json!(true), &json!(false)),
+        "{merged}"
+    );
+    assert!(f.merged(&app, 3).await?);
+    assert_eq!(
+        app.merge_state_for_person(&ctx, "t3").await?["armed"],
+        false
+    );
+
+    // A commit not pushed yet is not armed: what would merge is the branch on GitHub (F5).
+    let fourth = f.task(4, &[("d.txt", "w\n")]).await?;
+    std::fs::write(fourth.join("later.txt"), "later\n")?;
+    git(&fourth, &["add", "-A"])?;
+    git(&fourth, &["commit", "-q", "-m", "not pushed"])?;
+    let refused = app
+        .merge_for_person(&owner_ctx(&f, 4).await?, "t4")
+        .await
+        .err();
+    assert!(
+        matches!(&refused, Some(yulius_app::error::AppError::Conflict(why)) if why.contains("not pushed")),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// A task chained after `t1`, created by Alice (who has a Claude account connected, SPEC-246).
+async fn chained_after_t1(f: &Fixture) -> BoxResult<TaskId> {
+    use yulius_app::model::{AccountRecord, AccountStatus};
+    use yulius_app::ports::store::AccountStore;
+    f.h.store
+        .insert_account(&AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("acc-1")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(f.h.app.deps.crypto.seal(b"oauth-token")?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "build on change 1", "after_task_id": "t1"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.body["status"], "chained", "{}", created.body);
+    Ok(TaskId::parse(created.body["id"].as_str().ok_or("id")?)?)
+}
+
+async fn status_of_task(f: &Fixture, id: &TaskId) -> Option<TaskStatus> {
+    TaskStore::task(&f.h.store, id)
+        .await
+        .ok()
+        .flatten()
+        .map(|task| task.status)
+}
+
+/// SPEC-487 CHN-001 (review round 1, M1): a server that started again knows a merge is armed
+/// before it put the armed merges back, so a chain pass in between (any task's turn end) does not
+/// find the green pull request Done.
+#[tokio::test]
+async fn a_restarted_server_keeps_a_chained_task_waiting_for_an_armed_merge() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let next = chained_after_t1(&f).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    // The server after a restart, before `restore_armed_merges` ran.
+    let restarted = App::new(app.config.clone(), app.deps.clone());
+    restarted.advance_chains(&TaskId::parse("t1")?).await;
+    assert_eq!(status_of_task(&f, &next).await, Some(TaskStatus::Chained));
+    // Once they are back, the slot answers as before.
+    restarted.restore_armed_merges().await;
+    restarted.advance_chains(&TaskId::parse("t1")?).await;
+    assert_eq!(status_of_task(&f, &next).await, Some(TaskStatus::Chained));
+    Ok(())
+}
+
+/// SPEC-487 CHN-002 (review round 1, M3): an armed merge that ended without merging leaves a
+/// green, open pull request and an idle agent that has not heard how it ended. That is not
+/// Done either: the task goes on by itself once the watch says so.
+#[tokio::test]
+async fn a_task_chained_after_a_dropped_armed_merge_waits_for_its_news() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let next = chained_after_t1(&f).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    // Its owner can no longer act: the train's end drops the merge and keeps why.
+    f.h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(app.now())), None)
+        .await?;
+    f.settle(&app).await?;
+    f.decide_until(&app, || async {
+        Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
+    })
+    .await?;
+    let first = TaskId::parse("t1")?;
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its agent has not heard how the merge ended"
+    );
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("task")?;
+    assert!(app.task_summary(&task).await?.yulius_wait);
+    Ok(())
+}
+
+/// SPEC-487 CHN-002 (review round 3, R3-7): a pull request GitHub reports merged before
+/// Yulius's record says so (a person merged it; the next reconciliation records it) is news
+/// like any other merge: the task the watch saw with it open is not Done before it was told.
+#[tokio::test]
+async fn a_merge_github_reports_first_is_news_too() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let next = chained_after_t1(&f).await?;
+    let first = TaskId::parse("t1")?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // The watch sees the pull request open (reading the task makes this server know its run).
+    let task = TaskStore::task(&f.h.store, &first).await?.ok_or("task")?;
+    app.task_summary(&task).await?;
+    app.watch_prs(&yulius_app::pr_watch::WatchBounds::default())
+        .await;
+    // A person merges it on GitHub; the record still says open.
+    let person = yulius_app::model::Secret("person-token".into());
+    app.deps
+        .github
+        .merge_pull(&person, "acme", "app", 1, "squash", &head)
+        .await?;
+    use yulius_app::ports::store_ext::DeliveryStore;
+    assert_eq!(
+        f.h.store.delivery(&first).await?.map(|record| record.stage),
+        Some(DeliveryStage::PrOpen)
+    );
+    app.advance_chains(&first).await;
+    assert_eq!(
+        status_of_task(&f, &next).await,
+        Some(TaskStatus::Chained),
+        "its agent has not heard of the merge"
+    );
     Ok(())
 }

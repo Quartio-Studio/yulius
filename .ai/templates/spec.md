@@ -1,50 +1,47 @@
+---
+yulius-task: <task id>
+status: draft
+---
+
 # SPEC-NNN: title
 
-Status: proposed
-Date: YYYY-MM-DD
-Owner: responsible person or team
-Scope authorization: user request / issue / accepted decision
+<!-- The form `spec_check` validates (skill `om-spec-writing`): the frontmatter above, with
+`status` one of draft, approved, in-progress, done or abandoned, and the seven sections below.
+Omit nothing; a section that does not apply says why in one line. -->
 
-## Problem and evidence
+## Goal
 
-User outcome, current behavior, and cited observations. Distinguish facts from assumptions.
+The user outcome in a few sentences: who gets what, and why now.
 
-## Scope
+## Context
 
-In scope, explicit non-goals, and dependencies on unresolved product decisions.
+Current behavior and cited observations (code paths, transcripts, issues). Distinguish facts
+from assumptions. In scope, explicit non-goals, and dependencies on unresolved decisions.
 
 ## Requirements
 
-| ID | Observable requirement | Evidence needed |
-| --- | --- | --- |
-| R-001 | Concrete behavior | Named test or manual verification |
+- **ABC-001** One observable behavior per requirement, with a stable ID. For each nonterminal
+  state name its owner, its exit trigger and what happens when that trigger never arrives;
+  boundaries, limits, cancellation, recovery and compatibility where they affect the change.
 
-## Design and contracts
+## Plan
 
-Affected modules; inputs/outputs; state transitions; invariants; versioning;
-authorization; data ownership; retries, limits, cancellation and recovery.
-Only include sections that affect this change. For each nonterminal state name
-its owner, exit trigger and behavior when that trigger never arrives.
+- [ ] A slice that leaves the project working, named by what it delivers
 
-## Failure and compatibility
+## Acceptance criteria
 
-Partial failure, malformed input, process exit, persistence recovery and existing
-behavior that must survive. Migration/rollback plan when durable data changes.
+- **AC-1** A concrete scenario tied to requirement IDs, with negative cases and expected outcomes.
 
-## Delivery and acceptance
+## Test plan
 
-Complete vertical slices, commands and behavioral scenarios tied to requirement IDs.
-Include negative cases, fixtures, expected outcomes and manual UI evidence as needed.
+The tests that prove each criterion (unit, integration, e2e), the fixtures, and manual evidence
+where a person must look (UI).
 
-## Open decisions
+## Decisions
 
-Each choice: owner, proposed default, evidence, blocking/nonblocking and revisit trigger.
+Each choice with the alternatives and why; a lasting one is an ADR in `docs/decisions/`. Open
+questions are decided with a reversible default and recorded here.
 
-## Implementation evidence
-
-Pending until actual commands and behaviors have been observed. A skipped gate is
-not a passing gate; specs and test names are not substitutes for executed results.
-
-## Changelog
-
-- YYYY-MM-DD: initial proposal.
+<!-- Before `status: done`: every Plan item ticked and an `## Evidence` section with the
+commands run and their results. A skipped gate is not a passing gate; test names are not
+executed results. -->

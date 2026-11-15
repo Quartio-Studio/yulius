@@ -36,6 +36,12 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
     })
 }
 
+/// Each account's runs, tasks and tokens since `?1` (`account_tokens`).
+pub(crate) const ACCOUNT_TOKENS_SQL: &str = "SELECT a.account_id, COUNT(*), COUNT(DISTINCT a.task_id), \
+     SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read), SUM(m.cache_write) \
+     FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
+     WHERE a.account_id IS NOT NULL AND a.started_at >= ?1 GROUP BY a.account_id";
+
 #[async_trait]
 impl AccountStore for SqliteStore {
     async fn insert_account(&self, a: &AccountRecord) -> AppResult<()> {
@@ -207,24 +213,6 @@ impl AccountStore for SqliteStore {
         .await
     }
 
-    async fn set_account_error(
-        &self,
-        id: &AccountId,
-        last_error: &str,
-        at: Timestamp,
-    ) -> AppResult<()> {
-        let (id, err) = (id.as_str().to_owned(), last_error.to_owned());
-        self.call(move |c| {
-            c.execute(
-                "UPDATE accounts SET last_error = ?1, updated_at = ?2 WHERE id = ?3",
-                params![err, at.0, id],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
-    }
-
     async fn set_usage_error(&self, id: &AccountId, note: &str, at: Timestamp) -> AppResult<()> {
         let (id, note) = (id.as_str().to_owned(), note.to_owned());
         self.call(move |c| {
@@ -258,14 +246,7 @@ impl AccountStore for SqliteStore {
         since: Timestamp,
     ) -> AppResult<Vec<yulius_app::model::AccountTokens>> {
         self.call(move |c| {
-            let mut statement = c
-                .prepare(
-                    "SELECT a.account_id, COUNT(*), COUNT(DISTINCT a.task_id), \
-                     SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read), SUM(m.cache_write) \
-                     FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
-                     WHERE a.account_id IS NOT NULL AND a.started_at >= ?1 GROUP BY a.account_id",
-                )
-                .map_err(db)?;
+            let mut statement = c.prepare(ACCOUNT_TOKENS_SQL).map_err(db)?;
             let rows = statement
                 .query_map([since.0], |row| {
                     let opt = |i: usize| row.get::<_, Option<i64>>(i).map(|v| v.map(crate::to_u64));

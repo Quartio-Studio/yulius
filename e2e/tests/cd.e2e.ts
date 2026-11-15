@@ -399,8 +399,11 @@ test('a refusal after its view was left is a toast; a page left with it open dra
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
   await expect(dialog).toBeHidden();
   expect(await browser.evaluate(() => document.querySelector('.cd-starting-elapsed') === null)).toBe(true);
-  await releaseDeploy(browser);
+  // Back on CD before the server answered (its checks take a while): the page shows what it read,
+  // and once the deploy answers it reads again at once, not at its next idle poll (#1171).
   await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'CI/CD').click();
+  await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deployed');
+  await releaseDeploy(browser);
   await expect(browser.locator('.item-card:has-text("Production")').first()).toContainText('Deploying');
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('Deploying production.')).toBeHidden();
@@ -857,7 +860,8 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
     ['Problem', 'The free plan has 2 runners'],
     ['Decide', 'Choose the paid plan or the free one'],
   ]);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+  // The sidebar may still read "Loading tasks…" here (#1175): wait for its row, never read once.
+  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
     .some((a) => a.getAttribute('title')?.includes('Needs your decision: Choose the paid plan or the free one: The free plan has 2 runners')))).toBe(true);
 
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
@@ -897,6 +901,27 @@ test('a production deploy proves its rollback on dev first', async ({ app, brows
 // migrations line, the kept releases with the one deployed now, "Roll back to previous" and "Roll
 // back to this", and why a release behind a barrier cannot be gone back to. One click and a
 // confirmation roll back; production's confirmation takes the slug typed.
+// #1171: a rollback answered after its CD page was left shows on the CD page shown again at once,
+// as a deploy does, not at its next idle poll.
+test('a rollback answered after the page was left shows when the page is back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const row = (release: string) => browser.locator(`.cd-rollback[aria-label="Dev rollback"] li[data-release="${release}"]`);
+  await expect(row('v42')).toContainText('Deployed now');
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusMock: { cdRunMs: number; holdCdRollback?: Promise<void> }; __releaseRollback?: () => void };
+    w.__yuliusMock.cdRunMs = 0;
+    w.__yuliusMock.holdCdRollback = new Promise((resolve) => { w.__releaseRollback = resolve; });
+  });
+  await screen.getByRole('region', 'Dev rollback').getByRole('button', 'Roll back to previous (v41) of dev').click();
+  await screen.getByRole('dialog', 'Roll back dev?').getByRole('button', 'Roll back to v41').click();
+  await browser.evaluate(() => { location.hash = '#/s/studio/git'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'CI/CD').click();
+  await expect(row('v42')).toContainText('Deployed now');
+  await browser.evaluate(() => { (window as unknown as { __releaseRollback: () => void }).__releaseRollback(); });
+  await expect(row('v41')).toContainText('Deployed now');
+});
+
 test('the CD page rolls back to an earlier release in one click', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?section=cd'));
   const dev = screen.getByRole('region', 'Dev rollback');

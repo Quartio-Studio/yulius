@@ -73,9 +73,21 @@ fn through(channel: Channel) -> &'static str {
 /// paste of its label and text. Enter is sent separately.
 #[must_use]
 pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
+    paste(login, channel, text, "")
+}
+
+/// [`message_paste`] for a message typed behind a person's possible draft (SPEC-487 TCT-006):
+/// a blank line first, so their text and the label are not glued into one line.
+#[must_use]
+pub fn message_paste_behind_draft(login: &str, channel: Channel, text: &str) -> Vec<u8> {
+    paste(login, channel, text, "\n\n")
+}
+
+fn paste(login: &str, channel: Channel, text: &str, before: &str) -> Vec<u8> {
     let login = clean_message(login);
     let through = through(channel);
-    format!("\x1b[200~Message from {login} (through {through}):\n\n{text}\x1b[201~").into_bytes()
+    format!("\x1b[200~{before}Message from {login} (through {through}):\n\n{text}\x1b[201~")
+        .into_bytes()
 }
 
 /// What Yulius types into a session ([`App::type_into_session`]).
@@ -97,6 +109,10 @@ pub(crate) enum Sender {
     /// A person, through their Superagent or their own agent: the refusal is their answer
     /// (DRF-004).
     Person,
+    /// The task's owner, who said to send past what they left in the prompt box (SPEC-487
+    /// TCT-006): the message is typed behind their possible draft and both are submitted as
+    /// one prompt. A person typing right now is still not typed over.
+    OwnerPastDraft,
     /// Yulius itself (a pull request's news, the wake after an outage, the MCP watch): the
     /// message waits in its watch, and the session's person is told once their last keystroke
     /// is ten minutes old (DRF-005, DRF-006).
@@ -110,7 +126,7 @@ impl Sender {
     /// Whether the session's person is told that the message waits for their possible draft.
     fn tells_person(self, held: BoxHeld) -> bool {
         match self {
-            Self::Person => false,
+            Self::Person | Self::OwnerPastDraft => false,
             Self::Yulius => held.tells_person(),
             Self::YuliusLastTry => matches!(held, BoxHeld::Draft { .. }),
         }
@@ -130,9 +146,37 @@ const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text 
     not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
     Yulius types its message.";
 
-/// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
-/// dropped half-way.
-struct Typing<'a>(&'a AtomicBool);
+/// How long a line of Yulius's own waits for another typist to finish ([`Typing::wait`]).
+pub(crate) const TYPING_TURN_WAIT: Duration = Duration::from_secs(5);
+
+/// A run's "something is being typed" mark, held from the text to its Enter: one typist at a
+/// time, whatever Yulius types (a message, `/compact`, a goal), so that no other text lands
+/// between a line and its submit (SPEC-483 TYP-002). Cleared when the typing ends, even if the
+/// call is dropped half-way.
+pub(crate) struct Typing<'a>(&'a AtomicBool);
+
+impl<'a> Typing<'a> {
+    /// The mark, when nothing else is being typed.
+    pub(crate) fn take(mark: &'a AtomicBool) -> Option<Self> {
+        (!mark.swap(true, Ordering::SeqCst)).then_some(Self(mark))
+    }
+
+    /// The mark once the typing under way ended, at most `limit` later. `None` when it did
+    /// not: a line of Yulius's own is then typed all the same (the other typist holds the
+    /// mark for well under a second; a mark that stays set must not stop a recovery).
+    pub(crate) async fn wait(mark: &'a AtomicBool, limit: Duration) -> Option<Self> {
+        let asked = tokio::time::Instant::now();
+        loop {
+            if let Some(typing) = Self::take(mark) {
+                return Some(typing);
+            }
+            if asked.elapsed() >= limit {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
 
 impl Drop for Typing<'_> {
     fn drop(&mut self) {
@@ -159,20 +203,11 @@ impl App {
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
             return Err(AppError::Forbidden("a task cannot message itself".into()));
         }
-        // A task holding its owner's personal secrets or MCP servers is directed by its owner
-        // alone (SPEC-245, SPEC-332): another person's message would steer an agent holding
-        // their credential.
-        if caller.user != task.owner
-            && (self.holds_personal_secrets(&task).await?
-                || self.holds_personal_mcp(&task).await?
-                || self.live_run_holds_personal_mcp(&task).await?)
-        {
-            return Err(AppError::Forbidden(format!(
-                "task #{} holds @{}'s personal secrets or MCP servers, so only they message it",
-                task.number,
-                self.login_of(&task.owner).await
-            )));
-        }
+        // A message steers the task, so it is its owner's (SPEC-490 OWN-004): queued into a
+        // request, typed into a session, past a draft or not. That also keeps another person's
+        // words from an agent holding the owner's personal secrets or MCP servers (SPEC-245,
+        // SPEC-332).
+        self.require_control(&ctx, &task).await?;
         let text = args
             .get("text")
             .and_then(Value::as_str)
@@ -187,9 +222,34 @@ impl App {
                 MAX_MESSAGE_BYTES / 1024
             )));
         }
+        // The owner decides that a message goes out together with what they left in their
+        // task's prompt box (SPEC-487 TCT-006); every message is the owner's (above).
+        let with_draft = match args.get("with_draft") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(with_draft)) => *with_draft,
+            Some(_) => {
+                return Err(AppError::Invalid(
+                    "`with_draft` must be true or false".into(),
+                ));
+            }
+        };
+        // A prompt Yulius held for the person's decision (TSK-013) is back in the prompt box
+        // and reads as a draft: it is decided on its card, never carried on by a message.
+        if with_draft && self.deps.store.pending_hold(&task.id).await?.is_some() {
+            return Err(AppError::Conflict(format!(
+                "task #{} has a prompt that Yulius held for its person's decision, and it is \
+                 back in the prompt box: they decide about it on the task's page first",
+                task.number
+            )));
+        }
         let delivered = if task.status == TaskStatus::Running {
             let login = self.login_of(&caller.user).await;
-            self.type_task_message(&task, &login, caller.channel, &text)
+            let from = if with_draft {
+                Sender::OwnerPastDraft
+            } else {
+                Sender::Person
+            };
+            self.type_task_message(&task, &login, caller.channel, &text, from)
                 .await?;
             "sent"
         } else if !self.task_started(&task).await? {
@@ -204,10 +264,14 @@ impl App {
                 not_now_advice(task.status)
             )));
         };
-        let named = json!({
+        let past_draft = with_draft && delivered == "sent";
+        let mut named = json!({
             "task": format!("#{} {}", task.number, task.title),
             "delivered": delivered,
         });
+        if past_draft {
+            named["with_draft"] = json!(true);
+        }
         // The message went out: a failed audit write is logged, not reported as a failed call
         // (which would invite sending it twice).
         if let Err(err) = self
@@ -226,6 +290,10 @@ impl App {
         }
         tracing::info!(task = %task.id, actor = %caller.actor, delivered, "task messaged by a tool");
         let note = match delivered {
+            "sent" if past_draft => {
+                "Typed into the task's session behind whatever its person had left in the \
+                 prompt box: both were submitted as one prompt, and the box is empty again."
+            }
             "sent" => "Typed into the task's session: its agent reads it as soon as it can.",
             _ => "Added to the task's request: its agent reads it when the task starts.",
         };
@@ -249,9 +317,14 @@ impl App {
         login: &str,
         channel: Channel,
         text: &str,
+        from: Sender,
     ) -> AppResult<()> {
-        let paste = message_paste(login, channel, text);
-        self.type_into_session(task, &paste, Typed::Prompt, Sender::Person)
+        let paste = if from == Sender::OwnerPastDraft {
+            message_paste_behind_draft(login, channel, text)
+        } else {
+            message_paste(login, channel, text)
+        };
+        self.type_into_session(task, &paste, Typed::Prompt, from)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
         // asked them is answered.
@@ -325,6 +398,18 @@ impl App {
         let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
         match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
+            // Its owner sends past their own text, once they are no longer typing it: it
+            // goes out with the message.
+            Some(BoxHeld::Draft { typed_ms_ago })
+                if from == Sender::OwnerPastDraft
+                    && typed_ms_ago > yulius_domain::intake::TYPED_WINDOW_MS => {}
+            Some(BoxHeld::Draft { .. }) if from == Sender::OwnerPastDraft => {
+                return Err(AppError::Conflict(format!(
+                    "a person typed into task #{}'s terminal in the last minute: try again in \
+                     a minute, or tell the person",
+                    task.number
+                )));
+            }
             Some(held @ BoxHeld::Draft { .. }) => {
                 if from.tells_person(held) {
                     self.tell_of_held_message(task, typed).await;
@@ -333,7 +418,8 @@ impl App {
                     "a person typed into task #{}'s terminal and sent no prompt since, so \
                      their text may still be in its prompt box and nothing is typed behind it: \
                      tell the person to send it, or to clear it and send any prompt, then try \
-                     again",
+                     again (when the task's owner says to send past it: task_message with \
+                     with_draft)",
                     task.number
                 )));
             }
@@ -346,13 +432,12 @@ impl App {
             }
             None => {}
         }
-        if runtime.typing_message.swap(true, Ordering::SeqCst) {
+        let Some(_typing) = Typing::take(&runtime.typing_message) else {
             return Err(AppError::Conflict(format!(
                 "another message to task #{} is being typed: try again in a moment",
                 task.number
             )));
-        }
-        let _typing = Typing(&runtime.typing_message);
+        };
         // From here a message is in the session's prompt box and not submitted, and a restart
         // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
         // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
@@ -368,8 +453,19 @@ impl App {
             return Err(err);
         }
         tokio::time::sleep(SUBMIT_DELAY).await;
+        // The submit below carries the owner's draft to the agent with the message: the
+        // prompt hook reads this to know the draft ended (also one known from its mark alone,
+        // after a restart of the server). Set before the Enter: the hook runs some 30 ms
+        // after it.
+        let past_draft = from == Sender::OwnerPastDraft && what == Typed::Prompt;
+        if past_draft {
+            runtime.sent_past_draft.store(true, Ordering::SeqCst);
+        }
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         self.send_input(&task.id, b"\r").await.map_err(|err| {
+            if past_draft {
+                runtime.sent_past_draft.store(false, Ordering::SeqCst);
+            }
             AppError::Conflict(format!(
                 "the message was pasted into task #{}'s session but not submitted ({}): it may \
                  still be in its prompt box, so look before sending it again",

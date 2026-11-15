@@ -386,7 +386,6 @@ fn snapshot(acc: &UsageAccumulator) -> UsageSnapshot {
         cli_version: acc.cli_version().map(str::to_owned),
         turns: acc.turns(),
         active_ms: acc.active().total_ms(),
-        turn_open_since: acc.active().open_since(),
     }
 }
 
@@ -782,7 +781,7 @@ mod tests {
         ];
         std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
         let resumed_at =
-            yulius_harness::time::parse_rfc3339("2026-11-12T06:01:00.000Z").ok_or("a time")?;
+            yulius_domain::time::parse_rfc3339("2026-11-12T06:01:00.000Z").ok_or("a time")?;
         let queued = |from: WatchFrom| -> Result<usize, Box<dyn std::error::Error>> {
             let mut watch = Watch {
                 harness: Harness::ClaudeCode,

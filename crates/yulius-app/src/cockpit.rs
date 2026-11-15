@@ -64,6 +64,9 @@ pub(crate) const REFRESH_NONE: u8 = 0;
 pub(crate) const REFRESH_DUE: u8 = 1;
 /// [`REFRESH_DUE`], and its conversation is in a turn: it waits for the turn to end.
 pub(crate) const REFRESH_WAITING: u8 = 2;
+/// [`REFRESH_DUE`], and its person has text in its prompt box they did not send: it waits for
+/// them (SPEC-487 SES-002).
+pub(crate) const REFRESH_HELD: u8 = 3;
 /// How long a refresh that could not start (no capacity, access lost) waits before it is tried
 /// again.
 const REFRESH_RETRY_MS: i64 = 60_000;
@@ -126,6 +129,128 @@ fn transcript_len(path: &std::path::Path) -> u64 {
 /// Whether the conversation found idle with transcript `seen` (path and length) still is: nothing
 /// was written to it since, such as a prompt sent meanwhile (review round 1). No conversation:
 /// nothing to cut.
+/// How long after its person's last keystroke a draft in a Cockpit's prompt box holds an
+/// update's restart (SPEC-487 SES-002): one left for longer is taken as abandoned.
+pub(crate) const DRAFT_HOLDS_MS: i64 = 30 * 60 * 1000;
+
+/// How often a growing draft's last keystroke is kept with the Cockpit's record.
+const DRAFT_SAVE_EVERY_MS: i64 = 60_000;
+
+/// What one frame of a person's keys does to Claude Code's prompt box (SPEC-487 SES-002).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BoxKeys {
+    /// Text went in (characters, a paste, a line break that does not send).
+    Typed,
+    /// It was sent or cleared (Enter, Ctrl-C) and nothing was typed after.
+    Emptied,
+    /// Neither: Esc, Tab, arrows, editing keys.
+    Neither,
+}
+
+/// What a Cockpit's key reader carries from one frame to the next: a bracketed paste not
+/// ended yet (the page splits a long one), and a backslash typed last (a browser sends it and
+/// the Enter after it as two frames; review of slice 9a, R1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeyState {
+    pub(crate) in_paste: bool,
+    pub(crate) after_backslash: bool,
+}
+
+/// How long without a keystroke ends a paste whose end marker never came (a reconnect mid-paste;
+/// review of slice 9a, R2): the next Enter sends again.
+pub(crate) const PASTE_STALE_MS: i64 = 5_000;
+
+/// The reader's state for a frame that comes `now_ms`, the last one having come `last_key_ms`.
+fn settled(state: KeyState, last_key_ms: i64, now_ms: i64) -> KeyState {
+    if now_ms.saturating_sub(last_key_ms) > PASTE_STALE_MS {
+        KeyState::default()
+    } else {
+        state
+    }
+}
+
+/// Reads one frame of a person's keys. A bracketed paste's line breaks are text, also across
+/// frames. Enter sends, unless it follows a backslash or comes with Alt (Claude Code's line
+/// breaks); Ctrl-C clears the box. Escape sequences (arrows, function keys), Tab and other
+/// control keys type nothing. Shift-Enter reaches the terminal as a plain Enter and reads as one.
+pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let (mut typed, mut emptied) = (false, false);
+    let in_paste = &mut state.in_paste;
+    let after_backslash = &mut state.after_backslash;
+    let mut i = 0;
+    while i < data.len() {
+        let rest = &data[i..];
+        if rest.starts_with(START) {
+            *in_paste = true;
+            typed = true;
+            i += START.len();
+        } else if rest.starts_with(END) {
+            *in_paste = false;
+            *after_backslash = false;
+            i += END.len();
+        } else if *in_paste {
+            typed = true;
+            *after_backslash = data[i] == b'\\';
+            i += 1;
+        } else {
+            let backslash_before = std::mem::take(after_backslash);
+            match data[i] {
+                0x1b if data.get(i + 1) == Some(&b'\r') => {
+                    typed = true;
+                    i += 2;
+                }
+                0x1b => {
+                    i += 1;
+                    if matches!(data.get(i), Some(b'[' | b'O')) {
+                        i += 1;
+                        while data.get(i).is_some_and(|b| !(0x40..=0x7e).contains(b)) {
+                            i += 1;
+                        }
+                    }
+                    i += 1;
+                }
+                b'\r' if backslash_before => {
+                    typed = true;
+                    i += 1;
+                }
+                b'\r' | 0x03 => {
+                    (typed, emptied) = (false, true);
+                    i += 1;
+                }
+                byte if byte >= 0x20 && byte != 0x7f => {
+                    typed = true;
+                    *after_backslash = byte == b'\\';
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+    }
+    if typed {
+        BoxKeys::Typed
+    } else if emptied {
+        BoxKeys::Emptied
+    } else {
+        BoxKeys::Neither
+    }
+}
+
+/// Whether a Cockpit's prompt box holds a draft its person typed (`typed_seq`, the keystroke it
+/// was typed in) after it was last emptied (`emptied_seq`), recently enough to wait for
+/// ([`DRAFT_HOLDS_MS`] after `typed_ms`). Keystrokes are ordered by their count, not by the
+/// clock, which two of them can share.
+fn draft_holds(typed_seq: u64, emptied_seq: u64, typed_ms: i64, now_ms: i64) -> bool {
+    let (typed, emptied) = (
+        i64::try_from(typed_seq).unwrap_or(i64::MAX),
+        i64::try_from(emptied_seq).unwrap_or(i64::MAX),
+    );
+    yulius_domain::agent_cli::is_draft(typed, emptied)
+        && now_ms.saturating_sub(typed_ms) < DRAFT_HOLDS_MS
+}
+
+/// Whether a Cockpit's conversation is as it was read idle: nothing was written to it since.
 fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
     seen.is_none_or(|(path, len)| transcript_len(path) == len)
 }
@@ -265,13 +390,69 @@ impl App {
         self.deps.crypto.sha256_hex(view.to_string().as_bytes())
     }
 
+    /// Whether the Cockpit `shell`'s prompt box holds text its person typed and did not send
+    /// (SPEC-487 SES-002). Public for tests.
+    #[must_use]
+    pub fn cockpit_has_draft(&self, shell: &str) -> bool {
+        self.shell(shell).is_some_and(|s| self.holds_draft(&s))
+    }
+
+    fn holds_draft(&self, runtime: &ShellRuntime) -> bool {
+        draft_holds(
+            runtime.typed_seq.load(Ordering::SeqCst),
+            runtime.emptied_seq.load(Ordering::SeqCst),
+            runtime.typed_ms.load(Ordering::SeqCst),
+            self.now().0,
+        )
+    }
+
+    /// Records a person's keys into a Cockpit (SPEC-487 SES-002); a draft that starts or ends
+    /// is kept with its record, so a server restarted for an update knows it (review of slice
+    /// 9a, F1).
+    pub(crate) fn note_cockpit_keys(&self, runtime: &ShellRuntime, data: &[u8]) {
+        let now = self.now().0;
+        let keys = {
+            let mut state = runtime
+                .key_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let last = runtime.last_key_ms.swap(now, Ordering::SeqCst);
+            *state = settled(*state, last, now);
+            read_box_keys(data, &mut state)
+        };
+        let was = self.holds_draft(runtime);
+        let seq = || runtime.key_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        match keys {
+            BoxKeys::Typed => {
+                runtime.typed_seq.store(seq(), Ordering::SeqCst);
+                runtime.typed_ms.store(now, Ordering::SeqCst);
+            }
+            BoxKeys::Emptied => runtime.emptied_seq.store(seq(), Ordering::SeqCst),
+            BoxKeys::Neither => return,
+        }
+        // Kept when a draft starts or ends, and once a minute while it grows, so a restart
+        // counts its half hour from a recent keystroke (review of slice 9a, R4).
+        let holds = self.holds_draft(runtime);
+        let saved = runtime.draft_saved_ms.load(Ordering::SeqCst);
+        if (was != holds || (holds && now.saturating_sub(saved) >= DRAFT_SAVE_EVERY_MS))
+            && let Err(err) = {
+                runtime.draft_saved_ms.store(now, Ordering::SeqCst);
+                self.save_shell(runtime)
+            }
+        {
+            tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit's draft mark was not kept");
+        }
+    }
+
     /// Whether the live Cockpit `shell` is to start again to get what this Yulius serves:
-    /// `none`, `due`, or `waiting` for its turn to end (tests, diagnostics; SPEC-186 SAV-006).
+    /// `none`, `due`, `waiting` for its turn to end (tests, diagnostics; SPEC-186 SAV-006), or
+    /// `held` by a draft in its prompt box (SPEC-487 SES-002).
     #[must_use]
     pub fn cockpit_refresh_state(&self, shell: &str) -> &'static str {
         match self.shell(shell).map(|s| s.refresh.load(Ordering::SeqCst)) {
             Some(REFRESH_DUE) => "due",
             Some(REFRESH_WAITING) => "waiting",
+            Some(REFRESH_HELD) => "held",
             _ => "none",
         }
     }
@@ -325,7 +506,11 @@ impl App {
     }
 
     /// The caller's running Cockpit in `sandbox`.
-    fn running_cockpit(&self, user: &UserId, sandbox: &SandboxId) -> Option<Arc<ShellRuntime>> {
+    pub(crate) fn running_cockpit(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> Option<Arc<ShellRuntime>> {
         self.sandbox_shells(sandbox).into_iter().find(|shell| {
             shell.kind == ShellKind::Cockpit && !shell.global && shell.creator() == user
         })
@@ -567,6 +752,10 @@ impl App {
                 {
                     return;
                 }
+                // Idle, with no conversation: a due check may start one (SPEC-487 CHK-003).
+                if runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE {
+                    self.type_due_check(&runtime).await;
+                }
                 continue;
             };
             // Its length before the poll: everything up to it is read by the poll, so a prompt
@@ -632,6 +821,13 @@ impl App {
                 } else {
                     runtime.refresh.store(REFRESH_WAITING, Ordering::SeqCst);
                 }
+            }
+            // Idle, nothing to restart for: a due check is typed (SPEC-487 CHK-003).
+            if history_read
+                && turn.idle(now)
+                && runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE
+            {
+                self.type_due_check(&runtime).await;
             }
         }
     }
@@ -814,6 +1010,11 @@ impl App {
         if runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE || now < *retry_from {
             return false;
         }
+        // Held by its person's draft, before anything costly (review of slice 9a, F5).
+        if self.holds_draft(runtime) {
+            runtime.refresh.store(REFRESH_HELD, Ordering::SeqCst);
+            return false;
+        }
         runtime.refresh.store(REFRESH_DUE, Ordering::SeqCst);
         match self.refresh_cockpit(runtime, seen).await {
             Refresh::Ended => true,
@@ -860,8 +1061,13 @@ impl App {
                 return Refresh::Failed;
             }
         };
-        // Checked last, right before the end: a prompt sent meanwhile is not cut.
+        // Checked last, right before the end: a prompt sent meanwhile is not cut, nor text its
+        // person is still typing into the prompt box (SPEC-487 SES-002).
         if !still_idle(seen) {
+            return Refresh::Busy;
+        }
+        if self.holds_draft(runtime) {
+            runtime.refresh.store(REFRESH_HELD, Ordering::SeqCst);
             return Refresh::Busy;
         }
         runtime.notice(REFRESH_NOTICE);
@@ -1113,7 +1319,88 @@ impl Drop for CockpitStartSlot<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Observation, ReportedLimit, Timestamp, TurnState, own_limit};
+    use super::{
+        BoxKeys, DRAFT_HOLDS_MS, KeyState, Observation, PASTE_STALE_MS, ReportedLimit, Timestamp,
+        TurnState, draft_holds, own_limit, read_box_keys, settled,
+    };
+
+    /// SPEC-487 SES-002 (review of slice 9a, F2 to F4): Enter and Ctrl-C empty the prompt box;
+    /// a paste's line breaks (also across the frames a long paste is split into), Alt-Enter and
+    /// a backslash before Enter are text; Esc, Tab and arrows type nothing.
+    #[test]
+    fn a_draft_is_text_typed_since_the_box_was_emptied() {
+        let read = |data: &[u8]| read_box_keys(data, &mut KeyState::default());
+        assert_eq!(read(b"\r"), BoxKeys::Emptied);
+        assert_eq!(read(b"deploy it\r"), BoxKeys::Emptied);
+        assert_eq!(read(b"\x03"), BoxKeys::Emptied);
+        assert_eq!(read(b"deploy"), BoxKeys::Typed);
+        assert_eq!(read(b"a\rb"), BoxKeys::Typed, "sent, then typed again");
+        assert_eq!(read(b"line one\x1b\r"), BoxKeys::Typed, "Alt-Enter");
+        assert_eq!(read(b"\x1b\r"), BoxKeys::Typed, "Alt-Enter on its own");
+        assert_eq!(
+            read(b"line one\\\r"),
+            BoxKeys::Typed,
+            "a backslash before Enter"
+        );
+        for keys in [
+            &b"\x1b"[..],
+            b"\t",
+            b"\x1b[A",
+            b"\x1bOP",
+            b"\x7f",
+            b"\x1b[1;5D",
+        ] {
+            assert_eq!(read(keys), BoxKeys::Neither, "{keys:?}");
+        }
+        assert_eq!(read(b"\x1b[200~a\rb\x1b[201~"), BoxKeys::Typed);
+        assert_eq!(
+            read(b"\x1b[200~a\x1b[201~\r"),
+            BoxKeys::Emptied,
+            "pasted, then sent"
+        );
+        let mut state = KeyState::default();
+        assert_eq!(
+            read_box_keys(b"\x1b[200~first part", &mut state),
+            BoxKeys::Typed
+        );
+        assert_eq!(
+            read_box_keys(b"more\r", &mut state),
+            BoxKeys::Typed,
+            "inside the paste"
+        );
+        assert_eq!(read_box_keys(b"end\x1b[201~", &mut state), BoxKeys::Typed);
+        assert!(!state.in_paste);
+        assert_eq!(read_box_keys(b"\r", &mut state), BoxKeys::Emptied);
+        // Review of slice 9a, R1: a backslash and the Enter after it, as two frames.
+        assert_eq!(read_box_keys(b"line one\\", &mut state), BoxKeys::Typed);
+        assert_eq!(
+            read_box_keys(b"\r", &mut state),
+            BoxKeys::Typed,
+            "a line break"
+        );
+        assert_eq!(
+            read_box_keys(b"\r", &mut state),
+            BoxKeys::Emptied,
+            "then sent"
+        );
+        // R2: a paste whose end never came is over after a pause without keys.
+        let open = KeyState {
+            in_paste: true,
+            after_backslash: false,
+        };
+        assert_eq!(settled(open, 1_000, 1_000 + PASTE_STALE_MS), open);
+        assert_eq!(
+            settled(open, 1_000, 1_001 + PASTE_STALE_MS),
+            KeyState::default()
+        );
+        assert!(!draft_holds(0, 0, 0, 5));
+        assert!(draft_holds(2, 1, 10, 20));
+        assert!(!draft_holds(1, 2, 10, 10), "sent in the same millisecond");
+        assert!(
+            !draft_holds(2, 1, 10, 10 + DRAFT_HOLDS_MS),
+            "left for half an hour"
+        );
+    }
 
     /// SPEC-486: the Cockpit acts on its own thread's limit, not on one that refused a
     /// workflow's agents (it could not have the workflow resumed after a move).

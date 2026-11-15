@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
+use yulius_domain::redact::scrub_github_tokens;
 
 /// A GitHub adapter failure.
 ///
@@ -90,9 +90,6 @@ pub enum GitHubError {
     InvalidKey,
 }
 
-/// `ghs_` first: a stateless installation token is removed whole before another prefix found
-/// inside its base64url payload or signature could cut it.
-const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const MAX_MESSAGE: usize = 300;
 const REDACTED: &str = "[redacted]";
 
@@ -105,28 +102,7 @@ pub(crate) fn scrub(text: &str, known: &[&str]) -> String {
             out = out.replace(secret, REDACTED);
         }
     }
-    for prefix in TOKEN_PREFIXES {
-        let mut search_from = 0;
-        while let Some(found) = out[search_from..].find(prefix) {
-            let start = search_from + found;
-            let tail = &out[start + prefix.len()..];
-            let stateless = if *prefix == INSTALLATION_TOKEN_PREFIX {
-                stateless_installation_token_len(tail)
-            } else {
-                None
-            };
-            let len = stateless.unwrap_or_else(|| {
-                tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .unwrap_or(tail.len())
-            });
-            if len == 0 {
-                search_from = start + prefix.len();
-                continue;
-            }
-            out.replace_range(start..start + prefix.len() + len, REDACTED);
-            search_from = start + REDACTED.len();
-        }
-    }
+    out = scrub_github_tokens(&out, REDACTED);
     out = scrub_jwts(&out);
     if out.len() > MAX_MESSAGE {
         let mut end = MAX_MESSAGE;

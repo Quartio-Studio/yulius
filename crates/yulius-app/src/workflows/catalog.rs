@@ -135,12 +135,18 @@ mod tests {
                 return Err(format!("catalog/workflows/{stem}.md tells agents: {word}").into());
             }
         }
-        // Delivery still ends somewhere: dev deployed when asked, production a person's.
-        for id in ["wf-feature", "wf-fix"] {
+        // Delivery still ends somewhere: dev deployed when asked, production a person's
+        // (SPEC-483 SHP-002: a chore deployed unasked).
+        for id in ["wf-feature", "wf-fix", "wf-chore"] {
             let w = default_workflow(id).ok_or(id)?;
             assert!(w.instructions.contains("`cd_deploy`"), "{id}");
             assert!(w.instructions.contains("production is a person's"), "{id}");
         }
+        // SPEC-483 SHP-003: `delivery_merge` takes only a head an independent review approved,
+        // documentation too.
+        let docs = default_workflow("wf-docs").ok_or("wf-docs")?;
+        assert!(!docs.instructions.contains("no independent review"));
+        assert!(docs.instructions.contains("independent review"));
         Ok(())
     }
 

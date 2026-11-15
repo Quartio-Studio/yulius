@@ -21,9 +21,9 @@ use crate::secret::Secret;
 /// Claude Code executable name (resolved through `PATH` by the spawner).
 pub const CLAUDE_PROGRAM: &str = "claude";
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
-pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
+pub const TASK_TOKEN_ENV: &str = yulius_domain::agent_endpoint::TOKEN_ENV;
 /// Environment variable holding the internal Yulius listener URL.
-pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
+pub const YULIUS_URL_ENV: &str = yulius_domain::agent_endpoint::URL_ENV;
 /// Environment variable holding the task's worktree: `yulius remove` removes the task's own files
 /// there (SPEC-192 RMV-001).
 pub const TASK_WORKTREE_ENV: &str = "YULIUS_TASK_WORKTREE";
@@ -735,8 +735,9 @@ pub const IS_SANDBOX_ENV: (&str, &str) = ("IS_SANDBOX", "1");
 /// Environment variable holding a Cockpit's Yulius MCP bearer.
 pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
 /// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
-/// nothing but its audit entry; SPEC-178 VAU-003).
-pub const COCKPIT_READ_ONLY_TOOLS: [&str; 13] = [
+/// nothing but its audit entry, SPEC-178 VAU-003; `task_delivery` is the task page's reading,
+/// which may store the delivery stage it finds on GitHub, as opening that page does).
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 27] = [
     "tasks_list",
     "task_get",
     "automations_list",
@@ -747,9 +748,24 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 13] = [
     "secret_verify",
     "sandboxes_list",
     "sandbox_task_get",
+    "sandbox_tasks_list",
+    "sandbox_requests",
+    "superagent_checks",
     "browser_tabs",
     "browser_snapshot",
     "browser_screenshot",
+    // The reading ones of the person's project tools (SPEC-487).
+    "task_delivery",
+    "merge_queue",
+    "subscriptions",
+    "instance",
+    "ci_runs",
+    "ci_run",
+    "cd_status",
+    "variables_list",
+    "task_screen",
+    "task_usage",
+    "checkout",
 ];
 
 /// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius and the

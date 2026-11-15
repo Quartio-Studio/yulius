@@ -3,7 +3,7 @@
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
-import { limitsNow, percentNow, placingModel } from './usage.js';
+import { limitsNow, needsSignIn, percentNow, placingModel } from './usage.js';
 import { PROVIDERS, fallbackLine, modelLabel } from './models.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
@@ -442,7 +442,7 @@ export function renderStatus(data) {
 
   // One line that says whether anything needs a person; those accounts are listed first. A
   // subscription at its limit needs nobody: the pool uses the others until it resets.
-  const troubled = accounts.filter((a) => ['relogin', 'pending_login', 'error'].includes(a.status));
+  const troubled = accounts.filter(needsSignIn);
   const hot = [vm.cpu_percent, memPct, diskPct].some((v) => Number.isFinite(v) && v >= 90);
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Not isolated: agent sessions run without an OS sandbox' };
@@ -1150,7 +1150,10 @@ export function createSidebar(ctx) {
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
     row.num.title = `Task #${task.number}`;
-    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
+    // A request for control of the viewer's own task waits for their answer (SPEC-490 OWN-008).
+    const asks = task.control_request && !otherOwner(task, ctx.store.state.me?.user?.login) ? `@${task.control_request.by.login} asks for control` : null;
+    setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null,
+      asks ? h('span', { class: 'badge badge-warn', title: asks }, icon('lock', { size: 12 }), h('span', { class: 'sr-only' }, asks)) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
     row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;
@@ -1158,7 +1161,7 @@ export function createSidebar(ctx) {
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
     const label = `Archive task #${task.number}`;
-    const archivable = taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
+    const archivable = taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login, Boolean(ctx.guest && ctx.guest())).archive;
     // The keyboard on a quick Archive that hides (the task was continued) goes to its row's link,
     // never to the page (#331); a rebuild after this keeps it there.
     if (!archivable && document.activeElement === row.archive) row.link.focus({ preventScroll: true });
@@ -1168,7 +1171,12 @@ export function createSidebar(ctx) {
     row.archive.title = label;
   }
 
-  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive).map((row) => row.task);
+  // "Archive all" takes the viewer's own tasks (SPEC-490 OWN-003): another person's task is put
+  // away by naming it (its row's archive, its menu).
+  const archivable = (groupRows) => groupRows.filter((row) => {
+    const me = ctx.store.state.me?.user?.login;
+    return !otherOwner(row.task, me) && taskActions(row.task, sandbox.access, row.pr, me).archive;
+  }).map((row) => row.task);
 
   /**
    * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While
@@ -1176,7 +1184,7 @@ export function createSidebar(ctx) {
    */
   function archiveAllButton(groupRows) {
     if (!archivable(groupRows).length) return null;
-    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive every Done task', onClick: async () => {
+    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive your Done tasks', onClick: async () => {
       const tasks = archivable(groupRows);
       if (archivingAll || !tasks.length) return;
       archivingAll = true;

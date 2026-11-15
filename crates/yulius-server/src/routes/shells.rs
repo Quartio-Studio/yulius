@@ -129,13 +129,6 @@ pub async fn superagent_requests(
     Ok(Json(app.superagent_requests(&ctx, &sid).await?))
 }
 
-/// The person's answer to one request.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestAnswer {
-    approve: bool,
-}
-
 /// `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": bool}`: the person approves
 /// or declines one request, from a browser session only (SPEC-335 XSR-006).
 pub async fn superagent_request_answer(
@@ -144,10 +137,10 @@ pub async fn superagent_request_answer(
     Path((sid, id)): Path<(String, String)>,
     body: Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let answer: RequestAnswer = serde_json::from_slice(&body)
+    let answer: yulius_app::cross_sandbox::RequestAnswer = serde_json::from_slice(&body)
         .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?;
     Ok(Json(
-        app.superagent_request_answer(&ctx, &sid, &id, answer.approve)
+        app.superagent_request_answer(&ctx, &sid, &id, &answer)
             .await?,
     ))
 }

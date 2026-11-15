@@ -265,16 +265,23 @@ impl App {
             Ok(HookReply::Output(output))
                 if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
         );
+        if from_box && blocked {
+            // What was submitted is back in the box: nothing was sent past a draft.
+            runtime.sent_past_draft.store(false, Ordering::SeqCst);
+        }
         if from_box && !held && !blocked {
             let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
             let run_dir = Path::new(&ctx.attempt.run_dir);
+            // The owner's message typed behind their draft went on with it (SPEC-487
+            // TCT-006): this prompt is known to follow the draft, whatever this server saw.
+            let past_draft = runtime.sent_past_draft.swap(false, Ordering::SeqCst);
             // A draft this server knows from its mark alone (typed before it started, no key
             // seen since) may sit behind this very prompt: one held across the restart is
             // asked about again and reads as a new submit here. Such a draft stays one until
             // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
             // not from what recovery kept: this hook may be served before the run is
             // reattached.
-            let inherited = if runtime.typed_seen.load(Ordering::SeqCst) {
+            let inherited = if past_draft || runtime.typed_seen.load(Ordering::SeqCst) {
                 0
             } else {
                 crate::supervisor::person_typed_marked(run_dir).min(self.now().0)
@@ -837,6 +844,13 @@ impl App {
             self.continue_working_stretch(&ctx.task.id).await
         };
         self.set_task_activity(&task, Activity::Working).await?;
+        // Only now, with the task gone from idle to Working by a prompt sent after the pull
+        // request watch typed: the turn of that news has begun (SPEC-487 CHN-002). Not for a
+        // task that already worked: the prompt hook of news typed while a turn runs comes at
+        // the Enter, and that news starts its own turn only after the running one.
+        if task.activity != Some(Activity::Working) {
+            self.pr_news_turn_began(&task.id, Some(sent));
+        }
         self.keep_working_stretch(&task.id, stretch).await;
         // A workflow of the session is paused at a usage limit: at a prompt a person or Yulius
         // typed, its agent is told to resume it, not to start it again (SPEC-486 WFL-006).
@@ -926,23 +940,33 @@ impl App {
         // Claude Code holds in its queue for the session, which a resumed session does not get
         // back: a prompt entered while this turn ran, by its person or by Yulius for one. While
         // one waits the session stays, is answered as on a subscription that stays, and moves
-        // at a later turn's end (SPEC-479 SWQ-001). Asked after the same read.
-        let (busy, prompt_waits) =
-            if matches!(decision.0, Decision::Switch { .. }) && !self.switch_cooling(&task.id) {
-                let prompts_before = self.prompts_passed(&task.id);
-                self.await_transcript_read(&task.id).await;
-                let busy = self.shells_running_now(&task.id).await;
-                crate::race::reached(
-                    crate::race::Point::SwitchProbed,
-                    std::path::Path::new(task.id.as_str()),
+        // at a later turn's end (SPEC-479 SWQ-001). Asked after the same read. A look at the
+        // background work that gives no answer counts as work running, as for everyone who
+        // asks before a session is ended (SPEC-483 SWT-001).
+        let (busy, prompt_waits) = if matches!(decision.0, Decision::Switch { .. })
+            && !self.switch_cooling(&task.id)
+        {
+            let prompts_before = self.prompts_passed(&task.id);
+            self.await_transcript_read(&task.id).await;
+            let work = self.background_work_now(&task.id).await;
+            if work.is_none() {
+                tracing::info!(
+                    task = %task.id,
+                    "the session is not moved to another subscription at this turn's end: its background work could not be told"
                 );
-                (
-                    busy,
-                    self.prompt_waits_for_turns_end(&task.id, prompts_before),
-                )
-            } else {
-                (false, false)
-            };
+            }
+            let busy = work != Some(false);
+            crate::race::reached(
+                crate::race::Point::SwitchProbed,
+                std::path::Path::new(task.id.as_str()),
+            );
+            (
+                busy,
+                self.prompt_waits_for_turns_end(&task.id, prompts_before),
+            )
+        } else {
+            (false, false)
+        };
         // A session that works on after this boundary (a gate's block, its goal) and runs an
         // older Claude Code than runs get now restarts on the newer one here, as a move to
         // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
@@ -1297,8 +1321,9 @@ impl App {
     /// order; checked items are `done`; unchecked items keep the status and effort of the
     /// existing step with the same title (agents may mark them `in_progress` before ticking the
     /// box), so unticking never reopens a finished step; new items start `pending`. Writes only
-    /// on change. Returns whether the steps changed. It runs at a session start, at a turn end and
-    /// every few seconds of a live run (SPEC-341 LSS-001), under the task's steps lock.
+    /// on change. Returns whether the steps changed. It also keeps the spec's `status` with the
+    /// task (SPEC-491 DON-004). It runs at a session start, at a turn end and every few seconds
+    /// of a live run (SPEC-341 LSS-001), under the task's steps lock.
     ///
     /// # Errors
     /// Store failures.
@@ -1312,15 +1337,40 @@ impl App {
         // newer one written meanwhile (SPEC-341 LSS-002).
         let runtime = self.runtime(&task.id);
         let _steps = runtime.steps_lock.lock().await;
-        let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
+        let root = PathBuf::from(worktree);
+        // A spec moved or deleted since it was registered: found again where it is now, or, with
+        // none left, its kept status goes (review of SPEC-491, m2). Only while a status is kept:
+        // every task is given a path at its start, and a task that never wrote its spec has
+        // nothing stale to clear, so it is not made to read the specs folder at every sync
+        // (review round 2).
+        let rel = if root.join(spec_path).is_file() {
+            spec_path.clone()
+        } else if root.is_dir()
+            && matches!(self.deps.store.spec_status(&task.id).await, Ok(Some(_)))
+        {
+            match self.task_spec_path(task, &root).await {
+                Ok(found) => found,
+                Err(_) => {
+                    self.note_spec_status(&task.id, None).await;
+                    return Ok(false);
+                }
+            }
+        } else {
+            return Ok(false);
+        };
         let expected = task.id.clone();
-        let plan = tokio::task::spawn_blocking(move || {
-            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected).plan)
+        let report = tokio::task::spawn_blocking(move || {
+            read_repo_doc(&root, &rel).map(|text| validate_spec_for(&text, &expected))
         })
         .await
         .map_err(AppError::internal)?;
-        let Some(plan) = plan else { return Ok(false) };
-        let items: Vec<_> = plan
+        let Some(report) = report else {
+            return Ok(false);
+        };
+        // What the spec says of the task's work decides Done with the steps (SPEC-491 DON-004).
+        self.note_spec_status(&task.id, report.status).await;
+        let items: Vec<_> = report
+            .plan
             .into_iter()
             .filter(|item| item.depth == 0 && !item.text.trim().is_empty())
             .take(crate::coordination::MAX_STEPS)

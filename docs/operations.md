@@ -21,7 +21,7 @@ been performed or verified** as part of the implementation work.
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
 | `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
-| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
+| Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium` (`YULIUS_CHROMIUM`). Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
 | `xvfb` | the sandbox browser's virtual display (SPEC-002 ADR-15) | `apt install xvfb`. Without it (or ffmpeg) the browser runs headless: JPEG frames, no real input, captchas fail. `xauth` is not needed (Yulius writes the cookie itself); `x11-utils` (`xdpyinfo`) only for diagnostics. |
 | `ffmpeg` with libx264 and x11grab | the browser video | `apt install ffmpeg` (Ubuntu's build has both; `yulius doctor` checks). |
 | Fonts | pages in the sandbox browser | at least `fonts-noto-core fonts-noto-color-emoji fonts-liberation` (Ubuntu 24.04 names); add `fonts-noto-cjk` for CJK pages. |
@@ -361,10 +361,13 @@ server {
 cookie `__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and of every
 cookie-authenticated API request is checked against it.
 
-Yulius itself sends `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`
-(nothing may frame Yulius, not even its own browser panel), `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: same-origin` and `X-Yulius: <process tag>` on every response (stricter route
-policies are kept). HSTS is the TLS proxy's job, as in the examples above; add it once the
+Yulius itself sends `X-Frame-Options: DENY`, a strict `Content-Security-Policy` (scripts and
+connections from Yulius itself only, no `eval`; styles, fonts, images and media also inline or
+as `data:`/`blob:`; and `frame-ancestors 'none'`:
+nothing may frame Yulius, not even its own browser panel; ADR-0338),
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and `X-Yulius: <process tag>`
+on every response (stricter route policies are kept). A proxy in front must pass these headers
+on, not replace them. HSTS is the TLS proxy's job, as in the examples above; add it once the
 domain is meant to stay on HTTPS.
 
 ### Per-client sign-in limits (trusted proxy header)
@@ -487,8 +490,9 @@ listener serves them too. The proxy in front only has to:
    WebSockets and streaming as for the main host.
 
 Preview origins must be subdomains of the Yulius host (the default): they are then the same site
-as Yulius, so their cookies work inside the panel's frames (no third-party cookie blocking), and
-Yulius never relies on `SameSite` for its own protection. `YULIUS_PREVIEW_DOMAIN` (or
+as Yulius, so the handshake's redirects between Yulius and a preview are same-site navigations
+whose grant cookie no browser treats as third-party, and Yulius never relies on `SameSite` for
+its own protection. `YULIUS_PREVIEW_DOMAIN` (or
 `--preview-domain`) sets another parent domain or `off`. A public URL that is an IP address has no
 previews. For local development use a name such as `http://yulius.localhost:8080`: browsers
 resolve `*.yulius.localhost` by themselves, and a bare `localhost` would not work
@@ -570,6 +574,8 @@ Encoding runs only while someone watches.
 | `--browser-max-size` / `YULIUS_BROWSER_MAX_SIZE` | `1920x1200` | Largest viewport in CSS pixels; larger panels show the page scaled down. |
 | `--browser-scale` / `YULIUS_BROWSER_SCALE` | 1 | Device pixels per CSS pixel (1–3). 2 gives crisp text on HiDPI screens at about three times the CPU and bandwidth. |
 | `--browser-display-base` / `YULIUS_BROWSER_DISPLAY_BASE` | 100 | First X display number; numbers in use are skipped. |
+| `--chromium` / `YULIUS_CHROMIUM` | found on `PATH` or in the usual install locations | The Chromium or Google Chrome executable. |
+| `--chromium-no-sandbox` / `YULIUS_CHROMIUM_NO_SANDBOX` | off | Starts Chromium with `--no-sandbox`: only on a host where Chromium's own sandbox cannot run (a container without user namespaces). The sandbox browsers run on the host as the service user, outside every project's sandbox, so without Chromium's sandbox a compromised page renderer has the service user's rights (the data directory, the vault key). |
 
 Resources (measured on a 12-vCPU VM, Chrome 155, ffmpeg 6.1; SPEC-002 ADR-15): the encoder takes
 about one core per watched browser at 1280×800 and 60 fps (three quarters of one on a static page),
@@ -616,7 +622,8 @@ that only points at one: serve it on one of the sandbox's ports and open it as
 ### Sandbox isolation
 
 Each sandbox has one **namespace holder** (SPEC-002 ADR-22). Agents' task sessions, users'
-shells and CI jobs join it. A sandbox gets:
+shells and CI jobs join it (a user's shell runs `--shell` / `YULIUS_SHELL`, default the service's
+`$SHELL`, then `/bin/bash`, then `/bin/sh`). A sandbox gets:
 
 - its own user namespace: root inside is the service user, ids 1–65535 come from its subordinate
   range;
@@ -950,7 +957,12 @@ silent. It types none of them while a person's draft may sit in the session's pr
   for the tasks chained after it until its person sent a prompt.
 - **What ends it.** Send what you typed in the task's terminal, or clear it and send any
   prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
-  it never sends or clears a person's text.
+  by itself it never sends or clears a person's text. The task's owner can also tell their
+  Superagent (or their own agent) to send a message past it: `task_message` with
+  `with_draft: true` types the message behind that text and both go to the agent as one
+  prompt, once the last key is more than a minute old (SPEC-487). That ends the hold too,
+  also for a draft from before a restart. Nobody else's message goes past it, and not while a
+  prompt Yulius held for a decision is back in the box.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
   box, and a restarted server reads it when it reattaches the run. A draft it knows from
@@ -995,9 +1007,10 @@ from a sandbox, and no daemon needs to run on the host.
 - **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
   starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
   network, with a run's view of the files plus its storage, a cgroup namespace rooted at
-  `sandboxes/<sandbox>/engine`, and a seccomp profile of its own that every container inherits,
-  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
-  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `sandboxes/<sandbox>/engine/inside` (its limits on `engine`, out of its view, ADR-0339), and
+  a seccomp profile of its own that every container inherits, `--privileged` included.
+  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves
+  through the sandbox's egress, and they reach the egress proxy at
   `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
   port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.** `sudo yulius host setup` (§2) brings all of them and proves them with the
@@ -1032,10 +1045,10 @@ from a sandbox, and no daemon needs to run on the host.
   - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
-    leaf again under the sandbox's group, and so does the server's upkeep tick (30 s) for an engine
-    or relay front it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
-    …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
-    prepared the sandbox.
+    leaf (and `inside` below it) again under the sandbox's group, and so does the server's
+    upkeep tick (30 s) for an engine or relay front it keeps (SPEC-201, #614). Before that fix,
+    `docker` answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory"
+    after every update, until a new run prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`,
     listed in `/etc/modules-load.d/yulius-docker.conf` so that they load at every boot.
@@ -1060,11 +1073,12 @@ from a sandbox, and no daemon needs to run on the host.
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
   capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container resource flags (`docker run -m`, `--cpus`, `--pids-limit`, compose `mem_limit`,
-    `cpus` or `pids_limit`) are not supported; leave them out. The engine lives in its own group,
-    so cgroup v2 passes no controller below it: memory flags are discarded, and CPU and task flags
-    may make the container fail to start. The sandbox's own limits, and the engine's 3/8 of its
-    task limit (SPEC-268), still bound every container.
+  - Per-container task limits (`--pids-limit`, compose `pids_limit`) work: `cpu` and `pids`
+    reach the engine's root and runc passes them on in threaded mode (ADR-0339). Memory and CPU
+    flags (`docker run -m`, `--cpus`, compose `mem_limit`, `cpus`) are not supported; leave them
+    out: memory cannot be threaded and is discarded, and runc refuses `--cpus` in threaded mode
+    ("cannot enter cgroupv2 … with domain controllers"). The sandbox's own limits, and the
+    engine's 3/8 of its task limit (SPEC-268), still bound every container.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
@@ -2038,7 +2052,9 @@ on the old host; without it the card says so and names the command above.
 Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
 audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the
 values). While a move's request waits or its run is in flight, **Update now** and **Restart…**
-are refused, and nothing is asked of a move while an update or restart runs. A move started with
+are refused (a run whose helper has been silent for a minute is in flight until systemd says
+the helper's service ended; only then does the card say the helper stopped without a word),
+and nothing is asked of a move while an update or restart runs. A move started with
 the command on the host shows on the page as a recorded checklist; whether it still runs is known
 only for runs the page started. On the new instance the card shows the move that brought it
 there until the next move does, or until `/var/lib/yulius-migrate/arrived.json` is removed.
@@ -2637,8 +2653,9 @@ means the path unit is not enabled or could not start the service: `systemctl st
 yulius-migrate.path yulius-migrate.service`. The path unit starts the helper on a change of the
 request file; a request written in the moment the helper ends another run starts nothing, so the
 server writes an untaken request again from 5 s on while the page waits for it. A helper that
-stopped without a word (it was killed, the host restarted) is said on the page after a minute; the
-move is continued or aborted from there, or with the command.
+stopped without a word (it was killed, the host restarted) is said on the page once its report is
+a minute old and systemd says its service ended; the move is continued or aborted from there, or
+with the command.
 
 ### Notes for specific upgrades
 
@@ -2886,10 +2903,12 @@ move is continued or aborted from there, or with the command.
   agent runs route HTTP(S) through the egress proxy and redact agent secrets; runs started earlier
   keep their environment until they are continued. Make sure `ca-certificates` is installed.
 - Upgrading to default workflows (AUT-006, #136, 2026-10-10): the default workflows now ship with
-  the binary (`catalog/workflows/`) and are read-only. On the first start the "Feature" and "Quick
-  task" rows seeded by earlier releases are retired (audited as `workflow.retired`); an edited
-  "Feature" is kept as "Feature (custom)", an edited "Quick task" stays as it is. Automations that
-  used "Quick task" continue without a workflow. No migration and no configuration.
+  the binary (`catalog/workflows/`) and are read-only. Releases from 2026-10-11 until SPEC-483 slice
+  25 (2026-11) retired the "Feature" and "Quick task" rows earlier releases seeded, at their first
+  start. On an instance that skipped all of them, a "Feature" row stays hidden behind the default
+  "Feature" (an edited one's edits are no longer shown: copy them from the database first if they
+  matter), and a "Quick task" row is listed as an instance workflow, which Settings → Workflows
+  deletes. No migration and no configuration.
 - Upgrading to dropped files (EDT-006, UI-048, 2026-10-10): raise the reverse proxy's request body
   limit to 32 MB (§4) or uploads between 16 and 25 MiB fail at the proxy with 413. No migration.
 - Upgrading to usage from the sessions and session-end tracking (F 2026-10-10 items 1(a)/(c)): no

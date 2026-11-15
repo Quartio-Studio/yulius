@@ -138,7 +138,6 @@ mod tests {
             client_secret: Secret::new("secret"),
             private_key_pem: Secret::new(pem),
             slug: "yulius-test".into(),
-            webhook_secret: None,
         }
     }
 

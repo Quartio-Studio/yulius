@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pool_supervision::{
-    ScriptedUsage, build_with, echoed, new_task, runtime, screen, seed, stop, task, temp, wait_for,
+    ScriptedUsage, build_tuned, build_with, echoed, new_task, runtime, screen, seed, stop, task,
+    temp, wait_for,
 };
 use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
@@ -322,6 +323,592 @@ fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
         assert!(
             !screen(&app, &id).contains("COMPACT"),
             "Yulius typed nothing"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A hooked agent (its prompts empty the prompt box, as Claude Code's do) whose second message
+/// meets a full context after a turn of `turn_ms`. A test that types "while the turn runs"
+/// types within that time right after the prompt's submit: its one assumption about time
+/// ([`TURN_MS`] is long for that).
+fn hooked(turn_ms: u64) -> FakeAgentOptions {
+    FakeAgentOptions {
+        hooks: true,
+        echo_turn_ms: Some(turn_ms),
+        ..agent(1, false)
+    }
+}
+
+/// The turn of a prompt during which a test types on.
+const TURN_MS: u64 = 3_000;
+
+/// An app whose hooks reach it (a listener of its own), with `tune` applied to its settings.
+async fn served(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    tune: impl FnOnce(&mut yulius_app::context::AppConfig),
+) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
+    served_on(data, fake, agent, 0, tune).await
+}
+
+/// [`served`] on `port` (0: any), for a second server on the first one's data and address.
+async fn served_on(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    tune: impl FnOnce(&mut yulius_app::context::AppConfig),
+) -> Result<(Arc<App>, u16), Box<dyn std::error::Error>> {
+    let usage = Arc::new(ScriptedUsage::default());
+    crate::first_message::start_with(data, fake, agent, port, usage, tune).await
+}
+
+/// Waits for a notice that contains `words` and fails when the terminal never says it.
+async fn must_hear(
+    frames: &mut Receiver<HubFrame>,
+    said: &mut Vec<String>,
+    words: &str,
+) -> TestResult {
+    heard(frames, said, &[&[words]]).await;
+    if said.iter().any(|n| n.contains(words)) {
+        Ok(())
+    } else {
+        Err(format!("the terminal never said {words:?}: {said:?}").into())
+    }
+}
+
+/// A person at the task's terminal: their context and a writer's attachment.
+async fn at_the_terminal(
+    app: &Arc<App>,
+    id: &TaskId,
+) -> Result<
+    (
+        yulius_app::auth::AuthContext,
+        yulius_app::terminal::TerminalAttach,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let person = task(app, id).await?.created_by;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&person).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let attach = app
+        .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+        .await?;
+    Ok((ctx, attach))
+}
+
+/// A task of a hooked agent whose person typed a prompt and sent it; it is being answered (the
+/// prompt emptied the box) and the full context has not refused it yet.
+async fn refused_soon(
+    app: &Arc<App>,
+    data: &Path,
+) -> Result<
+    (
+        TaskId,
+        yulius_app::auth::AuthContext,
+        yulius_app::terminal::TerminalAttach,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let id = started(app, data).await?;
+    let (ctx, attach) = at_the_terminal(app, &id).await?;
+    app.terminal_input(&ctx, &attach, b"too much", false)
+        .await?;
+    assert!(app.has_draft(&id), "typed, not sent yet");
+    app.terminal_input(&ctx, &attach, b"\r", false).await?;
+    wait_for("the prompt's submit", Duration::from_secs(30), || async {
+        !app.has_draft(&id)
+    })
+    .await?;
+    Ok((id, ctx, attach))
+}
+
+/// SPEC-483 TYP-001: the way a context usually fills. A person types a prompt and sends it, and
+/// the full context refuses it: the prompt emptied the box, their keys are no draft, and Yulius
+/// compacts the session.
+#[test]
+fn a_persons_own_refused_prompt_is_compacted() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = served(&data, &fake, hooked(0), |_| {}).await?;
+        let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
+        wait_for("the compaction", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: a person types while the turn runs and sends nothing; then the context is
+/// full. Their text may sit in the prompt box, so `/compact` typed now would be sent with it:
+/// Yulius holds the compaction, the task reads Needs your action with why and what to do, and
+/// nothing is typed. When they type on, the session is theirs (the flag ends, Your turn); when
+/// they send what they typed, the full context refuses it and that refusal is compacted.
+#[test]
+fn a_possible_draft_holds_the_compaction_and_its_person_is_told() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
+        let (id, ctx, attach) = refused_soon(&app, &data).await?;
+        let mut frames = app.runtime(&id).hub.watch();
+        // The next instruction, begun while the turn runs.
+        app.terminal_input(&ctx, &attach, b"and then", false)
+            .await?;
+        assert!(app.has_draft(&id));
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        let why = crate::support::attention(&app, id.as_str()).await?;
+        assert_eq!(
+            why["problem"],
+            "The session's context is full, and Yulius does not compact it yet: someone typed in \
+             the terminal and sent no prompt since, so their text may still be in the prompt box."
+        );
+        assert_eq!(
+            why["action"],
+            "Send what you typed in the terminal, or clear it and send any prompt: Yulius then \
+             compacts the session. In ten minutes Yulius types its command all the same: text \
+             still in the prompt box then is sent with it and lost, and the task continues in a \
+             fresh session."
+        );
+        let mut said = Vec::new();
+        must_hear(&mut frames, &mut said, "holds the compaction").await?;
+        assert!(
+            !screen(&app, &id).contains("COMPACT"),
+            "nothing typed behind the draft"
+        );
+        // They type on: the session is theirs now, the flag ends and the task waits for them.
+        app.terminal_input(&ctx, &attach, b" this", false).await?;
+        must_hear(&mut frames, &mut said, "leaves the full session to you").await?;
+        wait_for("Your turn", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::Waiting)
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("COMPACT"));
+        // They send it: the box is empty, the full context refuses the prompt, and that
+        // refusal is compacted.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the compaction", Duration::from_secs(60), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: nobody answers the flag (a goal task whose person pressed a key hours ago
+/// and left), and the key left nothing in the box. The hold is bounded: after it Yulius types
+/// its command, the session is compacted and told to carry on (the command's Enter emptied the
+/// box, so the old key keeps nothing out any more), and the task works on instead of waiting
+/// for someone who is not there.
+#[test]
+fn a_held_compaction_is_typed_once_its_hold_is_over() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = served(&data, &fake, hooked(TURN_MS), |config| {
+            config.compact_hold_ms = 3_000;
+        })
+        .await?;
+        let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
+        // A key that leaves nothing in the box (an arrow, Esc, a dialog's answer): Yulius sees
+        // keys, not the box, so it counts as a possible draft all the same.
+        let person = task(&app, &id).await?.created_by;
+        app.record_typing(&id, &person);
+        assert!(app.has_draft(&id));
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("COMPACT"), "held first");
+        wait_for("the compaction", Duration::from_secs(60), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        assert!(
+            !activity_is(&app, &id, Activity::NeedsAttention).await,
+            "the flag ended with the hold"
+        );
+        wait_for("the wake-up", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Yulius: your context was full") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: nobody answers the flag and real text sits in the box. After the hold
+/// Yulius's command goes out behind that text, as a prompt, which the full context refuses:
+/// that refusal is the compaction's failure, and the task continues in a fresh session at
+/// once, not after the ten minutes a compaction's outcome gets.
+#[test]
+fn a_command_sent_behind_real_text_continues_in_a_fresh_session() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = served(&data, &fake, hooked(TURN_MS), |config| {
+            config.compact_hold_ms = 3_000;
+        })
+        .await?;
+        let (id, ctx, attach) = refused_soon(&app, &data).await?;
+        let mut frames = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, b"and then", false)
+            .await?;
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        wait_for("the fresh session", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].launch_kind, LaunchKind::New);
+        let mut said = Vec::new();
+        must_hear(
+            &mut frames,
+            &mut said,
+            "Compacting did not help (the command was sent with text left in the prompt box)",
+        )
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001 (review, round 3): during the hold the box is emptied without a key and
+/// without a turn: a prompt hook for a command reaches Yulius (sent here by the test with the
+/// run's own token, as a Claude Code that runs the hook for commands sends it). The hold is
+/// over: when Yulius types its command, the task does not read the hold's flag any more.
+#[test]
+fn a_hold_whose_box_was_emptied_without_a_key_ends_its_flag() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, port) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
+        let (id, _ctx, _attach) = refused_soon(&app, &data).await?;
+        // A key that left nothing in the box: what the command's submit then empties is
+        // only what Yulius knows of it.
+        let person = task(&app, &id).await?.created_by;
+        app.record_typing(&id, &person);
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        let read = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, key, id, read) = (app.clone(), id.clone(), id.clone(), read.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineTyped,
+                Path::new(key.as_str()),
+                move || {
+                    let now = tokio::task::block_in_place(|| handle.block_on(task(&app, &id)));
+                    if let (Ok(mut slot), Ok(now)) = (read.lock(), now) {
+                        *slot = Some(now.activity);
+                    }
+                },
+            );
+        }
+        // The run's token, as its agent's hooks have it.
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let pid = run.child_pid.ok_or("no agent pid")?;
+        let environ = std::fs::read(format!("/proc/{pid}/environ"))?;
+        let token = environ
+            .split(|byte| *byte == 0)
+            .filter_map(|entry| std::str::from_utf8(entry).ok())
+            .find_map(|entry| entry.strip_prefix("YULIUS_TASK_TOKEN="))
+            .ok_or("the run has no task token")?
+            .to_owned();
+        let body = serde_json::json!({"hook_event_name": "UserPromptSubmit",
+            "session_id": "s", "prompt": "/compact"})
+        .to_string();
+        let request = format!(
+            "POST /hooks/claude/UserPromptSubmit HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+             X-Yulius-Hook-Sent-Ms: {}\r\nConnection: close\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            app.now().0,
+            body.len()
+        );
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut client, request.as_bytes()).await?;
+        let mut answer = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut client, &mut answer).await?;
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(!app.has_draft(&id), "the command's submit emptied the box");
+        wait_for("the compaction", Duration::from_secs(60), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        let read = *read.lock().map_err(|_| "poisoned")?;
+        let read = read.ok_or("the command was never typed")?;
+        assert_ne!(read, Some(Activity::NeedsAttention));
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: Yulius restarts while a compaction is held. The hold did not give the
+/// recovery up: the new server ends the old flag and starts the recovery over, hold and all,
+/// and the task goes on (here in a fresh session: real text sits in the box).
+#[test]
+fn a_compaction_held_at_a_restart_is_taken_up_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        // The first server never gets to the hold's end.
+        let (app, port) = served(&data, &fake, hooked(TURN_MS), |_| {}).await?;
+        let (id, ctx, attach) = refused_soon(&app, &data).await?;
+        app.terminal_input(&ctx, &attach, b"and then", false)
+            .await?;
+        wait_for("the flag", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let (app, _) = served_on(&data, &fake, hooked(TURN_MS), port, |config| {
+            config.compact_hold_ms = 3_000;
+        })
+        .await?;
+        app.reconcile().await?;
+        wait_for("the fresh session", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == AttemptState::Live
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Records a key of the task's person when Yulius reaches `point` for the task.
+fn a_key_at(
+    app: &Arc<App>,
+    id: &TaskId,
+    person: &yulius_domain::ids::UserId,
+    point: yulius_app::race::Point,
+) {
+    let (app, key, id, person) = (app.clone(), id.clone(), id.clone(), person.clone());
+    yulius_app::race::on(point, Path::new(key.as_str()), move || {
+        // A key after this moment, on the server's clock too (it counts milliseconds).
+        let reached = app.now();
+        while app.now() <= reached {
+            std::hint::spin_loop();
+        }
+        app.record_typing(&id, &person);
+    });
+}
+
+/// SPEC-483 TYP-002: a person starts to type just before Yulius types `/compact` (the terminal
+/// was quiet and nobody had typed; Yulius may wait for the typing mark there). Asked again
+/// with the mark held, their key keeps the line out: the session is left to them.
+#[test]
+fn a_key_just_before_the_compaction_keeps_it_out() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(1, false),
+        )?;
+        let id = started(&app, &data).await?;
+        let person = task(&app, &id).await?.created_by;
+        let mut frames = app.runtime(&id).hub.watch();
+        a_key_at(&app, &id, &person, yulius_app::race::Point::LineReady);
+        app.send_input(&id, b"too much\r").await?;
+        let mut said = Vec::new();
+        heard(
+            &mut frames,
+            &mut said,
+            &[&["leaves the full session to you"]],
+        )
+        .await;
+        assert!(
+            said.iter()
+                .any(|n| n.contains("leaves the full session to you")),
+            "{said:?}"
+        );
+        wait_for("Your turn", Duration::from_secs(10), || {
+            activity_is(&app, &id, Activity::Waiting)
+        })
+        .await?;
+        assert!(
+            !screen(&app, &id).contains("COMPACT"),
+            "Yulius typed nothing"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-001: a person types while Yulius compacts the session (here right after the
+/// command's Enter). The line that wakes the compacted session is not typed behind what they
+/// typed: the session is compacted, the terminal says that it was not told to carry on, and
+/// the task waits for them.
+#[test]
+fn a_draft_typed_during_the_compaction_keeps_the_wake_up_out() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(1, false),
+        )?;
+        let id = started(&app, &data).await?;
+        let person = task(&app, &id).await?.created_by;
+        let mut frames = app.runtime(&id).hub.watch();
+        a_key_at(&app, &id, &person, yulius_app::race::Point::LineEntered);
+        app.send_input(&id, b"too much\r").await?;
+        wait_for("the compaction", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        assert!(app.has_draft(&id));
+        let mut said = Vec::new();
+        must_hear(
+            &mut frames,
+            &mut said,
+            "Yulius did not tell the session to carry on",
+        )
+        .await?;
+        wait_for("Your turn", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::Waiting)
+        })
+        .await?;
+        assert!(
+            !screen(&app, &id).contains("Yulius: your context was full"),
+            "no wake-up behind the draft"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-483 TYP-002: while Yulius types `/compact` (the line is in the prompt box, its Enter not
+/// sent yet), nothing else is typed into the session: a message for the task is refused, as
+/// while another message is being typed, and the command is submitted as it was typed.
+#[test]
+fn nothing_is_typed_between_a_line_of_yulius_and_its_enter() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        // A session without hooks counts as started half this time after its spawn: a message
+        // for it is not refused for a session that still starts.
+        let app = build_tuned(&data, &fake, agent(1, false), |config| {
+            config.goal_ready_ms = 200;
+        })?;
+        let id = started(&app, &data).await?;
+        let record = task(&app, &id).await?;
+        let refused = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let refused = refused.clone();
+            let caller = yulius_app::coordination::ProjectCaller {
+                sandbox: record.sandbox_id.clone(),
+                user: record.created_by.clone(),
+                task: None,
+                channel: yulius_app::coordination::Channel::Superagent,
+                actor: "cockpit:admin".into(),
+                detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+            };
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::LineTyped,
+                Path::new(key.as_str()),
+                move || {
+                    let answer = tokio::task::block_in_place(|| {
+                        handle.block_on(app.tool_task_message(
+                            &caller,
+                            &serde_json::json!({"task_id": id.as_str(), "text": "one more thing"}),
+                        ))
+                    });
+                    if let Ok(mut slot) = refused.lock() {
+                        *slot = Some(answer.map(|_| ()).map_err(|err| err.to_string()));
+                    }
+                },
+            );
+        }
+        app.send_input(&id, b"too much\r").await?;
+        wait_for("the compaction", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTED: Keep: task #") }
+        })
+        .await?;
+        let answer = refused.lock().map_err(|_| "poisoned")?.clone();
+        let answer = answer.ok_or("no message was tried while the line waited for its Enter")?;
+        assert!(
+            matches!(&answer, Err(why) if why.contains("is being typed")),
+            "{answer:?}"
+        );
+        assert!(
+            !screen(&app, &id).contains("one more thing"),
+            "nothing of the message reached the session"
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())

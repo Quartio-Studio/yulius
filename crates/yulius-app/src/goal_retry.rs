@@ -424,7 +424,7 @@ impl App {
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
         runtime.resumed_turn.store(false, Ordering::SeqCst);
-        runtime.end_turn(self.now());
+        runtime.end_turn();
         let store = &self.deps.store;
         if matches!(store.task_needs_you(&task.id).await, Ok(None)) {
             let now = self.now();

@@ -412,3 +412,94 @@ test('the end banner keeps keyboard focus when the task’s details are read aga
   });
   expect(focused).toBe(label);
 });
+
+// SPEC-483 GRP-001 to GRP-003 (findings W2, D8): the sidebar's rule and its counters agree with
+// the server's (`AttentionFacts::group`): a paused run is Working whatever it waited for; the
+// onboarding task a pending sandbox waits for is counted in line; an armed merge keeps even an
+// achieved goal out of Done.
+test('a paused task, a waiting onboarding task and an armed merge are counted as the server counts them (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { counter, taskInfo } = await import(statusUrl);
+    const of = (task: Record<string, unknown>, pr: unknown = null) => {
+      const info = taskInfo(task, null, pr);
+      return [info.label, info.group, counter(task, info)];
+    };
+    const pause = { by: 'person', pending: false };
+    const pr = { number: 7, state: 'open', checks: 'success' };
+    return {
+      pausedAttention: of({ status: 'running', activity: 'needs_attention', pause }),
+      pausedHeld: of({ status: 'running', activity: 'waiting', pause, held_prompt: { text: 'x' } }),
+      onboarding: of({ status: 'closed', not_started: true, awaits_start_onboarding: true }),
+      armedGoal: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }),
+      armedGoalPr: of({ status: 'running', activity: 'done', yulius_wait: true, merge_armed: true }, pr),
+      achieved: of({ status: 'running', activity: 'done' }, pr),
+    };
+  });
+  expect(read).toEqual({
+    pausedAttention: ['Paused', 'working', 'working'],
+    pausedHeld: ['Paused', 'working', 'working'],
+    onboarding: ['Waits for Start onboarding', 'working', 'queued'],
+    armedGoal: ['Waiting for checks or merge', 'working', 'working'],
+    armedGoalPr: ['Waiting for checks or merge', 'working', 'working'],
+    achieved: ['Done · PR #7', 'done', null],
+  });
+});
+
+// SPEC-491 DON-003, DON-004, DON-006 (14 November 2026: #465 read Done with 28/28 steps, a spec
+// that said in-progress, and a green pull request that conflicted with `dev`): the sidebar's rule
+// agrees with the server's (`AttentionFacts::group`, `PullSignal::from_wire`). A pull request that
+// conflicts with its base is not tested; a spec that does not say done is work left, however
+// complete the plan reads and whatever the pull request says; an achieved goal stays Done.
+test('a conflicting pull request and a spec that does not say done keep a task out of Done (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { counter, taskInfo } = await import(statusUrl);
+    const of = (task: Record<string, unknown>, pr: unknown = null) => {
+      const info = taskInfo(task, null, pr);
+      return [info.label, info.group, counter(task, info), info.detail ?? null];
+    };
+    const idle = { status: 'running', activity: 'waiting', steps: { total: 28, done: 28 } };
+    const open = { number: 7, state: 'open', base: 'dev' };
+    const tested = { ...open, checks: 'success' };
+    const merged = { number: 7, state: 'merged', base: 'dev', checks: 'none' };
+    const conflicting = { ...tested, conflicts: true };
+    const why = 'Every step is finished, but its spec does not say done: work it declared is left.';
+    return {
+      why,
+      tested: of(idle, tested),
+      conflicting: of(idle, conflicting),
+      conflictingNoChecks: of(idle, { ...open, checks: 'none', conflicts: true }),
+      conflictingRunning: of(idle, { ...open, checks: 'pending', conflicts: true }),
+      conflictingFailing: of(idle, { ...open, checks: 'failure', conflicts: true }),
+      conflictingGoal: of({ ...idle, activity: 'done' }, conflicting),
+      conflictingOpenPlan: of({ ...idle, steps: { total: 28, done: 27 } }, conflicting),
+      specTested: of({ ...idle, spec_unfinished: true }, tested),
+      specMerged: of({ ...idle, spec_unfinished: true }, merged),
+      specNoPull: of({ ...idle, spec_unfinished: true }),
+      specWaits: of({ ...idle, spec_unfinished: true, yulius_wait: true }, merged),
+      specGoal: of({ ...idle, activity: 'done', spec_unfinished: true }, merged),
+      specDone: of(idle, merged),
+    };
+  });
+  const turn = ['Your turn', 'needs', 'needs', read.why];
+  expect(read).toEqual({
+    why: read.why,
+    tested: ['Done · PR #7', 'done', null, null],
+    conflicting: ['In review · PR #7 · conflicts with dev', 'working', 'working', null],
+    conflictingNoChecks: ['In review · PR #7 · conflicts with dev', 'working', 'working', null],
+    conflictingRunning: ['In review · PR #7 · checks running', 'working', 'working', null],
+    conflictingFailing: ['PR #7 · checks failing', 'needs', 'needs', null],
+    conflictingGoal: ['Done · PR #7', 'done', null, null],
+    conflictingOpenPlan: ['Your turn', 'needs', 'needs', null],
+    specTested: turn,
+    specMerged: turn,
+    specNoPull: turn,
+    specWaits: ['Waiting for checks or merge', 'working', 'working', 'Waits for its checks or merge; goes on by itself'],
+    // An achieved goal is Done whatever its plan and spec say, as with open steps.
+    specGoal: ['Done', 'done', null, null],
+    specDone: ['Done · PR #7 merged', 'done', null, null],
+  });
+});

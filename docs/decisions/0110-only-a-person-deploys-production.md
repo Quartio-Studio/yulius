@@ -4,6 +4,9 @@
 
 Accepted. Specified in [SPEC-134](../../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md);
 task #113. Changes DLV-008's "an agent never promotes unless its task asks": agents never promote.
+Amended by [0334](0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)
+(SPEC-487): the person may type the slug on their Superagent's panel, which then runs the CD page's
+deploy, rollback or promotion as them.
 
 ## Context
 

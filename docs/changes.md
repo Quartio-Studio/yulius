@@ -4,8 +4,310 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-15
+
+- A sandbox's Docker engine runs below the group that holds its limits (SPEC-483 slice 39,
+  ADR-0339, task #465). A privileged container could start a nested cgroup namespace and lift
+  the engine's task cap and CPU weight, the share that keeps agents a quarter of the sandbox's
+  tasks; the engine now runs in `engine/inside`, and an engine group an older engine left
+  threaded is made plain again once it is idle.
+- The web UI runs under a strict content security policy (SPEC-483 slice 38, ADR-0338, task
+  #465). Pages sent only `frame-ancestors 'none'`; now scripts, styles, fonts, images, media,
+  connections and workers come from Yulius only, with no inline or evaluated script, plugins,
+  frames or `<base>`. The e2e server sends the same policy file, and an e2e test fails when the
+  page itself is refused a load.
+- `ability_report` refuses a compound of the project's name too (`shop-api`, `ShopApi`), names
+  the word it refused and how it was written, caps the case at 1500 characters (what its filing
+  link takes of plain ASCII prose) and gives the link's size when it is too long (SPEC-487,
+  review of slice 11).
+- Three flaky tests fixed (task #465): the session view's spider-web test read its scroll
+  range before the view finished laying out (fixes #1185), a switch test expected one of two
+  recorders of a killed run's end that race under load, and a stop test took an exited but
+  unreaped host for a running one (fixes #1190).
+- A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
+  task's summary, and the queue's pass for every queued task, read the whole task list again to
+  find its supertask holders; listing 200 tasks took 88 ms and grew with the square of the
+  list, now 31 ms.
+- A missing ability is reported in one call (SPEC-487 slice 11, task #469,
+  [ADR-0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
+  The Superagent offered to report walls and never could; `ability_report` (also a task's agent's)
+  keeps the report on the instance and answers a link that opens it as a new issue in the Yulius
+  repository for the person to submit. The Superagent also sets and deletes project variables. The
+  product summary now holds the full table of what the Superagent and a task's agent may do, and
+  why.
+- The Superagent sees what happened to a task (SPEC-487 slice 10b, task #469): `task_screen`
+  shows a task's screen, also the last one its crashed run left, with the exit code and reason;
+  `task_usage` the tokens each task used, as the Dashboard counts them; `checkout` how far its
+  repository checkout is behind the integration branch (a stale checkout once gave a wrong "no").
+- A secret's value is typed by its person on the Superagent's panel (SPEC-487 slice 10a, task
+  #469, [ADR-0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
+  The Superagent could not take a value, so people retyped keys on the Secrets page or pasted
+  them into the chat. Now `secret_request_value` puts a card with a masked field on its panel;
+  the value goes to the vault as the person's, a multi-line key with its line breaks kept, and the
+  Superagent sees its name only.
+- A deploy or rollback answered after its CD page was left shows when the page is back (task
+  #465, fixes #1171). The page read on return, before the server answered, and then waited for
+  its 30 s idle poll; it now reads again as soon as the answer comes.
+- Watching a live task reads only what was written since (SPEC-483 slice 36, task #465). Each
+  1.5 s poll re-read and re-parsed the whole transcript; the server now goes on from where the
+  last read ended (30 MB: 497 ms a poll before, 18 µs now).
+- The Superagent's standing jobs survive its restarts (SPEC-487 slice 9b, task #469,
+  [ADR-0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)). Its crons and
+  watchers ended with every restart; once nothing monitored for 15 hours while the person thought
+  it did. Now "keep monitoring" is a scheduled check Yulius holds (`superagent_check_set`): due, it
+  is typed into the Superagent when it is idle, and a Superagent that is not running is started
+  for it.
+- The Superagent keeps its person's text across a restart (SPEC-487 slice 9a, task #469). A
+  person's message was swallowed by a restart: the restart that gets an update's tools now waits
+  while text sits unsent in the Superagent's prompt box (up to half an hour after the last
+  keystroke, also when the server itself restarted for the update), and what the person types
+  while it restarts in place is kept and typed into the new session.
+- The capacity and accounts views read through indexes (SPEC-483 slice 35, task #465). Their
+  runs and pauses were found by scanning every run and pause ever recorded on each load of the
+  dashboard; three indexes (migration 0061) let them read only their window.
+- One reader of a sandbox's way to Yulius (SPEC-483 slice 34, task #465). The Git credential
+  helper, `yulius wait` and `yulius tool`, the MCP bridge and the hook clients each read
+  `YULIUS_URL` and the task token and parsed the URL with one of two parsers that took different
+  addresses; they now read them one way.
+
+## 2026-11-14
+
+- The Superagent deploys production once its person types the project's slug (SPEC-487 slice 8b,
+  task #469, [ADR-0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)).
+  Asked to deploy production, roll it back or promote, it could only send the person to the CD
+  page. Now the request waits on its panel, the person (an administrator) types the slug there as
+  the CD page asks, and the CD page's own deploy, rollback or promotion runs as them; a project's
+  onboarding starts the same way with a click. `cd_rollback` of a dev-stage environment is one of
+  the person's tools, for their Superagent and their own agent.
+- Consent to control can be withdrawn, and a request is heard anywhere (SPEC-490 slice 2, task
+  #473). Whoever handed a task over on request takes it back with one click (Take back on the
+  task's page, `POST /api/tasks/{tid}/control/take-back`, schema 60), until control moves again;
+  the person it is taken from is told. A request for control reaches its owner as a
+  notification and a toast that opens the task, and marks its row in the sidebar. Review fixes:
+  a playground's guest stops, archives and deletes only their own tasks; a refused Start
+  onboarding pushes no first commit, and an onboarding task that never ran goes to whoever
+  starts onboarding.
+- One dispatch of the Superagent's tools (SPEC-483 slice 33, task #465). The Yulius MCP and the
+  remote MCP each kept the same 18 project tools and the protocol handshake; a tool added to one
+  only would have been listed and answered "unknown tool". The device sign-in's polling code is
+  no longer printed in debug output.
+- The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
+  [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
+  A request to create, change, message or stop a task in another sandbox ended after 4 minutes,
+  at Esc or at a restart, so a person who stepped away came back to nothing and the Superagent
+  asked the same thing again. Now the card stays on its panel until the person answers it, also
+  across a restart of Yulius; the Superagent reads how each ended (`sandbox_requests`), changes a
+  waiting one in place (`sandbox_request_amend`) or withdraws it, lists another sandbox's tasks
+  without asking (`sandbox_tasks_list`), and leaves a decision only the person makes on the same
+  panel as a question answered Yes or No (`person_ask`).
+- The CLI's sign-in has one contract (SPEC-483 slice 32, task #465). The server and `yulius
+  login` each defined the device sign-in's answers, the server's state a free word the CLI might
+  not read; both now use one definition, and a state the CLI does not know reads as expired.
+- One reader of RFC 3339 time (SPEC-483 slice 31, task #465). GitHub's, the transcripts', the
+  imports' and the app's readers took different inputs (GitHub's took 31 February); every crate
+  now reads timestamps one way, and converts dates with the domain's calendar.
+- A task whose work is not finished no longer reads Done (SPEC-491, task #474,
+  [ADR-0332](decisions/0332-done-needs-a-pull-request-that-would-merge-and-a-spec-that-says-done.md)).
+  Task #465 read Done, and the tasks chained after it started, while its pull request
+  conflicted with `dev` and its spec still named work to do. A pull request now counts as
+  tested only when it would merge as it is: no conflict with its base, and checks passed or
+  none required by the project (the list reads "In review · PR #N · conflicts with dev"). A
+  task whose spec does not say `done` has work left, however complete its plan reads: it is
+  "Your turn", not Done, and chains and start rules wait. The step tools and `spec_check` tell
+  the agent so, and the pull request watch tells a conflict also where no CI run exists.
+
+- The Superagent reads and updates Yulius itself (SPEC-487 slice 7, task #469). Asked whether
+  Yulius was up to date or loaded, or to update or restart it, it sent the person to
+  Settings. Now `instance` shows the build, an update offered or under way, the host's load,
+  memory and disk and the sessions, and for a superadmin `instance_update` checks, installs,
+  restarts or cancels with the buttons' functions and refusals. The Global Superagent is not
+  served `instance_update`.
+
+- Stopping a waiting task no longer runs the queue unless it was a supertask (SPEC-483 slice
+  30, task #465, fixes #1278). Only a supertask's cancel frees anything; the extra pass let a
+  bulk stop start its next waiting task in the tests before stopping it.
+- Anyone who may work in a project stops, archives, restores and deletes any of its tasks;
+  steering a task stays its owner's (SPEC-490, ADR-0331, task #473; amends ADR-0060). Stop,
+  Archive and Delete are enabled on other people's tasks in the task menu, the sidebar and the
+  task's page, the confirmation names the owner, and the audit says who did it. Everything else
+  (typing, messages, answers, continue, start, pause, the subscription, delivery, files and
+  shells in the worktree) is refused to anyone but the owner by one rule
+  (`yulius_domain::task_access`), with a message that says how to ask for control. That rule
+  now also covers three ways in that it did not: a Superagent's `task_message` to another
+  person's running task, a restore of attachments into another person's task, and Start
+  onboarding of an onboarding task someone else owns (a sandbox without one gets it created
+  for whoever starts onboarding). Request control is in the task's menu too.
+- One reader of a bearer token and one GitHub-token scrub (SPEC-483 slice 29, task #465).
+  Five routes read `Authorization: Bearer` their own way (the leftovers key untrimmed) and Git's
+  and GitHub's adapters each kept the loop that removes GitHub tokens; each is written once now.
+  The welcome page of a sandbox's browser and its refresh draw the port list by one function.
+- The web UI asks about unsaved work on every way out (SPEC-483 slice 28, task #465). The
+  automation, MCP server, workflow and skill editors asked only when a link was clicked; Back,
+  Forward and navigation by a button or the palette now ask too, through one guard in the
+  router. Every pull request chip says its checks one way ("checks failing", not "checks
+  failed" in some places), and sizes and short commits are worded in one place. The
+  repository's instruction check no longer joins a heading, a table row or a code fence to
+  the text around it.
+- The Superagent tells and changes what a task runs on (SPEC-487 slice 6, task #469). It
+  could not say which subscription a task was on, move it, or change its model. Now
+  `subscriptions` shows the pool as the Subscriptions panel does, `tasks_list` and `task_get`
+  name each task's subscription, model and effort, `task_switch` moves a task to the
+  subscription its person names, and `task_model` sets its model or effort for its session's
+  next start.
+
+- The Superagent merges for its person and reads the merge queue (SPEC-487 slice 5, task
+  #469). It could not say why a pull request that passed was not merging, nor arm a merge,
+  and handed both back to the person. `task_delivery` now says where a task's merge stands
+  (armed, its head, why it has not merged, how the last one ended), `merge_queue` lists the
+  project's armed merges and merge train, `task_merge` merges a task's pull request for its
+  owner (at once on green, otherwise armed until its checks pass) and `ci_prioritize` puts a
+  queued CI run first in its project's queue. The person's own agent has them too through
+  the remote MCP.
+
+- The repository's own instructions deliver as Yulius does (SPEC-483 slice 27, task #465).
+  AGENTS.md, the Git and workflow documents, the Git skill and the pull request template no
+  longer tell an agent to merge its own pull request by hand, to poll, or to promote; they
+  describe the review, `delivery_merge`, the merge queue and a person's promotion on the CD
+  page, and the repository check refuses the old wording. The spec template is now the form
+  `spec_check` validates. The engineering documents describe the product code, and a few
+  server options and an internal route are documented.
+- What Yulius tells agents and people agrees with how it works (SPEC-483 slice 26, task #465).
+  The goal and the merge news no longer say an agent may promote when its task asks: promotion
+  is a person's. The Chore workflow no longer deploys after a merge, and the Docs workflow no
+  longer says documentation needs no review (the merge always needs one). The Git page says
+  agents merge and a person releases on the CD page (Yulius itself with auto-promote). The
+  merge guard, the briefing, the delivery skill and the API's error codes say what is true.
+- Code nothing used is gone (SPEC-483 slice 25, task #465): task events, a fail reason and a
+  start timeout nothing produced, API contract items, domain and store helpers only their own
+  tests called, the message inbox readers (nothing writes messages since SPEC-028), "rotate
+  now" without a subscription, the start-up clean-up of workflows seeded before the catalog
+  in October, and unused Cargo features. Nothing behaves differently. A CD run's
+  `YULIUS_CD_KIND` (`deploy`, `rollback` or `drill`) is now documented.
+- The Superagent sees what waits for its person, and answers when told (SPEC-487 slice 4,
+  task #469). A task's "Needs you" reached it only when the person pasted or screenshotted
+  it, and a look at what a task was doing took 4 to 9 `session_read` calls with guessed
+  offsets. `tasks_list` and `task_get` now say where the list shows a task and why it waits
+  for a person or is held (the agent's request, the flag's reason, a held prompt, a pause),
+  `tasks_list` with scope `needs_you` lists the open ones, and `session_read` with `tail`
+  reads a session's end; tasks' agents read the same, without a held prompt's words. Two
+  new tools decide for the person: `task_question_dismiss` ends a request they call settled
+  and `task_held_prompt` decides a held prompt as its card does; the answer to a question
+  goes with `task_message`, as before.
+
+- Previews pass pages through as the dev server sends them (SPEC-483 slice 24, task #465).
+  The preview proxy appended a script to every page for a framed browser panel that no longer
+  exists, and fetched every page uncompressed for it. Pages now keep their compression and
+  length, and the dev server's own framing rules; a preview is framed by nothing but itself.
+  Also gone: the stored GitHub App webhook secret (Yulius has no webhook), web code and styles
+  nothing used, and an Editor file whose access was withdrawn no longer asks the server again
+  every second.
+- Home, the project tabs and the sidebar count a task the same way (SPEC-483 slice 23, task
+  #465). A paused task that had been waiting for a person was counted as needing you while
+  the sidebar showed it Paused under Working; a new project's onboarding task waiting for
+  Start onboarding was listed but counted nowhere. A task whose goal is achieved while its
+  merge is armed is no longer Done: it reads "Waiting for checks or merge", a task chained
+  after it keeps waiting, and archiving it is refused instead of ending the merge unseen.
+  And in the Editor, a change refused because you may no longer change the folder makes the
+  file read-only and says so, instead of leaving it "Unsaved" for good.
+- A move whose helper has said nothing for a minute is no longer taken for a stopped move
+  while systemd says the helper still runs it (SPEC-483 slice 22, task #465). A copy that
+  kept the disk busy could hold the helper's report back: the card offered to continue the
+  move and an update or restart could stop the server in the middle of it. Now the move is
+  in flight until systemd says the helper's service ended. A move's mark that is not even
+  text queues the lost tasks and goes, rather than staying for every start. And a task's
+  close time is that of the close it is in: a task continued after a close no longer shows
+  its old close time in the analytics export and the project list (migration 0058 clears
+  what earlier versions left).
+- Yulius no longer types `/compact` at once behind a person's unsent text (SPEC-483 slice
+  21, task #465). A person who typed their next instruction while a turn ran, and whose
+  session then filled its context, had `/compact …` appended to that text and sent with
+  it. The compaction waits now: the task reads Needs your action and says what to do
+  (send what you typed, or clear it and send any prompt). After ten minutes Yulius types
+  its command all the same, so a task nobody watches goes on: an empty box is compacted,
+  and text still there is sent with the command and the task continues in a fresh
+  session, as the flag says beforehand. And from a line Yulius types
+  to its Enter nothing else is typed into the session, whatever the line is (a message,
+  `/compact`, a goal); a goal keeps that until Claude Code took it.
+- The Superagent changes tasks that exist (SPEC-487 slice 3, task #469). "Pause all tasks"
+  had become 19 messages and "kill all tasks" 24 calls; a wrong request in a queued task
+  was fixed by deleting the task, which once destroyed four screenshots. New tools, also
+  for the person's own agent through the remote MCP: `task_edit` (a title; the whole request
+  of a task that has not started, keeping its attached files and answering the text it
+  replaced), `tasks_reorder` (the person's queued tasks swap the places they hold),
+  `task_close` (an idle running task is closed out) and `tasks_bulk` (stop, pause, resume
+  or one message to several tasks or all of the person's, each task's outcome in the
+  answer). `task_message` takes `with_draft`: the task's owner sends past text they left
+  unsent in its prompt box, which until now blocked every message until they went to the
+  terminal. Each is a person's function with their rights at the call; a task's agent gets
+  none of them.
+
+- A restart of Yulius no longer forgets two things about a running session (SPEC-483 slice
+  20, task #465). A session started with its owner's personal MCP servers is still known
+  as that after a restart, so a hand-over restarts it and the previous owner's credential
+  does not stay with the new owner. And a goal task whose `/goal` Yulius still had to type
+  when it restarted is flagged ("Yulius restarted before it set this task's goal") unless
+  Claude Code had recorded the goal, instead of idling without a goal and without a word.
+- The Superagent does what its person does on the project's pages (SPEC-487 slice 2, task
+  #469, ADR-0330). It was served 39 tools and none for a task's Continue, Pause or Start now,
+  for CI, a task's delivery or a deploy, so it handed those back as steps to click, used
+  finished tasks as hands and nudged tasks with messages. It now has `task_restart`
+  (Continue), `task_pause`, `task_unpause`, `task_start_now`, `task_delivery`, `ci_runs`,
+  `ci_run`, `ci_rerun`, `ci_cancel`, `cd_status`, `cd_deploy` (dev-stage environments) and
+  `variables_list`: each is the function the page's button calls, with the person's rights
+  at the call (a task is changed by its owner only), and each change is audited
+  `superagent.tool`. They are one list (`person_tools`) with the remote MCP's tools of the
+  same names. A task's agent gets none of the steering ones. The Superagent's instructions
+  say the rule: it acts with its person's rights, reads its tool list before it says it
+  cannot, names what is missing, and does not let a repository rule overrule its person's
+  direct request without naming the rule and asking. An open Superagent restarts once idle
+  to get the tools.
+
+- A start that has to wait in the queue is no longer forgotten (SPEC-483 slice 19, task
+  #465). When every session slot was taken, a task that was to resume past a usage limit,
+  to get a held prompt typed, or to continue on a subscription a person chose was queued
+  and later started as a plain resume on the pool's choice: it sat at the limit's error,
+  lost the prompt, or ran elsewhere. The queue keeps each task's start now, across a
+  restart too. A chosen subscription that fills up while the task waits is given up, said
+  in the task's terminal, instead of failing the task. And a paused task whose start met a
+  full queue is no longer left waiting for good: its pause stays until the start is made
+  or queued.
+- A subscription Claude refused no longer returns to the pool by a failed sign-in (SPEC-483
+  slice 18, task #465). A refused subscription whose new sign-in failed or timed out became
+  `error`, the background round then read its usage and stored `ok`, and tasks were placed
+  on it again, each losing a turn. It stays "needs a new sign-in" with Claude's reason
+  now, and one rule (`ok` or `limited`) says everywhere which subscriptions work: only
+  those take tasks and are asked for their usage, and a usage reading changes the status
+  of no other.
+
 ## 2026-11-13
 
+- A task that waits for another starts when that one has really finished (SPEC-487 slice 1,
+  task #469, ADR-0328). On 13 November tasks #466 to #469, created to run after the audit
+  (#465), started while it was still running. A task was Done once its turn had ended with a
+  complete plan and a pull request that was green or merged; a task that merges its own pull
+  request passes through that state: for as long as the merge queue takes after its checks
+  pass, and for up to 20 seconds between its merge and the moment the pull request watch
+  tells its agent, which then goes on. Now a running task is neither Done nor a person's turn
+  while Yulius has such news for its agent (a merge armed or being decided, an armed merge's
+  end or a merge not told yet, news typed whose turn has not begun): it reads "Waiting for
+  checks or merge", and chains, start rules and a supertask's wait keep waiting. Achieved
+  goals, closed tasks, tasks a person paused and playgrounds are as before. The tools
+  (`tasks_list`, `task_get`, `task_create`, `task_update`) answer a
+  waiting task's start as stored: `start_rule` with the whole rule (it read "after" the
+  rule's first task only), `runs_after` for a task chained after one task, `start_blocked`
+  with the reason when it will not start by itself. `after_all_tasks: true` on `task_create`
+  and `task_update` waits for every task of the project with work still coming (not the ended,
+  the prepared, or those the list shows Done or Answered), written as the rule that names
+  them; a rule names at most 64 tasks (16 before; the editor builds 16).
+- A switch to another subscription ends no work it cannot answer for (SPEC-483 slice 17,
+  task #465). At a turn's end a look at the session's background work that gave no answer
+  (a loaded host) read as "none", and the session was ended with the build or review it
+  had left running; it reads as running now, as it does everywhere else, and the session
+  moves at a later turn's end. And a switch whose old session did not end in time no
+  longer starts a second session beside it: a session that had to be killed rests the task
+  as stopped ("restarting the session took too long"), whoever sees its end
+  first, and one that cannot be killed keeps the task running in the session it had,
+  flagged for a person.
 - A failure inside Yulius no longer reads as an outage to `yulius wait` (SPEC-483 slice 16,
   task #465). The listener the agents' own clients call (hooks, `yulius wait`, the Git
   credential helper) had its own table of HTTP statuses: every error but five kinds was a

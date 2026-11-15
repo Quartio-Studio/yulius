@@ -1,8 +1,9 @@
 # Contracts for agent orchestration
 
-Apply these when implementing the named boundary; they are engineering requirements,
-not claims that the current tooling scaffold implements a runtime. A feature spec
-must supply concrete numeric limits and supported platforms before runtime work ships.
+Apply these when implementing or changing the named boundary; they are engineering
+requirements that the runtime crates (`yulius-ptyhost`, `yulius-harness`, `yulius-app`'s
+supervisor) follow. A feature spec supplies concrete numeric limits and supported platforms
+before runtime work ships.
 
 ## Process ownership and cancellation
 

@@ -2,7 +2,8 @@
 
 Use explicit domain, application and I/O boundaries. Add crates only when a real
 feature needs a separate boundary; these classifications are not a product roadmap.
-The current workspace has only the engineering task runner.
+The workspace's crates and their layers are listed in
+[the architecture](../architecture.md#layers-and-crates).
 
 | Layer | Responsibility | Allowed internal dependencies |
 | --- | --- | --- |
@@ -27,5 +28,5 @@ are separately versioned; a storage struct is not automatically a public API.
 Use small typed constructors and traits at actual substitution points rather than
 a global service locator or a trait for every struct.
 
-Choose runtime, database, frontend, providers and deployment through future feature
-specs. This file does not select those technologies or authorize product scope.
+The runtime, database, frontend, providers and deployment are chosen in SPEC-002 and the ADRs
+(`docs/decisions/`); this file states the dependency rules they follow.

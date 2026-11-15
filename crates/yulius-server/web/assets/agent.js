@@ -238,18 +238,32 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   }
 
   /** Opens the session; `focus` only when the person asked for the Superagent (not a new page or sandbox). */
-  async function open({ focus: wantFocus = true } = {}) {
+  /**
+   * What the person typed while the session restarted in place, for the new one (SPEC-487 SES-001):
+   * whole frames, so a cut never splits a key's sequence or a paste's markers.
+   */
+  let held = [];
+  const heldText = () => held.join('');
+
+  async function open({ focus: wantFocus = true, keep = false } = {}) {
     if (opening || !alive) return;
     // Where the keyboard was: a slow start does not take it once the person has moved on.
     const from = document.activeElement;
     opening = true;
-    drop();
-    setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
+    // A restart in place keeps the ended terminal, and the keyboard in it, until the new one runs:
+    // what the person types meanwhile is kept for it (SPEC-487 SES-001).
+    if (!keep) {
+      drop();
+      setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
+    }
     let shell;
     try {
       shell = await openShell();
     } catch (err) {
       opening = false;
+      // The restart failed: the ended terminal goes, and what was typed for it with it (review of slice 9a, F6).
+      held = [];
+      if (keep) drop();
       if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the ${name}: ${err.message}`, () => open())));
       return;
     }
@@ -329,11 +343,25 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
       // Opened again rather than recovered: the server answers once the new one runs (it holds the
       // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
-      onExit: (exit) => { if (exit.status === 'switched' && !restarting) open({ focus: el.contains(document.activeElement) }); },
+      onExit: (exit) => { if (exit.status === 'switched' && !restarting) open({ focus: el.contains(document.activeElement), keep: true }); },
+      // Typed while it restarts in place: kept, and typed into the new session once it runs (SPEC-487 SES-001).
+      onExitedInput: (data, exit) => {
+        if (exit.status !== 'switched') return false;
+        // A Ctrl-C would interrupt the new session as it starts (review of slice 9a, F7).
+        const keys = data.replace(/\x03/g, '');
+        if (keys) held.push(keys);
+        // The newest frame stays whole, also a long paste on its own (review of slice 9a, R3).
+        while (held.length > 1 && heldText().length > HELD_MAX) held.shift();
+        return true;
+      },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
       // leaves the keyboard where it is.
-      onReady: () => { asked = { focus: false, from: null }; },
+      onReady: () => {
+        asked = { focus: false, from: null };
+        // Kept until they are sent: if the socket is not open yet, the next terminal mounted sends them.
+        if (held.length && terminal.sendKeys(heldText())) held = [];
+      },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository. The
       // Global Superagent has no files: it works through Yulius only.
@@ -465,6 +493,13 @@ const OPTION_LABELS = {
   start_at: (v) => `Starts at ${v}`,
   model: (v) => `Model: ${v}`,
   effort: (v) => `Effort: ${v}`,
+  // A production release (SPEC-487 REL-001).
+  environment: (v) => `Environment: ${v}`,
+  expect: (v) => `Commit: ${v}`,
+  release: (v) => `Release: ${v}`,
+  part: (v) => `Part: ${v}`,
+  // Whose a secret asked for is (SPEC-487, review of slice 10a, M2).
+  scope: (v) => (v === 'personal' ? 'Yours only (personal)' : 'This project’s (sandbox)'),
 };
 
 /**
@@ -483,11 +518,32 @@ function askedFor(request) {
       return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, failed: `send ${task} the message`, declined: 'nothing was sent', text: 'Message' };
     case 'stop':
       return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}`, failed: `stop ${task}`, declined: 'nothing was changed' };
+    // SPEC-487 XRQ-005: a decision only the person makes, on the Superagent's own panel: no target.
+    case 'ask':
+      return { heading: 'you to decide', own: true, answer: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
+    // SPEC-487 SEC-001: a secret's value, typed masked here and sent to the vault; never shown.
+    case 'secret':
+      return { heading: `you for the secret ${request.title} in `, secret: true, button: 'Store', done: `Stored ${request.title}`, failed: `store ${request.title}`, declined: 'nothing was stored', text: request.prompt ? 'What it is for' : null };
+    // SPEC-487 REL-001: production, on the Superagent's own panel; the slug typed, as on the CD page.
+    case 'deploy': {
+      const env = (request.options && request.options.environment) || 'production';
+      return { heading: `to deploy ${env} in `, button: 'Deploy', done: 'Deploy started', failed: `deploy ${env}`, declined: 'nothing was deployed', typed: true };
+    }
+    case 'rollback': {
+      const env = (request.options && request.options.environment) || 'production';
+      return { heading: `to roll ${env} back in `, button: 'Roll back', done: 'Rollback started', failed: `roll ${env} back`, declined: 'nothing was rolled back', typed: true };
+    }
+    case 'promote':
+      return { heading: 'to promote production in ', button: 'Promote', done: 'Promotion done', failed: 'promote', declined: 'nothing was promoted', typed: true };
+    case 'onboard':
+      return { heading: 'to start onboarding in ', button: 'Start onboarding', done: 'Onboarding started', failed: 'start onboarding', declined: 'onboarding did not start', text: request.prompt ? 'Hand-over' : null };
     default:
       return { heading: 'to start a task in ', button: 'Create task', failed: 'create the task', declined: 'nothing was created', text: 'Prompt' };
   }
 }
 
+/** The most a restart keeps of what was typed meanwhile (a message's worth). */
+const HELD_MAX = 16384;
 /** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
 const ARM_MS = 600;
 /** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */
@@ -506,10 +562,11 @@ export function shownPrompt(text) {
 /**
  * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
  * session. Nothing reaches that sandbox until the person presses Create task; each request is
- * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
+ * answered once, and stays until it is answered or the Superagent withdraws it (SPEC-487 XRQ-001). Create task takes a click only once the
  * whole prompt was in view (scrolled to its end) and the card has been there a moment. SPEC-442
  * XST-006: the same cards ask to start, re-chain, message or stop a task there (Start now, Change
- * start, Send message, Stop task); a message is read to its end as a prompt is.
+ * start, Send message, Stop task); a message is read to its end as a prompt is. SPEC-487 XRQ-005:
+ * a decision the Superagent leaves to its person (Yes, No), its question read to its end too.
  */
 function createRequests(ctx, sandbox, onCount) {
   const el = h('div', { class: 'agent-requests', hidden: true });
@@ -542,10 +599,12 @@ function createRequests(ctx, sandbox, onCount) {
     if (gone.length) for (const [id, shown] of cards) if (ids.has(id)) shown.rearm();
     for (const id of gone) { cards.get(id).destroy(); cards.delete(id); }
     for (const request of items) {
-      if (cards.has(request.id)) continue;
+      const old = cards.get(request.id);
+      // An amended request (SPEC-487) is drawn again, to be read to its end again.
+      if (old && old.revision === (request.revision || 0)) continue;
       const shown = card(request);
       cards.set(request.id, shown);
-      el.append(shown.el);
+      if (old) { old.el.replaceWith(shown.el); old.destroy(); } else el.append(shown.el);
     }
     el.hidden = cards.size === 0;
     if (onCount) onCount(cards.size);
@@ -558,21 +617,29 @@ function createRequests(ctx, sandbox, onCount) {
       .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
       .filter(Boolean);
     const asked = askedFor(request);
-    const heading = `Your Superagent asks ${asked.heading}${slug}`;
+    const heading = `Your Superagent asks ${asked.heading}${asked.own ? '' : slug}`;
     // The text's last line: once it was on screen (not clipped by the text box, the list or the window), it was all read.
     // A request with no text (a start or a stop) has nothing to read.
     const end = asked.text ? h('span', { class: 'agent-request-end', 'aria-hidden': 'true' }) : null;
     const prompt = asked.text ? h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': asked.text }, shownPrompt(request.prompt || ''), end) : null;
-    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${asked.text === 'Message' ? 'message to send it' : 'prompt to create the task'}.`);
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it', 'Hand-over': 'hand-over to start onboarding' }[asked.text] || 'prompt to create the task'}.`);
+    // A production release takes the project's slug typed (SPEC-487 REL-001), as the CD page does.
+    const typed = asked.typed ? h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Type ${slug} to confirm`, onInput: () => update() }) : null;
+    // A secret's value (SPEC-487 SEC-002): masked, line breaks kept, sent once and cleared.
+    // Masked as typed; where a browser cannot mask a text box, a password field (one line).
+    const masks = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
+    const fieldAttrs = { class: 'input agent-request-secret', autocomplete: 'new-password', autocapitalize: 'off', spellcheck: 'false', 'data-1p-ignore': '', 'data-lpignore': 'true', 'aria-label': `${request.title}’s value`, onInput: () => update() };
+    const secretField = !asked.secret ? null : masks ? h('textarea', { ...fieldAttrs, rows: 3 }) : h('input', { ...fieldAttrs, type: 'password' });
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
-    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
+    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
     let armed = false;
     let read = !end;
     let sending = false;
     // Answered: the card only waits to go; it takes no second click.
     let done = false;
     const update = () => {
-      create.disabled = !armed || !read || sending || done;
+      create.disabled = !armed || !read || sending || done || (typed !== null && typed.value.trim() !== slug)
+        || (secretField !== null && secretField.value.length < 8);
       decline.disabled = !armed || sending || done;
       hint.hidden = read;
     };
@@ -597,12 +664,22 @@ function createRequests(ctx, sandbox, onCount) {
       sending = true;
       update();
       try {
-        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+        // The revision it showed: one the Superagent amended since is refused (409).
+        const body = { approve, revision: request.revision || 0 };
+        if (typed && approve) body.confirm = typed.value.trim();
+        if (secretField && approve) body.value = secretField.value;
+        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, body);
+        // Taken: the value leaves the page (kept while the server refuses it; review of slice 10a, M4).
+        if (secretField) secretField.value = '';
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
           const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+        } else if (asked.answer) {
+          toast(approve ? `${asked.done}.` : 'Answered no.', { kind: approve ? 'ok' : 'info' });
+        } else if (approve && asked.done) {
+          toast(`${asked.done} in ${slug}.`, { kind: 'ok' });
         } else if (!approve) {
           toast(`Declined: ${asked.declined}.`, { kind: 'info' });
         }
@@ -618,15 +695,21 @@ function createRequests(ctx, sandbox, onCount) {
     return {
       el: h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
         h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
-          h('strong', null, `Your Superagent asks ${asked.heading}`, h('span', { class: 'agent-request-target' }, slug)),
-          target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+          h('strong', null, `Your Superagent asks ${asked.heading}`, asked.own ? null : h('span', { class: 'agent-request-target' }, slug)),
+          target.repository && !asked.own ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
         request.task ? h('div', { class: 'agent-request-title' }, `#${request.task.number} ${shownText(request.task.title || '')}`, h('span', { class: 'muted' }, ` · ${request.task.status}`)) : null,
         request.title ? h('div', { class: 'agent-request-title' }, shownText(request.title)) : null,
         prompt,
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,
+        typed ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Type “${slug}” to confirm`), typed) : null,
+        request.replaces ? h('div', { class: 'agent-request-title' }, `Replaces the value of ${request.title}`) : null,
+        secretField ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Value (hidden; never shown to your Superagent)'), secretField) : null,
+        // A one-line field cannot take a key's line breaks (review of slice 10a, n1).
+        secretField && secretField.tagName === 'INPUT' ? h('div', { class: 'agent-request-hint' }, 'This browser cannot hide a multi-line text: write a key’s line breaks as \\n.') : null,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
+      revision: request.revision || 0,
       destroy() {
         clearTimeout(timer);
         if (seen) seen.disconnect();

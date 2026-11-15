@@ -50,7 +50,6 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
         client_id: credentials.client_id.clone(),
         client_secret: credentials.client_secret.expose().to_owned(),
         private_key_pem: credentials.private_key_pem.expose().to_owned(),
-        webhook_secret: None,
     };
     Ok(World {
         fake,

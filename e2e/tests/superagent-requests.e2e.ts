@@ -18,7 +18,8 @@ const mock = (path: string) => mockPage(path, '&browserask=0');
 type Asking = {
   __yuliusMock: {
     askSuperagent: (source: string, request: unknown) => string;
-    endSuperagentRequest: (source: string, id: string) => void;
+    withdrawSuperagentRequest: (source: string, id: string) => void;
+    amendSuperagentRequest: (source: string, id: string, prompt: string) => void;
     askBrowserSignIn: () => boolean;
     tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string }[];
   };
@@ -89,7 +90,7 @@ test('a sign-in request from the sandbox browser cannot move a pressed Open (#97
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
 
-test('Decline creates nothing, and a request whose call ended goes by itself', async ({ app, browser, screen }) => {
+test('Decline creates nothing, and a withdrawn request goes by itself', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   const before = await productTasks(browser);
@@ -101,10 +102,10 @@ test('Decline creates nothing, and a request whose call ended goes by itself', a
   await expect(browser.locator('.toast:has-text("Declined")')).toBeVisible();
   expect(await productTasks(browser)).toEqual(before);
 
-  // The Superagent's call ended (interrupted, or nobody answered): the card goes.
+  // SPEC-487 XRQ-001: a request stays until answered; the Superagent withdraws it: the card goes.
   const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Another one' });
   await expect(card).toBeVisible();
-  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', i), id);
+  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.withdrawSuperagentRequest('sb_studio', i), id);
   await expect(card).toBeHidden();
   expect(await productTasks(browser)).toEqual(before);
 });
@@ -295,7 +296,7 @@ test('a request while All sandboxes is in front marks the This sandbox tab', asy
 
   await here.click();
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
-  await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', r), id);
+  await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.withdrawSuperagentRequest('sb_studio', r), id);
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
   await expect(marker).toBeHidden();
 });
@@ -385,4 +386,132 @@ test('Send message takes a click only once the whole message was in view', async
   const start = screen.getByRole('group', `Your Superagent asks to start #${number} now in product`);
   await expect(start).toHaveText(/Supertask: runs alone/);
   await expect(screen.getByRole('button', 'Start now')).toBeVisible();
+});
+
+// SPEC-487 XRQ-005 (wall 9): a decision only the person makes waits on the Superagent's own
+// panel, its question read to its end as a prompt is; Yes answers yes and No answers no.
+test('a decision the Superagent leaves to its person is answered Yes or No on its panel', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const question = 'May I merge #12 tonight?\nIts checks passed; nobody reviewed the docs.';
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'ask', prompt: question });
+  const card = screen.getByRole('group', 'Your Superagent asks you to decide');
+  await expect(card).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe(question);
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.getAttribute('aria-label') ?? null)).toBe('Question');
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Yes').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Answered yes")')).toBeVisible();
+
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'ask', prompt: 'OK to spend on the paid plan?' });
+  await expect(card).toBeVisible();
+  await screen.getByRole('button', 'No').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Answered no")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentAnswers: string[] } }).__yuliusMock.superagentAnswers)).toEqual(['yes', 'no']);
+});
+
+// Review of slice 8a, F1: a request the Superagent amends while its card is shown is drawn
+// again with the new text, read to its end again, and approved as drawn (the mock refuses an
+// answer naming an older revision, as the server does).
+test('an amended request is drawn again and approved as drawn', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const before = await productTasks(browser);
+  const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Rewrite the README' });
+  const card = screen.getByRole('group', 'Your Superagent asks to start a task in product');
+  await expect(card).toBeVisible();
+  await browser.evaluate((i) => (window as unknown as Asking).__yuliusMock.amendSuperagentRequest('sb_studio', i, 'Rewrite the README and the guide'), id);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe('Rewrite the README and the guide');
+  await screen.getByRole('button', 'Create task').click();
+  await expect(card).toBeHidden();
+  const created = await productTasks(browser);
+  expect(created.length).toBe(before.length + 1);
+  expect(created[created.length - 1].prompt).toBe('Rewrite the README and the guide');
+});
+
+// SPEC-487 REL-001 (the person's decision of 2026-11-13): a production release the Superagent
+// asks for waits on its panel, and its button takes a click only once the project's slug is
+// typed, as the CD page's confirmation does; Decline needs none. Onboarding is a plain click.
+test('a production deploy asked by the Superagent takes the project slug typed', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'deploy', options: { environment: 'prod' } });
+  const card = screen.getByRole('group', 'Your Superagent asks to deploy prod in studio');
+  await expect(card).toBeVisible();
+  await expect(card).toHaveText(/Environment: prod/);
+  const deploy = screen.getByRole('button', 'Deploy');
+  const typed = browser.locator('.agent-request input[aria-label="Type studio to confirm"]');
+  await expect(typed).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await typed.fill('studi');
+  await expect(deploy).toBeDisabled();
+  await typed.fill('studio');
+  await expect(deploy).toBeEnabled();
+  await deploy.click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Deploy started in studio")')).toBeVisible();
+  const released = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentReleases?: unknown[] } }).__yuliusMock.superagentReleases ?? []);
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }]);
+
+  // Declined without typing anything: nothing is released.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'promote' });
+  const promote = screen.getByRole('group', 'Your Superagent asks to promote production in studio');
+  await expect(promote).toBeVisible();
+  await expect(screen.getByRole('button', 'Promote')).toBeDisabled();
+  await screen.getByRole('button', 'Decline').click();
+  await expect(promote).toBeHidden();
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }]);
+
+  // Onboarding takes a click, no slug.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'onboard' });
+  const onboard = screen.getByRole('group', 'Your Superagent asks to start onboarding in studio');
+  await expect(onboard).toBeVisible();
+  await screen.getByRole('button', 'Start onboarding').click();
+  await expect(onboard).toBeHidden();
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }, { action: 'onboard', confirm: null }]);
+});
+
+// SPEC-487 SEC-001, SEC-002 (wall 10, the person's decision of 2026-11-13): the Superagent asks
+// for a secret's value; the person types it masked on its panel, line breaks kept, and it goes
+// to the vault: the page never shows it, and Store takes a click only once there is a value.
+test('a secret the Superagent asks for is typed masked on its panel and stored', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'secret', title: 'DEPLOY_KEY', prompt: "the dev VM's SSH key", options: { scope: 'personal' } });
+  const card = screen.getByRole('group', 'Your Superagent asks you for the secret DEPLOY_KEY in studio');
+  await expect(card).toBeVisible();
+  await expect(card).toHaveText(/the dev VM's SSH key/);
+  // Review of slice 10a, M2: whose it is, said on the card.
+  await expect(card).toHaveText(/Yours only \(personal\)/);
+  await expect(card).not.toHaveText(/Replaces/);
+  const field = browser.locator('.agent-request textarea[aria-label="DEPLOY_KEY’s value"]');
+  await expect(field).toBeVisible();
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.agent-request textarea')!).getPropertyValue('-webkit-text-security'))).toBe('disc');
+  expect(await field.getAttribute('data-1p-ignore')).not.toBeNull();
+  const store = screen.getByRole('button', 'Store');
+  await expect(store).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+  // M4: a value the server refuses stays typed, and the card waits.
+  await field.fill('1234567\n');
+  await expect(store).toBeEnabled();
+  await store.click();
+  await expect(browser.locator('.toast:has-text("Couldn’t store DEPLOY_KEY")')).toBeVisible();
+  await expect(card).toBeVisible();
+  await expect(field).toHaveValue('1234567\n');
+  await field.fill('-----BEGIN KEY-----\nAAAA\n-----END KEY-----');
+  await store.click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Stored DEPLOY_KEY")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentSecrets?: unknown[] } }).__yuliusMock.superagentSecrets ?? []))
+    .toEqual([{ name: 'DEPLOY_KEY', value: '-----BEGIN KEY-----\nAAAA\n-----END KEY-----' }]);
+  // Nothing of it stays on the page.
+  expect(await browser.evaluate(() => document.body.innerText.includes('AAAA'))).toBe(false);
+
+  // A project secret that replaces one says so.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'secret', title: 'API_TOKEN', prompt: null, options: { scope: 'sandbox' }, replaces: true });
+  const second = screen.getByRole('group', 'Your Superagent asks you for the secret API_TOKEN in studio');
+  await expect(second).toHaveText(/This project’s \(sandbox\)/);
+  await expect(second).toHaveText(/Replaces the value of API_TOKEN/);
 });

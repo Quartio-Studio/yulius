@@ -175,6 +175,15 @@ impl App {
                 || title_from_prompt(&prompt),
                 |t| t.chars().take(120).collect(),
             );
+        let status = if after.is_some() {
+            TaskStatus::Chained
+        } else if prepared.is_some() {
+            TaskStatus::Prepared
+        } else if req.start {
+            TaskStatus::Queued
+        } else {
+            TaskStatus::Closed
+        };
         let record = TaskRecord {
             id: TaskId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
             sandbox_id: sandbox.id.clone(),
@@ -185,15 +194,7 @@ impl App {
             model: req.model.clone(),
             effort: req.effort.clone(),
             workflow_id: req.workflow_id.clone(),
-            status: if after.is_some() {
-                TaskStatus::Chained
-            } else if prepared.is_some() {
-                TaskStatus::Prepared
-            } else if req.start {
-                TaskStatus::Queued
-            } else {
-                TaskStatus::Closed
-            },
+            status,
             activity: None,
             branch: None,
             worktree_path: None,
@@ -204,7 +205,8 @@ impl App {
             owner: req.created_by.clone(),
             created_at: now,
             updated_at: now,
-            closed_at: (!req.start).then_some(now),
+            // The time of the close the task is in (SPEC-483 CLT-001).
+            closed_at: (status == TaskStatus::Closed).then_some(now),
             archived_at: (!req.start).then_some(now),
             queued_at: (req.start && after.is_none() && prepared.is_none()).then_some(now),
             gate_blocks: 0,
@@ -430,7 +432,8 @@ impl App {
         }
     }
 
-    /// `POST /api/tasks/{tid}/stop`.
+    /// `POST /api/tasks/{tid}/stop`: anyone who may work in the project stops a task, or
+    /// cancels one that waits to start (SPEC-490 OWN-002).
     ///
     /// # Errors
     /// Access errors, `Conflict` when not stoppable.
@@ -439,8 +442,27 @@ impl App {
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
+        self.stop_task_as(ctx, id, None).await
+    }
+
+    /// [`App::stop_task`] for a person on a page, or for a `tool` acting for them, which its
+    /// audit then names. A stop by someone who does not own the task is audited with the owner
+    /// and said in the task's terminal (SPEC-490 OWN-005).
+    ///
+    /// # Errors
+    /// As [`App::stop_task`].
+    pub(crate) async fn stop_task_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        tool: Option<crate::tasks::ToolAudit<'_>>,
+    ) -> AppResult<TaskSummary> {
+        let task = self
+            .load_task_to(ctx, id, yulius_domain::task_access::TaskAction::Tidy)
+            .await?;
         self.stop_task_now(&task.id).await?;
+        self.record_tidy(ctx, &task, "task.stopped", tool).await;
+        self.say_ended_by_another(ctx, &task, "Stopped").await;
         let task = self
             .deps
             .store

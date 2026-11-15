@@ -13,8 +13,6 @@ use crate::time::Timestamp;
 pub const PACKAGE: &str = "@anthropic-ai/claude-code";
 /// The only registry versions and tarballs are read from.
 pub const REGISTRY_HOST: &str = "registry.npmjs.org";
-/// Installed versions kept: the one in use and the one before it (CCU-004).
-pub const KEEP: usize = 2;
 
 /// A released version: plain `X.Y.Z`, nothing else (it names a directory).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1333,6 +1331,5 @@ mod tests {
             vec![v("2.1.318")]
         );
         assert!(to_remove(&[v("2.1.311")], v("2.1.311")).is_empty());
-        assert_eq!(KEEP, 2);
     }
 }

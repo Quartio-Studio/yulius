@@ -315,6 +315,33 @@ fn attachment_path(line: &str) -> Option<String> {
     valid_path(rest.to_owned())
 }
 
+/// An attached file as the composer writes it into a request: a POSIX single-quoted mention
+/// `@'/path'`, which [`Request::parse`] reads back as that file.
+#[must_use]
+pub fn quoted_mention(path: &str) -> String {
+    format!("@'{}'", path.replace('\'', "'\\''"))
+}
+
+/// `new` as the request that replaces `old` (SPEC-487 TCT-002): the text as given, and after
+/// it, each on a line of its own, the files attached to `old` that `new` does not mention, so a
+/// request that is rewritten loses no file its person attached.
+#[must_use]
+pub fn keeping_attachments(old: &str, new: &str) -> String {
+    let named = Request::parse(new).attachments;
+    let mut kept: Vec<String> = Vec::new();
+    for path in Request::parse(old).attachments {
+        if !named.contains(&path) && !kept.contains(&path) {
+            kept.push(path);
+        }
+    }
+    let mut out = new.trim().to_owned();
+    for (i, path) in kept.iter().enumerate() {
+        out.push_str(if i == 0 { "\n\n" } else { "\n" });
+        out.push_str(&quoted_mention(path));
+    }
+    out
+}
+
 /// The path of a POSIX single-quoted mention after its opening quote (`'\''` closes, adds a
 /// quote and reopens), with the bytes it takes, closing quote included.
 fn quoted_path(quoted: &str) -> Option<(String, usize)> {
@@ -409,7 +436,8 @@ impl DoneDefinition {
         format!(
             "Done = repository changes merged into {} on green Yulius CI (by delivery_merge, or \
              by anyone at a head whose own Yulius CI run passed){deploy}, or work needing no \
-             change reported; {SUMMARY}; never promote to {} unless asked.",
+             change reported; {SUMMARY}; promotion to {} is not yours (a person's, or automatic \
+             where the delivery profile says so).",
             self.integration_branch, self.production_branch
         )
     }
@@ -468,8 +496,9 @@ impl DoneDefinition {
             " Fix what fails and loop until it is green; Yulius deletes the merged branch.\n\
              - **If it needs no repository change** (research, a brainstorm, an answer, setting \
              something up outside the repository): do it and report the result.\n\
-             - **Never promote to `{}`** or deploy to production unless the request asks for it: \
-             a person does that in a separate task.\n\
+             - **Promotion to `{}` and production deploys are not yours:** they are a person's \
+             (promotion is automatic where the delivery profile says so); when the request needs \
+             one from a person, ask with `needs_you` and finish the rest.\n\
              - **End with a short summary:** what changed, how it was verified, and what could \
              not be tested in this environment.",
             self.production_branch
@@ -634,6 +663,32 @@ fn take_units(text: &str, max: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-487 TCT-002: a rewritten request keeps the files attached to the one it replaces:
+    /// those it does not mention follow its text, each read back as a file; one it mentions
+    /// stays where it put it, once.
+    #[test]
+    fn a_replaced_request_keeps_its_attached_files() {
+        let old = "Fix @'/att/a b.png' and\n@/att/c.txt\nsee @'/att/it'\\''s.png' too";
+        let attached = Request::parse(old).attachments;
+        assert_eq!(attached, ["/att/a b.png", "/att/c.txt", "/att/it's.png"]);
+        let new = keeping_attachments(old, "  Other work, see @'/att/c.txt' first  ");
+        assert_eq!(
+            new,
+            "Other work, see @'/att/c.txt' first\n\n@'/att/a b.png'\n@'/att/it'\\''s.png'"
+        );
+        let mut read = Request::parse(&new).attachments;
+        read.sort();
+        assert_eq!(read, attached);
+        // Nothing attached, or everything mentioned: the text as given.
+        assert_eq!(keeping_attachments("plain", " new text "), "new text");
+        assert_eq!(keeping_attachments(old, old), old);
+        // A file attached twice is kept once.
+        assert_eq!(
+            keeping_attachments("@'/a.png' and @'/a.png'", "x"),
+            "x\n\n@'/a.png'"
+        );
+    }
 
     #[test]
     fn a_hand_over_follows_the_request_under_whose_agent_wrote_it() {
@@ -1220,7 +1275,19 @@ mod tests {
         assert!(file.contains("\n- /srv/a.png\n"), "{file}");
         assert!(file.contains("`delivery_merge` on green Yulius CI"));
         assert!(file.contains("Then deploy to `dev` with `delivery_deploy`"));
-        assert!(file.contains("**Never promote to `main`**"));
+        assert!(file.contains("**Promotion to `main` and production deploys are not yours:**"));
+        // SPEC-483 SHP-001 (ADR-0110): nothing Yulius types tells an agent to promote.
+        for (what, text) in [
+            ("short", done(&["dev"]).short()),
+            ("full", done(&["dev"]).full()),
+            ("file", file.clone()),
+        ] {
+            assert_eq!(
+                crate::cd::production_instruction(&text),
+                None,
+                "{what}: {text}"
+            );
+        }
         assert!(file.contains("`yulius wait` with `run_in_background`"));
     }
 

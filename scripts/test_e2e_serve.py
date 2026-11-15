@@ -69,6 +69,39 @@ class Serve(unittest.TestCase):
         finally:
             conn.close()
 
+    def get_policy(self, path):
+        if not self.serving:
+            self.start()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("GET", path)
+            response = conn.getresponse()
+            response.read()
+            return response.getheader("Content-Security-Policy")
+        finally:
+            conn.close()
+
+    def test_every_answer_carries_the_servers_own_policy(self):
+        # SPEC-483 W1b: the e2e suite runs the UI under the policy `yulius serve` sends (one file).
+        policy = (
+            Path(__file__).resolve().parent.parent / "crates" / "yulius-server" / "src" / "content-security-policy.txt"
+        ).read_text(encoding="utf-8").strip()
+        self.assertIn("script-src 'self';", policy)
+        for path in ["/app.js", "/missing.js", "/?mock=1", "/?mock=1&laboratory=1"]:
+            self.assertEqual(self.get_policy(path), policy, path)
+
+    def test_only_the_brand_lab_may_load_its_google_fonts(self):
+        # The lab (`?lab=`, mock only, never shipped) previews families from Google Fonts; every
+        # other directive stays the server's.
+        policy = serve.POLICY
+        lab = self.get_policy("/?mock=1&lab=roma")
+        self.assertEqual(
+            lab,
+            policy.replace("style-src 'self' 'unsafe-inline';", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;")
+            .replace("font-src 'self' data:;", "font-src 'self' data: https://fonts.gstatic.com;"),
+        )
+        self.assertEqual(self.get_policy("/?lab=&mock=1"), lab)
+
 
 if __name__ == "__main__":
     unittest.main()

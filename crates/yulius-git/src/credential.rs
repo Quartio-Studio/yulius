@@ -20,8 +20,10 @@
 //! ```
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
+use std::net::TcpStream;
 use std::time::{Duration, Instant};
+
+use yulius_domain::agent_endpoint::{AgentEndpoint, EndpointError};
 
 /// Overall deadline for one `get` round trip.
 pub const HELPER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -203,16 +205,7 @@ pub fn credential_get(
     if request.protocol.as_deref() != Some("https") {
         return Err(CredentialError::UnsupportedProtocol);
     }
-    let base = env("YULIUS_URL").ok_or(CredentialError::BadEnvironment("YULIUS_URL is not set"))?;
-    let token = env("YULIUS_TASK_TOKEN").ok_or(CredentialError::BadEnvironment(
-        "YULIUS_TASK_TOKEN is not set",
-    ))?;
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(CredentialError::BadEnvironment(
-            "YULIUS_TASK_TOKEN must be printable ASCII",
-        ));
-    }
-    let endpoint = LoopbackUrl::parse(&base)?;
+    let endpoint = AgentEndpoint::from_env(env).map_err(bad_environment)?;
     let mut body = serde_json::Map::new();
     for (key, value) in [
         ("protocol", &request.protocol),
@@ -224,7 +217,7 @@ pub fn credential_get(
         }
     }
     let body = serde_json::Value::Object(body).to_string();
-    let response = http_post(&endpoint, &token, &body, timeout)?;
+    let response = http_post_to(&endpoint, CREDENTIAL_PATH, &body, timeout)?;
     match response.status {
         200 => parse_credential(&response.body),
         401 | 403 | 404 => Err(CredentialError::Refused(response.status)),
@@ -258,62 +251,26 @@ fn parse_credential(body: &[u8]) -> Result<Credential, CredentialError> {
     })
 }
 
-/// A parsed `http://<loopback>[:port][/base]` URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LoopbackUrl {
-    pub(crate) address: SocketAddr,
-    pub(crate) host_header: String,
-    pub(crate) base_path: String,
+/// A connection to the first of `endpoint`'s addresses that takes one before `deadline`: every
+/// attempt has only the time left, so trying the next address never stretches the bound.
+pub(crate) fn connect(endpoint: &AgentEndpoint, deadline: Instant) -> std::io::Result<TcpStream> {
+    let mut last = std::io::Error::new(ErrorKind::NotFound, "no address");
+    for address in &endpoint.addresses {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "deadline passed"));
+        }
+        match TcpStream::connect_timeout(address, left) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
 }
 
-impl LoopbackUrl {
-    pub(crate) fn parse(url: &str) -> Result<Self, CredentialError> {
-        let invalid =
-            || CredentialError::BadEnvironment("YULIUS_URL must be http:// on a loopback address");
-        let rest = url.strip_prefix("http://").ok_or_else(invalid)?;
-        if rest.chars().any(|c| c.is_control() || c.is_whitespace()) {
-            return Err(invalid());
-        }
-        let (authority, path) = match rest.find('/') {
-            Some(slash) => (&rest[..slash], &rest[slash..]),
-            None => (rest, ""),
-        };
-        if authority.contains('@') || path.contains(['?', '#']) {
-            return Err(invalid());
-        }
-        let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-            let (host, after) = bracketed.split_once(']').ok_or_else(invalid)?;
-            let port = match after.strip_prefix(':') {
-                Some(port) => port,
-                None if after.is_empty() => "80",
-                None => return Err(invalid()),
-            };
-            (host, port)
-        } else {
-            match authority.rsplit_once(':') {
-                Some((host, port)) => (host, port),
-                None => (authority, "80"),
-            }
-        };
-        let port: u16 = port.parse().map_err(|_| invalid())?;
-        let ip = if host.eq_ignore_ascii_case("localhost") {
-            IpAddr::V4(Ipv4Addr::LOCALHOST)
-        } else {
-            host.parse::<IpAddr>().map_err(|_| invalid())?
-        };
-        let loopback = match ip {
-            IpAddr::V4(v4) => v4.is_loopback(),
-            IpAddr::V6(v6) => v6 == Ipv6Addr::LOCALHOST,
-        };
-        if !loopback {
-            return Err(invalid());
-        }
-        Ok(Self {
-            address: SocketAddr::new(ip, port),
-            host_header: authority.to_owned(),
-            base_path: path.trim_end_matches('/').to_owned(),
-        })
-    }
+/// The environment's error as the helper says it (Git prints it on stderr).
+fn bad_environment(error: EndpointError) -> CredentialError {
+    CredentialError::BadEnvironment(error.message())
 }
 
 struct HttpResponse {
@@ -334,15 +291,6 @@ fn remaining(deadline: Instant) -> Result<Duration, CredentialError> {
     }
 }
 
-fn http_post(
-    endpoint: &LoopbackUrl,
-    token: &str,
-    body: &str,
-    timeout: Duration,
-) -> Result<HttpResponse, CredentialError> {
-    http_post_to(endpoint, CREDENTIAL_PATH, token, body, timeout)
-}
-
 /// Posts JSON to a task endpoint of the Yulius server the agent's session belongs to
 /// (`YULIUS_URL`, `YULIUS_TASK_TOKEN`), as the sandbox's `yulius` CLI does for `wait`: returns
 /// the HTTP status and body.
@@ -355,30 +303,20 @@ pub fn agent_post(
     env: &dyn Fn(&str) -> Option<String>,
     timeout: Duration,
 ) -> Result<(u16, Vec<u8>), CredentialError> {
-    let base = env("YULIUS_URL").ok_or(CredentialError::BadEnvironment("YULIUS_URL is not set"))?;
-    let token = env("YULIUS_TASK_TOKEN").ok_or(CredentialError::BadEnvironment(
-        "YULIUS_TASK_TOKEN is not set",
-    ))?;
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(CredentialError::BadEnvironment(
-            "YULIUS_TASK_TOKEN must be printable ASCII",
-        ));
-    }
-    let endpoint = LoopbackUrl::parse(&base)?;
-    let response = http_post_to(&endpoint, path, &token, body, timeout)?;
+    let endpoint = AgentEndpoint::from_env(env).map_err(bad_environment)?;
+    let response = http_post_to(&endpoint, path, body, timeout)?;
     Ok((response.status, response.body))
 }
 
 fn http_post_to(
-    endpoint: &LoopbackUrl,
+    endpoint: &AgentEndpoint,
     path: &str,
-    token: &str,
     body: &str,
     timeout: Duration,
 ) -> Result<HttpResponse, CredentialError> {
     let deadline = Instant::now() + timeout;
-    let mut stream = TcpStream::connect_timeout(&endpoint.address, timeout)
-        .map_err(|e| transport("connect", &e))?;
+    let token = &endpoint.token;
+    let mut stream = connect(endpoint, deadline).map_err(|e| transport("connect", &e))?;
     let request = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\
@@ -522,26 +460,6 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn parses_loopback_urls_only() -> Result<(), CredentialError> {
-        let url = LoopbackUrl::parse("http://127.0.0.1:7171/base/")?;
-        assert_eq!(url.address.port(), 7171);
-        assert_eq!(url.base_path, "/base");
-        assert!(LoopbackUrl::parse("http://[::1]:80").is_ok());
-        assert!(LoopbackUrl::parse("http://localhost:9").is_ok());
-        for bad in [
-            "https://127.0.0.1:1",
-            "http://10.0.0.1:80",
-            "http://example.com:80",
-            "http://user@127.0.0.1:80",
-            "http://127.0.0.1:99999",
-            "http://0.0.0.0:80",
-        ] {
-            assert!(LoopbackUrl::parse(bad).is_err(), "{bad} accepted");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn decodes_chunked_bodies() -> Result<(), CredentialError> {
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"to\r\n9\r\nken\":\"t\"}\r\n0\r\n\r\n";
         let response =
@@ -549,6 +467,56 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{\"token\":\"t\"}");
         assert!(try_parse_response(&raw[..raw.len() - 5])?.is_none());
+        Ok(())
+    }
+
+    fn endpoint_at(url: String) -> Result<AgentEndpoint, EndpointError> {
+        AgentEndpoint::from_env(&move |name| match name {
+            "YULIUS_URL" => Some(url.clone()),
+            "YULIUS_TASK_TOKEN" => Some("tk".to_owned()),
+            _ => None,
+        })
+    }
+
+    /// A listener on ::1 whose port nothing holds on 127.0.0.1 (another test's listener there
+    /// would take the first connection): tried a few times, as ports are given at random.
+    fn ipv6_only_listener() -> std::io::Result<TcpListener> {
+        for _ in 0..20 {
+            let listener = TcpListener::bind("[::1]:0")?;
+            let port = listener.local_addr()?.port();
+            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return Ok(listener);
+            }
+        }
+        Err(std::io::Error::other(
+            "no port free on both loopback addresses",
+        ))
+    }
+
+    /// SPEC-483 slice 34 (review): `localhost` is 127.0.0.1 then ::1; a server on ::1 only is
+    /// reached through the second address.
+    #[test]
+    fn localhost_reaches_a_server_on_the_second_address() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = ipv6_only_listener()?;
+        let port = listener.local_addr()?.port();
+        let endpoint = endpoint_at(format!("http://localhost:{port}"))?;
+        let stream = connect(&endpoint, Instant::now() + Duration::from_secs(5))?;
+        assert!(stream.peer_addr()?.is_ipv6());
+        Ok(())
+    }
+
+    /// SPEC-483 slice 34 (review): every address shares the one deadline; once it passed, no
+    /// address is tried, so two addresses never take twice the bound.
+    #[test]
+    fn a_spent_deadline_tries_no_address() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let endpoint = endpoint_at(format!("http://127.0.0.1:{port}"))?;
+        let error = connect(&endpoint, Instant::now())
+            .err()
+            .ok_or("connected")?;
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
         Ok(())
     }
 

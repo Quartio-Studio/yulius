@@ -305,6 +305,24 @@ test('Run now and the start chip wait until the automation has loaded (SPEC-093 
   await expect(screen.getByRole('button', 'Start: Start now')).toBeEnabled();
 });
 
+// SPEC-483 slice 28 (review): reached from a page whose tasks are already read (no first-load
+// event redraws the chip), the chip still loads as the named, shimmering "Start".
+test('the start chip loads as "Start" when the editor is reached from another page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks', '&ambient=0&hold=/api/sandboxes/sb_studio/automations'));
+  await expect(screen.getByText('Checkout API').first()).toBeVisible();
+  await browser.evaluate(async () => {
+    const { navigate } = await import('/assets/router.js' as string);
+    navigate('/s/studio/automations/aut_2');
+  });
+  await expect(screen.getByRole('button', 'Start')).toBeDisabled();
+  expect(await browser.evaluate(() => {
+    const chip = document.querySelector('.au-start')!;
+    return { text: chip.textContent, bar: Boolean(chip.querySelector('.skeleton-bar')) };
+  })).toEqual({ text: 'Start', bar: true });
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('button', 'Start: Start now')).toBeEnabled();
+});
+
 test('a reader sees the start chip, disabled, in the action bar (AC-AUT-24)', async ({ app, screen }) => {
   await app.open(mock('/s/sandbox-3/automations/new'));
   await expect(screen.getByText(/^Read-only: changing automations/)).toBeVisible();

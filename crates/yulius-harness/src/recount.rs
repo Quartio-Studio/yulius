@@ -72,7 +72,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn at(rfc3339: &str) -> Timestamp {
-        crate::time::parse_rfc3339(rfc3339).unwrap_or(Timestamp(0))
+        yulius_domain::time::parse_rfc3339(rfc3339).unwrap_or(Timestamp(0))
     }
 
     fn fixture() -> PathBuf {
@@ -161,7 +161,7 @@ mod tests {
         let empty = dir.path().join("empty.jsonl");
         fs::write(&empty, "")?;
         let acc = count_run(&empty, None, None)?.ok_or("an empty file is a transcript")?;
-        assert!(acc.usage().is_unknown());
+        assert_eq!(acc.usage(), yulius_domain::usage::TokenUsage::UNKNOWN);
         assert_eq!((acc.turns(), acc.active().total_ms()), (0, None));
         Ok(())
     }

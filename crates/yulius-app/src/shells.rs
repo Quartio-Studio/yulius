@@ -164,7 +164,8 @@ pub struct ShellRuntime {
     /// written before it was kept.
     pub(crate) launch: OnceLock<String>,
     /// Whether an adopted Cockpit is to start again to get what this Yulius serves:
-    /// [`crate::cockpit::REFRESH_NONE`], `REFRESH_DUE` or `REFRESH_WAITING` (for its turn).
+    /// [`crate::cockpit::REFRESH_NONE`], `REFRESH_DUE`, `REFRESH_WAITING` (for its turn) or
+    /// `REFRESH_HELD` (by its person's draft, SPEC-487 SES-002).
     pub(crate) refresh: AtomicU8,
     /// A Cockpit that is its person's Global Superagent (SPEC-427): `sandbox` only hosts it.
     pub(crate) global: bool,
@@ -183,13 +184,27 @@ pub struct ShellRuntime {
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
     scrub: crate::vault::TerminalScrub,
-    writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
+    pub(crate) writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
     closing: AtomicBool,
     ended_tx: watch::Sender<bool>,
     /// Clock time (ms) when the last viewer left; meaningful only without viewers.
     idle_since_ms: AtomicI64,
+    /// A Cockpit's prompt box (SPEC-487 SES-002): the count of its person's keystroke frames
+    /// that changed it, the one that last typed into it and when, the one that last emptied it
+    /// (Enter, Ctrl-C), and whether a bracketed paste is still coming. Text typed after the last
+    /// emptying is a draft, which an update's restart does not throw away.
+    pub(crate) key_seq: AtomicU64,
+    pub(crate) typed_seq: AtomicU64,
+    pub(crate) typed_ms: AtomicI64,
+    pub(crate) emptied_seq: AtomicU64,
+    pub(crate) key_state: Mutex<crate::cockpit::KeyState>,
+    /// When its person's last keystroke frame came, and when a draft's mark was last kept.
+    pub(crate) last_key_ms: AtomicI64,
+    pub(crate) draft_saved_ms: AtomicI64,
+    /// When Yulius last typed one of its checks into this Cockpit (SPEC-487 CHK-003).
+    pub(crate) check_typed_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
@@ -253,6 +268,9 @@ struct ShellFile {
     /// The launch digest a Cockpit was started with (absent in older records, SPEC-186).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch: Option<String>,
+    /// When its person last typed a draft that is still in its prompt box (SPEC-487 SES-002).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_typed_at: Option<i64>,
     /// A Global Superagent's record (absent for every other shell, SPEC-427).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     global: bool,
@@ -286,6 +304,11 @@ impl ShellRuntime {
         } else {
             Seat::Sandbox(self.sandbox.clone())
         }
+    }
+
+    /// When this shell started (ms), for a Cockpit the start of its process.
+    pub(crate) fn started_ms(&self) -> i64 {
+        self.created_at.0
     }
 
     /// The user who opened the shell.
@@ -841,6 +864,11 @@ impl App {
             limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
                 .filter(|ms| *ms > 0),
             launch: runtime.launch.get().cloned(),
+            draft_typed_at: yulius_domain::agent_cli::is_draft(
+                i64::try_from(runtime.typed_seq.load(Ordering::SeqCst)).unwrap_or(i64::MAX),
+                i64::try_from(runtime.emptied_seq.load(Ordering::SeqCst)).unwrap_or(i64::MAX),
+            )
+            .then(|| runtime.typed_ms.load(Ordering::SeqCst)),
             global: runtime.global,
             token: hex_token(&sealed.0),
         };
@@ -893,6 +921,14 @@ impl App {
             closing: AtomicBool::new(false),
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
+            key_seq: AtomicU64::new(0),
+            typed_seq: AtomicU64::new(0),
+            typed_ms: AtomicI64::new(0),
+            emptied_seq: AtomicU64::new(0),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
@@ -1277,7 +1313,7 @@ impl App {
             return true;
         };
         match self.deps.store.task(task).await {
-            Ok(Some(task)) => task.owner == ctx.user.id,
+            Ok(Some(task)) => crate::tasks::owns(&task, &ctx.user.id),
             Ok(None) => true,
             Err(_) => false,
         }
@@ -1299,6 +1335,9 @@ impl App {
         }
         if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
+        }
+        if attach.runtime.kind == ShellKind::Cockpit && crate::terminal::is_typing(data) {
+            self.note_cockpit_keys(&attach.runtime, data);
         }
         match attach.runtime.writer.lock().await.as_mut() {
             Some(writer) => writer.input(data).await,
@@ -1523,6 +1562,15 @@ impl App {
             closing: AtomicBool::new(false),
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
+            // A draft kept with its record (review of slice 9a, F1).
+            key_seq: AtomicU64::new(u64::from(file.draft_typed_at.is_some())),
+            typed_seq: AtomicU64::new(u64::from(file.draft_typed_at.is_some())),
+            typed_ms: AtomicI64::new(file.draft_typed_at.unwrap_or(0)),
+            emptied_seq: AtomicU64::new(0),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),

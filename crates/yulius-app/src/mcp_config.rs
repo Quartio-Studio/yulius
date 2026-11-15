@@ -941,26 +941,6 @@ impl App {
             .any(|s| s.owner_id.is_some()))
     }
 
-    /// Whether the live run of `task` was started with a person's personal MCP servers (MSC-009).
-    ///
-    /// # Errors
-    /// Store failures.
-    pub(crate) async fn live_run_holds_personal_mcp(
-        &self,
-        task: &crate::model::TaskRecord,
-    ) -> AppResult<bool> {
-        // Never creates a runtime: a task without one has no run.
-        let Some(runtime) = self.existing_runtime(&task.id) else {
-            return Ok(false);
-        };
-        let held = runtime
-            .personal_mcp_of
-            .lock()
-            .map(|held| held.is_some())
-            .unwrap_or(true);
-        Ok(held && self.deps.store.live_attempt(&task.id).await?.is_some())
-    }
-
     /// Configured MCP servers for runs of `holder` in `sandbox` (`effective_mcp`) with
     /// opened secrets. Every run gets them, whichever subscription it runs on (MCP-004). HTTP servers
     /// forward an `Authorization: Bearer` header as the bearer token; other headers cannot be

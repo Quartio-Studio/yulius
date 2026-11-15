@@ -81,12 +81,17 @@ pub const WITHHELD_TOOLS: &[&str] = &[
     "variables_set",
     "variable_delete",
     "cd_deploy",
+    // A dev rollback is a deploy too (review of slice 8b, M1).
+    "cd_rollback",
     "project_import",
     "onboarding_start",
     "onboarding_skip",
     // Text it reads in one sandbox must not merge code into another (review round 2): pull
     // requests it opens are merged by a person or a task's delivery.
     "change_merge",
+    // Nor a task's merge for its owner (SPEC-487 MRG-005): the same reason, and no independent
+    // review covers what it merges.
+    "task_merge",
 ];
 
 /// The tools only the Global Superagent is served with `project`, not a person's own agent: the
@@ -467,6 +472,21 @@ mod tests {
             !global_tool_descriptors()
                 .iter()
                 .any(|t| t.name == "change_merge")
+        );
+        // Nor a task's merge for its owner (SPEC-487 MRG-005, review of slice 5, F3): text it
+        // reads in one sandbox must not merge code in another.
+        assert!(
+            !global_tool_descriptors()
+                .iter()
+                .any(|t| t.name == "task_merge")
+        );
+        // Nor updating or restarting the instance (SPEC-487 INS-004): text it reads in one
+        // sandbox must not restart everyone's work. It is the Superagent's only
+        // (`person_tools::SUPERAGENT_ONLY`), so no remote tool serves it.
+        assert!(
+            !global_tool_descriptors()
+                .iter()
+                .any(|t| t.name == "instance_update")
         );
     }
 }

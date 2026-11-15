@@ -44,7 +44,7 @@ use crate::delivery::DeliveryProfile;
 use crate::ids::TaskId;
 use markdown::{Line, checklist_item, heading, is_meaningful, normalize_title};
 
-/// Longest slug produced by [`spec_slug`].
+/// Longest slug a spec file name gets from its title.
 pub const MAX_SLUG_LEN: usize = 50;
 
 /// Where architecture decisions live.
@@ -170,6 +170,29 @@ impl SpecStatus {
             Self::Done => "done",
             Self::Abandoned => "abandoned",
         }
+    }
+
+    /// Whether a spec with this status says that its task's work is not finished (SPEC-491
+    /// DON-004): everything but `done` (every Plan item ticked, Evidence present) and
+    /// `abandoned`. Such a task is not Done, however complete its plan reads.
+    #[must_use]
+    pub fn work_left(self) -> bool {
+        !matches!(self, Self::Done | Self::Abandoned)
+    }
+
+    /// What the agent is told when every step of its plan is finished and its spec has this
+    /// status (SPEC-491 DON-007): what keeps the task from Done, and the two ways on. `None`
+    /// for a status that says nothing is left.
+    #[must_use]
+    pub fn unfinished_note(self) -> Option<String> {
+        self.work_left().then(|| {
+            format!(
+                "Every step is finished and the spec says `status: {}`, so the task is not Done \
+                 and tasks waiting for it do not start. If work remains, add its steps \
+                 (`steps_set`); if none does, add the Evidence and set `status: done`.",
+                self.as_str()
+            )
+        })
     }
 
     /// Parses the frontmatter spelling.
@@ -611,13 +634,7 @@ fn transliterate(c: char) -> Option<&'static str> {
 
 /// ASCII kebab-case slug of a title, at most [`MAX_SLUG_LEN`] characters, cut at a word
 /// boundary when possible; common Latin diacritics are transliterated (`Żółw` → `zolw`).
-/// Returns `task` when nothing usable remains.
-#[must_use]
-pub fn spec_slug(title: &str) -> String {
-    slug_or(title, "task")
-}
-
-/// [`spec_slug`] with a custom fallback.
+/// Returns `fallback` when nothing usable remains.
 pub(crate) fn slug_or(title: &str, fallback: &str) -> String {
     let mut slug = String::new();
     let mut dash = false;
@@ -726,6 +743,17 @@ pub fn is_documentation_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 DOC-001: the repository's spec template, the one AGENTS.md and the spec workflow
+    /// route to, is a spec `spec_check` accepts once its task id is filled in.
+    #[test]
+    fn the_repository_spec_template_validates() {
+        let template = include_str!("../../../../.ai/templates/spec.md");
+        let filled = template.replace("<task id>", "1fb06e11-08e1-4c37-90d0-3219e19122ad");
+        let report = validate_spec(&filled);
+        assert!(report.is_valid(), "{:?}", report.problems);
+        assert_eq!(report.status, Some(SpecStatus::Draft));
+    }
 
     /// Deterministic xorshift generator for randomized tests (no extra dependency).
     struct Rng(u64);
@@ -1018,24 +1046,25 @@ mod tests {
 
     #[test]
     fn slugs() {
-        assert_eq!(spec_slug("Checkout API"), "checkout-api");
+        assert_eq!(slug_or("Checkout API", "task"), "checkout-api");
         assert_eq!(
-            spec_slug("  Fix: login (OAuth) -- again!  "),
+            slug_or("  Fix: login (OAuth) -- again!  ", "task"),
             "fix-login-oauth-again"
         );
         assert_eq!(
-            spec_slug("Zrób sklep internetowy z płatnościami"),
+            slug_or("Zrób sklep internetowy z płatnościami", "task"),
             "zrob-sklep-internetowy-z-platnosciami"
         );
-        assert_eq!(spec_slug("Straße & Café"), "strasse-cafe");
-        assert_eq!(spec_slug("🚀🚀"), "task");
-        assert_eq!(spec_slug(""), "task");
-        let long = spec_slug(
+        assert_eq!(slug_or("Straße & Café", "task"), "strasse-cafe");
+        assert_eq!(slug_or("🚀🚀", "task"), "task");
+        assert_eq!(slug_or("", "task"), "task");
+        let long = slug_or(
             "implement the complete customer checkout flow with card payments and receipts",
+            "task",
         );
         assert_eq!(long, "implement-the-complete-customer-checkout-flow-with");
         assert!(long.len() <= MAX_SLUG_LEN);
-        let unbroken = spec_slug(&"a".repeat(80));
+        let unbroken = slug_or(&"a".repeat(80), "task");
         assert_eq!(unbroken.len(), MAX_SLUG_LEN);
     }
 }

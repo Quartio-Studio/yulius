@@ -22,6 +22,8 @@ use yulius_contracts::api::tasks::{ChangeStart, CreateTask};
 use yulius_domain::auto_choice::AUTO;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
+use yulius_domain::rule::{MAX_ATOMS, Rule};
+use yulius_domain::task::{TaskGroup, TaskStatus};
 
 use crate::auth::AuthContext;
 use crate::automations::{CreatedVia, templates};
@@ -91,13 +93,126 @@ fn opt_str(args: &Value, key: &str) -> AppResult<Option<String>> {
     }
 }
 
+/// What `after_all_tasks` answers when no task is left to wait for (SPEC-487 CHN-005).
+const NOTHING_LEFT: &str = "No task of this project is left to wait for: it starts now.";
+
+/// `after_all_tasks` among `args`, which then holds no other start choice (SPEC-487 CHN-005).
+fn after_all_tasks_arg(args: &Value) -> AppResult<bool> {
+    if !flag_arg(args, "after_all_tasks")? {
+        return Ok(false);
+    }
+    // A blank text is no choice, as `opt_str` reads it.
+    let other = [
+        "after_task",
+        "start_rule",
+        "supertask",
+        "prepared",
+        "start_at",
+    ]
+    .into_iter()
+    .any(|key| match args.get(key) {
+        None | Some(Value::Null | Value::Bool(false)) => false,
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(_) => true,
+    });
+    if other {
+        return Err(AppError::Invalid(
+            "`after_all_tasks` stands alone: give no after_task, start_rule, supertask, prepared or start_at with it".into(),
+        ));
+    }
+    Ok(true)
+}
+
 impl App {
+    /// The start rule `after_all_tasks` means now (SPEC-487 CHN-005): every task of `sandbox`
+    /// that still has work coming is done. Left out: a task that ended or is stopping; one the
+    /// task list shows under Done (done, or "Answered": an idle session with nothing open,
+    /// which never becomes `done` by itself); a prepared task (it waits for a person or a
+    /// time); and `of`, the task whose start changes, with the tasks waiting on it, directly or
+    /// through others (waiting for them would be waiting for itself). `None` when no task is
+    /// left.
+    ///
+    /// # Errors
+    /// `Invalid` for more tasks than a rule names; store failures.
+    async fn all_tasks_rule(
+        &self,
+        sandbox: &SandboxId,
+        of: Option<&TaskRecord>,
+    ) -> AppResult<Option<String>> {
+        let tasks = self.deps.store.tasks(sandbox, false).await?;
+        let mut held: Vec<u32> = of.map(|task| task.number).into_iter().collect();
+        while !held.is_empty() {
+            let mut grew = false;
+            for task in &tasks {
+                if task.status != TaskStatus::Chained || held.contains(&task.number) {
+                    continue;
+                }
+                let Some(chain) = self.deps.store.chain(&task.id).await? else {
+                    continue;
+                };
+                let names = match chain.rule.as_deref() {
+                    Some(rule) => Rule::parse(rule)
+                        .map(|rule| rule.numbers())
+                        .unwrap_or_default(),
+                    None => vec![chain.after_number],
+                };
+                if names.iter().any(|number| held.contains(number)) {
+                    held.push(task.number);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let requested = self.browser_requests(sandbox).await;
+        let mut numbers = Vec::new();
+        for task in &tasks {
+            if task.status == TaskStatus::Prepared || held.contains(&task.number) {
+                continue;
+            }
+            // By the list's own rule (`AttentionFacts::group`).
+            if !matches!(
+                self.task_group(task, &requested).await?,
+                TaskGroup::Done | TaskGroup::Ended
+            ) {
+                numbers.push(task.number);
+            }
+        }
+        numbers.sort_unstable();
+        if numbers.len() > MAX_ATOMS {
+            return Err(AppError::Invalid(format!(
+                "{} tasks of this project have not ended, and a rule names at most {MAX_ATOMS}: name the ones that matter in start_rule",
+                numbers.len()
+            )));
+        }
+        let rule = numbers
+            .iter()
+            .map(|number| format!("#{number} done"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        Ok(Some(rule).filter(|rule| !rule.is_empty()))
+    }
+
     /// The person a caller acts for, when they may still change things in its project: enabled
     /// and with write access, checked at every creating or changing tool call (MGT-002, MGT-005).
     ///
     /// # Errors
     /// `Forbidden` for a disabled person, the access errors of [`App::require`].
     pub(crate) async fn manage_authority(&self, caller: &ProjectCaller) -> AppResult<UserRecord> {
+        self.person_authority(caller, Action::Work).await
+    }
+
+    /// The person a caller acts for, when they are enabled and `action` is theirs in its
+    /// project, as things are at this call (SPEC-487 SAR-002).
+    ///
+    /// # Errors
+    /// `Forbidden` for a disabled person, the access errors of [`App::require`].
+    pub(crate) async fn person_authority(
+        &self,
+        caller: &ProjectCaller,
+        action: Action,
+    ) -> AppResult<UserRecord> {
         let user = self
             .deps
             .store
@@ -107,7 +222,7 @@ impl App {
             .ok_or_else(|| {
                 AppError::Forbidden("the person this session acts for is disabled".into())
             })?;
-        self.require(&user, &caller.sandbox, Action::Work).await?;
+        self.require(&user, &caller.sandbox, action).await?;
         Ok(user)
     }
 
@@ -188,6 +303,14 @@ impl App {
             .get("prompt")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::Invalid("missing string argument `prompt`".into()))?;
+        // Before anything is read for the caller: what `after_all_tasks` answers says how
+        // many tasks the project has.
+        let user = self.manage_authority(caller).await?;
+        let all_tasks = if after_all_tasks_arg(args)? {
+            Some(self.all_tasks_rule(&caller.sandbox, None).await?)
+        } else {
+            None
+        };
         let after_task_id = match args.get("after_task") {
             None | Some(Value::Null) => None,
             Some(number) => Some(
@@ -212,12 +335,14 @@ impl App {
             title: opt_str(args, "title")?,
             mode: opt_str(args, "mode")?,
             after_task_id,
-            start_rule: opt_str(args, "start_rule")?,
+            start_rule: match &all_tasks {
+                Some(rule) => rule.clone(),
+                None => opt_str(args, "start_rule")?,
+            },
             supertask: flag_arg(args, "supertask")?,
             prepared: flag_arg(args, "prepared")?,
             start_at: opt_str(args, "start_at")?,
         };
-        let user = self.manage_authority(caller).await?;
         let now = self.now().0;
         self.tool_tasks
             .reserve(&caller.sandbox, now)
@@ -251,7 +376,10 @@ impl App {
         tracing::info!(task = %task.id, number = task.number, actor = %caller.actor, "task created by a tool");
         Ok(json!({
             "task": self.task_brief(&task).await?,
-            "note": "The task is on the Tasks page of this project.",
+            "note": match all_tasks {
+                Some(None) => NOTHING_LEFT,
+                _ => "The task is on the Tasks page of this project.",
+            },
         }))
     }
 }
@@ -275,9 +403,17 @@ impl App {
             None | Some(Value::Null) => None,
             Some(number) => Some(self.after_task_arg(caller, number).await?.id),
         };
+        let all_tasks = if after_all_tasks_arg(args)? {
+            Some(self.all_tasks_rule(&caller.sandbox, Some(&task)).await?)
+        } else {
+            None
+        };
         let change = ChangeStart {
             after_task_id: after_task_id.map(|id| id.as_str().to_owned()),
-            start_rule: opt_str(args, "start_rule")?,
+            start_rule: match &all_tasks {
+                Some(rule) => rule.clone(),
+                None => opt_str(args, "start_rule")?,
+            },
             supertask: flag_arg(args, "supertask")?,
             prepared: flag_arg(args, "prepared")?,
             start_at: opt_str(args, "start_at")?,
@@ -297,7 +433,11 @@ impl App {
             .task(&task.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        Ok(json!({"task": self.task_brief(&task).await?}))
+        let mut answer = json!({"task": self.task_brief(&task).await?});
+        if all_tasks == Some(None) {
+            answer["note"] = json!(NOTHING_LEFT);
+        }
+        Ok(answer)
     }
 }
 
@@ -366,7 +506,11 @@ impl App {
             )));
         }
         let id = task.id.as_str();
-        let named = json!({"task": format!("#{} {}", task.number, task.title)});
+        // Each is audited by the function that does it, with the caller (SPEC-490 OWN-005).
+        let tool = crate::tasks::ToolAudit {
+            actor: &caller.actor,
+            detail: &caller.detail,
+        };
         let action = match change {
             TaskChange::Delete => {
                 let attachments = self
@@ -380,11 +524,11 @@ impl App {
                 }}));
             }
             TaskChange::Stop => {
-                self.stop_task(&ctx, id).await?;
+                self.stop_task_as(&ctx, id, Some(tool)).await?;
                 "task.stopped"
             }
             TaskChange::Archive(archived) => {
-                self.archive_task(&ctx, id, archived).await?;
+                self.archive_task_as(&ctx, id, archived, Some(tool)).await?;
                 if archived {
                     "task.archived"
                 } else {
@@ -392,22 +536,6 @@ impl App {
                 }
             }
         };
-        // The change happened: a failed audit write is logged, not reported as a failed call
-        // (which would invite a retry), as for a deletion.
-        if let Err(err) = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &caller.actor,
-                action,
-                Some(id),
-                Some(&tool_detail(caller, &named)),
-            )
-            .await
-        {
-            tracing::warn!(task = %task.id, error = %err, action, "tool audit failed");
-        }
         tracing::info!(task = %task.id, actor = %caller.actor, action, "task changed by a tool");
         let task = self
             .deps

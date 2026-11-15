@@ -20,7 +20,9 @@
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
-// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
+// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies),
+// labtask=1 (with guest=1: the maker's stopped task in `lab`, SPEC-490),
+// controlask=1 (anna-q's request for control of studio #12 waits, SPEC-490).
 // move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
 // no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
 // preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
@@ -441,12 +443,19 @@ function seed(params) {
   // A playground's guests (SPEC-410). `guestlink=1|dead`: signed out, holding a link to `lab`;
   // `guest=1`: signed in as a guest of `lab`, who sees nothing else.
   db.guestInvites = [];
+  // `controlask=1`: anna-q asked for control of studio #12 before the page loaded (SPEC-490 OWN-008).
+  if (params.get('controlask') === '1') {
+    const asked = db.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 12);
+    if (asked) asked.controlRequest = { by: { login: 'anna-q' }, at: '2026-11-14T10:00:00Z' };
+  }
   if (params.get('guestlink') || params.get('guest') === '1') {
     const lab = guestPlayground(db);
     if (params.get('guestlink') !== 'dead') {
       db.guestInvites.push({ id: 'inv_seed', sandbox_id: lab.id, code: MOCK_GUEST_CODE, created_by: 'mkarp', created_at: iso(HOUR), expires_at: isoIn(7 * DAY), guests: [] });
     }
     if (['1', 'dead'].includes(params.get('guestlink'))) db.signedIn = false;
+    // `labtask=1`: the maker's stopped task in the playground, which a guest may not put away (SPEC-490).
+    if (params.get('labtask') === '1') db.tasks.push(t(guestPlayground(db).id, 1, 'Sketch the landing page', 'claude', 'stopped_cancelled', null, { author: 'mkarp', noSteps: true }));
     if (params.get('guest') === '1') becomeGuest(db, db.guestInvites[0], 'Carol');
   }
   return db;
@@ -489,6 +498,8 @@ function summary(task) {
     state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
+    // Who handed it over on request and may take it back (SPEC-490 OWN-009).
+    control_from: task.controlFrom ? { ...task.controlFrom } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
     // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
@@ -514,8 +525,11 @@ function summary(task) {
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
+    merge_armed: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.merge_armed === true,
     // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
     goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
+    // Its spec says its work is not finished (SPEC-491 DON-004).
+    spec_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.spec_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
@@ -841,11 +855,18 @@ function ownerOf(task) {
   return task.owner || task.created_by;
 }
 
-/** Changing a task needs write access and its ownership, like the server's `load_task`. */
+/** Steering a task needs write access and its ownership, like the server's `load_task` (SPEC-490). */
 function needTaskWrite(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
   const owner = ownerOf(task).login;
-  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: it acts on GitHub as them. Ask them for control.`);
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s and only they steer it: it acts on GitHub as them. Ask them for control on the task's page. You can still stop, archive or delete it.`);
+}
+
+/** Stop, archive, restore and delete need write access alone (SPEC-490 OWN-002). */
+function needTaskTidy(db, task) {
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const owner = ownerOf(task).login;
+  if (db.me.user.guest && owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: a guest stops, archives and deletes only their own tasks on this playground.`);
 }
 
 function hashString(s) {
@@ -1151,10 +1172,10 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   // The server writes both switches in one write: a refused protection switch changes neither.
-  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(503, 'unavailable', 'the store is busy');
+  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(500, 'internal', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
-    if (db.vidoc.patchFail) fail(503, 'unavailable', 'the store is busy');
+    if (db.vidoc.patchFail) fail(500, 'internal', 'the store is busy');
     if ((sandbox.profile.vidoc !== false) !== Boolean(body.vidoc)) sandbox.vidocChanged = { by: db.me.user.login, at: new Date().toISOString() };
     sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
   }
@@ -1751,7 +1772,7 @@ route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 });
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   if (task.status === 'chained' || task.status === 'prepared') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
@@ -1790,7 +1811,7 @@ route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.deleteRequests = (db.deleteRequests || 0) + 1;
   if (db.holdDelete) await db.holdDelete;
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   // A finished task is closed as it is deleted (SPEC-039); any other live task is stopped first.
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
   if (['starting', 'running', 'switching', 'stopping'].includes(task.status) && !finished) fail(409, 'conflict', 'stop the task before deleting it');
@@ -1803,7 +1824,7 @@ route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
   // Tests can hold the answers (`__yuliusMock.holdArchive = promise`).
   if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
   // archived (TSK-014); any other live task has to be stopped first.
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
@@ -1833,12 +1854,24 @@ route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
-  touch(db, task, { owner: { ...task.controlRequest.by }, controlRequest: null });
+  // The giver may take it back, unless it goes back to the one who gave it (SPEC-490 OWN-009).
+  const to = task.controlRequest.by;
+  const controlFrom = task.controlFrom && task.controlFrom.login === to.login ? null : { login: ownerOf(task).login };
+  touch(db, task, { owner: { ...to }, controlRequest: null, controlFrom });
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/control/take-back`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.controlFrom) fail(409, 'conflict', 'nobody can take this task back: it was not handed over on request, or control moved since');
+  const me = db.me.user.login;
+  if (task.controlFrom.login !== me) fail(403, 'forbidden', `only @${task.controlFrom.login}, who handed task #${task.number} over, takes it back; ask @${ownerOf(task).login} for control`);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  touch(db, task, { owner: { login: me }, controlRequest: null, controlFrom: null });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  needTaskWrite(db, task);
+  needTaskTidy(db, task);
   touch(db, task, { archived: false });
   return summary(task);
 });
@@ -2316,7 +2349,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
 });
 // A rollback to a kept release (SPEC-415): refused as the server refuses it, else a run of kind
 // rollback whose release is deployed at once on the page.
-route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const cd = cdOf(db, p[0]);
   const name = p[1] === 'production' ? 'prod' : p[1];
@@ -2325,6 +2358,9 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
   const prod = env.stage === 'prod';
   need(sandbox, prod ? 'admin' : 'write');
   db.lastCdRollback = body || {};
+  // A test can hold the answer (`__yuliusMock.holdCdRollback = promise`): the server's checks
+  // take a while, as a deploy's do (#1171).
+  if (db.holdCdRollback) { await db.holdCdRollback; db.holdCdRollback = null; }
   if (prod && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   const rb = env.rollback || {};
   if (!rb.command && !env.deploy) fail(409, 'conflict', `nothing is deployed to ${env.label} that a rollback could redeploy: [cd.${name}] of yulius.toml on ${env.branch} runs no deploy command`);
@@ -2738,6 +2774,8 @@ route('GET', `/api/sandboxes/${ID}/files/live`, ({ db, p, query }) => {
 });
 route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
+  // A test's access withdrawn mid-edit (SPEC-483 LVE-001): the server's answer to an edit then.
+  if (db.live.refuseEdits) fail(403, 'forbidden', 'you may no longer change this folder');
   db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op, save: Boolean(body.save), at: Date.now() });
   if (db.live.holdEdits) await new Promise((resolve) => db.live.held.push(resolve));
   const doc = liveDocOf(db, place, body.session);
@@ -3592,8 +3630,9 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   needClaude(db);
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
-  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
+  // Held first, so a test acts while a start that then fails is under way.
   if (db.holdCockpit) await db.holdCockpit;
+  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
@@ -3665,8 +3704,30 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (db.holdAnswer) await db.holdAnswer;
   const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
   if (!request) fail(404, 'not_found', 'not found');
+  if ((body.revision ?? 0) !== request.view.revision) fail(409, 'conflict', 'the Superagent changed this request since you read it: read it again');
+  // A secret's value the vault would refuse leaves the request waiting (SPEC-487 SEC-002).
+  if (body.approve && request.view.action === 'secret' && String(body.value || '').trim().length < 8) fail(422, 'invalid', 'the value cannot be stored: it is shorter than 8 characters');
+  // A production release takes the slug typed, checked before the request is taken (SPEC-487 REL-001).
+  if (body.approve && ['deploy', 'rollback', 'promote'].includes(request.view.action) && String(body.confirm || '').trim() !== request.view.sandbox.slug) fail(422, 'invalid', `type the project's slug \`${request.view.sandbox.slug}\` to confirm`);
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  // A secret's value typed on the panel (SPEC-487 SEC-002): stored, never answered back.
+  if (request.view.action === 'secret') {
+    if (!body.approve) return { outcome: 'declined' };
+    db.superagentSecrets = [...(db.superagentSecrets || []), { name: request.view.title, value: body.value }];
+    return { outcome: 'approved', secret: request.view.title, stored: 'created' };
+  }
+  // A production release or onboarding (SPEC-487 REL-001): the slug typed, as the server checks it.
+  if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
+    if (!body.approve) return { outcome: 'declined' };
+    db.superagentReleases = [...(db.superagentReleases || []), { action: request.view.action, confirm: body.confirm ?? null }];
+    return { outcome: 'approved', note: 'The person approved.' };
+  }
+  // A decision the Superagent left to its person (SPEC-487 XRQ-005): the answer is kept for it.
+  if (request.view.action === 'ask') {
+    db.superagentAnswers = [...(db.superagentAnswers || []), body.approve ? 'yes' : 'no'];
+    return body.approve ? { outcome: 'approved', answer: 'yes' } : { outcome: 'declined', answer: 'no' };
+  }
   if (!body.approve) return { outcome: 'declined' };
   const target = db.sandboxes.find((s) => s.id === request.view.sandbox.id);
   if (!target || !['write', 'admin'].includes(target.access)) fail(404, 'not_found', 'not found');
@@ -3950,7 +4011,7 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   return json(204);
 });
 // Reads the provider's usage windows again and asks about the limits stored for the account
-// (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
+// (SPEC-473); an account that does not work keeps its status and its reason. A test scripts what
 // Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
 // kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
 // as it is, `usage_read: false`), or `{ usage, status, at }` (what the reading and the answers
@@ -3964,7 +4025,6 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
   // Like the server: an account that never signed in has no credential to ask with (409), and
   // its sign-in error stays.
   if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
-  if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
   db.usageInFlight = (db.usageInFlight || 0) + 1;
   db.usageMostInFlight = Math.max(db.usageMostInFlight || 0, db.usageInFlight);
   try { await db.usageGate; } finally { db.usageInFlight -= 1; }
@@ -3973,9 +4033,12 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
     if (answer.note !== false) account.last_error = `usage: ${answer.fail}`;
     fail(502, 'upstream', answer.fail);
   }
-  account.last_error = null;
+  // Like the server: a reading changes neither the status nor the reason of a subscription
+  // that does not work (SPEC-483 SGN-002).
+  const working = account.status === 'ok' || account.status === 'limited';
+  if (working) account.last_error = null;
   if (answer.unread) return { ...account, usage_read: false };
-  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
+  Object.assign(account, { status: working ? answer.status || account.status : account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
   return { ...account, usage_read: true };
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
@@ -5229,7 +5292,7 @@ route('PUT', '/api/admin/vidoc', ({ db, body }) => {
 route('PUT', '/api/admin/vidoc/enabled', ({ db, body }) => {
   superadminOnly(db);
   if (typeof body.enabled !== 'boolean') fail(422, 'invalid', 'enabled must be true or false');
-  if (db.vidoc.fail) fail(503, 'unavailable', 'the store is busy');
+  if (db.vidoc.fail) fail(500, 'internal', 'the store is busy');
   if (body.enabled) Object.assign(db.vidoc, { offAt: null, offBy: null });
   else if (!db.vidoc.offAt) Object.assign(db.vidoc, { offAt: new Date().toISOString(), offBy: db.me.user.login });
   return vidocView(db);
@@ -6279,6 +6342,9 @@ function startLogin(db, accountId) {
  * goes running → ok | error | cancelled and the exit frame carries the same status. Tokens are
  * masked. Enter signs in; the code `fail` makes the sign-in fail as the CLI's would (SPEC-243).
  */
+/** Why the mock's sign-in fails: what the server's exit frame and a first sign-in's error say. */
+const SIGN_IN_FAILED = 'the sign-in ended without producing a token (exit code 1)';
+
 class LoginSession {
   constructor(db, accountId) {
     this.db = db;
@@ -6314,7 +6380,7 @@ class LoginSession {
         'Paste the authorization code here (any text in mock mode; "fail" fails), then press Enter:',
         '> ',
       ].join('\r\n')));
-      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code }));
+      if (this.done) ws.push(JSON.stringify({ type: 'exit', status: this.status, code: this.code, cause: this.cause }));
     } else if (msg.type === 'input' && !this.done) {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') { this.finish(); return; }
@@ -6332,14 +6398,16 @@ class LoginSession {
     if (this.input === 'fail') {
       this.out(`\r\n${c(203, 'OAuth error: the authorization code was not accepted.')}\r\n`);
       if (account) {
-        // Like the server: a working account keeps its state and notes the failed re-login.
+        // Like the server: a working account keeps its state and notes the failed re-login, one
+        // Claude refused keeps needing a sign-in with Claude's reason, and only a first sign-in
+        // that fails is an error (SPEC-483 SGN-001).
         const working = account.status === 'ok' || account.status === 'limited';
-        Object.assign(account, working
-          ? { last_error: 're-login failed: the sign-in ended without producing a token (exit code 1)' }
-          : { status: 'error', last_error: 'the sign-in ended without producing a token (exit code 1)' });
+        if (working) account.last_error = `re-login failed: ${SIGN_IN_FAILED}`;
+        else if (account.status === 'relogin') account.last_error = account.last_error || SIGN_IN_FAILED;
+        else Object.assign(account, { status: 'error', last_error: SIGN_IN_FAILED });
         emit(this.db, { type: 'account.updated', account });
       }
-      this.end('error', 1);
+      this.end('error', 1, SIGN_IN_FAILED);
       return;
     }
     this.out(`\r\nToken: sk-ant-oat01-[REDACTED]\r\n${c(114, '✔')} Logged in. Credentials stored encrypted for this account.\r\n`);
@@ -6357,15 +6425,16 @@ class LoginSession {
     this.end('ok', 0);
   }
 
-  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer. */
-  end(status, code) {
+  /** Ends the sign-in with `status` (ok | error | cancelled) and tells the viewer, a failed one with `cause`. */
+  end(status, code, cause = undefined) {
     if (this.done) return;
     this.done = true;
     this.status = status;
     this.code = code;
+    this.cause = cause;
     if (this.ws) {
       this.ws.push(JSON.stringify(this.state()));
-      this.ws.push(JSON.stringify({ type: 'exit', status, code }));
+      this.ws.push(JSON.stringify({ type: 'exit', status, code, cause }));
     }
   }
 
@@ -6794,6 +6863,13 @@ export function createMockTransport(params) {
     doc.transcript = [];
     db.appendTranscript(sandboxId, number, items);
   };
+  // The person who handed a task to the viewer takes it back (SPEC-490 OWN-010): the task changes
+  // and the server tells the viewer, as `App::take_back_task_control` does.
+  db.takeBack = (sandboxId, number, by) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number);
+    touch(db, task, { owner: { login: by }, controlRequest: null, controlFrom: null });
+    emit(db, { type: 'task.control_taken_back', task_id: task.id, sandbox_id: sandboxId, number, title: task.title, by });
+  };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // An administrator connects a Claude account elsewhere (another tab, SPEC-246): it is signed in.
   db.connectClaude = () => {
@@ -6886,7 +6962,7 @@ export function createMockTransport(params) {
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
-  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null }) => {
+  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null, replaces = false }) => {
     const target = db.sandboxes.find((s) => s.slug === sandbox);
     const task = number === null ? null : db.tasks.find((t) => t.sandbox_id === target.id && t.number === number);
     db.nextId += 1;
@@ -6895,14 +6971,21 @@ export function createMockTransport(params) {
       task: task ? { number: task.number, title: task.title, status: task.status } : null,
       // As the server says it: an update with no start option (or a supertask) starts the task now.
       starts_now: action === 'update' && (startsNow ?? !Object.keys(options).length),
-      title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
+      title, prompt, options, asked_at: new Date().toISOString(), revision: 0,
+      ...(action === 'secret' ? { replaces } : {}),
     };
     db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
     emit(db, { type: 'superagent.requests', sandbox_id: source });
     return view.id;
   };
-  // The Superagent's call ended (it was interrupted, or nobody answered): its request goes.
-  db.endSuperagentRequest = (source, id) => {
+  // The Superagent amended its request (SPEC-487 XRQ-003): new text, the next revision.
+  db.amendSuperagentRequest = (source, id, prompt) => {
+    const request = (db.superagentRequests || []).find((r) => r.view.id === id);
+    request.view = { ...request.view, prompt, revision: request.view.revision + 1 };
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+  };
+  // The Superagent withdrew its request (SPEC-487 XRQ-003): it goes.
+  db.withdrawSuperagentRequest = (source, id) => {
     db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
     emit(db, { type: 'superagent.requests', sandbox_id: source });
   };

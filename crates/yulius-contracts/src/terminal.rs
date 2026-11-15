@@ -104,7 +104,8 @@ pub enum TerminalServerMsg {
         /// Exit code when known.
         code: Option<i32>,
         /// The limit the sandbox was at when the run ended: `pids` (its task limit) or `memory`
-        /// (an OOM kill); absent otherwise (SPEC-268 PID-005).
+        /// (an OOM kill; SPEC-268 PID-005). On a sign-in's terminal: why the sign-in failed.
+        /// Absent otherwise.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cause: Option<String>,
     },

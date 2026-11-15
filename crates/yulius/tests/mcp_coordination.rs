@@ -682,7 +682,7 @@ async fn step_tools_answer_with_short_text_not_records() -> TestResult {
 /// knows of is left out.
 #[tokio::test]
 async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestResult {
-    let (_h, internal) = project().await?;
+    let (h, internal) = project().await?;
     let slices: Vec<String> = (1..=18)
         .map(|n| format!("Slice {n}: the findings of area {n} fixed and reviewed"))
         .collect();
@@ -738,6 +738,22 @@ async fn a_long_plan_is_not_nudged_and_a_complete_one_asks_once_more() -> TestRe
         ),
         "{last}"
     );
+
+    // SPEC-491 DON-007: with every step finished, a spec that does not say done keeps the task
+    // from Done, and the step tools say so; a spec that says done, or none, adds nothing.
+    assert!(!last.contains("the spec says"), "no spec read: {last}");
+    let claude1 = TaskId::parse("claude1")?;
+    let unfinished = "Every step is finished and the spec says `status: in-progress`, so the task \
+                      is not Done and tasks waiting for it do not start. If work remains, add its \
+                      steps (`steps_set`); if none does, add the Evidence and set `status: done`.";
+    h.store
+        .set_spec_status(&claude1, Some("in-progress"))
+        .await?;
+    let told = agent_text(&internal, "steps_get", json!({})).await?;
+    assert!(told.contains(unfinished), "{told}");
+    h.store.set_spec_status(&claude1, Some("done")).await?;
+    let told = agent_text(&internal, "steps_get", json!({})).await?;
+    assert!(!told.contains("the spec says"), "{told}");
 
     // Work found later: the plan grows, and every count says what it had at first (PLN-010).
     assert!(!last.contains("at first"), "{last}");

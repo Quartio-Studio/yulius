@@ -7,6 +7,12 @@
 import { relLong, resetLabel } from './format.js';
 import { PROVIDERS, fallbackOf } from './models.js';
 
+/** A subscription works while it reads `ok` or `limited`: the server's one rule (`AccountStatus::healthy`). */
+export const works = (account) => account.status === 'ok' || account.status === 'limited';
+
+/** A subscription whose status says anything else needs a new sign-in (one without a status says nothing). */
+export const needsSignIn = (account) => Boolean(account.status) && !works(account);
+
 /**
  * A reading older than this may be out of date: the background round reads an idle subscription
  * every 5 minutes, so an older one means the round is backing off or cannot read.
@@ -73,7 +79,7 @@ const POOL_THRESHOLD = 98;
 
 /** Whether the pool can place a task of `model` on a subscription at `now`, as the server judges it. */
 function runsNow(account, model, now) {
-  if (account.status && account.status !== 'ok' && account.status !== 'limited') return false;
+  if (needsSignIn(account)) return false;
   const usage = account.usage || {};
   if (limitInEffect(usage, now)) return false;
   return [usage.primary, usage.secondary, modelWindow(usage, model)].every((w) => !((percentNow(w, now) ?? 0) >= POOL_THRESHOLD));
@@ -114,7 +120,7 @@ export function limitsNow(account, now = Date.now()) {
     lines.push({ key: 'reported', text: usage.limit_resets_at ? `Claude reported a usage limit · ${when(usage.limit_resets_at, now)}` : 'Claude reported a usage limit without saying when it resets' });
   }
   const read = at(usage.observed_at);
-  const settled = account.status === 'ok' || account.status === 'limited' || !account.status;
+  const settled = !needsSignIn(account);
   return {
     state: settled ? (limited ? 'limited' : 'ok') : account.status,
     limited,

@@ -72,12 +72,6 @@ impl SkillSource {
             Self::Superpowers => "superpowers",
         }
     }
-
-    /// Whether skills of this source ship with Yulius (read-only, per-sandbox enablement).
-    #[must_use]
-    pub fn is_bundled(self) -> bool {
-        !matches!(self, Self::Repository | Self::Instance)
-    }
 }
 
 /// One skill found in the catalog.
@@ -1099,7 +1093,11 @@ mod tests {
             BTreeSet::from(["open-mercato", "superpowers", "yulius"]),
             "bundled packs are never listed as instance skills"
         );
-        assert!(catalog.iter().all(|s| s.source.is_bundled()));
+        assert!(
+            catalog
+                .iter()
+                .all(|s| !matches!(s.source, SkillSource::Repository | SkillSource::Instance))
+        );
         Ok(())
     }
 }

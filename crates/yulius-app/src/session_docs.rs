@@ -30,7 +30,7 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
-use crate::imports::{aux_relative, copy_immutable, move_tree, parse_rfc3339};
+use crate::imports::{aux_relative, copy_immutable, move_tree};
 use crate::lifecycle::NewTask;
 use crate::model::{ProviderSessionRecord, SandboxRecord, TaskOrigin, TaskRecord, UserRecord};
 use crate::ports::session_docs::{IndexAdvance, SessionDocRecord, SessionKind};
@@ -38,6 +38,7 @@ use crate::ports::store::TaskFieldUpdate;
 use crate::projects::blocking;
 use crate::supervisor::RunStart;
 use crate::transcripts::{self, MAX_PAGE_CHARS};
+use yulius_domain::time::parse_rfc3339;
 
 /// Most imported sessions one sandbox holds (SPEC-002 §9).
 pub const MAX_IMPORTED_SESSIONS: u64 = 10_000;
@@ -61,6 +62,11 @@ pub const MAX_LIST: usize = 500;
 pub const READ_CHARS_DEFAULT: usize = 24_000;
 /// Largest `session_read` text for agents.
 pub const READ_CHARS_MAX: usize = 100_000;
+
+/// The entries a tail reads beyond twice `limit`, for notes that show no text (a system note,
+/// an interruption), which `limit` does not count (SPEC-487 QST-003).
+const TAIL_EXTRA: usize = 20;
+
 /// Snippet match markers produced by the store.
 const MARK_OPEN: char = '\u{2}';
 const MARK_CLOSE: char = '\u{3}';
@@ -179,6 +185,9 @@ fn kind_arg(text: Option<&str>) -> AppResult<Option<SessionKind>> {
             .ok_or_else(|| AppError::Invalid("kind must be all, task or imported".into())),
     }
 }
+
+/// The most transcripts whose read cursor is kept at once (one per watched session).
+pub const MAX_TRANSCRIPT_CURSORS: usize = 256;
 
 /// What a watcher asks of [`App::task_transcript`] (SPEC-179 WAT-001).
 #[derive(Debug, Clone, Default)]
@@ -308,6 +317,10 @@ impl App {
     /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
     /// again from its start: the index reads transcripts as append-only.
     pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
+        // Rewritten in place: no read goes on from where an earlier one ended.
+        if let Ok(mut cursors) = self.transcript_cursors.lock() {
+            cursors.clear();
+        }
         let store = &self.deps.store;
         let Ok(docs) = store.session_docs(sandbox).await else {
             return;
@@ -737,6 +750,31 @@ impl App {
         })
     }
 
+    /// Where the last read of the transcript at `path` ended, to go on from (SPEC-483 slice 36).
+    fn transcript_cursor(&self, path: &Path) -> Option<transcripts::ReadCursor> {
+        self.transcript_cursors
+            .lock()
+            .ok()
+            .and_then(|cursors| cursors.get(path).cloned())
+    }
+
+    /// Keeps where a read of `path` ended, unless a point farther on in the same file is kept.
+    /// The map is bounded: past
+    /// [`MAX_TRANSCRIPT_CURSORS`] it starts afresh (a read without a cursor reads from the start).
+    fn keep_transcript_cursor(&self, path: PathBuf, cursor: transcripts::ReadCursor, len: u64) {
+        if let Ok(mut cursors) = self.transcript_cursors.lock() {
+            if cursors.len() >= MAX_TRANSCRIPT_CURSORS && !cursors.contains_key(&path) {
+                cursors.clear();
+            }
+            if cursors
+                .get(&path)
+                .is_none_or(|kept| cursor.replaces(kept, len))
+            {
+                cursors.insert(path, cursor);
+            }
+        }
+    }
+
     /// `GET /api/tasks/{tid}/transcript` (read; SPEC-179 WAT-001): the task's latest session as its
     /// watchers read it: the tail without `from`, else the lines from `from`, redacted as session
     /// pages are. With `seen` and `session` naming the current session at its current size the
@@ -762,6 +800,8 @@ impl App {
             .filter(|_| from.is_some() && read.session.as_deref() == Some(session_id.as_str()));
         let limit = read.limit;
         let anchor = self.sandbox_dir(&task.sandbox_id);
+        let cursor = from.and_then(|_| self.transcript_cursor(&path));
+        let cursor_path = path.clone();
         let found = blocking(move || {
             let file = match transcripts::open(&anchor, &path) {
                 Ok(file) => file,
@@ -773,11 +813,16 @@ impl App {
                 return Ok(Some((bytes, None)));
             }
             let page = match from {
-                Some(from) => transcripts::read_page(file, from, limit, MAX_PAGE_CHARS),
-                None => transcripts::read_tail(file, limit, MAX_PAGE_CHARS),
+                Some(from) => {
+                    transcripts::read_page_at(file, cursor.as_ref(), from, limit, MAX_PAGE_CHARS)
+                        .map(|(page, next)| (page, Some(next)))
+                }
+                None => {
+                    transcripts::read_tail(file, limit, MAX_PAGE_CHARS).map(|page| (page, None))
+                }
             };
             match page {
-                Ok(page) => Ok(Some((bytes, Some(page)))),
+                Ok((page, next)) => Ok(Some((bytes, Some((page, next))))),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(AppError::internal(err)),
             }
@@ -791,10 +836,13 @@ impl App {
             return Ok(view);
         };
         view.bytes = bytes;
-        let Some(page) = page else {
+        let Some((page, next)) = page else {
             view.end = from.unwrap_or_default();
             return Ok(view);
         };
+        if let Some(next) = next {
+            self.keep_transcript_cursor(cursor_path, next, bytes);
+        }
         let mut entries = page.entries;
         self.redact_page_secrets(&task.sandbox_id, &mut entries)
             .await;
@@ -1344,6 +1392,17 @@ impl App {
                 "give the session `id` from sessions_search or a `task_number`".into(),
             ));
         };
+        // The end of the session instead of a place in it (SPEC-487 QST-003).
+        let tail = match args.get("tail") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(tail)) => *tail,
+            Some(_) => return Err(AppError::Invalid("`tail` must be true or false".into())),
+        };
+        if tail && args.get("from").is_some_and(|from| !from.is_null()) {
+            return Err(AppError::Invalid(
+                "give `tail` or `from`, not both: tail reads the session's end".into(),
+            ));
+        }
         let from = args.get("from").and_then(Value::as_u64).unwrap_or(0);
         let limit = args
             .get("limit")
@@ -1361,7 +1420,20 @@ impl App {
         let anchor = self.sandbox_dir(&doc.sandbox_id);
         let page = blocking(move || {
             transcripts::open(&anchor, &path)
-                .and_then(|file| transcripts::read_page(file, from, limit, max_chars * 2))
+                .and_then(|file| {
+                    if tail {
+                        // Bounded below by the text shown, where a tool's result is cut to a
+                        // few lines: what the transcript holds says little about it.
+                        // More entries than `limit`: notes that show nothing do not count.
+                        transcripts::read_tail(
+                            file,
+                            limit.saturating_mul(2).saturating_add(TAIL_EXTRA),
+                            transcripts::MAX_PAGE_CHARS,
+                        )
+                    } else {
+                        transcripts::read_page(file, from, limit, max_chars * 2)
+                    }
+                })
                 .map_err(|err| {
                     if transcripts::unreadable(&err) {
                         AppError::Invalid("this session's transcript is not on the server".into())
@@ -1371,19 +1443,58 @@ impl App {
                 })
         })
         .await?;
-        let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
         let tasks = self.sandbox_tasks(sandbox).await?;
         let view = self.doc_view(&doc, &tasks, &mut HashMap::new(), None).await;
-        Ok(json!({
+        let mut answer = json!({
             "id": view.id,
             "kind": view.kind,
             "title": view.title,
             "task_number": view.task.as_ref().map(|t| t.number),
             "author": view.author.as_ref().map(|a| a.login.clone()),
-            "from": from,
-            "next_from": cut_at.or(page.next),
-            "text": if text.is_empty() { "(nothing to show in this range)".to_owned() } else { text },
-        }))
+        });
+        let text = if tail {
+            // The bound keeps the end: entries are left out at the front until the text they
+            // show fits (the last one is shown whatever its size, cut at its own end).
+            // Entries that show no text (a system note) do not count as that last one.
+            let entries = page.entries.as_slice();
+            let mut first = entries.len().saturating_sub(1);
+            let (mut shown, mut shown_before, mut counted) = (0, 0, 0);
+            for (index, entry) in entries.iter().enumerate().rev() {
+                let size = transcripts::render_text(std::slice::from_ref(entry), usize::MAX)
+                    .0
+                    .len();
+                shown += size;
+                // `limit` counts the entries that show text.
+                let full = counted >= limit;
+                if (full && size > 0)
+                    || (shown > max_chars && index + 1 < entries.len() && shown_before > 0)
+                {
+                    break;
+                }
+                counted += usize::from(size > 0);
+                shown_before = shown;
+                first = index;
+            }
+            let entries = &entries[first..];
+            let (text, _) = transcripts::render_text(entries, max_chars);
+            answer["from"] = json!(entries.first().map_or(page.end, |entry| entry.line));
+            answer["earlier"] = json!(page.earlier || first > 0);
+            // Where a later read goes on: after the last line read, for what came since.
+            answer["next_from"] = json!(page.end);
+            answer["tail"] = json!(true);
+            text
+        } else {
+            let (text, cut_at) = transcripts::render_text(&page.entries, max_chars);
+            answer["from"] = json!(from);
+            answer["next_from"] = json!(cut_at.or(page.next));
+            text
+        };
+        answer["text"] = json!(if text.is_empty() {
+            "(nothing to show in this range)".to_owned()
+        } else {
+            text
+        });
+        Ok(answer)
     }
 }
 

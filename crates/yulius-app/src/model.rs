@@ -526,6 +526,15 @@ impl AccountStatus {
         }
     }
 
+    /// Whether the subscription works: `ok`, or `limited` until its limit resets. Tasks are
+    /// placed only on a healthy one, the background rounds ask only a healthy one for its
+    /// usage and its address, and a usage reading changes the status of no other: every other
+    /// status ends with a sign-in that succeeds, and with nothing else (SPEC-483 SGN-002).
+    #[must_use]
+    pub fn healthy(self) -> bool {
+        matches!(self, Self::Ok | Self::Limited)
+    }
+
     /// Parses a wire name (unknown → `Error`).
     #[must_use]
     pub fn parse(text: &str) -> Self {
@@ -624,6 +633,53 @@ impl PauseKind {
     #[must_use]
     pub fn holds_process(self) -> bool {
         !matches!(self, Self::Start)
+    }
+}
+
+/// How a task that waits in the queue is to start, kept with it (`tasks.queued_start`, SPEC-483
+/// QST-001): what the start that had to queue was to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedStart {
+    /// A new session, a resume, or a resume past the usage limit that cut the turn.
+    pub kind: QueuedStartKind,
+    /// The prompt of a new session or the continuation of a resumed one; none past a limit.
+    pub prompt: Option<String>,
+    /// The subscription a person chose for the start (Continue on…). The pool's own choice is
+    /// not kept: it is made again at the launch.
+    pub account_id: Option<AccountId>,
+}
+
+/// The kinds of [`QueuedStart`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedStartKind {
+    /// A new session.
+    Fresh,
+    /// A resume of the task's latest session.
+    Resume,
+    /// A resume past the usage limit that cut the turn (SPEC-034).
+    AfterLimit,
+}
+
+impl QueuedStartKind {
+    /// Stable name in the store.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Resume => "resume",
+            Self::AfterLimit => "after_limit",
+        }
+    }
+
+    /// Parses a stored name; `None` for one this build does not know.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "fresh" => Some(Self::Fresh),
+            "resume" => Some(Self::Resume),
+            "after_limit" => Some(Self::AfterLimit),
+            _ => None,
+        }
     }
 }
 
@@ -760,17 +816,6 @@ pub struct MessageRecord {
     pub body: String,
     /// Created.
     pub created_at: Timestamp,
-}
-
-/// A message plus the receipt state for one recipient task.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InboxEntry {
-    /// The message.
-    pub message: MessageRecord,
-    /// Delivered to the agent (hook context).
-    pub delivered: bool,
-    /// Read via the inbox tool.
-    pub read: bool,
 }
 
 /// An advisory scope claim.

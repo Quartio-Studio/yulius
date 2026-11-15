@@ -142,12 +142,13 @@ watching, steering and unblocking.
   bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it changes how a waiting task starts, stops, archives or
-  deletes tasks, runs or deletes automations and enables the ready-made ones (asking the person
+  deletes tasks (another person's too, when it is the one named), runs or deletes automations and enables the ready-made ones (asking the person
   before each change only on an uncontained server). A deleted task's attachments stay while
   another task's request or an automation's prompt names them and otherwise wait 7 days in a trash it restores them from
   (SPEC-396). Task agents
   can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
-  DO budget", the Superagent passes the message on (task agents cannot): a task that has not
+  DO budget", the Superagent passes the message on to a task of its person's (task agents cannot,
+  and another person's task takes messages from its owner only, SPEC-490): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from
   alice (through their Superagent)" (or "(through their own agent)" when the person's own agent
   sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
@@ -167,11 +168,106 @@ watching, steering and unblocking.
   person with a link; the Browser page shows its cursor as "alice's Superagent" (SPEC-437). Asked for work in
   another of the person's sandboxes ("make a task in the website repo for that"), it asks the
   person: the request shows above its session with the target, the whole prompt and its start
-  options, and nothing reaches that sandbox until the person presses Create task there; Decline,
-  no answer in 4 minutes or interrupting the Superagent creates nothing, and no API token can
-  approve (SPEC-335). After an update
+  options, and nothing reaches that sandbox until the person presses Create task there; Decline
+  creates nothing, and no API token can approve (SPEC-335). The request stays there until the
+  person answers it, also when they are away for hours or Yulius restarts; the Superagent reads
+  how it ended, changes its text in place or withdraws it instead of asking again, lists another
+  sandbox's tasks without asking, and leaves a decision only the person makes on the same panel
+  as a question answered Yes or No (SPEC-487, [decision
+  0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)). Asked to
+  deploy production, roll it back or promote, it asks on the same panel and the person, an
+  administrator, approves by typing the project's slug as on the CD page; the deploy then runs as
+  them. It starts a project's onboarding the same way, with a click
+  ([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)).
+  Asked to set up a key it does not have, it asks for it on the same panel: the person types the
+  value there, masked (a multi-line key keeps its line breaks), and it goes to the vault as
+  theirs; the Superagent sees its name only, never the value
+  ([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
+  It reads a task's screen, also the last one a crashed run left with its exit code, the tokens
+  each task used as the Dashboard counts them, and how far its repository checkout is behind the
+  integration branch (SPEC-487).
+  A missing ability it reports in one call (`ability_report`): kept on the instance, with a link
+  that opens it as a new issue in the Yulius repository for its person to read and submit
+  ([decision 0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
+  What it and a task's agent may do, and why (SPEC-487; "yes" is with the person's rights, checked
+  at the call):
+
+  | Ability | Superagent | Task's agent | Why |
+  | --- | --- | --- | --- |
+  | Create, chain, schedule, stop, archive, delete a task; automations | yes (had) | yes (had) | SPEC-037: a follow-up runs as its own task |
+  | Read a start rule back as stored; "after all current tasks" | yes (slice 1) | yes (slice 1) | Both create tasks with `task_create` |
+  | Restart, pause, resume, start now | yes (slice 2) | no | A person speaks to their tasks; tasks do not steer each other (ADR-0178) |
+  | Start a project's onboarding (also by continuing its onboarding task before it started) | behind the person's click in the panel (slice 8b) | no | SPEC-051 OBD-002, ADR-0038: a person decides that a repository is adapted |
+  | Project variables: read | yes (slice 2) | in its environment (had) | They are not secrets |
+  | Project variables: set, delete | yes (`variables_set`, `variable_delete`, slice 11; Configure) | no | Plain values, never a secret's; as a person's own agent through the remote MCP |
+  | Rename, edit a prompt not started, reorder, close out, bulk actions | yes (slice 3) | no | As above |
+  | Send a message past text the person left unsent in a task's prompt box | yes, for the task's owner (slice 3) | no | SPEC-480: the text is the person's; they decide that it goes out with the message |
+  | Discard text a person left unsent in a task's prompt box | no | no | Yulius sees keys, not the box, and the keys that clear it (Esc, Ctrl+C) also interrupt a turn or end the session; the owner's message goes past it instead |
+  | Message a task | yes (had) | no | ADR-0178 |
+  | List open questions, see why a task needs attention | yes (slice 4) | yes, read only, without a held prompt's words (slice 4) | A task that sees another's question does not ask it again; a prompt Yulius held reached no agent |
+  | Answer or dismiss a task's question for the person; decide a held prompt (send, dismiss, a new task now or after) | yes (slice 4) | no | The question is to a person; their Superagent answers when they say so |
+  | Decide a held prompt by skipping steps or reverting the task | no: the person, on the task's page | no | Reverting discards the task's work and asks for the person's own confirmation there (TSK-013) |
+  | Answer a question Claude Code asks in a task's terminal (a permission menu, a choice) | no: it reads the menu (`task_screen`) and tells its person | no | Typing into a task's terminal is its owner's control (SPEC-490); keys typed from a screen read a moment before could take another choice |
+  | The end of a session (`session_read` tail) | yes (slice 4) | yes (slice 4) | Sessions are docs for both (SPEC-001 SES) |
+  | CI: read runs and logs, run again | yes (slice 2) | yes (had) | A task needs its own checks |
+  | CI: cancel, order | yes (slices 2, 5) | no | They change other tasks' runs |
+  | CI: hold the queue | no: no page holds it either; cancel a run and run it again later | no | A held queue would hold every task's checks and merges; asked for in no case where cancel and run again did not do |
+  | A task's delivery, the merge queue, why a pull request is not merging | yes (slices 2, 5) | its own (had) | A task delivers its own work |
+  | Arm or re-arm a task's merge; merge a task's pull request | yes, for the task's owner (slice 5) | its own, after an independent review (had) | The person decides what of theirs merges, as the page's Merge does; an agent delivers its own reviewed work |
+  | Dev deploy, CD status | yes (slice 2) | yes, when its task asks (had) | SPEC-134 |
+  | Production deploy and rollback, promotion to `main` | behind the person's typed project slug in the panel (slice 8b); a dev-stage rollback at once | no (a dev-stage deploy and rollback, had) | ADR-0110: a person decides; the Superagent prepares and asks |
+  | A task's subscription: see, move; model and effort | yes (slice 6) | sees them in the task list (slice 6) | Tasks are subscription-agnostic (SPEC-001 ROT-007); a person moves their task |
+  | The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
+  | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
+  | Instance: Update now, Restart, Cancel, Check | yes, a superadmin's (slice 7; not the Global Superagent) | no | The buttons' rights and refusals |
+  | A task's screen, live or its last run's, and how that run ended (exit code, reason) | yes (`task_screen`, slice 10b) | no | The page's terminal shows it to anyone who sees the task; a task's agent reads its own transcript, not another's screen |
+  | A task's tokens, the period's by model | yes (`task_usage`, slice 10b; cost as tokens: no price per task is kept) | no | The Dashboard's figures |
+  | A task's or the host's load | the host's (`instance`); a task's: no | no | Yulius measures the host and the sessions per sandbox, not each task's processes |
+  | How far the repository's checkout is from its integration branch | yes (`checkout`, slice 10b) | it has its own branch and `git` | A stale checkout gave a wrong "no" |
+  | Instance: logs, `yulius doctor` | no: no page shows them; `instance` shows health (load, memory, disk, sessions) | no | The logs and the doctor are the host's (`journalctl`, the CLI), outside what Yulius serves |
+  | Another sandbox: list and read tasks | yes (slice 8a) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
+  | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting, amended, withdrawn in slice 8a) | no | ADR-0227, ADR-0333 |
+  | Leave a decision only the person makes, answered Yes or No on its panel (`person_ask`) | yes (slice 8a) | asks with `needs_you` (had) | A question in a report is not read; the panel keeps it until answered |
+  | A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
+  | Enter a secret's value | the person, masked, on the Superagent's panel (`secret_request_value`, slice 10a) | no (it asks a person: `secret_request_copy`, `needs_you`) | The value goes from the person to the vault; ADR-0336 |
+  | Report a missing ability to the Yulius project | yes (`ability_report`, slice 11) | yes (slice 11) | Both meet walls; ADR-0337 |
+  | Standing jobs (monitoring, a disk guard) | yes: scheduled checks Yulius holds (`superagent_check_set`, slice 9b) | its own automation or task | Its session's timers end with every restart; ADR-0335 |
+  | Text typed to it while it restarts, or left in its prompt box | kept (slice 9a) | (tasks: SPEC-468, SPEC-480) | A person's message was lost to a restart |
+
+  What its person does on the project's pages it does for them when they
+  ask, with their rights and audited as theirs through the Superagent: it continues a task that
+  stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
+  (its pull request, checks, what comes next and what is refused now and why), reads the
+  CI runs and a run's failing output, runs a run again or cancels it, reads the deployments and
+  deploys a dev-stage environment. It renames a task, rewrites the request of one that has
+  not started (the files attached to it stay attached; never by deleting the task and
+  creating it again), puts the person's queued tasks in the order they ask for, closes out an
+  idle task they call finished, and pauses, resumes, stops or messages several tasks, or all
+  of the person's, in one call. Told to send past text its person left unsent in a task's
+  prompt box, it does (the text goes to the agent with the message); nobody else's message
+  does. It sees which tasks wait for the person and why without anything pasted to it (what
+  a task's agent asked, why a task is flagged, a prompt Yulius held, who paused it; `tasks_list`
+  shows the same to a task's agent, without a held prompt's words), reads the end of a
+  session in one call, passes the person's answer on, dismisses a request they call settled
+  and decides a held prompt as its card does. It says where a task's merge stands and why a
+  pull request that passed has not merged yet, lists the project's merge queue and merge
+  train, merges a task's pull request for its owner (at once on green, otherwise armed until
+  its checks pass) and puts a queued CI run first in the project's queue. It reads the subscriptions and
+  which one a task runs on with which model and effort, moves a task to the subscription its
+  person names, and sets a task's model or effort for its next start. It reads the instance (its build, an
+  update offered, the host's load and disk, the sessions), and for a superadmin checks for,
+  installs or cancels an update and restarts Yulius, with the buttons' own refusals. It no longer hands such a job back as steps to click or
+  uses a finished task as hands; an ability it lacks it names
+  (SPEC-487, [decision 0330](decisions/0330-the-superagent-does-what-its-person-may-do.md)).
+  After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
-  its conversation.
+  its conversation; it waits while its person has text in its prompt box they did not send, and
+  what they type while it restarts reaches the new session (SPEC-487). A standing job its person
+  asks for ("keep monitoring the deploy", "check the disk every hour") is a scheduled check Yulius
+  holds, not a timer of its session: due, it is typed into the Superagent when it is idle, after
+  any restart, and a Superagent that is not running (its person ended it, the machine restarted)
+  is started for it
+  ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
   (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where
@@ -212,7 +308,12 @@ watching, steering and unblocking.
   Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
-  builds from picked conditions (a task, its state, all or any).
+  builds from picked conditions (a task, its state, all or any). A task that waits for another
+  starts when that one has really finished: not in the minute its green pull request waits in
+  the merge queue, and not between a merge and the moment its agent hears of it and goes on
+  (it reads "Waiting for checks or merge" then, not Done). The tools show a waiting task's rule
+  whole, and "after all current tasks" (`after_all_tasks`) waits for every task with work
+  still coming (SPEC-487).
   A task that waits and has not started yet takes queued messages: each is added to its request,
   so the agent gets the correction when the task starts. The request and the message box show
   files as placeholders (`Image N`) that open on a click (a double-click in the box); images pasted or dropped into a message
@@ -241,7 +342,11 @@ watching, steering and unblocking.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
-  and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
+  and `gh` use a narrowed App token), so only they steer it: type into it, send it messages,
+  answer what it asks, continue, start, pause or deliver it. Anyone who may work in the project
+  can **stop, archive, restore and delete** any of its tasks (a playground's guest only their
+  own), from the task's page, the lists and the sidebar; stopping or deleting someone else's task asks first and names its owner, and
+  the audit says who did it (SPEC-490). Its owner can **pause** a running task and resume it later: the agent
   stops where it is without being told (as an update pauses every task) and goes on from there; a
   paused task, and one an update holds, reads Paused in the lists and says why. A task that
   reads **Needs your action** says why in the bar over its terminal, whenever it is opened:
@@ -252,8 +357,12 @@ watching, steering and unblocking.
   Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
-  in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
-  the new owner.
+  in the view and in the sidebar, and can ask the owner for control, from the task's page or
+  its menu in a list; the owner hears of the request wherever they are (a notification, a
+  toast and a mark on the task's row) and hands it over or declines; once handed over, it acts
+  as the new owner, and whoever handed it over can take it back at any time without asking. No administrator takes a task
+  without asking; only a task whose owner can no longer act (a disabled account, no write
+  access) passes to the first person who asks.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; switches and
   pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
@@ -387,9 +496,11 @@ watching, steering and unblocking.
   or a production that only promotes, as Yulius's own) needs no rollback, and the page says so and
   why; Yulius itself rolls back through its update, which restores the previous binary and database
   when the new build fails to start (its health check), or by a revert promoted again (SPEC-418).
-  Production (with its promotion) is always a person's: an administrator types the project's slug,
-  and on GitHub a ruleset only repository admins bypass keeps the production branch out of reach of
-  the agents' own token, which is never a person's
+  Only where a delivery profile promotes by itself (`auto_promote`, the Studio preset) does Yulius
+  promote, once each merged change passed its integration environments; a production deploy stays a
+  person's there too. Production (with its promotion) is otherwise always a person's: an
+  administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
+  keeps the production branch out of reach of the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
   as the person who started onboarding when they are a repository admin; where the GitHub plan
   has no rulesets, a sandbox admin waives it on the Git page's Production protection card, and

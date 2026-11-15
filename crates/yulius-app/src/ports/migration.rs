@@ -51,4 +51,7 @@ pub trait MoveHelper: Send + Sync {
     fn status(&self) -> Option<MoveStatus>;
     /// The checklist a move to this host left, if any.
     fn arrived(&self) -> Option<MoveChecklist>;
+    /// Whether the helper's service still runs its command, as systemd says: `Some(false)` once
+    /// it ended (or on a host without one), `None` when systemd cannot say. May block briefly.
+    fn helper_active(&self) -> Option<bool>;
 }

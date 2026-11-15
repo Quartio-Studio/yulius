@@ -1939,6 +1939,52 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
             "{refused}"
         );
     }
+    // The same for a person's own agent, by the tool it shares with their Superagent
+    // (SPEC-487, review of slice 2, F16): a production-stage environment by any name.
+    let operate = {
+        use yulius_app::ports::store::SessionStore as _;
+        let token = "yul_test_operate_alice";
+        f.h.store
+            .insert_api_token(&yulius_app::model::ApiTokenRecord {
+                id: "tok-operate".into(),
+                user_id: yulius_domain::ids::UserId::parse("u-alice")?,
+                token_hash: f.h.app.deps.crypto.sha256_hex(token.as_bytes()),
+                label: "laptop".into(),
+                scope: yulius_domain::permission::TokenScope::Operate,
+                created_at: yulius_domain::time::Timestamp(1),
+                last_used_at: None,
+                revoked_at: None,
+            })
+            .await?;
+        Creds {
+            bearer: Some(token.to_owned()),
+            ..Creds::default()
+        }
+    };
+    for env in ["platform", "selfserve", "prod"] {
+        let refused = call(
+            &f.h.router,
+            Method::POST,
+            "/mcp",
+            Some(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                    "name": "cd_deploy",
+                    "arguments": {"project": "s1", "environment": env},
+                }}),
+            ),
+            &operate,
+        )
+        .await?;
+        let result = &refused.body["result"];
+        assert!(
+            result["isError"] == true
+                && result["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("only a person deploys production")),
+            "{env}: {}",
+            refused.body
+        );
+    }
     // #784: the agent's deploy validates the name as the person's does, before anything else.
     for env in ["../staging", "Staging", "staging/x", "dev prod", ""] {
         let refused = tool("cd_deploy", json!({"environment": env})).await?;
