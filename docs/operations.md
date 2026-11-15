@@ -1007,9 +1007,10 @@ from a sandbox, and no daemon needs to run on the host.
 - **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
   starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
   network, with a run's view of the files plus its storage, a cgroup namespace rooted at
-  `sandboxes/<sandbox>/engine`, and a seccomp profile of its own that every container inherits,
-  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
-  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `sandboxes/<sandbox>/engine/inside` (its limits on `engine`, out of its view, ADR-0339), and
+  a seccomp profile of its own that every container inherits, `--privileged` included.
+  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves
+  through the sandbox's egress, and they reach the egress proxy at
   `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
   port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.** `sudo yulius host setup` (§2) brings all of them and proves them with the
@@ -1044,10 +1045,10 @@ from a sandbox, and no daemon needs to run on the host.
   - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
-    leaf again under the sandbox's group, and so does the server's upkeep tick (30 s) for an engine
-    or relay front it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
-    …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
-    prepared the sandbox.
+    leaf (and `inside` below it) again under the sandbox's group, and so does the server's
+    upkeep tick (30 s) for an engine or relay front it keeps (SPEC-201, #614). Before that fix,
+    `docker` answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory"
+    after every update, until a new run prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`,
     listed in `/etc/modules-load.d/yulius-docker.conf` so that they load at every boot.
@@ -1072,11 +1073,12 @@ from a sandbox, and no daemon needs to run on the host.
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
   capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container resource flags (`docker run -m`, `--cpus`, `--pids-limit`, compose `mem_limit`,
-    `cpus` or `pids_limit`) are not supported; leave them out. The engine lives in its own group,
-    so cgroup v2 passes no controller below it: memory flags are discarded, and CPU and task flags
-    may make the container fail to start. The sandbox's own limits, and the engine's 3/8 of its
-    task limit (SPEC-268), still bound every container.
+  - Per-container task limits (`--pids-limit`, compose `pids_limit`) work: `cpu` and `pids`
+    reach the engine's root and runc passes them on in threaded mode (ADR-0339). Memory and CPU
+    flags (`docker run -m`, `--cpus`, compose `mem_limit`, `cpus`) are not supported; leave them
+    out: memory cannot be threaded and is discarded, and runc refuses `--cpus` in threaded mode
+    ("cannot enter cgroupv2 … with domain controllers"). The sandbox's own limits, and the
+    engine's 3/8 of its task limit (SPEC-268), still bound every container.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the

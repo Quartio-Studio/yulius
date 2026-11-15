@@ -60,7 +60,9 @@ task.
 - The engine's containers see `pids` among their available controllers. Per-container task flags
   (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
   below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
-  container fail to start where they were discarded before.
+  container fail to start where they were discarded before. (Corrected by
+  [ADR-0339](0339-the-engine-runs-below-the-group-that-holds-its-limits.md): runc passes `cpu` and
+  `pids` on in threaded mode, so `--pids-limit` works; `--cpus` fails.)
 - Two saturated sandboxes could still fill the service's limit between them and leave the server
   none; [ADR-0201](0201-all-sandboxes-share-a-task-limit-below-the-services.md) (task #260) gives
   all sandboxes together a common limit, counted on 6.13+ kernels and reset without a service

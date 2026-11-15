@@ -68,7 +68,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35 (merged, #1306), QB5 slice 36 (merged,
       #1309), QA8 and QC6 slice 37 (merged, #1313);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
-      changes of their own, taken out of slice 9, which is one concern: W1b is slice 38;
+      changes of their own, taken out of slice 9, which is one concern: W1b is slice 38
+      (merged, #1317), C4 slice 39;
   19. the connection that carries the server's token in a clone its agents configure (G2,
       found in slice 10): taken as slice 11 of the Plan (the earlier number 11, V6, follows
       it): merged, pull request #1252;
@@ -760,6 +761,17 @@ went; two of the auditors' items had gained a user since and stay.
   which sent no policy, and its page check (`instrument()`) fails a test on uncaught errors and
   `console.error` only: the browser merely logs a refused load, so no test would have seen one.
 
+### Slice 39: the engine runs below the group that holds its limits
+
+- **C4 (low).** The engine's cgroup, `sandboxes/<sandbox>/engine`, held its limits and was the
+  root of its cgroup namespace and its `/sys/fs/cgroup`. Root in the sandbox's user namespace is
+  the service user, which owns every file of the delegated tree; `nsdelegate` refuses writes to
+  the writer's own namespace root only. A process of the engine (in practice a privileged
+  container any Docker caller in the sandbox may run, CI jobs included) that moves to a child
+  group and starts a cgroup namespace there may write `engine/pids.max` and `engine/cpu.weight`:
+  the 3/8 task cap that keeps agents a quarter (SPEC-268 PID-002) and the CPU split are gone
+  inside the sandbox (its own limits, one group up, hold).
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1316,8 +1328,18 @@ went; two of the auditors' items had gained a user since and stay.
   no inline or evaluated script, no frames, plugins or `<base>`, and no framing; forms may post
   elsewhere (the GitHub App's manifest goes to GitHub). The e2e server sends the same file (a
   brand lab page, mock only, may also load Google Fonts), and every e2e test fails on a load the
-  page itself is refused (not one in a tab it opens or in a worker). Routes with a stricter policy (preview pages,
-  attachments) keep theirs.
+  page itself is refused (not one in a tab it opens or in a worker). Routes with a stricter
+  policy (preview pages, attachments) keep theirs.
+- **CGR-003** A sandbox's Docker engine runs in, and sees as its `/sys/fs/cgroup`, the group
+  `engine/inside`, the root of its cgroup namespace; its limits (the task cap of SPEC-268
+  PID-002, its CPU weight) stay on `engine`, out of its view, and `cpu` and `pids` pass down
+  to `inside` as they reached the engine before (`--pids-limit` works in containers, `--cpus`
+  fails in runc's threaded mode as before). A start after a restart that pruned them makes
+  both groups again (nothing above). An engine group an engine of the old layout left threaded
+  is made plain again (its emptied leftovers removed) once no process runs in it but below
+  `inside` and its `cgroup.procs` can be read; an old engine still running there is left alone.
+  A container is a populated group below the engine's root (`cgroup.events`), also where runc
+  made it threaded.
 
 ## Plan
 
@@ -1361,7 +1383,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 35: the capacity and accounts views read their window through indexes (merged, #1306)
 - [x] Slice 36: a watcher's poll reads only what was written since (merged, #1309)
 - [x] Slice 37: a project's task list reads the project once (merged, #1313)
-- [ ] Slice 38: the web UI runs under a strict content security policy
+- [x] Slice 38: the web UI runs under a strict content security policy (merged, #1317)
+- [ ] Slice 39: a sandbox's Docker engine runs below the group that holds its limits
 
 ## Acceptance criteria
 
@@ -2023,10 +2046,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   font hosts added; an inline script, an image from elsewhere and `new Function` in the page are
   refused and each fails the test; a form posted to another site from a tab the page opened is
   sent and a recording plays from a `blob:` URL (in the e2e suite and in a real Chrome); the
-  whole e2e suite (terminals, the editor, the browser
-  panel, pasted images, the brand lab) passes under it, and a real Chrome on the real server
-  shows setup, Home, Settings, Users, Archived, the design page and a missing sandbox with no
-  refusal (CSP-001).
+  whole e2e suite (terminals, the editor, the browser panel, pasted images, the brand lab)
+  passes under it, and a real Chrome on the real server shows setup, Home, Settings, Users,
+  Archived, the design page and a missing sandbox with no refusal (CSP-001).
+- **AC-159** A sandbox's groups give the engine `engine/inside` as its root and its spec binds
+  that group; the task cap is on `engine` and `inside` has no limit of its own; a pruned root is
+  made again with its group, never another group's parent; an idle old engine group loses its
+  leftovers and controllers, a running one keeps them. On a real kernel (Ubuntu 26.04 guest),
+  the old layout lets a nested cgroup namespace (and a privileged container of a real `dockerd`)
+  lift the engine's `pids.max` and `cpu.weight`; the new one does not, a fork past the cap is
+  refused, a real `dockerd` runs containers in it, and an old group settled as above runs them
+  again (CGR-003).
 
 ## Test plan
 
@@ -2288,6 +2318,16 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 39: `yulius-sandbox` `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves`,
+  `ci_and_the_engine_leave_the_agents_a_reserve_of_tasks`,
+  `without_the_cpu_controller_there_is_no_split`, `without_the_split_the_leaves_get_no_task_limit`,
+  `a_pruned_leaf_is_restored_under_its_parent`,
+  `an_idle_engine_group_from_before_is_made_plain_again`,
+  `the_engine_root_gets_the_threaded_controllers`,
+  `engine_supervisor::tests::only_processes_below_the_engines_group_are_containers`,
+  `engine_supervisor::tests::a_start_recreates_the_engine_leaf_a_restart_pruned`,
+  `manager::tests::a_kept_engine_front_gets_its_pruned_leaf_back` (AC-159); the kernel's and
+  `dockerd`'s behaviour in an Ubuntu 26.04 QEMU guest (scripts kept in the task's cache).
 - Slice 38: `yulius` `http_auth::public_responses_carry_security_headers` (the policy word for
   word, AC-158); `scripts/test_e2e_serve.py` (the same file on every answer, the lab's fonts on
   a lab page only); e2e `content-security-policy.e2e.ts` (the page's policy; refusals fail the
@@ -2423,6 +2463,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- [ADR-0339](../../docs/decisions/0339-the-engine-runs-below-the-group-that-holds-its-limits.md)
+  (slice 39): the engine in `engine/inside`, its limits one group up; `cpu` and `pids` passed
+  down as before; old engine groups settled when idle; rejected: read-only limit files, refusing
+  privileged containers, dropping the per-leaf caps.
 - [ADR-0338](../../docs/decisions/0338-the-web-ui-runs-under-a-strict-content-security-policy.md)
   (slice 38): one policy file for the server and the e2e server; inline styles allowed (xterm
   and Monaco add `<style>` elements, which take no nonce); no nonces, hashes, Trusted Types or
@@ -2947,7 +2991,7 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QB5 | efficiency | The watched transcript re-read and re-parsed from byte 0 every 1.5 s | medium | fixed (slice 36) |
 | QC1 | efficiency | The capacity and accounts views scan every run and pause | low | fixed (slice 35) |
 | Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
-| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
+| C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | slice 39 |
 
 ## Evidence
 
@@ -3017,3 +3061,132 @@ later slices follow.
 - **After round 1.** The whole e2e suite: 85 files, 1054 passed, 1 skipped (`e2e-all3.log`).
   `scripts/dev ci` at `b959635c5`: exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped`
   (`gate3.log`).
+
+### Slice 39 (2026-11-15)
+
+- **On a real kernel first** (an Ubuntu 26.04 QEMU guest, kernel 7.0, cgroup2 with
+  `nsdelegate`, Yulius's bwrap AppArmor profile; scripts and logs in
+  `target/audit/slice39/guest/`). The old layout, a service user's delegated group with the
+  engine leaf bound into a bwrap user namespace (`--cap-add ALL`, as the engine):
+  - a direct write to the leaf's `pids.max` is refused;
+  - after moving to a child and `unshare -C`, `pids.max` becomes `max` and `cpu.weight` 10000
+    (`c4-repro.log`);
+  - a real `dockerd` in that layout, as root without the user namespace:
+    `docker run --privileged --cgroupns=host … unshare -C` set both too (`c4-privileged.log`).
+
+  The new layout (`engine/inside` bound, the limits on `engine`):
+  - the nested write reaches only `inside`'s own files, and `engine` keeps 30 tasks and weight
+    100;
+  - after the nested process lifts the limit it can see, 60 forks stop at the cap
+    (`engine/pids.events` `max 1`);
+  - the privileged container leaves `pids.max` 200.
+
+  A real `dockerd` runs containers in both layouts, all their tasks counted on `engine`
+  (`c4-dockerd2.log`).
+- **An update's case, found on the guest.** After an old-layout engine has run a container, a
+  new engine in `inside` fails every container ("…/docker/<id>/cgroup.procs: no such file or
+  directory"). runc had made the old subtree threaded (`engine` "domain threaded" with
+  `cpu pids` passed down, `engine/docker` threaded), and a domain child below is "domain
+  invalid" (`c4-upgrade.log`). Removing the emptied `engine/docker` and taking the controllers
+  back makes `engine` "domain" again, and the new engine runs containers (`c4-repair.log`).
+  The code now does this at each preparation and each restore, unless a process runs in the
+  group or below it outside `inside`.
+- **Tests failing before the change**: `a_sandbox_group_splits_into_weighted_leaves` and the
+  other group tests (no `engine_root`), the restore tests (the pruned engine group not made
+  again), `an_idle_engine_group_from_before_is_made_plain_again` ("the leftovers are gone").
+  `yulius-sandbox`: 168 passed.
+- **Mutations** (`target/audit/slice39/mutations.log`, 10 of 10 caught after one more case):
+  - the spec binding `engine`;
+  - the root being `engine` itself;
+  - no settling at preparation;
+  - settling despite a process in the group, or despite a populated child;
+  - settling removing the root;
+  - no controller drop;
+  - no parent restore;
+  - no settling on restore;
+  - a parent restored for any group. This one survived at first; the restore test now also
+    asks that `s1/agents/inside` and `s1/engine2/inside` fail and make nothing.
+- **Shared, not copied.** `lines`, `populated`, `subgroups`, `remove_tree` and the per-controller
+  drop moved from `adopt.rs` to `cgroup.rs` and serve both.
+- **Slice 38's round 2 nits.** The changes sentence and two over-long lines are reworded. The
+  F1 test accepting any cross-origin end state is answered: what the policy decides is whether
+  the tab may leave for the other origin. The reviewer's own probe showed the POST delivered.
+  `subscription-touch.e2e.ts` predates the slice and opens its own browser.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Gate.** `scripts/dev ci` at `0779ed67f`: exit 0; `4456 tests run: 4456 passed (1 slow), 17
+  skipped` (`target/audit/slice39/gate.log`).
+- **Review, round 1** (a fresh session, head `089018f2a`): request changes, two own-code
+  minors.
+  - F1: the claim that no controller passed below the engine's group before was false. My own
+    guest logs showed `[cpu pids]` at the old engine's root, and runc passed them on in threaded
+    mode, so the new layout lost per-container `--pids-limit`.
+  - F2: the opt-in real-host test `isolation.rs` still asserted the engine in `engine`.
+  - Nits: F3, an idle old front's group pruned at the update leads to the front's restart (not
+    in the ADR); F4, an unreadable `cgroup.procs` counted as idle; F5, a race between settling
+    and an old engine's first container; F6, no guest run of an old engine starting beside
+    `inside`; F7, over-long lines.
+  - Pre-existing (major): P1, the idle check read `cgroup.procs` of runc's threaded container
+    groups. That read fails, so an old-layout engine counted as idle and was stopped while its
+    containers ran.
+- **Fixes.** Tests first, failing before (`the_engine_root_gets_the_threaded_controllers`,
+  `only_processes_below_the_engines_group_are_containers` with events only).
+  - F1: settling now passes `cpu` and `pids` down to `inside`, one write each, as the group
+    lists them; `memory` is never passed.
+  - P1: the idle check reads `populated` from `cgroup.events` of the groups below the root.
+  - F4: an unreadable `cgroup.procs` is busy.
+  - F2: `isolation.rs` asserts `engine/inside`.
+  - F3: the ADR names the front's restart.
+  - F7: rewrapped.
+  - F5 is answered: settling runs while the old engine is busy only up to its first container's
+    group. The kernel refuses `rmdir` of a populated group and a controller change that would
+    break a threaded subtree, and the next preparation settles again.
+- **On the guest, with the code's own steps** (`c4-round1.log`, `c4-old-flags.log`):
+  - The old layout on a fresh group: `--pids-limit 50` reaches the container, and `--cpus 0.5`
+    fails in runc ("cannot enter cgroupv2 … with domain controllers -- it is in an invalid
+    state / threaded mode").
+  - The new layout with `cpu pids` passed down: a running container shows `populated 1` below
+    `inside`, and the privileged nested write leaves `pids.max` 200 and `cpu.weight` 100. (Each
+    flag alone, and the new engine after an old one, are shown in round 2's log: this run's
+    containers all carried `--cpus`.)
+  - F6: an old engine started in `engine` while `inside` exists runs containers; settling then
+    leaves it alone ("busy").
+- **Mutations** (`mutations-r1.log`): 16 of 16 caught, the five new ones included (no pass
+  down, `memory` passed, an unlisted controller passed, an unreadable `cgroup.procs` idle, the
+  idle check by `cgroup.procs`).
+- **Gate after round 1.** `scripts/dev ci` at `0e4c8b3d0`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `6caa9f082`): request changes, three own-code
+  minors and a nit.
+  - The round 1 fixes hold. Both questions were checked against the kernel's
+    `cgroup_migrate_vet_dst`: a group that passes only threaded controllers down still takes an
+    old engine, and removing the threaded leftovers before enabling is the right order.
+  - R2-1: the engine's group now passes `cpu` and `pids` down for every sandbox, so the stop's
+    undo of the split (`unsplit_all`, SPEC-053 CPU-205, SPEC-268 PID-003) failed everywhere.
+    Before, it failed only after an engine had run a container.
+  - R2-2: two Evidence claims cited a log that did not show them (each flag alone; containers
+    after an old engine).
+  - R2-3: `docs/operations.md`, ADR-0198 and ADR-0151 still said no controller reaches
+    containers.
+  - R2-4 (nit): the idle check no longer erred toward busy at its bound.
+- **Fixes.** Tests first, both failing before.
+  - R2-1: the stop test now asks that the engine's group give its controllers back, and that a
+    preparation while stopping passes nothing down. `unsplit_all` writes `-pids` and `-cpu` to
+    `engine` before the sandbox's group, and settling waits for a preparation that is not
+    stopping. On the guest (`c4-undo.log`), for a prepared group whose engine never ran:
+    sandbox-first is refused, engine-first succeeds, and the sandbox passes nothing down
+    afterwards. Where an engine ran containers, runc's threaded groups keep the controllers,
+    as they did in the old layout (`c4-round2.log`, the last part, after both engines).
+  - R2-4: past 4096 entries it is busy (test with 4096 empty groups).
+  - R2-2: `c4-round2.log` shows, on a fresh group, beside a running old engine, and after it
+    stopped:
+    - a plain container runs;
+    - `--pids-limit 50` alone gives the container `pids.max 50`;
+    - `--cpus 0.5` alone fails in runc's threaded mode.
+
+    The round 1 lines above now say what their log shows.
+  - R2-3: the three docs are corrected, pointing to ADR-0339.
+  - ADR-0339 gains the stop's order and the bound.
+  - Mutations (`mutations-r2.log`): 19 of 19 caught (new: no engine-first undo, settling while
+    stopping, no busy at the bound).
+- **Gate after round 2.** `scripts/dev ci` at `3b4ca452e`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate3.log`).
