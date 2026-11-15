@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use crate::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS};
+use crate::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS, REVIEW_CLAUDE_MODEL};
 use crate::time::Timestamp;
 
 /// The npm package of the Claude Code CLI.
@@ -471,7 +471,8 @@ pub fn default_model_fix(channel: Channel, newest_lacks: Option<&str>) -> String
     }
 }
 
-/// "2.1.311 does not know claude-fable-5-2 (Yulius's default model) and claude-opus-5-5".
+/// "2.1.311 does not know claude-opus-5-5 (Yulius's default model) and claude-fable-5-2 (the
+/// independent review's model)" (SPEC-493 MDL-003: the review's model is named, not refused).
 #[must_use]
 pub fn gap_text(version: &str, missing: &[String]) -> String {
     let named: Vec<String> = missing
@@ -479,6 +480,8 @@ pub fn gap_text(version: &str, missing: &[String]) -> String {
         .map(|model| {
             if model == DEFAULT_CLAUDE_MODEL {
                 format!("{model} (Yulius's default model)")
+            } else if model == REVIEW_CLAUDE_MODEL {
+                format!("{model} (the independent review's model)")
             } else {
                 model.clone()
             }
@@ -646,15 +649,20 @@ mod tests {
         assert!(!lacks_default(&[]));
         assert_eq!(
             gap_text("2.1.311", &without_default),
-            "2.1.311 does not know claude-fable-5-2 (Yulius's default model)"
+            "2.1.311 does not know claude-opus-5-5 (Yulius's default model)"
+        );
+        // SPEC-493 MDL-003: a build without the review's model is named for it, not refused.
+        let without_review = missing_models(&["claude-opus-5-5", "claude-sonnet-5-5"]);
+        assert!(!lacks_default(&without_review));
+        assert_eq!(
+            gap_text("2.1.311", &without_review),
+            "2.1.311 does not know claude-fable-5-2 (the independent review's model), \
+             claude-fable-5-1 and claude-haiku-4-5"
         );
         assert_eq!(
-            gap_text(
-                "2.1.311",
-                &missing_models(&["claude-opus-5-5", "claude-sonnet-5-5"])
-            ),
-            "2.1.311 does not know claude-fable-5-2 (Yulius's default model), claude-fable-5-1 \
-             and claude-haiku-4-5"
+            gap_text("2.1.311", &missing_models(&["claude-sonnet-5-5"])),
+            "2.1.311 does not know claude-opus-5-5 (Yulius's default model), claude-fable-5-2 \
+             (the independent review's model), claude-fable-5-1 and claude-haiku-4-5"
         );
         assert_eq!(
             gap_text("2.1.322", &[]),
@@ -667,7 +675,7 @@ mod tests {
     fn the_fix_names_what_happens_next_and_the_host_command() {
         let problem = default_model_problem("2.1.311");
         assert!(
-            problem.starts_with("Claude Code 2.1.311 does not know claude-fable-5-2"),
+            problem.starts_with("Claude Code 2.1.311 does not know claude-opus-5-5"),
             "{problem}"
         );
         for channel in [Channel::Latest, Channel::Stable] {

@@ -4,10 +4,11 @@ import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './
 
 failOnPageErrors();
 
-// A task of a Fable model runs Opus 5.5 while no subscription can run Fable (SPEC-482): the pages
-// say which model a session runs and why, and count the subscriptions that run the fallback.
+// A task set to a Fable model runs Opus 5.5 while no subscription can run Fable (SPEC-482): the
+// pages say which model a session runs and why. The default model, Opus 5.5, has no fallback
+// (SPEC-493 MDL-002).
 
-const LINE = 'Fable 5.2 is used up on every subscription: tasks run on Opus 5.5 until it can run again';
+const LINE = 'Fable 5.2 is used up on every subscription: tasks set to it run on Opus 5.5 until it can run again';
 
 type Account = { label: string; status: string; usage: Record<string, unknown> };
 
@@ -31,16 +32,19 @@ test('a task’s details say that its session runs on the fallback and why (SPEC
     const dt = [...document.querySelectorAll('.ti-kv dt')].find((el) => (el as HTMLElement).innerText === 'Model');
     return dt ? (dt.nextElementSibling as HTMLElement).innerText : null;
   });
-  // A task that names no model runs the default one. Its session is refused Fable everywhere
-  // and starts again on the same subscription: the details are read again and name the fallback.
+  // A task that names no model runs the default one, Opus 5.5 (SPEC-493 MDL-001).
   await touchTask(browser, 'sb_studio', 11, { model: null, status: 'switching' });
-  await expect.poll(model).toBe('Fable 5.2 (default) · High effort');
-  await touchTask(browser, 'sb_studio', 11, { fallback_model: 'claude-opus-5-5', status: 'running' });
-  await expect.poll(model).toBe('Fable 5.2 (default) · High effort · this session runs on Opus 5.5 (Fable 5.2 was used up when it started)');
+  await expect.poll(model).toBe('Opus 5.5 (default) · High effort');
+  // A task set to Fable 5.2 is refused Fable everywhere and starts again on the same
+  // subscription: the details are read again and name the fallback.
+  await touchTask(browser, 'sb_studio', 11, { model: 'claude-fable-5-2', status: 'running' });
+  await expect.poll(model).toBe('Fable 5.2 · High effort');
+  await touchTask(browser, 'sb_studio', 11, { fallback_model: 'claude-opus-5-5', status: 'switching' });
+  await expect.poll(model).toBe('Fable 5.2 · High effort · this session runs on Opus 5.5 (Fable 5.2 was used up when it started)');
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('the Capacity panel says that tasks run on the fallback and counts the subscriptions that run it (SPEC-482 FBK-010)', async ({ app, browser, screen }) => {
+test('the Capacity panel says that Fable tasks run on the fallback, and counts for the default model (SPEC-482 FBK-010, SPEC-493)', async ({ app, browser, screen }) => {
   const tile = () => browser.evaluate(() => {
     const tiles = [...document.querySelectorAll('.capacity-panel .stat-tile')] as HTMLElement[];
     const found = tiles.find((el) => el.innerText.includes('Available now'));
@@ -58,12 +62,12 @@ test('the Capacity panel says that tasks run on the fallback and counts the subs
   await fableOutEverywhere(browser);
   await browser.evaluate(() => { location.hash = '#/admin/accounts'; });
   await expect(browser.locator('.capacity-fallback')).toHaveText(LINE);
-  // The subscriptions that run the fallback are the ones available.
-  await expect.poll(tile).toMatch(/Available now [1-9]\d* of \d+ for Opus 5\.5, below 98% in every window$/);
+  // "Available now" counts for the default model, Opus 5.5, which these subscriptions run.
+  await expect.poll(tile).toMatch(/Available now [1-9]\d* of \d+ below 98% in every window$/);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('the status line of a pool out of Fable says that tasks run on the fallback (SPEC-482 FBK-010)', async ({ app, browser }) => {
+test('the status line of a pool out of Fable says that Fable tasks run on the fallback (SPEC-482 FBK-010)', async ({ app, browser }) => {
   await app.open(mock('/s/studio', '&ambient=0'));
   await fableOutEverywhere(browser);
   await browser.locator('.btn-status').click();
@@ -100,15 +104,17 @@ test('the model the pool places a task with, and which subscription takes it (un
     const fable = { model: 'claude-fable-5-2' };
     return {
       fallback: [models.fallbackOf('claude-fable-5-2'), models.fallbackOf('claude-fable-5-1'), models.fallbackOf('claude-opus-5-5'), models.fallbackOf('claude-sonnet-5-5'), models.fallbackOf(null)],
-      // No model: the default one.
-      allOut: usage.placingModel([fableOut, fableOut], null),
+      // No model: the default one, Opus 5.5, which a pool out of Fable runs as its own.
+      defaultTask: usage.placingModel([fableOut, fableOut], null),
+      allOut: usage.placingModel([fableOut, fableOut], 'claude-fable-5-2'),
       oneRuns: usage.placingModel([fableOut, room], 'claude-fable-5-2'),
       // A window past its reset is a new window: Fable runs again.
       reset: usage.placingModel([{ status: 'limited', usage: { weekly_fable: w(100, past) } }], 'claude-fable-5-2'),
       neither: usage.placingModel([full, bothOut], 'claude-fable-5-2'),
       needsSignIn: usage.placingModel([{ ...fableOut, status: 'relogin' }], 'claude-fable-5-2'),
       reported: usage.placingModel([{ status: 'limited', usage: { limit_reached: true, limit_resets_at: null, weekly_fable: w(100) } }], 'claude-fable-5-2'),
-      noFallback: usage.placingModel([{ status: 'ok', usage: { weekly_opus: w(100) } }], 'claude-opus-5-5'),
+      // The default model has no fallback: out of Opus everywhere, a default task waits.
+      noFallback: usage.placingModel([{ status: 'ok', usage: { weekly_opus: w(100) } }], null),
       // "Run #N on…": with Fable used up everywhere, a subscription with room takes the task.
       movedInFallback: actions.cannotTake(fableOut, fable, [fableOut, fableOut]),
       movedWhileOneRunsFable: actions.cannotTake(fableOut, fable, [fableOut, room]),
@@ -118,6 +124,7 @@ test('the model the pool places a task with, and which subscription takes it (un
   });
   expect(got).toEqual({
     fallback: ['claude-opus-5-5', 'claude-opus-5-5', null, null, null],
+    defaultTask: 'claude-opus-5-5',
     allOut: 'claude-opus-5-5',
     oneRuns: 'claude-fable-5-2',
     reset: 'claude-fable-5-2',

@@ -2,7 +2,8 @@
 // another harness's models can join the list; each provider names the harness that runs them.
 // Yulius runs Claude Code only today (TSK-003). A model id goes to Claude Code's `--model` and a
 // level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
-// Fable 5.2 at high effort (SPEC-023, SPEC-462).
+// Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493). The first model listed is the default,
+// as on the server.
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -14,9 +15,9 @@ export const PROVIDERS = [
     name: 'Anthropic',
     harness: 'claude',
     models: [
+      { id: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Complex coding and agentic work' },
       { id: 'claude-fable-5-2', name: 'Fable 5.2', description: 'Most capable, for the hardest long-running work (needs Fable access)' },
       { id: 'claude-fable-5-1', name: 'Fable 5.1', description: 'The previous Fable (needs Fable access)' },
-      { id: 'claude-opus-5-5', name: 'Opus 5.5', description: 'Complex coding and agentic work' },
       { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', description: 'Fast and capable for everyday coding' },
       // Haiku 4.5 takes no effort level.
       { id: 'claude-haiku-4-5', name: 'Haiku 4.5', description: 'Fastest, for small and quick tasks', effort: false },
@@ -30,6 +31,12 @@ export const PROVIDERS = [
  */
 export const FALLBACK_MODEL = 'claude-opus-5-5';
 
+/**
+ * The Fable model the pages watch for that fallback (SPEC-493): the server's
+ * `REVIEW_CLAUDE_MODEL`, which a test keeps equal to this. The default model has no fallback.
+ */
+export const REVIEW_MODEL = 'claude-fable-5-2';
+
 /** The model a task of `model` falls back to, or null: a Fable model's is [`FALLBACK_MODEL`]. */
 export function fallbackOf(model) {
   return String(model || '').toLowerCase().includes('fable') ? FALLBACK_MODEL : null;
@@ -37,7 +44,7 @@ export function fallbackOf(model) {
 
 /** What the pool says while tasks of `model` run its fallback (SPEC-482), in one line. */
 export function fallbackLine(model, fallback) {
-  return `${modelLabel(model)} is used up on every subscription: tasks run on ${modelLabel(fallback)} until it can run again`;
+  return `${modelLabel(model)} is used up on every subscription: tasks set to it run on ${modelLabel(fallback)} until it can run again`;
 }
 
 export const EFFORTS = [
@@ -73,7 +80,7 @@ export function findEffort(id) {
 /** Menu items to pick a model (grouped by provider); `onPick(id|null)`. */
 export function modelMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Fable 5.2', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: 'Opus 5.5', checked: selected === null, onSelect: () => onPick(null) },
     ...PROVIDERS.flatMap((provider) => [
       { header: provider.name },
       ...provider.models.map((model) => ({ label: model.name, description: model.description, checked: model.id === selected, onSelect: () => onPick(model.id) })),

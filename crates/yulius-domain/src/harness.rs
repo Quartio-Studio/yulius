@@ -2,31 +2,37 @@
 
 use std::fmt;
 
-/// The Claude model of a task that names none: Fable 5.2 by its full id, not an alias that moves
-/// with each release (2026-11-10: "make fable 5.2 effort max default model"; before it Opus 5.5,
-/// task #21). A subscription's own default would be Sonnet.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-fable-5-2";
+/// The Claude model of a task that names none: Opus 5.5 by its full id, not an alias that moves
+/// with each release (the person's decision of 2026-11-13, SPEC-493: Opus 5.5 writes, Fable 5.2
+/// reviews; Fable 5.2 from 2026-11-10 until then, Opus 5.5 before, task #21). A subscription's
+/// own default would be Sonnet.
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+
+/// The model of the independent code review's first two rounds (SPEC-493): Fable 5.2 by its
+/// full id. One of [`OFFERED_CLAUDE_MODELS`], so a Claude Code release is read for it.
+pub const REVIEW_CLAUDE_MODEL: &str = "claude-fable-5-2";
 
 /// The Claude models the composer offers (SPEC-461 CCM-002), the default first. The web UI's
 /// `models.js` lists the same ids, and a test keeps the two equal. A Claude Code release is read
 /// for them before sandboxes get it.
 pub const OFFERED_CLAUDE_MODELS: [&str; 5] = [
     DEFAULT_CLAUDE_MODEL,
+    REVIEW_CLAUDE_MODEL,
     "claude-fable-5-1",
-    "claude-opus-5-5",
     "claude-sonnet-5-5",
     "claude-haiku-4-5",
 ];
 
 /// The model a run falls back to while no subscription can run its Fable model (SPEC-482,
-/// "add fallback for opus 5.5 if fable is done everywhere", 2026-11-12): Opus 5.5 by its full id,
-/// like the default. One of [`OFFERED_CLAUDE_MODELS`], so a Claude Code release is read for it.
+/// "add fallback for opus 5.5 if fable is done everywhere", 2026-11-12): Opus 5.5 by its full
+/// id, which is the default model since SPEC-493. One of [`OFFERED_CLAUDE_MODELS`], so a Claude
+/// Code release is read for it.
 pub const FALLBACK_CLAUDE_MODEL: &str = "claude-opus-5-5";
 
 /// The model a run of `model` is launched with instead while no subscription can run `model`:
 /// [`FALLBACK_CLAUDE_MODEL`] for a Fable model, whose weekly allowance of usage credits can be
 /// used up on every subscription while their other windows have room. `None` for any other
-/// model: its task waits.
+/// model, the default one included: its task waits.
 #[must_use]
 pub fn fallback_model(model: &str) -> Option<&'static str> {
     (crate::usage::ModelFamily::of(Some(model)) == crate::usage::ModelFamily::Fable)
@@ -192,14 +198,31 @@ pub fn valid_session_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// SPEC-493 MDL-001: a task that names no model runs Opus 5.5, the first model offered; the
+    /// review's model is Fable 5.2 and is offered too, so every Claude Code release is read for
+    /// both.
+    #[test]
+    fn the_default_model_is_opus_5_5_and_the_review_model_fable_5_2() {
+        assert_eq!(DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");
+        assert_eq!(REVIEW_CLAUDE_MODEL, "claude-fable-5-2");
+        assert_eq!(OFFERED_CLAUDE_MODELS[0], DEFAULT_CLAUDE_MODEL);
+        assert!(OFFERED_CLAUDE_MODELS.contains(&REVIEW_CLAUDE_MODEL));
+        let mut unique = OFFERED_CLAUDE_MODELS.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), OFFERED_CLAUDE_MODELS.len(), "an id twice");
+    }
+
     /// SPEC-482 FBK-001: a Fable model falls back to Opus 5.5, which is offered (so every Claude
-    /// Code release is read for it); no other model falls back, nor does the fallback itself.
+    /// Code release is read for it); no other model falls back, nor does the fallback itself,
+    /// which is the default model (SPEC-493 MDL-002: a default task waits).
     #[test]
     fn a_fable_model_falls_back_to_opus_5_5() {
         assert_eq!(FALLBACK_CLAUDE_MODEL, "claude-opus-5-5");
         assert!(OFFERED_CLAUDE_MODELS.contains(&FALLBACK_CLAUDE_MODEL));
+        assert_eq!(fallback_model(DEFAULT_CLAUDE_MODEL), None);
         for fable in [
-            DEFAULT_CLAUDE_MODEL,
+            REVIEW_CLAUDE_MODEL,
             "claude-fable-5-1",
             "claude-fable-5-2[1m]",
         ] {

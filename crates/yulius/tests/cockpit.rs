@@ -334,7 +334,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     // The default model and effort (SPEC-023 DEF-004).
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort high]"
+        "[--model claude-opus-5-5 --effort high]"
     );
     assert_eq!(printed(&screen, "token")?, TOKEN);
     let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
@@ -521,7 +521,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort high]"
+        "[--resume after-clear --model claude-opus-5-5 --effort high]"
     );
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
@@ -544,7 +544,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort high]"
+        "[--resume after-clear --model claude-opus-5-5 --effort high]"
     );
     f.h.app.end_all_shells().await;
     Ok(())
@@ -750,7 +750,7 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort high]",
+        "[--model claude-opus-5-5 --effort high]",
         "a fresh conversation"
     );
     f.h.app.end_all_shells().await;
@@ -787,7 +787,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort high]"
+        "[--model claude-opus-5-5 --effort high]"
     );
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
@@ -1128,7 +1128,7 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume kept --model claude-fable-5-2 --effort high]",
+        "[--resume kept --model claude-opus-5-5 --effort high]",
         "the same conversation"
     );
     f.h.app.end_all_shells().await;
@@ -1248,10 +1248,11 @@ async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> 
     Ok(())
 }
 
-/// SPEC-023 DEF-004: the Cockpit runs Fable 5.2, which no weekly Opus cap binds, so the
-/// subscription with the most room is taken even when its Opus cap is spent.
+/// SPEC-023 DEF-004, SPEC-493 MDL-001: the Cockpit runs Opus 5.5, which the weekly Opus cap
+/// binds, so a subscription whose Opus cap is spent is not taken though its week has the most
+/// room; one that is only out of Fable's credits is.
 #[tokio::test]
-async fn a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription() -> TestResult {
+async fn a_spent_opus_cap_keeps_the_cockpit_off_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
     let now = f.h.clock.0.load(Ordering::SeqCst);
     let window = |used: f64| json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
@@ -1261,7 +1262,11 @@ async fn a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription() -> Test
             "spent-opus-token",
             json!({"secondary": window(5.0), "weekly_opus": window(100.0)}),
         ),
-        ("acc-b", TOKEN, json!({"secondary": window(60.0)})),
+        (
+            "acc-b",
+            TOKEN,
+            json!({"secondary": window(60.0), "weekly_fable": window(100.0)}),
+        ),
     ] {
         f.h.store
             .insert_account(&AccountRecord {
@@ -1285,7 +1290,11 @@ async fn a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription() -> Test
     let mut socket = attach(served.addr, &id, &f.alice).await?;
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
-    assert_eq!(printed(&screen, "token")?, "spent-opus-token");
+    assert_eq!(
+        printed(&screen, "token")?,
+        TOKEN,
+        "the one out of Fable only"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -2895,7 +2904,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(printed(&screen, "interrupted")?, "1");
@@ -2918,10 +2927,10 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     Ok(())
 }
 
-/// SPEC-464 UCL-008: the Superagent runs the default model. Refused for that model's usage
-/// credits (the record of Claude Code 2.1.322, with the allowance's reset), it moves like at any
-/// usage limit, and the limit is kept as the model's on its subscription: the week keeps its
-/// reading and no limit of the whole subscription is recorded.
+/// SPEC-464 UCL-008: the Superagent runs the default model, Opus 5.5 (SPEC-493). Refused for
+/// its model's usage credits (the record of Claude Code 2.1.322, with the allowance's reset), it
+/// moves like at any usage limit, and the limit is kept as the model's on its subscription: the
+/// week keeps its reading and no limit of the whole subscription is recorded.
 #[tokio::test]
 async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
@@ -2971,11 +2980,12 @@ async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> Te
         "{stepped}"
     );
     let usage = usage_of(&f.h, "acc-a").await?;
-    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert_eq!(usage["weekly_opus"]["used_percent"], 100.0, "{usage}");
     assert_eq!(
-        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        usage["weekly_opus"]["resets_at"], 1_791_400_000_000_i64,
         "{usage}"
     );
+    assert!(usage["weekly_fable"].is_null(), "not Fable's: {usage}");
     assert_eq!(usage["secondary"]["used_percent"], 5.0, "{usage}");
     assert_eq!(usage["limit_reached"], false, "{usage}");
     f.h.app.end_all_shells().await;
@@ -3002,13 +3012,11 @@ fn credits_refusal(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
     )
 }
 
-/// SPEC-482 FBK-011: the only subscription refuses the Superagent Fable for its usage credits.
-/// Before, it stayed at the refusal ("No other subscription has capacity"); now it starts again
-/// on the same subscription with Opus 5.5 and continues the turn, its viewers are told why, and
-/// its record keeps the model. A limit it hits there is Opus's, not Fable's: with neither model
-/// left it stays, as before.
+/// SPEC-493 MDL-002: the Superagent runs the default model, Opus 5.5, which has no fallback.
+/// Refused for its usage credits on the only subscription, it stays at the refusal ("No other
+/// subscription has capacity"), in the same session, and the limit is recorded as Opus's.
 #[tokio::test]
-async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult {
+async fn a_superagent_refused_its_model_on_the_only_subscription_stays() -> TestResult {
     let f = fixture().await?;
     let served = serve(f.h.router.clone()).await?;
     let id = cockpit_id(&f, &f.alice).await?;
@@ -3017,7 +3025,7 @@ async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult 
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort high]"
+        "[--model claude-opus-5-5 --effort high]"
     );
     let project = project_of(&screen)?;
     std::fs::create_dir_all(&project)?;
@@ -3032,47 +3040,6 @@ async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult 
     )?;
 
     let notice = read_message(&mut socket, "notice").await?;
-    assert_eq!(
-        notice["text"],
-        "Fable 5.2 is used up on every subscription: this session runs on Opus 5.5."
-    );
-    let exit = read_message(&mut socket, "exit").await?;
-    assert_eq!(exit["status"], "switched", "{exit}");
-    let again = other_cockpit(&f, &id).await?;
-    let mut socket = attach(served.addr, &again, &f.alice).await?;
-    let mut screen = String::new();
-    read_until(&mut socket, &mut screen, "ready").await?;
-    assert_eq!(
-        printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
-        "the same conversation on the fallback, nothing typed"
-    );
-    assert_eq!(printed(&screen, "interrupted")?, "1");
-    assert_eq!(printed(&screen, "token")?, TOKEN, "the same subscription");
-    let stepped = std::fs::read_to_string(&transcript)?;
-    assert!(
-        !stepped.contains("refused") && stepped.contains("\"u1\""),
-        "{stepped}"
-    );
-    let usage = usage_of(&f.h, "acc-1").await?;
-    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
-    assert!(usage["weekly_opus"].is_null(), "{usage}");
-    let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
-    assert!(record.contains("\"model\":\"claude-opus-5-5\""), "{record}");
-
-    // Refused on the fallback too: the limit is Opus's, and nothing else can take the session.
-    let mut more = std::fs::OpenOptions::new().append(true).open(&transcript)?;
-    std::io::Write::write_all(
-        &mut more,
-        [
-            prompt_record("u2", Some("u1"), 20),
-            credits_refusal("refused-again", "u2", 21, 1_791_500_000),
-        ]
-        .concat()
-        .as_bytes(),
-    )?;
-    drop(more);
-    let notice = read_message(&mut socket, "notice").await?;
     assert!(
         notice["text"]
             .as_str()
@@ -3081,14 +3048,11 @@ async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult 
     );
     let usage = usage_of(&f.h, "acc-1").await?;
     assert_eq!(
-        usage["weekly_opus"]["resets_at"], 1_791_500_000_000_i64,
+        usage["weekly_opus"]["resets_at"], 1_791_400_000_000_i64,
         "{usage}"
     );
-    assert_eq!(
-        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
-        "Fable's window is as it was: {usage}"
-    );
-    assert_eq!(cockpit_id(&f, &f.alice).await?, again, "the same session");
+    assert!(usage["weekly_fable"].is_null(), "{usage}");
+    assert_eq!(cockpit_id(&f, &f.alice).await?, id, "the same session");
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -3337,7 +3301,7 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
     );
     assert_eq!(
         printed(&screen, "interrupted")?,
@@ -3391,7 +3355,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     assert_eq!(printed(&screen, "token")?, TOKEN);
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
     );
     // Opened again later, it still resumes the conversation.
     socket
@@ -4422,7 +4386,7 @@ async fn a_superagent_started_before_an_update_restarts_resuming_its_conversatio
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(
@@ -5657,7 +5621,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
         "the same conversation"
     );
     let fresh = link_state(&f, &f.alice).await?;

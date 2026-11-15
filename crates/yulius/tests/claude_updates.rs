@@ -682,14 +682,14 @@ async fn the_doctor_names_the_version_runs_get() -> TestResult {
 /// server follows (chosen in Settings) over its own argument.
 #[tokio::test]
 async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestResult {
-    // The incident: runs get the host's 2.1.311, which knows Fable 5.1 only.
+    // As in the incident of 2026-11-11: runs get a host's 2.1.311 that lacks the default model.
     let s = setup("2.1.311").await?;
     host_knows(&s.host, "2.1.311", &OFFERED[1..])?;
     let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
     assert_eq!(health, Health::Fail, "{text}");
     assert!(text.starts_with("2.1.311 from the host"), "{text}");
     assert!(
-        text.contains("Claude Code 2.1.311 does not know claude-fable-5-2, Yulius's default model"),
+        text.contains("Claude Code 2.1.311 does not know claude-opus-5-5, Yulius's default model"),
         "{text}"
     );
     assert!(
@@ -712,7 +712,7 @@ async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestRe
     let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Off);
     assert_eq!(health, Health::Fail, "{text}");
     assert!(
-        text.contains("Claude Code of an unknown version does not know claude-fable-5-2"),
+        text.contains("Claude Code of an unknown version does not know claude-opus-5-5"),
         "{text}"
     );
     host_install_manifest(&s.host, "2.1.311")?;
@@ -1013,7 +1013,7 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
     s.stub.tag("latest", "2.1.300");
     s.stub.release("2.1.300", good("2.1.300")?);
     s.updater.check(Channel::Latest).await?;
-    // 2.1.311 knows Fable 5.1 and the rest, not Fable 5.2.
+    // 2.1.311 knows every offered model but the default one.
     s.stub.tag("latest", "2.1.311");
     s.stub
         .release("2.1.311", knowing("2.1.311", &OFFERED[1..])?);
@@ -1021,7 +1021,7 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
     assert!(
         refused.as_ref().is_err_and(|e| e
             .to_string()
-            .contains("2.1.311 does not know claude-fable-5-2")),
+            .contains("2.1.311 does not know claude-opus-5-5")),
         "{refused:?}"
     );
     assert_eq!(s.updater.current(), Some(v("2.1.300")));
@@ -1055,7 +1055,7 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
 /// both are named.
 #[tokio::test]
 async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
-    // The incident: the host and npm's `stable` are 2.1.311, which knows Fable 5.1 only.
+    // As in the incident: the host and npm's `stable` are 2.1.311, which lacks the default model.
     let s = setup("2.1.311").await?;
     host_knows(&s.host, "2.1.311", &OFFERED[1..])?;
     s.stub.tag("stable", "2.1.311");
@@ -1071,7 +1071,7 @@ async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
     assert!(
         error
             .to_string()
-            .contains("2.1.322 does not know claude-fable-5-2"),
+            .contains("2.1.322 does not know claude-opus-5-5"),
         "{error}"
     );
     assert_eq!(error.refused().len(), 1);
@@ -1116,8 +1116,8 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
     let error = refused.as_ref().err().ok_or("a refusal")?;
     let text = error.to_string();
     assert!(
-        text.contains("2.1.311 does not know claude-fable-5-2")
-            && text.contains("2.1.318 does not know claude-fable-5-2"),
+        text.contains("2.1.311 does not know claude-opus-5-5")
+            && text.contains("2.1.318 does not know claude-opus-5-5"),
         "{text}"
     );
     let versions: Vec<_> = error.refused().iter().map(|r| r.version).collect();

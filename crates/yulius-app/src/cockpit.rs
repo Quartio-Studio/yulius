@@ -323,8 +323,8 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model a Cockpit was launched with: the default one, Fable 5.2 (SPEC-023), or its fallback
-/// while no subscription could run that (SPEC-482 FBK-011).
+/// The model a Cockpit was launched with: the default one, Opus 5.5 (SPEC-023, SPEC-493), or
+/// the fallback of a default model that has one (SPEC-482 FBK-011; Opus 5.5 has none).
 fn cockpit_model(runtime: &ShellRuntime) -> &str {
     runtime
         .model
@@ -570,8 +570,8 @@ impl App {
         record: &SandboxRecord,
         global: bool,
     ) -> AppResult<ShellInfo> {
-        // The Cockpit runs the default model, Fable 5.2 (SPEC-023), or its fallback while no
-        // subscription can run that (SPEC-482).
+        // The Cockpit runs the default model, Opus 5.5 (SPEC-023, SPEC-493); a default model
+        // with a fallback would run that while no subscription can run it (SPEC-482).
         let account = self.place_default_run(None).await?;
         let seat = if global {
             Seat::Global

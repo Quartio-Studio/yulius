@@ -331,7 +331,7 @@ function seed(params) {
     { id: 'acc_c2', provider: 'anthropic', email: 'team@example.com', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
     { id: 'acc_c3', provider: 'anthropic', email: 'ops@example.com', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'Your organization has disabled Claude subscription access for Claude Code', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', email: 'pawel@example.com', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
-    { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, weekly_fable: { used_percent: 100.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
+    { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, weekly_opus: { used_percent: 100.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, weekly_fable: { used_percent: 100.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', email: null, label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
   ];
   seededDb = db;
@@ -694,7 +694,7 @@ function detail(db, task) {
     request: task.prompt ?? task.title,
     started: hasStarted(task),
     // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
-    model: task.model || 'claude-fable-5-2',
+    model: task.model || 'claude-opus-5-5',
     model_default: !task.model || task.effort === 'default',
     // The model its run was launched with while no subscription could run its own (SPEC-482).
     ...(task.fallback_model ? { fallback_model: task.fallback_model } : {}),
@@ -4619,7 +4619,7 @@ function sandboxDockerView(db) {
 }
 
 // The Claude Code sandboxes run (SPEC-461 CCM-008..CCM-010).
-const CLAUDE_DEFAULT_MODEL = 'claude-fable-5-2';
+const CLAUDE_DEFAULT_MODEL = 'claude-opus-5-5';
 const CLAUDE_HOST_FIX = 'Yulius installs a release that knows it at its next check (every hour, or "Check now" in Settings, Instance, Claude Code); to fix it at once, install one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.';
 
 function claudeState(mode) {
@@ -4638,7 +4638,7 @@ function claudeView(db) {
     return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, models_unread: null, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
   }
   const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
-  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
+  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m === 'claude-fable-5-2' ? `${m} (the independent review's model)` : m)).join(', ')}`;
   const resultText = {
     installed: `Installed ${c.version}: new runs use it.`,
     up_to_date: `Up to date: runs get ${c.version}.`,
@@ -5340,11 +5340,12 @@ route('GET', '/api/capacity', ({ db }) => {
     const known = healthy.map((a) => a.usage && a.usage[key] && a.usage[key].used_percent).filter(Number.isFinite);
     return known.length ? known.reduce((sum, used) => sum + Math.max(0, threshold - used), 0) : null;
   };
-  // For a task of the default model: Fable's weekly allowance binds it too (SPEC-464), and while
-  // no subscription can run Fable the task is placed with its fallback, Opus 5.5 (SPEC-482).
+  // `available` is for a task of the default model, Opus 5.5: its weekly window binds it too
+  // (SPEC-464, SPEC-493). While no subscription can run Fable, a task set to it is placed with
+  // its fallback, Opus 5.5 (SPEC-482): `fallback_model` says so.
   const runs = (own) => (a) => healthy.includes(a) && ['primary', 'secondary', own].every((key) => !(a.usage && a.usage[key] && a.usage[key].used_percent >= threshold));
   const fallback = !db.accounts.some(runs('weekly_fable')) && db.accounts.some(runs('weekly_opus'));
-  const isAvailable = runs(fallback ? 'weekly_opus' : 'weekly_fable');
+  const isAvailable = runs('weekly_opus');
   const paused = db.tasks.filter((t) => t.status === 'waiting_capacity');
   return {
     threshold,

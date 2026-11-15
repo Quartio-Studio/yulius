@@ -1,6 +1,6 @@
 import { type Browser, type Screen, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -40,8 +40,9 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
 
 test('a subscription out of its model\'s usage credits shows that model\'s week beside its own (SPEC-464)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts'));
-  // The limit is the model's: its weekly allowance is used up until it resets, while the 5-hour
-  // and weekly windows keep their own readings.
+  // The limit is the model's: Fable's weekly allowance is used up until it resets (and so is
+  // the default model's weekly window), while the 5-hour and weekly windows keep their own
+  // readings.
   const card = '.card:has-text("studio@example.com")';
   await expect(browser.locator(`${card} .account-state`)).toHaveText('Limit reached');
   const fable = browser.locator(`${card} .usage-row:has-text("Fable this week")`);
@@ -90,11 +91,13 @@ test('each card says how old its reading is and which window is used up (SPEC-47
   expect(old.age).toBe('Usage read 3 d ago · may be out of date');
   expect(old.stale).toBe('true');
   expect(old.foot).toBe('No tasks right now');
-  // Out of the default model's allowance: the line names that window and its reset.
+  // Out of the default model's weekly window and of Fable's allowance: a line names each
+  // window and its reset.
   const out = await cardSays(browser, 'main .account-card', 'studio@example.com');
   expect(out.state).toBe('Limit reached');
-  expect(out.limits.length).toBe(1);
-  expect(out.limits[0]).toMatch(/^Fable this week used up · resets \S+ \d/);
+  expect(out.limits.length).toBe(2);
+  expect(out.limits[0]).toMatch(/^Opus this week used up · resets \S+ \d/);
+  expect(out.limits[1]).toMatch(/^Fable this week used up · resets \S+ \d/);
   // One that needs a sign-in and was never read has no reading to date.
   const refused = await cardSays(browser, 'main .account-card', 'ops@example.com');
   expect(refused.age).toBeNull();
@@ -340,10 +343,10 @@ test('a refresh that Claude does not answer says why in one sentence, on a toast
 test('a refresh that finds the limit gone draws the card ready and reads the capacity again (SPEC-473)', async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
   expect((await cardSays(browser, 'main .account-card', 'studio@example.com')).state).toBe('Limit reached');
-  // Claude answers that the default model runs: nothing is stored about its allowance any more.
+  // Claude answers that the models run: nothing is stored about their windows any more.
   await browser.evaluate(() => {
     const db = (window as unknown as Usage).__yuliusMock;
-    const { weekly_fable: _gone, ...usage } = db.accounts.find((a) => a.id === 'acc_x2')!.usage;
+    const { weekly_fable: _gone, weekly_opus: _too, ...usage } = db.accounts.find((a) => a.id === 'acc_x2')!.usage;
     db.usageAnswers = { acc_x2: { status: 'ok', usage: { ...usage, primary: { used_percent: 12, resets_at: new Date(Date.now() + 3600e3).toISOString(), window_minutes: 300 } } } };
   });
   const capacityReads = () => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/capacity'] ?? 0);
@@ -631,13 +634,15 @@ test('a task shows its subscription and a person runs it on another (SPEC-447 MO
   await app.open(mock('/s/studio/t/12'));
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
   await expect(chip).toHaveText('Claude #2');
+  await touchTask(browser, 'sb_studio', 12, { model: 'claude-sonnet-5-5' });
   await chip.click();
   await expect(screen.getByText('Run #12 on…')).toBeVisible();
   // Its own is marked, one needing a sign-in says why; the others show their use.
   await expect(screen.getByRole('menuitem', /^Claude #2\s*Runs on it now/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
-  // Out of the default model's usage credits only: this task runs Opus, so it can go there (SPEC-464).
+  // Out of the default model's weekly window (and of Fable's credits) only: this task runs
+  // Sonnet, so it can go there (SPEC-464).
   await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('menuitem', /^Claude #4/).click();
@@ -657,6 +662,7 @@ test('"Run #N on…" knows the task\'s model before the task view has its detail
     w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
     location.hash = '#/s/studio/t/12';
   });
+  await touchTask(browser, 'sb_studio', 12, { model: 'claude-sonnet-5-5' });
   await expect.poll(() => browser.evaluate(() => {
     const db = (window as unknown as Holding).__yuliusMock;
     return Boolean(db.detailReads?.tsk_studio_12) && !db.holdDetail;
@@ -665,7 +671,8 @@ test('"Run #N on…" knows the task\'s model before the task view has its detail
   await expect(chip).toHaveText('Claude #2');
   await chip.click();
   await expect(screen.getByText('Run #12 on…')).toBeVisible();
-  // Task #12 runs Opus: a subscription that is only out of the default model's usage credits can take it.
+  // Task #12 runs Sonnet: a subscription that is only out of the default model's weekly window
+  // (and of Fable's credits) can take it.
   await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
   await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
   // When the menu cannot read the task either, it still opens, and a task of no known model is
@@ -687,7 +694,8 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
     const ahead = new Date(Date.now() + 3600e3).toISOString();
     const past = new Date(Date.now() - 3600e3).toISOString();
     const w = (used, resets_at = ahead) => ({ used_percent: used, resets_at, window_minutes: 10080 });
-    // "Limited" because the default model's allowance is used up; its own windows have room.
+    // Stored "limited" when Fable was the default model; only Fable's allowance is used up, and
+    // the default model, Opus 5.5, runs there (SPEC-493).
     const fableOut = { status: 'limited', usage: { primary: w(10), secondary: w(20), weekly_fable: w(100) } };
     const opus = { model: 'claude-opus-5-5' };
     return {
@@ -695,6 +703,8 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
       opusTaskOnFableOut: cannotTake(fableOut, opus),
       unknownModelOnFableOut: cannotTake(fableOut, {}),
       opusTaskOnOpusOut: cannotTake({ status: 'ok', usage: { primary: w(10), weekly_opus: w(100) } }, opus),
+      // A task of no known model is judged as one of the default model.
+      unknownModelOnOpusOut: cannotTake({ status: 'ok', usage: { primary: w(10), weekly_opus: w(100) } }, {}),
       weekUsedUp: cannotTake({ status: 'limited', usage: { secondary: w(100) } }, opus),
       // A limit of the whole subscription binds every model, whatever else is used up beside it.
       limitOfTheSubscription: cannotTake({ status: 'limited', usage: { primary: w(10), limit_reached: true, limit_resets_at: ahead } }, opus),
@@ -711,8 +721,9 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
   expect(reasons).toEqual({
     fableTaskOnFableOut: 'At its usage limit',
     opusTaskOnFableOut: null,
-    unknownModelOnFableOut: 'At its usage limit',
+    unknownModelOnFableOut: null,
     opusTaskOnOpusOut: 'At its usage limit',
+    unknownModelOnOpusOut: 'At its usage limit',
     weekUsedUp: 'At its usage limit',
     limitOfTheSubscription: 'At its usage limit',
     limitOfTheSubscriptionAndFableOut: 'At its usage limit',
@@ -749,9 +760,10 @@ test('what a subscription\'s usage means now is worked out from its windows (uni
       // A stored "ok" with a binding window at 100 % is at its limit now (evidence (b)).
       fiveHour: of('ok', { primary: w(100), secondary: w(12), observed_at: iso(-30e3) }),
       week: of('limited', { primary: w(10), secondary: w(100) }),
-      fable: of('limited', { primary: w(10), weekly_fable: w(100) }),
       // Another model's window: its line, and the default model still runs here.
-      opus: of('ok', { primary: w(10), weekly_opus: w(100), weekly_sonnet: w(100, null) }),
+      fable: of('limited', { primary: w(10), weekly_fable: w(100), weekly_sonnet: w(100, null) }),
+      // The default model's own window (SPEC-493: Opus 5.5): at its limit, whatever was stored.
+      opus: of('ok', { primary: w(10), weekly_opus: w(100) }),
       noReset: of('limited', { weekly_fable: w(100, null) }),
       // A limit of the whole subscription that no window shows, with and without its reset.
       reported: of('limited', { primary: w(10), limit_reached: true, limit_resets_at: ahead }),
@@ -778,9 +790,8 @@ test('what a subscription\'s usage means now is worked out from its windows (uni
   expect(read.room).toEqual({ ...none, age: 'Usage read 2 min ago', stale: false });
   expect(read.fiveHour).toEqual({ state: 'limited', limited: true, lines: [`5-hour window used up · ${read.resets}`], age: 'Usage read just now', stale: false });
   expect(read.week).toEqual({ state: 'limited', limited: true, lines: [`This week used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
-  expect(read.fable.lines).toEqual([`Fable this week used up · ${read.resets}`]);
-  expect(read.fable.limited).toBe(true);
-  expect(read.opus).toEqual({ ...none, lines: [`Opus this week used up · ${read.resets}`, 'Sonnet this week used up · Claude did not say when it resets'], age: 'Usage not read yet', stale: false });
+  expect(read.fable).toEqual({ ...none, lines: ['Sonnet this week used up · Claude did not say when it resets', `Fable this week used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.opus).toEqual({ state: 'limited', limited: true, lines: [`Opus this week used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
   expect(read.noReset.lines).toEqual(['Fable this week used up · Claude did not say when it resets']);
   expect(read.reported).toEqual({ state: 'limited', limited: true, lines: [`Claude reported a usage limit · ${read.resets}`], age: 'Usage not read yet', stale: false });
   expect(read.reportedBlind.lines).toEqual(['Claude reported a usage limit without saying when it resets']);

@@ -1751,7 +1751,8 @@ mod tests {
     }
 
     /// SPEC-462 EFF-004: `task_create` names the default model and effort a launch really uses
-    /// (it said "default Opus" for a day after the default moved to Fable 5.2).
+    /// (it said "default Opus" for a day after the default moved to Fable 5.2; Opus 5.5 again
+    /// since SPEC-493).
     #[test]
     fn task_create_names_the_default_model_and_effort_of_a_launch() {
         let tool = tool_descriptors()
@@ -1774,7 +1775,7 @@ mod tests {
         );
         assert_eq!(
             (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),
-            ("claude-fable-5-2", "high")
+            ("claude-opus-5-5", "high")
         );
     }
 
