@@ -758,14 +758,17 @@ impl App {
             .and_then(|cursors| cursors.get(path).cloned())
     }
 
-    /// Keeps where a read of `path` ended. The map is bounded: past
+    /// Keeps where a read of `path` ended, unless a point farther on in the same file is kept.
+    /// The map is bounded: past
     /// [`MAX_TRANSCRIPT_CURSORS`] it starts afresh (a read without a cursor reads from the start).
     fn keep_transcript_cursor(&self, path: PathBuf, cursor: transcripts::ReadCursor) {
         if let Ok(mut cursors) = self.transcript_cursors.lock() {
             if cursors.len() >= MAX_TRANSCRIPT_CURSORS && !cursors.contains_key(&path) {
                 cursors.clear();
             }
-            cursors.insert(path, cursor);
+            if cursors.get(&path).is_none_or(|kept| cursor.replaces(kept)) {
+                cursors.insert(path, cursor);
+            }
         }
     }
 

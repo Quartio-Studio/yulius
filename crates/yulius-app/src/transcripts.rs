@@ -552,6 +552,9 @@ pub struct ReadCursor {
     pub line: u64,
     /// The byte offset of that line's start.
     pub byte: u64,
+    /// The file it is in (device, inode): a transcript replaced by another file (a step-back
+    /// renames a rewritten copy over it) has none of the old file's points.
+    file: Option<(u64, u64)>,
     env_calls: EnvCalls,
 }
 
@@ -563,6 +566,15 @@ pub struct ReadCursor {
 /// I/O failures reading the transcript.
 pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::Result<Page> {
     Ok(read_page_at(file, None, from, limit, max_chars)?.0)
+}
+
+impl ReadCursor {
+    /// Whether this point should replace `kept` for the same transcript: it is of another file,
+    /// or as far on or farther (two watchers at different lines keep the farther point).
+    #[must_use]
+    pub fn replaces(&self, kept: &Self) -> bool {
+        self.file != kept.file || self.line >= kept.line
+    }
 }
 
 /// [`read_page`] that goes on from `cursor` when it can: when the cursor is at or before `from`
@@ -578,10 +590,17 @@ pub fn read_page_at(
     limit: usize,
     max_chars: usize,
 ) -> io::Result<(Page, ReadCursor)> {
+    use std::os::unix::fs::MetadataExt as _;
     let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
     let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
+    let metadata = file.metadata()?;
+    let identity = Some((metadata.dev(), metadata.ino()));
     let start = match cursor {
-        Some(cursor) if cursor.line <= from && at_line_start(&mut file, cursor.byte)? => {
+        Some(cursor)
+            if cursor.file == identity
+                && cursor.line <= from
+                && at_line_start(&mut file, cursor.byte)? =>
+        {
             cursor.clone()
         }
         _ => ReadCursor::default(),
@@ -598,6 +617,7 @@ pub fn read_page_at(
         let at = ReadCursor {
             line,
             byte,
+            file: identity,
             env_calls: EnvCalls::default(),
         };
         let read = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
@@ -1096,15 +1116,93 @@ mod tests {
         )?);
         text.push('\n');
         std::fs::write(&dotenv, &text)?;
-        for point in [at_end, at_page] {
+        std::fs::write(&dotenv, &text)?;
+        for point in [&at_end, &at_page] {
             let (page, _) =
-                read_page_at(File::open(&dotenv)?, Some(&point), 2, 100, MAX_PAGE_CHARS)?;
+                read_page_at(File::open(&dotenv)?, Some(point), 2, 100, MAX_PAGE_CHARS)?;
             let shown = shown(&page);
             assert!(
                 shown.contains("DB_PASSWORD") && !shown.contains("plainword"),
                 "{shown}"
             );
         }
+        // Replaced by another file (a step-back renames a rewritten copy over it) whose dotenv
+        // read ends exactly where the old point is, its result after it: the old point is of the
+        // other file and is not used, so the result is redacted as a read from the start does.
+        let replaced = dir.path().join("dotenv.new");
+        let call = |pad: usize| {
+            serde_json::to_string(
+                &json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "e2", "name": "Read",
+                 "input": {"file_path": "/repo/.env", "pad": "x".repeat(pad)}}]}}),
+            )
+        };
+        let short = call(0)?.len() + 1;
+        let target = usize::try_from(at_end.byte)?;
+        let mut other = call(target.saturating_sub(short))?;
+        other.push('\n');
+        assert_eq!(other.len(), target, "the dotenv read ends at the old point");
+        other.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "e2", "content": "DB_PASSWORD=plainword\n"}]}}),
+        )?);
+        other.push('\n');
+        std::fs::write(&replaced, &other)?;
+        std::fs::rename(&replaced, &dotenv)?;
+        let from_start = read_page(File::open(&dotenv)?, 2, 100, MAX_PAGE_CHARS)?;
+        let (on, _) = read_page_at(File::open(&dotenv)?, Some(&at_end), 2, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(shown(&on), shown(&from_start));
+        assert!(!shown(&on).contains("plainword"), "{}", shown(&on));
+        Ok(())
+    }
+
+    /// SPEC-483 slice 36 (review): two watchers of a transcript at different lines keep the
+    /// farther point; a point of another file replaces any.
+    #[test]
+    fn the_farther_point_of_a_file_is_kept() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let (_, early) = read_page_at(File::open(&path)?, None, 0, 2, MAX_PAGE_CHARS)?;
+        let (_, far) = read_page_at(File::open(&path)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        assert!(early.line < far.line);
+        assert!(far.replaces(&early) && !early.replaces(&far) && far.replaces(&far));
+        let copy = dir.path().join("copy.jsonl");
+        std::fs::copy(&path, &copy)?;
+        let (_, other) = read_page_at(File::open(&copy)?, None, 0, 2, MAX_PAGE_CHARS)?;
+        assert!(
+            other.replaces(&far),
+            "another file's point replaces a farther one"
+        );
+        Ok(())
+    }
+
+    /// SPEC-483 slice 36 (review): a line past the bound is skipped and its bytes counted, so
+    /// the point after it is at the next line's start.
+    #[test]
+    fn a_point_after_an_overlong_line_is_at_the_next_line() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("long.jsonl");
+        let mut text = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(MAX_LINE_BYTES));
+        text.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": "After"}}),
+        )?);
+        text.push('\n');
+        std::fs::write(&path, &text)?;
+        let (page, point) = read_page_at(File::open(&path)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!((page.skipped, page.entries.len(), point.line), (1, 1, 2));
+        assert_eq!(point.byte, u64::try_from(text.len())?);
+        let (head, early) = read_page_at(File::open(&path)?, None, 0, 100, 1)?;
+        assert_eq!((head.skipped, early.line), (1, 2));
+        let mut more = std::fs::OpenOptions::new().append(true).open(&path)?;
+        std::io::Write::write_all(
+            &mut more,
+            b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Next\"}}\n",
+        )?;
+        let (next, _) = read_page_at(File::open(&path)?, Some(&point), 2, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            next.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
+            vec![2]
+        );
         Ok(())
     }
 
