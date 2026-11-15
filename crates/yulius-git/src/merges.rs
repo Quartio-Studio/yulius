@@ -292,6 +292,74 @@ impl Git {
         Ok(false)
     }
 
+    /// The commits after `reviewed` on the way from `head` (first parents, newest first), when
+    /// every merge on that way is a clean merge of `integration` (SPEC-493 APR-001, APR-003):
+    /// `None` when `reviewed` is not reached within `limit` steps (it is not an ancestor of the
+    /// head), or a merge on the way resolved a conflict or merged something else.
+    pub fn follow_up_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<String>>, GitError> {
+        let Some(reviewed) = self.resolve_commit(worktree, reviewed)? else {
+            return Ok(None);
+        };
+        let mut current = self.rev_parse(worktree, head)?;
+        let mut commits = Vec::new();
+        for _ in 0..=limit {
+            if current == reviewed {
+                return Ok(Some(commits));
+            }
+            let parents = self.parents(worktree, &current)?;
+            match parents.as_slice() {
+                [parent] => {
+                    commits.push(current.clone());
+                    current.clone_from(parent);
+                }
+                [first, second] => {
+                    if !self.is_ancestor(worktree, second, integration)? {
+                        return Ok(None);
+                    }
+                    let Some(merged) = self.merge_tree(worktree, first, second)? else {
+                        return Ok(None);
+                    };
+                    if self.tree_of(worktree, &current)?.as_deref() != Some(merged.as_str()) {
+                        return Ok(None);
+                    }
+                    current.clone_from(first);
+                }
+                _ => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
+    /// The lines `commit` added and removed against its first parent, per file, by line number
+    /// (`-U0`, renames as a deletion and an addition, binary files as no line).
+    pub fn commit_lines(&self, repo: &Path, commit: &str) -> Result<Vec<CommitFileLines>, GitError> {
+        let commit = self.rev_parse(repo, commit)?;
+        let output = self.run_ok(
+            Invocation::new(self, "show", Some(repo))
+                .args([
+                    "show",
+                    "--format=",
+                    "-U0",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--first-parent",
+                    "-m",
+                    "--end-of-options",
+                ])
+                .arg(&commit)
+                .arg("--"),
+        )?;
+        Ok(parse_unified_zero(&String::from_utf8_lossy(&output.stdout)))
+    }
+
     /// Keeps Yulius's block in `info/attributes` of the clone `repo` (read by every worktree of
     /// the repository) at exactly `lines`; the rest of the file is kept as it is. `repo` is the
     /// clone itself, with its own `.git` directory, never one of its worktrees: the file is
@@ -410,5 +478,73 @@ mod tests {
         assert!(second.contains("/CHANGELOG.md merge=union") && !second.contains("docs/changes"));
         assert_eq!(with_managed_block(&second, &[]), "*.png binary\n");
         assert_eq!(with_managed_block("", &[]), "");
+    }
+}
+
+/// One file of [`Git::commit_lines`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitFileLines {
+    /// Its path after the commit; a deleted file's before it.
+    pub path: String,
+    /// Line numbers it added (new file).
+    pub added: Vec<u32>,
+    /// Line numbers it removed (old file).
+    pub removed: Vec<u32>,
+}
+
+/// Parses `git show -U0` output into each file's added and removed line numbers.
+fn parse_unified_zero(text: &str) -> Vec<CommitFileLines> {
+    let mut files: Vec<CommitFileLines> = Vec::new();
+    let mut old_path = String::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("--- ") {
+            old_path = rest.strip_prefix("a/").unwrap_or(rest).to_owned();
+        } else if let Some(rest) = line.strip_prefix("+++ ") {
+            let path = match rest {
+                "/dev/null" => old_path.clone(),
+                other => other.strip_prefix("b/").unwrap_or(other).to_owned(),
+            };
+            files.push(CommitFileLines {
+                path,
+                ..CommitFileLines::default()
+            });
+        } else if let Some(rest) = line.strip_prefix("@@ ")
+            && let Some(file) = files.last_mut()
+        {
+            let mut parts = rest.split_whitespace();
+            let (Some(old), Some(new)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let range = |spec: &str| -> (u32, u32) {
+                let spec = spec.trim_start_matches(['-', '+']);
+                let (start, count) = spec.split_once(',').unwrap_or((spec, "1"));
+                (start.parse().unwrap_or(0), count.parse().unwrap_or(0))
+            };
+            let (old_start, old_count) = range(old);
+            let (new_start, new_count) = range(new);
+            file.removed.extend(old_start..old_start.saturating_add(old_count));
+            file.added.extend(new_start..new_start.saturating_add(new_count));
+        }
+    }
+    files
+}
+
+#[cfg(test)]
+mod unified_tests {
+    use super::*;
+
+    #[test]
+    fn unified_zero_hunks_give_line_numbers() {
+        let text = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n\
+                    @@ -3 +3,2 @@ fn a\n-x\n+y\n+z\n@@ -10,2 +11,0 @@\n-p\n-q\n\
+                    diff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n";
+        let files = parse_unified_zero(text);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "src/a.rs");
+        assert_eq!(files[0].added, [3, 4]);
+        assert_eq!(files[0].removed, [3, 10, 11]);
+        assert_eq!(files[1].path, "old.txt");
+        assert_eq!(files[1].removed, [1, 2]);
+        assert!(files[1].added.is_empty());
     }
 }

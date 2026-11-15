@@ -485,6 +485,39 @@ impl GitPort for RealGit {
         Err(AppError::Upstream("not used".into()))
     }
     /// The branch policy is read from `yulius.toml` at the integration branch (SPEC-069).
+    async fn follow_up_commits(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        crate::support::confined_git()
+            .follow_up_commits(worktree, reviewed, head, integration)
+            .await
+    }
+
+    async fn commit_lines(
+        &self,
+        repo: &Path,
+        commit: &str,
+    ) -> AppResult<Option<Vec<yulius_domain::follow_up::FileLines>>> {
+        crate::support::confined_git()
+            .commit_lines(repo, commit)
+            .await
+    }
+
+    async fn changed_paths(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        crate::support::confined_git()
+            .changed_paths(repo, base, head)
+            .await
+    }
+
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
         let object = format!("{rev}:{path}");
         if self.run(repo, &["cat-file", "-e", &object]).await.is_err() {
@@ -2396,6 +2429,180 @@ async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
     second.await??;
     let runs = f.h.store.ci_runs_for_sha(&sandbox, &head).await?;
     assert_eq!(runs.len(), 1, "{runs:?}");
+    Ok(())
+}
+
+/// What `delivery_merge` answers for the reviewed head after `follow` changed the branch: whether
+/// it refused, and its text. The task's pull request is open with `feature.rs` (30 lines) and its
+/// spec; the head at that point is the reviewed one; the checks are pending (an accepted call
+/// arms the merge).
+async fn deliver_after_follow_up(
+    follow: impl FnOnce(&Fixture, &Path) -> BoxResult<()>,
+) -> BoxResult<(bool, String)> {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout", "dev")
+        .await?;
+    let body: String = (1..=30).map(|n| format!("pub fn f{n}() {{}}\n")).collect();
+    commit_file(&wt, "src/feature.rs", &body, "Feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let reviewed = git(&wt, &["rev-parse", "HEAD"])?;
+    follow(&f, &wt)?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: TaskId::parse("t1")?,
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let internal = yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let agent = Creds {
+        bearer: Some("tok-agent".into()),
+        ..Creds::default()
+    };
+    let answer = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "delivery_merge",
+            "arguments": {"reviewed_head": reviewed, "review_summary": "approve"}}}),
+        ),
+        &agent,
+    )
+    .await?;
+    let refused = answer.body["result"]["isError"] == true;
+    let text = answer.body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+    let task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
+    let audited =
+        f.h.store
+            .audit_details(
+                &format!("shop#{}", task.number),
+                "delivery.agent.merge_armed",
+                5,
+            )
+            .await?
+            .join("\n");
+    Ok((refused, format!("{text}\n{audited}")))
+}
+
+fn lines(n: u32, tag: &str) -> String {
+    (1..=n)
+        .map(|i| format!("pub fn {tag}{i}() {{}}\n"))
+        .collect()
+}
+
+/// SPEC-493 APR-001 to APR-004 (AC-17): an approval carries across a follow-up of at most 20
+/// product lines, counted commit by commit, with tests and documents not counted; more, a file of
+/// the reviewed change reverted out of it, or a conflicted merge, needs a new review. Accepted
+/// calls say what was counted.
+#[tokio::test]
+async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
+    // 20 product lines, and 200 lines of tests and documents.
+    let (refused, said) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "src/extra.rs", &lines(20, "e"), "Nits")?;
+        commit_file(wt, "tests/it.rs", &lines(150, "t"), "Tests")?;
+        commit_file(wt, "docs/x.md", &"line\n".repeat(50), "Docs")
+    })
+    .await?;
+    assert!(!refused, "{said}");
+    assert!(
+        said.contains("since then 20 product lines in 1 file: src/extra.rs 20"),
+        "{said}"
+    );
+    // 21: refused, with the count.
+    let (refused, said) =
+        deliver_after_follow_up(|_, wt| commit_file(wt, "src/extra.rs", &lines(21, "e"), "Nits"))
+            .await?;
+    assert!(refused, "{said}");
+    assert!(
+        said.contains("21 product lines in 1 file: src/extra.rs 21"),
+        "{said}"
+    );
+    // Two commits of 12: 24.
+    let (refused, said) = deliver_after_follow_up(|_, wt| {
+        commit_file(wt, "src/a.rs", &lines(12, "a"), "One")?;
+        commit_file(wt, "src/b.rs", &lines(12, "b"), "Two")
+    })
+    .await?;
+    assert!(refused && said.contains("24 product lines"), "{said}");
+    // A Rust file's test module does not count, its code before it does.
+    let (refused, said) = deliver_after_follow_up(|_, wt| {
+        let tested = format!(
+            "{}#[cfg(test)]\nmod tests {{\n{}}}\n",
+            lines(30, "f"),
+            lines(40, "t")
+        );
+        commit_file(wt, "src/feature.rs", &tested, "Tests")?;
+        commit_file(wt, "src/extra.rs", &lines(3, "e"), "Nits")
+    })
+    .await?;
+    assert!(!refused, "{said}");
+    assert!(
+        said.contains("since then 3 product lines in 1 file: src/extra.rs 3"),
+        "{said}"
+    );
+    // A file of the reviewed change reverted out of it.
+    let (refused, said) = deliver_after_follow_up(|_, wt| {
+        git(wt, &["rm", "-q", "src/feature.rs"])?;
+        git(wt, &["commit", "-q", "-m", "Not this after all"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`src/feature.rs` of the reviewed change left"),
+        "{said}"
+    );
+    // A clean merge of the integration branch and 5 lines: accepted.
+    let (refused, said) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "other.txt", "other\n")?;
+        git(wt, &["fetch", "-q", "origin"])?;
+        git(wt, &["merge", "-q", "--no-edit", "origin/dev"])?;
+        commit_file(wt, "src/extra.rs", &lines(5, "e"), "Nits")
+    })
+    .await?;
+    assert!(!refused, "{said}");
+    assert!(said.contains("5 product lines"), "{said}");
+    // A merge that resolved a conflict: refused.
+    let (refused, said) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "src/feature.rs", "pub fn other() {}\n")?;
+        git(wt, &["fetch", "-q", "origin"])?;
+        let _ = git(wt, &["merge", "-q", "--no-edit", "origin/dev"]);
+        std::fs::write(wt.join("src/feature.rs"), lines(30, "f"))?;
+        git(wt, &["add", "-A"])?;
+        git(wt, &["commit", "-q", "--no-edit"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("resolved a conflict"), "{said}");
     Ok(())
 }
 

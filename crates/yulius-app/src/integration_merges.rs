@@ -166,6 +166,120 @@ impl App {
     }
 }
 
+impl App {
+    /// What the commits after the reviewed one changed (SPEC-493 APR-001 to APR-003): `Ok` with
+    /// the count when the approval carries (at most [`FOLLOW_UP_LINES`] product lines, beside
+    /// clean merges of the integration branch), `Err` with why not: the reviewed commit is not
+    /// on the head's way, a merge after it resolved a conflict, a file of the reviewed change left
+    /// the pull request's change, more product lines, or what Git said cannot be read.
+    ///
+    /// [`FOLLOW_UP_LINES`]: yulius_domain::follow_up::FOLLOW_UP_LINES
+    pub(crate) async fn follow_up_since_review(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+    ) -> Result<yulius_domain::follow_up::FollowUp, String> {
+        use yulius_domain::follow_up::{
+            FOLLOW_UP_LINES, FollowUp, ProductRule, first_test_module_line,
+        };
+        let git = &self.deps.git;
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or("the sandbox cannot be read")?;
+        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
+            tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before counting a follow-up");
+        }
+        let integration = format!(
+            "origin/{}",
+            crate::delivery::delivery_profile(&sandbox).integration_branch
+        );
+        let commits = git
+            .follow_up_commits(worktree, reviewed, head, &integration)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                "the reviewed commit is not on the head's way, or a merge after it resolved a \
+                 conflict or merged something other than the integration branch"
+                    .to_owned()
+            })?;
+        // A file of the reviewed change that is no longer in the pull request's change: what was
+        // approved is not what merges (a pull request split anew).
+        let changed = |rev: String| {
+            let integration = integration.clone();
+            async move {
+                git.changed_paths(worktree, &integration, &rev)
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        };
+        let (Some(was), Some(now)) = (
+            changed(reviewed.to_owned()).await,
+            changed(head.to_owned()).await,
+        ) else {
+            return Err("the files of the change cannot be read".to_owned());
+        };
+        let left: Vec<&String> = was.iter().filter(|file| !now.contains(file)).collect();
+        if !left.is_empty() {
+            let named: Vec<String> = left.iter().take(5).map(|f| format!("`{f}`")).collect();
+            return Err(format!(
+                "{} of the reviewed change left the pull request's change",
+                named.join(", ")
+            ));
+        }
+        let mut lines = Vec::new();
+        for commit in &commits {
+            let files = git
+                .commit_lines(worktree, commit)
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| format!("what {} changed cannot be read", short(commit)))?;
+            for mut file in files {
+                if Path::new(&file.path)
+                    .extension()
+                    .is_some_and(|ext| ext == "rs")
+                {
+                    let test_line = |rev: String| {
+                        let path = file.path.clone();
+                        async move {
+                            git.show_file(worktree, &rev, &path)
+                                .await
+                                .ok()
+                                .flatten()
+                                .and_then(|text| first_test_module_line(&text))
+                        }
+                    };
+                    file.tests_from_new = test_line(commit.clone()).await;
+                    file.tests_from_old = test_line(format!("{commit}^")).await;
+                }
+                lines.push(file);
+            }
+        }
+        let follow = FollowUp::count(&lines, &ProductRule::default());
+        if follow.within_bound() {
+            Ok(follow)
+        } else {
+            Err(format!(
+                "{}, more than the {FOLLOW_UP_LINES} a follow-up may change",
+                follow.describe()
+            ))
+        }
+    }
+}
+
+fn short(sha: &str) -> &str {
+    sha.get(..9).unwrap_or(sha)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

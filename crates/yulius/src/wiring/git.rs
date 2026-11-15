@@ -20,6 +20,9 @@ use yulius_git::{
 /// Most changed files a CI run's `paths` decision reads; past it every job runs (SPEC-493).
 const CHANGED_PATHS_MAX: usize = 20_000;
 
+/// Most commits after a review a follow-up may have and keep its approval (SPEC-493 APR-001).
+const FOLLOW_UP_COMMITS_MAX: usize = 64;
+
 /// Git adapter.
 #[derive(Clone)]
 pub struct GitAdapter {
@@ -530,6 +533,52 @@ impl GitPort for GitAdapter {
             insertions: u32::try_from(stat.insertions).unwrap_or(u32::MAX),
             deletions: u32::try_from(stat.deletions).unwrap_or(u32::MAX),
         })
+    }
+
+    async fn follow_up_commits(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        let (git, worktree, reviewed, head, integration) = (
+            self.git(),
+            worktree.to_path_buf(),
+            reviewed.to_owned(),
+            head.to_owned(),
+            integration.to_owned(),
+        );
+        blocking(move || {
+            git.follow_up_since(
+                &worktree,
+                &reviewed,
+                &head,
+                &integration,
+                FOLLOW_UP_COMMITS_MAX,
+            )
+        })
+        .await
+    }
+
+    async fn commit_lines(
+        &self,
+        repo: &Path,
+        commit: &str,
+    ) -> AppResult<Option<Vec<yulius_domain::follow_up::FileLines>>> {
+        let (git, repo, commit) = (self.git(), repo.to_path_buf(), commit.to_owned());
+        let files = blocking(move || git.commit_lines(&repo, &commit)).await?;
+        Ok(Some(
+            files
+                .into_iter()
+                .map(|file| yulius_domain::follow_up::FileLines {
+                    path: file.path,
+                    added: file.added,
+                    removed: file.removed,
+                    ..yulius_domain::follow_up::FileLines::default()
+                })
+                .collect(),
+        ))
     }
 
     async fn changed_paths(
