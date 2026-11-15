@@ -26,9 +26,11 @@ gates.
    compilation unless tooling/contracts changed.
 5. **Review:** examine the diff against each requirement, security boundary and
    existing default behavior. Classify findings with concrete failure scenarios.
-   Green tests do not establish untested product acceptance. Get an independent
-   review in a fresh session too: a reviewer with no shared context (a subagent given
-   only the diff range and the spec), read-only; fix each finding in the change's own
+   Green tests do not establish untested product acceptance. Get an independent review in a
+   fresh session too: a reviewer with no shared context (a subagent given only the diff
+   range and the spec), read-only. Start the independent code review with the Agent tool and
+   the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
+   request's first two rounds, then Opus 5.5). Then fix each finding in the change's own
    code test-first, never deferring it ([Review output](#review-output)).
 6. **Deliver and hand off:** for authorized delivery, follow the [Git sequence](git.md) to a
    verified merge into dev (`delivery_merge` with the reviewed head); promotion to main is a
