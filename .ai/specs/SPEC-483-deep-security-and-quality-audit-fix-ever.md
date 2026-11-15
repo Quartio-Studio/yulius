@@ -3153,3 +3153,5 @@ later slices follow.
 - **Mutations** (`mutations-r1.log`): 16 of 16 caught, the five new ones included (no pass
   down, `memory` passed, an unlisted controller passed, an unreadable `cgroup.procs` idle, the
   idle check by `cgroup.procs`).
+- **Gate after round 1.** `scripts/dev ci` at `0e4c8b3d0`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate2.log`).
