@@ -34,14 +34,18 @@ pub(crate) const LEGACY_LEAF: &str = "legacy";
 pub(crate) const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
 /// share, so up to 80 % of the sandbox under full contention while the holder and the engine
-/// idle. The engine's group (SPEC-187 DKR-005) is the root of its cgroup namespace: containers
-/// get groups below it.
+/// idle. The engine runs below its group (SPEC-187 DKR-005), in [`ENGINE_ROOT_LEAF`], the root of
+/// its cgroup namespace: containers get groups below that.
 const LEAVES: [(&str, u32); 4] = [
     ("system", 100),
     ("agents", 100),
     ("ci", 400),
     ("engine", 100),
 ];
+/// Groups one walk visits at most.
+pub(crate) const MAX_GROUPS: usize = 4096;
+/// How deep below the unit a group may lie (`sandboxes/<sandbox>/<leaf>/run-<name>` is 4).
+pub(crate) const MAX_DEPTH: usize = 8;
 /// The engine's group, also without the `cpu` split: it holds the engine's limits.
 pub(crate) const ENGINE_LEAF: &str = "engine";
 /// The group below [`ENGINE_LEAF`] the engine runs in and sees as its `/sys/fs/cgroup`, the root
@@ -373,7 +377,7 @@ pub struct SandboxGroups {
     /// which holds the engine's limits.
     pub engine: PathBuf,
     /// Where the engine runs, below [`SandboxGroups::engine`]: its cgroup namespace's root
-    /// ([`ENGINE_ROOT_LEAF`]).
+    /// (`inside`).
     pub engine_root: PathBuf,
 }
 
@@ -564,10 +568,12 @@ impl Delegation {
         }
         if !self.controllers.iter().any(|c| c == "cpu") {
             let groups = SandboxGroups::single(&dir);
+            settle_engine_group(&groups.engine);
             std::fs::create_dir_all(&groups.engine_root)?;
             return Ok(groups);
         }
         let groups = SandboxGroups::leaves(&dir);
+        settle_engine_group(&groups.engine);
         for leaf in [
             &groups.system,
             &groups.agents,
@@ -678,11 +684,86 @@ impl Delegation {
     }
 }
 
-/// Creates the engine's root `dir` ([`ENGINE_ROOT_LEAF`]) and the engine's group above it when
+/// The words of the file `path` (none when it cannot be read).
+pub(crate) fn lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether a process runs in `group` or below it (`cgroup.events`).
+pub(crate) fn populated(group: &Path) -> bool {
+    lines(&group.join("cgroup.events"))
+        .windows(2)
+        .any(|pair| pair[0] == "populated" && pair[1] == "1")
+}
+
+/// The groups directly below `group`, sorted, at most [`MAX_GROUPS`].
+pub(crate) fn subgroups(group: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(group) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .take(MAX_GROUPS)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Removes the emptied group `dir` and those below it, deepest first. A group that still holds
+/// a process stays; so does a fake one in tests (it keeps its files).
+pub(crate) fn remove_tree(dir: &Path, depth: usize) {
+    if depth < MAX_DEPTH {
+        for child in subgroups(dir) {
+            remove_tree(&child, depth + 1);
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
+/// Takes back every controller `group` passes down, one write each: one a remaining child still
+/// uses must not keep the others.
+pub(crate) fn drop_controllers(group: &Path) {
+    for controller in lines(&group.join("cgroup.subtree_control")) {
+        let _ = std::fs::write(
+            group.join("cgroup.subtree_control"),
+            format!("-{controller}"),
+        );
+    }
+}
+
+/// Makes the engine's group `engine` plain again once no engine of the old layout runs in it
+/// (SPEC-483 C4): that engine ran in the group itself, and runc made its subtree threaded and
+/// passed `cpu` and `pids` down, which leaves a domain group below it, [`ENGINE_ROOT_LEAF`],
+/// invalid (no container starts there). With no process in the group itself and none below but
+/// in its root, every other group below goes (emptied ones only) and the controllers are taken
+/// back; an engine that still runs there keeps its groups until its front starts again.
+fn settle_engine_group(engine: &Path) {
+    let root = engine.join(ENGINE_ROOT_LEAF);
+    let others: Vec<PathBuf> = subgroups(engine)
+        .into_iter()
+        .filter(|child| *child != root)
+        .collect();
+    if !lines(&engine.join("cgroup.procs")).is_empty() || others.iter().any(|g| populated(g)) {
+        return;
+    }
+    for child in &others {
+        remove_tree(child, 0);
+    }
+    drop_controllers(engine);
+}
+
+/// Creates the engine's root `dir` (`engine/inside`) and the engine's group above it when
 /// they are gone; returns whether it created either (SPEC-201 DBX-005, #614; SPEC-483 C4).
 /// `yulius.service` stops with `KillMode=process`, and systemd then removes every empty group
 /// left in the unit, those of an idle engine among them, while its holder and front run on.
 /// Nothing above is created: without the sandbox's group, which holds the limits, it fails. An
+/// engine's group an old engine left threaded is made plain first (`settle_engine_group`). An
 /// engine's group made again under a split parent gets the default `cpu.weight`, 100, which is
 /// the engine's (`LEAVES`); its task limit comes back with the sandbox's next preparation.
 ///
@@ -695,20 +776,22 @@ pub fn restore_leaf(dir: &Path) -> io::Result<bool> {
             "not a cgroup directory",
         ));
     }
+    let engine_root = |engine: &Path| {
+        dir.file_name() == Some(ENGINE_ROOT_LEAF.as_ref())
+            && engine.file_name() == Some(ENGINE_LEAF.as_ref())
+    };
+    if let Some(engine) = dir.parent().filter(|engine| engine_root(engine)) {
+        settle_engine_group(engine);
+    }
     let create = |group: &Path| match std::fs::create_dir(group) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(error),
     };
     // Only the engine's own group is made with it, never a sandbox's.
-    let engine = match dir.parent() {
-        Some(engine)
-            if dir.file_name() == Some(ENGINE_ROOT_LEAF.as_ref())
-                && engine.file_name() == Some(ENGINE_LEAF.as_ref()) =>
-        {
-            create(engine)?
-        }
-        _ => false,
+    let engine = match dir.parent().filter(|engine| engine_root(engine)) {
+        Some(engine) => create(engine)?,
+        None => false,
     };
     Ok(create(dir)? || engine)
 }
@@ -990,6 +1073,21 @@ mod tests {
         std::fs::remove_dir(&leaf)?;
         assert!(restore_leaf(&leaf)?, "the root alone");
         assert!(leaf.is_dir());
+        // Only the engine's own group is made with its root, no other group's parent.
+        assert!(restore_leaf(&root.path().join("s1/agents/inside")).is_err());
+        assert!(restore_leaf(&root.path().join("s1/engine2/inside")).is_err());
+        assert!(!root.path().join("s1/agents").exists());
+        // An old engine's leftovers go first, also on this way (SPEC-483 C4).
+        std::fs::remove_dir(&leaf)?;
+        let engine = root.path().join("s1/engine");
+        std::fs::create_dir(engine.join("docker"))?;
+        std::fs::write(engine.join("cgroup.subtree_control"), "cpu\n")?;
+        assert!(restore_leaf(&leaf)?);
+        assert!(!engine.join("docker").exists());
+        assert_eq!(
+            std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
         std::fs::write(leaf.join("cgroup.procs"), "")?;
         assert!(!restore_leaf(&leaf)?, "already there");
         assert!(leaf.join("cgroup.procs").exists(), "left as it was");
@@ -1222,6 +1320,54 @@ mod tests {
     }
 
     /// Without the split the runs live in the sandbox's group, which cannot pass `pids` down.
+    /// SPEC-483 C4 (an update): an engine of the old layout ran in `engine` itself, and runc made
+    /// its subtree threaded (`engine/docker` threaded, `cpu` and `pids` passed down), which leaves
+    /// a domain group below it invalid: no container would start in `inside`. Once nothing runs
+    /// in the engine's group but below `inside`, the leftovers go and the controllers are taken
+    /// back; an old engine that still runs there is left as it is.
+    #[test]
+    fn an_idle_engine_group_from_before_is_made_plain_again()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let old = |dir: &Path, engine_procs: &str, events: &str| -> io::Result<PathBuf> {
+            let engine = dir.join("engine");
+            std::fs::create_dir_all(engine.join("docker/c1"))?;
+            std::fs::write(engine.join("cgroup.procs"), engine_procs)?;
+            std::fs::write(engine.join("cgroup.subtree_control"), "cpu pids\n")?;
+            if !events.is_empty() {
+                std::fs::write(engine.join("docker/cgroup.events"), events)?;
+            }
+            Ok(engine)
+        };
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let engine = old(&dir, "", "")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        assert!(!engine.join("docker").exists(), "the leftovers are gone");
+        // One write each; a fake file keeps the last.
+        assert_eq!(
+            std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
+            "-pids"
+        );
+        assert!(groups.engine_root.is_dir());
+        // A new engine in `inside` is never touched.
+        std::fs::write(groups.engine_root.join("cgroup.procs"), "7\n")?;
+        std::fs::create_dir(groups.engine_root.join("docker"))?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert!(groups.engine_root.join("docker").is_dir());
+
+        // The old engine still runs in the group itself, or a container of it below.
+        for (procs, events) in [("41\n", ""), ("", "populated 1\nfrozen 0\n")] {
+            let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+            let engine = old(&dir, procs, events)?;
+            delegation.sandbox_group("s1", &Limits::default())?;
+            assert!(engine.join("docker/c1").is_dir(), "{procs:?} {events:?}");
+            assert_eq!(
+                std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
+                "cpu pids\n"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;

@@ -12,14 +12,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::cgroup::{ENGINE_LEAF, LEGACY_LEAF, SANDBOXES};
+use crate::cgroup::{
+    ENGINE_LEAF, LEGACY_LEAF, MAX_DEPTH, MAX_GROUPS, SANDBOXES, drop_controllers, lines, populated,
+    remove_tree, subgroups,
+};
 
 /// The subgroup systemd places the server in (`DelegateSubgroup=server`).
 pub const SERVER_LEAF: &str = "server";
-/// Groups one call visits at most.
-const MAX_GROUPS: usize = 4096;
-/// How deep below the unit a group may lie (`sandboxes/<sandbox>/<leaf>/run-<name>` is 4).
-const MAX_DEPTH: usize = 8;
 /// What a group's settings are: copied to a group this call creates. `cgroup.freeze` keeps a
 /// paused run paused: its processes arrive in a frozen group.
 const SETTINGS: [&str; 6] = [
@@ -58,34 +57,6 @@ impl Adopted {
     pub fn nothing(&self) -> bool {
         self.groups == 0 && self.processes == 0 && self.engines == 0 && self.left.is_empty()
     }
-}
-
-fn lines(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn populated(group: &Path) -> bool {
-    lines(&group.join("cgroup.events"))
-        .windows(2)
-        .any(|pair| pair[0] == "populated" && pair[1] == "1")
-}
-
-fn subgroups(group: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(group) else {
-        return Vec::new();
-    };
-    let mut found: Vec<PathBuf> = entries
-        .flatten()
-        .take(MAX_GROUPS)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
-        .collect();
-    found.sort();
-    found
 }
 
 /// Gives the group `dir` and its files to `owner`: a group root creates is root's, and the
@@ -169,17 +140,6 @@ fn sweep(old: &Path, sessions: &Path, relative: &Path, done: &mut Adopted) {
             sweep(old, sessions, below, done);
         }
     }
-}
-
-/// Removes the emptied group `dir` and those below it, deepest first. A group that still holds
-/// a process stays; so does a fake one in tests (it keeps its files).
-fn remove_tree(dir: &Path, depth: usize) {
-    if depth < MAX_DEPTH {
-        for child in subgroups(dir) {
-            remove_tree(&child, depth + 1);
-        }
-    }
-    let _ = std::fs::remove_dir(dir);
 }
 
 /// Ends the Docker engine in `group` (SPEC-458 LAY-005): it runs in a cgroup namespace rooted
@@ -347,9 +307,7 @@ pub fn adopt(
     // Also with nothing to move: a unit that keeps its place with a process left in `server/`
     // still passes its controllers down, and systemd 258 starts no unit that does. One write
     // each: a controller a remaining group still uses must not keep the others.
-    for controller in lines(&old.join("cgroup.subtree_control")) {
-        let _ = std::fs::write(old.join("cgroup.subtree_control"), format!("-{controller}"));
-    }
+    drop_controllers(old);
     for child in &children {
         if child.is_dir() && populated(child) {
             done.left

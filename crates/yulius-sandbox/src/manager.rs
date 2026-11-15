@@ -2432,7 +2432,10 @@ while True:
             Some(front.pid),
             "{mode}: the running front is kept"
         );
-        assert!(leaf.is_dir(), "{mode}: the engine's leaf is back");
+        assert!(
+            leaf.is_dir(),
+            "{mode}: the engine's root and group are back"
+        );
         kill(front.pid);
         Ok(())
     }
