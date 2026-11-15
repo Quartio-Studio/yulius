@@ -148,8 +148,8 @@ pub struct TaskRuntime {
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// The model family a limit refused after the session's person switched to it (`/model`),
-    /// written by every placement after a limit (none unless it moves the run) and taken by the
-    /// launch past it, whose terminal names the model it runs instead (SPEC-493 MDL-002).
+    /// written by every placement after a limit and taken by the next launch, which says it
+    /// with the model it runs when it is the launch past that limit (SPEC-493 MDL-002).
     pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
@@ -2056,16 +2056,15 @@ impl App {
         }
         // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
         // with the model this run is launched with, unless that is of the refused family again
-        // (its usage changed since the decision), which the line above says.
-        let ran = match &start {
-            RunStart::AfterLimit => self
-                .runtime(&task.id)
-                .switched_limit
-                .lock()
-                .ok()
-                .and_then(|mut kept| kept.take()),
-            _ => None,
-        };
+        // (its usage changed since the decision), which the line above says. Every launch takes
+        // it, so a start that is not the one past that limit leaves nothing for a later one.
+        let kept = self
+            .runtime(&task.id)
+            .switched_limit
+            .lock()
+            .ok()
+            .and_then(|mut kept| kept.take());
+        let ran = kept.filter(|_| matches!(start, RunStart::AfterLimit));
         if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
             self.runtime(&task.id)
                 .hub
@@ -5643,10 +5642,10 @@ impl App {
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
-        // Kept for the relaunch past this limit, which says it with the model it runs; every
-        // limit's decision writes it, so none is left for a later, unrelated start.
+        // Kept for the launch past this limit (now, or when a pause for it ends), which says it
+        // with the model it runs; every limit's decision writes it.
         if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
-            *kept = ran.filter(|_| matches!(decision, Decision::Switch { .. }));
+            *kept = ran;
         }
         match decision {
             Decision::Stay => {}
@@ -5662,10 +5661,6 @@ impl App {
                 };
                 if let Err(err) = switched {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
-                    // Nothing launched past this limit: nothing is left for a later start.
-                    if let Ok(mut kept) = self.runtime(task_id).switched_limit.lock() {
-                        *kept = None;
-                    }
                 }
             }
             Decision::Wait { until } => {

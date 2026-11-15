@@ -714,3 +714,16 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   fails the fallback test; no same-family filter fails the new test. `usage_credits::`,
   `cockpit::`, `model_fallback::`, `subscription_moves::`, `claude_code_moves::`: 176 passed;
   `scripts/dev lint` exit 0. Spec indentation nit fixed.
+- **Review round 5** (delta `3ec7234dc..d53d9a7eb`, Opus 5.5): approve. It confirmed the race
+  fix (the new test fails on round 4's code; 8 of 8 stress runs pass) and killed 3 of 5
+  mutations; the two that survived were the guards of round 4's unreproduced finding (no write
+  for a decision other than Switch; the clearing after a failed switch), and it read one stale
+  case left (a paused switch, then a stop and a Continue). Answered by a simpler rule that
+  leaves no such branch: every limit decision writes the family, and every launch takes it,
+  saying it only when it is the launch past a limit. The two guards are gone, so a limit that
+  pauses the task is now said when the session goes on past it. Test first:
+  `usage_credits::a_switched_limit_that_waits_is_said_when_the_session_goes_on` failed (no
+  notice at the resume); it passes now. 177 passed in `usage_credits::`, `cockpit::`,
+  `model_fallback::`, `subscription_moves::`, `claude_code_moves::`; lint exit 0. Its nits
+  (a launch that places again after its account was removed, a failed spawn after the notice)
+  behave as the existing `model_change_notice` does, and the lines that follow correct them.

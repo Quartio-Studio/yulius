@@ -1557,6 +1557,76 @@ fn the_notice_past_a_switched_limit_names_the_model_the_launch_runs() -> TestRes
     Ok(())
 }
 
+/// SPEC-493 MDL-002 (review round 5 of fix 1a): a default task's session is switched to Fable
+/// and refused for Fable's credits while Opus is used up too on the only subscription: nothing
+/// can take it, so it waits. When Opus has room again, the session goes on past that limit with
+/// Opus 5.5, and that launch says why it does not run Fable.
+#[test]
+fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let opus = "claude-opus-5-5";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(opus)).await?;
+        opus_out(&app, &["a-first"]).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        assert!(
+            !notices(&mut watch)
+                .iter()
+                .any(|n| n.contains("is used up on this")),
+            "nothing goes on yet"
+        );
+        // Opus has room again; Fable's allowance is still used up.
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let _ = app.resume_round().await;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            app.deps.store.attempts(&id).await?[1].model.as_deref(),
+            Some(opus)
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
 /// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
 /// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.
