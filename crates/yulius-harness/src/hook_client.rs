@@ -407,6 +407,32 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    /// SPEC-483 slice 34 (review): `localhost` is 127.0.0.1 then ::1; the hook client reaches a
+    /// server on ::1 only through the second address.
+    #[test]
+    fn localhost_reaches_a_server_on_the_second_address() -> io::Result<()> {
+        let listener = TcpListener::bind("[::1]:0")?;
+        let port = listener.local_addr()?.port();
+        let server = thread::spawn(move || -> io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut buf = [0u8; 4096];
+            let _read = stream.read(&mut buf)?;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")?;
+            Ok(())
+        });
+        let url = format!("http://localhost:{port}");
+        let env = move |key: &str| match key {
+            "YULIUS_URL" => Some(url.clone()),
+            "YULIUS_TASK_TOKEN" => Some("t".into()),
+            _ => None,
+        };
+        let answer = post_internal("/internal/x", b"{}", &env, Duration::from_secs(5));
+        assert_eq!(answer.ok().as_deref(), Some(&b"ok"[..]));
+        server
+            .join()
+            .map_err(|_| io::Error::other("server panicked"))?
+    }
+
     #[test]
     fn slow_server_hits_the_deadline() -> io::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0")?;

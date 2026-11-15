@@ -7,7 +7,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use yulius_domain::agent_endpoint::{AgentEndpoint, EndpointError};
+use yulius_domain::agent_endpoint::AgentEndpoint;
 
 use crate::credential::{connect, decode_chunked, header_end, parse_head};
 
@@ -61,22 +61,14 @@ pub fn agent_call(
     env: &dyn Fn(&str) -> Option<String>,
     limits: CallLimits,
 ) -> Result<Answer, CallError> {
-    let endpoint = AgentEndpoint::from_env(env).map_err(|error| {
-        CallError::Environment(match error {
-            EndpointError::UrlMissing => "YULIUS_URL is not set",
-            EndpointError::TokenMissing => "YULIUS_TASK_TOKEN is not set",
-            EndpointError::TokenNotPrintable => "YULIUS_TASK_TOKEN must be printable ASCII",
-            EndpointError::Url | EndpointError::NotLoopback => {
-                "YULIUS_URL must be http:// on a loopback address"
-            }
-        })
-    })?;
+    let endpoint =
+        AgentEndpoint::from_env(env).map_err(|error| CallError::Environment(error.message()))?;
     let token = &endpoint.token;
     let deadline = Instant::now() + limits.total;
     let unsent =
         |what: &str, err: &std::io::Error| CallError::Unsent(format!("{what}: {}", err.kind()));
-    let mut stream =
-        connect(&endpoint, limits.connect.min(limits.total)).map_err(|e| unsent("connect", &e))?;
+    let mut stream = connect(&endpoint, Instant::now() + limits.connect.min(limits.total))
+        .map_err(|e| unsent("connect", &e))?;
     let head = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\

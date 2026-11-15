@@ -45,6 +45,19 @@ pub struct AgentEndpoint {
     pub token: String,
 }
 
+impl EndpointError {
+    /// The message every client says it with.
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::UrlMissing => "YULIUS_URL is not set",
+            Self::TokenMissing => "YULIUS_TASK_TOKEN is not set",
+            Self::TokenNotPrintable => "YULIUS_TASK_TOKEN must be printable ASCII",
+            Self::Url | Self::NotLoopback => "YULIUS_URL must be http:// on a loopback address",
+        }
+    }
+}
+
 impl fmt::Debug for AgentEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AgentEndpoint")
@@ -92,21 +105,28 @@ fn parse_url(url: &str) -> Result<(Vec<SocketAddr>, String, String), EndpointErr
     if authority.is_empty() || authority.contains('@') || path.contains(['?', '#']) {
         return Err(EndpointError::Url);
     }
-    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+    // One spelling of each address: IPv6 only in brackets, a port of digits only.
+    let (host, port, bracketed) = if let Some(bracketed) = authority.strip_prefix('[') {
         let (host, after) = bracketed.split_once(']').ok_or(EndpointError::Url)?;
         let port = match after {
             "" => "80",
             port => port.strip_prefix(':').ok_or(EndpointError::Url)?,
         };
-        (host, port)
+        (host, port, true)
     } else {
-        match authority.rsplit_once(':') {
-            Some((host, port)) => (host, port),
-            None => (authority, "80"),
+        match authority.split_once(':') {
+            Some((host, port)) => (host, port, false),
+            None => (authority, "80", false),
         }
     };
+    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(EndpointError::Url);
+    }
     let port: u16 = port.parse().map_err(|_| EndpointError::Url)?;
-    let ips = if host.eq_ignore_ascii_case("localhost") {
+    if bracketed && host.parse::<Ipv6Addr>().is_err() {
+        return Err(EndpointError::Url);
+    }
+    let ips = if !bracketed && host.eq_ignore_ascii_case("localhost") {
         vec![
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             IpAddr::V6(Ipv6Addr::LOCALHOST),
@@ -184,6 +204,11 @@ mod tests {
             ("http://10.0.0.1:80", EndpointError::NotLoopback),
             ("http://0.0.0.0:80", EndpointError::NotLoopback),
             ("http://example.com", EndpointError::NotLoopback),
+            // One spelling of each address: IPv6 only in brackets, a port of digits.
+            ("http://[127.0.0.1]:80", EndpointError::Url),
+            ("http://::1:80", EndpointError::Url),
+            ("http://127.0.0.1:+80", EndpointError::Url),
+            ("http://[::1]:", EndpointError::Url),
         ] {
             assert_eq!(with(url, "ytk_a").err(), Some(why), "{url}");
         }

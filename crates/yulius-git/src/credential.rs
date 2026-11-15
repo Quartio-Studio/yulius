@@ -251,12 +251,16 @@ fn parse_credential(body: &[u8]) -> Result<Credential, CredentialError> {
     })
 }
 
-/// A parsed `http://<loopback>[:port][/base]` URL.
-/// A connection to the first of `endpoint`'s addresses that takes one within `timeout`.
-pub(crate) fn connect(endpoint: &AgentEndpoint, timeout: Duration) -> std::io::Result<TcpStream> {
+/// A connection to the first of `endpoint`'s addresses that takes one before `deadline`: every
+/// attempt has only the time left, so trying the next address never stretches the bound.
+pub(crate) fn connect(endpoint: &AgentEndpoint, deadline: Instant) -> std::io::Result<TcpStream> {
     let mut last = std::io::Error::new(ErrorKind::NotFound, "no address");
     for address in &endpoint.addresses {
-        match TcpStream::connect_timeout(address, timeout) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(ErrorKind::TimedOut, "deadline passed"));
+        }
+        match TcpStream::connect_timeout(address, left) {
             Ok(stream) => return Ok(stream),
             Err(error) => last = error,
         }
@@ -266,14 +270,7 @@ pub(crate) fn connect(endpoint: &AgentEndpoint, timeout: Duration) -> std::io::R
 
 /// The environment's error as the helper says it (Git prints it on stderr).
 fn bad_environment(error: EndpointError) -> CredentialError {
-    CredentialError::BadEnvironment(match error {
-        EndpointError::UrlMissing => "YULIUS_URL is not set",
-        EndpointError::TokenMissing => "YULIUS_TASK_TOKEN is not set",
-        EndpointError::TokenNotPrintable => "YULIUS_TASK_TOKEN must be printable ASCII",
-        EndpointError::Url | EndpointError::NotLoopback => {
-            "YULIUS_URL must be http:// on a loopback address"
-        }
-    })
+    CredentialError::BadEnvironment(error.message())
 }
 
 struct HttpResponse {
@@ -319,7 +316,7 @@ fn http_post_to(
 ) -> Result<HttpResponse, CredentialError> {
     let deadline = Instant::now() + timeout;
     let token = &endpoint.token;
-    let mut stream = connect(endpoint, timeout).map_err(|e| transport("connect", &e))?;
+    let mut stream = connect(endpoint, deadline).map_err(|e| transport("connect", &e))?;
     let request = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
          Content-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\
@@ -470,6 +467,41 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"{\"token\":\"t\"}");
         assert!(try_parse_response(&raw[..raw.len() - 5])?.is_none());
+        Ok(())
+    }
+
+    fn endpoint_at(url: String) -> Result<AgentEndpoint, EndpointError> {
+        AgentEndpoint::from_env(&move |name| match name {
+            "YULIUS_URL" => Some(url.clone()),
+            "YULIUS_TASK_TOKEN" => Some("tk".to_owned()),
+            _ => None,
+        })
+    }
+
+    /// SPEC-483 slice 34 (review): `localhost` is 127.0.0.1 then ::1; a server on ::1 only is
+    /// reached through the second address.
+    #[test]
+    fn localhost_reaches_a_server_on_the_second_address() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = TcpListener::bind("[::1]:0")?;
+        let port = listener.local_addr()?.port();
+        let endpoint = endpoint_at(format!("http://localhost:{port}"))?;
+        let stream = connect(&endpoint, Instant::now() + Duration::from_secs(5))?;
+        assert!(stream.peer_addr()?.is_ipv6());
+        Ok(())
+    }
+
+    /// SPEC-483 slice 34 (review): every address shares the one deadline; once it passed, no
+    /// address is tried, so two addresses never take twice the bound.
+    #[test]
+    fn a_spent_deadline_tries_no_address() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let endpoint = endpoint_at(format!("http://127.0.0.1:{port}"))?;
+        let error = connect(&endpoint, Instant::now())
+            .err()
+            .ok_or("connected")?;
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
         Ok(())
     }
 
