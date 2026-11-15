@@ -2949,3 +2949,16 @@ slices follow.
   lines past the width, a missing blank line, the test's reason), answered in slice 34.
 - **Merged.** Pull request #1300 was squash-merged into `dev` (`1fa35c08e`) after its merge
   train passed.
+
+### Slice 34 (2026-11-15)
+
+- **Test failing before the change**: `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`
+  did not compile (no shared reader); the cases the Git and hook parsers disagreed on (a
+  non-ASCII path, `localhost`'s addresses) are in it.
+- **Tests failing without their fix** (`target/audit/slice34/mutate.py`, `mutations.log`,
+  `mutations-b.log`, 9 cases, each failed its test): a non-ASCII path, an empty host or any
+  address taken, `localhost` on IPv4 only, a blank token taken, the token shown in `Debug`, the
+  path kept with its slash, the Git client or the hook client trying no address.
+- **Gate.** `scripts/dev ci` at `cbed41969`: exit 0; `4413 tests run: 4413 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
