@@ -2349,7 +2349,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
 });
 // A rollback to a kept release (SPEC-415): refused as the server refuses it, else a run of kind
 // rollback whose release is deployed at once on the page.
-route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, async ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   const cd = cdOf(db, p[0]);
   const name = p[1] === 'production' ? 'prod' : p[1];
@@ -2358,6 +2358,9 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
   const prod = env.stage === 'prod';
   need(sandbox, prod ? 'admin' : 'write');
   db.lastCdRollback = body || {};
+  // A test can hold the answer (`__yuliusMock.holdCdRollback = promise`): the server's checks
+  // take a while, as a deploy's do (#1171).
+  if (db.holdCdRollback) { await db.holdCdRollback; db.holdCdRollback = null; }
   if (prod && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   const rb = env.rollback || {};
   if (!rb.command && !env.deploy) fail(409, 'conflict', `nothing is deployed to ${env.label} that a rollback could redeploy: [cd.${name}] of yulius.toml on ${env.branch} runs no deploy command`);

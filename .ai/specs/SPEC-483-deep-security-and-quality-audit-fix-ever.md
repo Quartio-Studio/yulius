@@ -65,7 +65,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
       #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33
       (merged, #1300), QB2 slice 34 (merged, #1305);
-  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35;
+  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35 (merged, #1306), QB5 slice 36;
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
@@ -722,6 +722,17 @@ went; two of the auditors' items had gained a user since and stay.
 - **Slice 34's review nits.** Two spec lines past the width; the new `::1` tests could, rarely,
   meet another test's listener on 127.0.0.1 at the same port and fail.
 
+### Slice 36: a watcher reads only what was written since
+
+- **QB5 (medium).** Watching a live task polls its transcript every 1.5 s (`watchview.js`
+  `WATCH_POLL_MS`) from the line its last read ended at (`task_transcript`, `from`). Each poll
+  opened the transcript at byte 0, read every earlier line and JSON-parsed every one holding a
+  tool call, to know the dotenv files read before the page (their results are redacted), then
+  answered the few new lines. A long session's transcript is tens of megabytes: each watcher
+  cost a full read and parse of it every 1.5 s, growing with the session's length.
+- **Slice 35's review nit.** A Test plan line past the width, which its Evidence said was
+  wrapped.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1260,6 +1271,13 @@ went; two of the auditors' items had gained a user since and stay.
   after every version `dev` had): no query of the
   capacity or accounts view scans either table; the pauses come in the same order as before
   (by start, then id).
+- **EFF-002** A poll that goes on from where the last read of the same transcript ended reads
+  from that byte on, with the dotenv calls seen before it, and answers what a read from the
+  start answers; where it ended is kept by the server (never sent to the reader, whose own
+  state could leave a dotenv read out), for at most 256 transcripts at once (two watchers keep
+  the farther point), used only in the same file (device and inode), while still at a line's
+  start and at or before the asked line, and forgotten when a transcript is rewritten in place
+  (`reindex_session`).
 
 ## Plan
 
@@ -1300,7 +1318,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read (merged, #1297)
 - [x] Slice 33: one dispatch of the shared project tools and one handshake for every MCP (merged, #1300)
 - [x] Slice 34: one reader of a sandbox's way to Yulius for every client in it (merged, #1305)
-- [ ] Slice 35: the capacity and accounts views read their window through indexes
+- [x] Slice 35: the capacity and accounts views read their window through indexes (merged, #1306)
+- [ ] Slice 36: a watcher's poll reads only what was written since
 
 ## Acceptance criteria
 
@@ -1946,6 +1965,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   `SCAN` of `attempts` or `capacity_pauses`; the capacity, accounts and dashboard tests pass,
   pauses in their order (EFF-001).
 
+- **AC-156** A read from a resume point gives the entries, `end` and `next` a read from the start
+  gives, the dotenv read before the point still redacted; a point past the asked line or off a
+  line's start, or of a file that replaced the transcript (its dotenv read ending exactly at the
+  old point), is read past; through the API, the next poll of a watched transcript reads on
+  from the last read's end (a newline slipped into an earlier line does not renumber what
+  follows); on a 30 MB transcript a poll took 497 ms from the start and 18 µs from the point
+  (EFF-002).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2206,10 +2233,14 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 36: `yulius-app` `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`,
+  `the_farther_point_of_a_file_is_kept`, `a_point_after_an_overlong_line_is_at_the_next_line`,
+  `yulius` `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since` (AC-156),
+  the transcript, watch and session tests; a timing probe (not kept).
 - Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`,
   `spans::tests::the_pauses_of_a_window_come_in_start_order` and
-  `tests::the_latest_schema_versions_keep_their_migrations` (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
-  dashboard tests.
+  `tests::the_latest_schema_versions_keep_their_migrations` (AC-155); the store's capacity
+  and accounts tests and the `yulius` capacity, accounts and dashboard tests.
 - Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
   `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
   `a_spent_deadline_tries_no_address`, `yulius-harness`
@@ -2327,6 +2358,17 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 36 (no decision record: a cache). The resume point is the server's, not the
+  reader's: the dotenv calls seen decide what is redacted, and a reader's cursor could be one
+  that leaves a dotenv read out. A transcript is append-only; one stepped back over a usage
+  limit (SPEC-034) is a rewritten copy renamed over it, so a point carries the file's device and
+  inode and is not used on another file; `reindex_session`, which the step-back calls, forgets
+  every point too, but a poll in flight could keep an old point after it (review of slice
+  36), so the identity is the guard. A point whose byte is no longer after a newline is not
+  used either. The map is
+  bounded by clearing it whole past 256 (a read without a point is a read from the start, as
+  before): simpler than an LRU for a cache refilled by the next poll. The tail read (a
+  watcher's first) still reads the whole file: it has no earlier point to go on from.
 - Slice 35 (no decision record: indexes). Indexes rather than pruning: the runs and pauses
   are the history the dashboard and the accounts page show, and pruning is a product decision
   this audit does not make. The pauses' two conditions became two branches of a `UNION ALL`
@@ -2824,8 +2866,9 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
-| QA8, QC6, QB5 | efficiency | Store round trips per task, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
-| QC1 | efficiency | The capacity and accounts views scan every run and pause | low | slice 35 |
+| QA8, QC6 | efficiency | Store round trips per task | medium | open (item 17 of the Context) |
+| QB5 | efficiency | The watched transcript re-read and re-parsed from byte 0 every 1.5 s | medium | slice 36 |
+| QC1 | efficiency | The capacity and accounts views scan every run and pause | low | fixed (slice 35) |
 | Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
 
@@ -3046,8 +3089,67 @@ slices follow.
   same rows in the same order, `token_runs` reading both terms through the index, and each
   query 0.2 to 1.8 ms at 200 000 runs. Answered: the migration is schema version 61 at the
   end, a test pins the latest versions to their files (it fails with the old placement,
-  `mutations-r1.log`), the test uses `PAUSE_COLS`, its doc says it, the line is wrapped.
+  `mutations-r1.log`), the test uses `PAUSE_COLS`, its doc says it. (The Test plan line was
+  in fact not wrapped then: review round 2; it is wrapped in slice 36.)
 - **Gate after it.** `scripts/dev ci` at `02bafbf68`: exit 0; `4427 tests run: 4427 passed (1
   slow), 17 skipped` (`gate2.log`). The reviewer's reproduction, a database made with `dev`'s
   migration list (version 60) opened by this head, applies only 0061 and gets the three
   indexes (`migorder-after.log`).
+- **Review, round 2** (the same session, head `a361e0eaa`): approve; one nit: the Test plan line
+  was still past the width though the round 1 entry said it was wrapped (both corrected in slice
+  36).
+- **Merged.** Pull request #1306 was squash-merged into `dev` (`f2a339e96`) after its merge
+  train passed.
+
+### Slice 36 (2026-11-15)
+
+- **Tests failing before the change**: `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`
+  did not compile (no resume point); `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since`
+  fails while the handler reads from the start (the slipped newline renumbers the new line 5).
+- **Tests failing without their fix** (`target/audit/slice36/mutate.py`, `mutations.log`): a
+  point past the asked line or off a line's start used, the byte offset not counted, the
+  handler reading from the start or keeping no point: each failed its test. The two that drop
+  the dotenv calls at the point survived the first test, whose dotenv value is also caught by
+  the token patterns: a case with a value only the dotenv rule hides was added and both fail
+  (`mutations-b.log`). Not tested on its own: the clear in `reindex_session` (see round 1:
+  the file identity is the guard; the reason first given here was wrong).
+- **Timing probe** (a test not kept, release build, `probe-timing.log`): a poll at the end of a
+  30 MB transcript of 125 830 lines took 497 ms read from the start and 18 µs from the point.
+- **Gate.** `scripts/dev ci` at `3c9919d85`: exit 0; `4433 tests run: 4433 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `7ba75f9e9`): request changes. Minor, own code,
+  security-relevant: the point had no file identity, and a step-back renames a rewritten copy
+  over the transcript; a poll in flight could keep a point of the old file after
+  `reindex_session`'s clear, and once the resumed session grew past it with a newline before
+  the byte, the point was used on the new file: the reviewer's probe showed
+  `DB_PASSWORD=plainword` where a read from the start redacts it. The Evidence's reason for
+  not testing the clear (a step-back shortens the file) held only until the file grew again.
+  Nits: an earlier point overwrote a farther one; the byte count of an over-long line had no
+  test. The reviewer found the byte counting (complete, over-long, partial last line, CRLF),
+  the page and end points, the carried dotenv calls, the bound and the map's sharing right.
+  Answered: the point records the file's device and inode (the reviewer's case, a replacing
+  file whose dotenv read ends exactly at the old point, failed first with `plainword` shown);
+  the farther point is kept; a test of an over-long line. Each new test fails without its fix
+  (`mutations-r1.log`, `mutations-r1b.log`, 10 cases, none survives).
+- **Gate after it.** `scripts/dev ci` at `6793ba26e`: exit 0; `4435 tests run: 4435 passed (1
+  slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `e65afc7d2`): approve; nits: a kept farther point
+  stays when an agent shortens its transcript in place (outside the threat model), the
+  handler's use of `replaces` has no test of its own, a doubled line in a test. The merge was
+  armed.
+- **Merge train at `e65afc7d2`** (run `0dfa6dad`): `e2e` failed in `cd.e2e.ts` "a refusal after
+  its view was left is a toast; a page left with it open draws nothing", the open flaky test
+  #1171, which this slice does not touch. Its cause, found here: the CD page left while a
+  deploy is being checked reads its runs when shown again, possibly before the server
+  answered, and then waits for its 30 s idle poll, showing the earlier run meanwhile (a
+  product race, not only the test's). Made deterministic (the deploy released after the page is
+  back and shows the earlier run: it failed with the CI's very message), then fixed: an answer
+  that comes after its page went makes the CD page shown for that sandbox read again at once;
+  the rollback had the same gap (a hold for rollbacks added to the mock, a test that failed
+  first). Separate commit, `Fixes #1171`. With it, the nits: a kept point past a transcript
+  shortened in place is replaced (tested), the doubled line removed; the handler's own use of
+  `replaces` stays untested (speed only).
+- **Gate after it** (`dev` merged in). `scripts/dev ci` at `41117af64`: exit 0; `4438 tests run:
+  4438 passed (1 slow), 17 skipped` (`gate3.log`); the whole e2e suite: 85 files, 1049 passed,
+  1 skipped (`e2e-full.log`).

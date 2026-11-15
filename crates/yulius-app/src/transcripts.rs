@@ -9,7 +9,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read as _, Seek, SeekFrom};
 use std::path::Path;
 
 use serde_json::Value;
@@ -108,7 +108,7 @@ fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 /// Tracks tool calls that touch dotenv files, so their results are redacted as dotenv content.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct EnvCalls {
     ids: HashSet<String>,
 }
@@ -542,6 +542,22 @@ pub fn unreadable(err: &io::Error) -> bool {
     )
 }
 
+/// Where a read of a transcript can go on without reading what came before (SPEC-483 slice 36):
+/// the line number, the byte offset of its start, and the dotenv calls seen on the lines before
+/// it, so a dotenv file read earlier is still redacted after it. Kept by the server, never sent
+/// to a reader: a reader's own state could leave a dotenv read out.
+#[derive(Debug, Clone, Default)]
+pub struct ReadCursor {
+    /// The line it is at.
+    pub line: u64,
+    /// The byte offset of that line's start.
+    pub byte: u64,
+    /// The file it is in (device, inode): a transcript replaced by another file (a step-back
+    /// renames a rewritten copy over it) has none of the old file's points.
+    file: Option<(u64, u64)>,
+    env_calls: EnvCalls,
+}
+
 /// Reads entries from line `from`: at most `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) and about
 /// `max_chars` of text (≤ [`MAX_PAGE_CHARS`]). Tool calls on earlier lines are scanned too, so
 /// a dotenv file read before the page is still redacted in it.
@@ -549,30 +565,81 @@ pub fn unreadable(err: &io::Error) -> bool {
 /// # Errors
 /// I/O failures reading the transcript.
 pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::Result<Page> {
+    Ok(read_page_at(file, None, from, limit, max_chars)?.0)
+}
+
+impl ReadCursor {
+    /// Whether this point should replace `kept` for the same transcript, now `len` bytes long:
+    /// it is of another file, or as far on or farther (two watchers at different lines keep the
+    /// farther point), or the file was shortened in place below the kept point.
+    #[must_use]
+    pub fn replaces(&self, kept: &Self, len: u64) -> bool {
+        self.file != kept.file || self.line >= kept.line || kept.byte > len
+    }
+}
+
+/// [`read_page`] that goes on from `cursor` when it can: when the cursor is at or before `from`
+/// and still at a line's start (the byte before it a newline), the lines before it are not read
+/// again. Also returns the cursor at the page's end, for the next read.
+///
+/// # Errors
+/// I/O failures reading the transcript.
+pub fn read_page_at(
+    mut file: File,
+    cursor: Option<&ReadCursor>,
+    from: u64,
+    limit: usize,
+    max_chars: usize,
+) -> io::Result<(Page, ReadCursor)> {
+    use std::os::unix::fs::MetadataExt as _;
     let limit = limit.clamp(1, MAX_PAGE_ENTRIES);
     let max_chars = max_chars.clamp(1, MAX_PAGE_CHARS);
+    let metadata = file.metadata()?;
+    let identity = Some((metadata.dev(), metadata.ino()));
+    let start = match cursor {
+        Some(cursor)
+            if cursor.file == identity
+                && cursor.line <= from
+                && at_line_start(&mut file, cursor.byte)? =>
+        {
+            cursor.clone()
+        }
+        _ => ReadCursor::default(),
+    };
+    file.seek(SeekFrom::Start(start.byte))?;
     let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut buf = Vec::new();
-    let mut env_calls = EnvCalls::default();
+    let mut env_calls = start.env_calls;
     let mut page = Page::default();
     let mut chars = 0;
-    let mut line = 0_u64;
+    let mut line = start.line;
+    let mut byte = start.byte;
     loop {
+        let at = ReadCursor {
+            line,
+            byte,
+            file: identity,
+            env_calls: EnvCalls::default(),
+        };
         let read = read_line(&mut reader, &mut buf, MAX_LINE_BYTES)?;
         let current = line;
         match read {
             LineRead::Eof => {
                 page.end = line;
-                return Ok(page);
+                return Ok((page, ReadCursor { env_calls, ..at }));
             }
-            LineRead::TooLong(_) => {
+            LineRead::TooLong(used) => {
                 line += 1;
+                byte += used as u64;
                 if current >= from {
                     page.skipped += 1;
                 }
                 continue;
             }
-            LineRead::Line(_) => line += 1,
+            LineRead::Line(used) => {
+                line += 1;
+                byte += used as u64;
+            }
         }
         if current < from {
             // Only tool calls matter before the page (dotenv tracking); skip the parse otherwise.
@@ -586,7 +653,7 @@ pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::R
         if page.entries.len() >= limit || chars >= max_chars {
             page.next = Some(current);
             page.end = current;
-            return Ok(page);
+            return Ok((page, ReadCursor { env_calls, ..at }));
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue;
@@ -601,6 +668,20 @@ pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::R
             Err(_) => page.skipped += 1,
         }
     }
+}
+
+/// Whether `byte` is at a line's start in `file`: the start of the file, or just after a
+/// newline within it.
+fn at_line_start(file: &mut File, byte: u64) -> io::Result<bool> {
+    if byte == 0 {
+        return Ok(true);
+    }
+    if file.metadata()?.len() < byte {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::Start(byte - 1))?;
+    let mut previous = [0_u8; 1];
+    Ok(file.read(&mut previous)? == 1 && previous[0] == b'\n')
 }
 
 /// Reads the last `limit` entries (≤ [`MAX_PAGE_ENTRIES`]) within about `max_chars` of text (≤
@@ -978,6 +1059,153 @@ mod tests {
             vec![7]
         );
         assert_eq!((rest.end, rest.next), (8, None));
+        Ok(())
+    }
+
+    /// SPEC-483 slice 36 (QB5): a read that continues from a resume point (the byte offset of a
+    /// line and the dotenv calls seen before it) gives what a read from the start gives, the
+    /// dotenv read before the point still redacted; a point past the asked line, or one that is
+    /// not at a line's start any more, is not used.
+    #[test]
+    fn a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let shown = |page: &Page| format!("{:?}", page.entries);
+        let whole = read_page(File::open(&path)?, 3, 100, MAX_PAGE_CHARS)?;
+        let (head, point) = read_page_at(File::open(&path)?, None, 0, 2, MAX_PAGE_CHARS)?;
+        assert_eq!((head.end, point.line), (3, 3));
+        assert!(point.byte > 0);
+        let (resumed, after) =
+            read_page_at(File::open(&path)?, Some(&point), 3, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(shown(&resumed), shown(&whole));
+        assert_eq!((resumed.end, resumed.next), (whole.end, whole.next));
+        assert_eq!(after.line, 7, "the unfinished line is left for later");
+        let TranscriptBlock::ToolResult { text, .. } = &resumed.entries[0].blocks[0] else {
+            return Err("tool result".into());
+        };
+        assert!(
+            text.contains("[REDACTED:"),
+            "the .env read before the point: {text}"
+        );
+        // A point past the asked line, or off a line's start, is read past: the same answer.
+        let (early, _) = read_page_at(File::open(&path)?, Some(&after), 3, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(shown(&early), shown(&whole));
+        let off = ReadCursor {
+            byte: point.byte - 1,
+            ..point.clone()
+        };
+        let (shifted, _) = read_page_at(File::open(&path)?, Some(&off), 3, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(shown(&shifted), shown(&whole));
+        // A value only the dotenv rule hides (a secret's name, a plain value): the point keeps
+        // the dotenv read made before it, at a page's end and at the file's end alike.
+        let dotenv = dir.path().join("dotenv.jsonl");
+        let mut text = String::new();
+        for line in [
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "e1", "name": "Read", "input": {"file_path": "/repo/.env"}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": "Go on"}}),
+        ] {
+            text.push_str(&serde_json::to_string(&line)?);
+            text.push('\n');
+        }
+        std::fs::write(&dotenv, &text)?;
+        let (_, at_end) = read_page_at(File::open(&dotenv)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        let (_, at_page) = read_page_at(File::open(&dotenv)?, None, 0, 1, MAX_PAGE_CHARS)?;
+        text.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "e1", "content": "DB_PASSWORD=plainword\n"}]}}),
+        )?);
+        text.push('\n');
+        std::fs::write(&dotenv, &text)?;
+        for point in [&at_end, &at_page] {
+            let (page, _) =
+                read_page_at(File::open(&dotenv)?, Some(point), 2, 100, MAX_PAGE_CHARS)?;
+            let shown = shown(&page);
+            assert!(
+                shown.contains("DB_PASSWORD") && !shown.contains("plainword"),
+                "{shown}"
+            );
+        }
+        // Replaced by another file (a step-back renames a rewritten copy over it) whose dotenv
+        // read ends exactly where the old point is, its result after it: the old point is of the
+        // other file and is not used, so the result is redacted as a read from the start does.
+        let replaced = dir.path().join("dotenv.new");
+        let call = |pad: usize| {
+            serde_json::to_string(
+                &json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "e2", "name": "Read",
+                 "input": {"file_path": "/repo/.env", "pad": "x".repeat(pad)}}]}}),
+            )
+        };
+        let short = call(0)?.len() + 1;
+        let target = usize::try_from(at_end.byte)?;
+        let mut other = call(target.saturating_sub(short))?;
+        other.push('\n');
+        assert_eq!(other.len(), target, "the dotenv read ends at the old point");
+        other.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "e2", "content": "DB_PASSWORD=plainword\n"}]}}),
+        )?);
+        other.push('\n');
+        std::fs::write(&replaced, &other)?;
+        std::fs::rename(&replaced, &dotenv)?;
+        let from_start = read_page(File::open(&dotenv)?, 2, 100, MAX_PAGE_CHARS)?;
+        let (on, _) = read_page_at(File::open(&dotenv)?, Some(&at_end), 2, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(shown(&on), shown(&from_start));
+        assert!(!shown(&on).contains("plainword"), "{}", shown(&on));
+        Ok(())
+    }
+
+    /// SPEC-483 slice 36 (review): two watchers of a transcript at different lines keep the
+    /// farther point; a point of another file replaces any.
+    #[test]
+    fn the_farther_point_of_a_file_is_kept() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = write_transcript(dir.path())?;
+        let (_, early) = read_page_at(File::open(&path)?, None, 0, 2, MAX_PAGE_CHARS)?;
+        let (_, far) = read_page_at(File::open(&path)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        assert!(early.line < far.line);
+        let len = far.byte;
+        assert!(far.replaces(&early, len) && !early.replaces(&far, len) && far.replaces(&far, len));
+        // A file shortened in place (same inode) below the kept point: the kept point goes.
+        assert!(early.replaces(&far, far.byte - 1));
+        let copy = dir.path().join("copy.jsonl");
+        std::fs::copy(&path, &copy)?;
+        let (_, other) = read_page_at(File::open(&copy)?, None, 0, 2, MAX_PAGE_CHARS)?;
+        assert!(
+            other.replaces(&far, len),
+            "another file's point replaces a farther one"
+        );
+        Ok(())
+    }
+
+    /// SPEC-483 slice 36 (review): a line past the bound is skipped and its bytes counted, so
+    /// the point after it is at the next line's start.
+    #[test]
+    fn a_point_after_an_overlong_line_is_at_the_next_line() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("long.jsonl");
+        let mut text = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(MAX_LINE_BYTES));
+        text.push_str(&serde_json::to_string(
+            &json!({"type": "user", "message": {"role": "user", "content": "After"}}),
+        )?);
+        text.push('\n');
+        std::fs::write(&path, &text)?;
+        let (page, point) = read_page_at(File::open(&path)?, None, 0, 100, MAX_PAGE_CHARS)?;
+        assert_eq!((page.skipped, page.entries.len(), point.line), (1, 1, 2));
+        assert_eq!(point.byte, u64::try_from(text.len())?);
+        let (head, early) = read_page_at(File::open(&path)?, None, 0, 100, 1)?;
+        assert_eq!((head.skipped, early.line), (1, 2));
+        let mut more = std::fs::OpenOptions::new().append(true).open(&path)?;
+        std::io::Write::write_all(
+            &mut more,
+            b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Next\"}}\n",
+        )?;
+        let (next, _) = read_page_at(File::open(&path)?, Some(&point), 2, 100, MAX_PAGE_CHARS)?;
+        assert_eq!(
+            next.entries.iter().map(|e| e.line).collect::<Vec<_>>(),
+            vec![2]
+        );
         Ok(())
     }
 

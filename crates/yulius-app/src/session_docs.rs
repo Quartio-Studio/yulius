@@ -186,6 +186,9 @@ fn kind_arg(text: Option<&str>) -> AppResult<Option<SessionKind>> {
     }
 }
 
+/// The most transcripts whose read cursor is kept at once (one per watched session).
+pub const MAX_TRANSCRIPT_CURSORS: usize = 256;
+
 /// What a watcher asks of [`App::task_transcript`] (SPEC-179 WAT-001).
 #[derive(Debug, Clone, Default)]
 pub struct TranscriptRead {
@@ -314,6 +317,10 @@ impl App {
     /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
     /// again from its start: the index reads transcripts as append-only.
     pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
+        // Rewritten in place: no read goes on from where an earlier one ended.
+        if let Ok(mut cursors) = self.transcript_cursors.lock() {
+            cursors.clear();
+        }
         let store = &self.deps.store;
         let Ok(docs) = store.session_docs(sandbox).await else {
             return;
@@ -743,6 +750,31 @@ impl App {
         })
     }
 
+    /// Where the last read of the transcript at `path` ended, to go on from (SPEC-483 slice 36).
+    fn transcript_cursor(&self, path: &Path) -> Option<transcripts::ReadCursor> {
+        self.transcript_cursors
+            .lock()
+            .ok()
+            .and_then(|cursors| cursors.get(path).cloned())
+    }
+
+    /// Keeps where a read of `path` ended, unless a point farther on in the same file is kept.
+    /// The map is bounded: past
+    /// [`MAX_TRANSCRIPT_CURSORS`] it starts afresh (a read without a cursor reads from the start).
+    fn keep_transcript_cursor(&self, path: PathBuf, cursor: transcripts::ReadCursor, len: u64) {
+        if let Ok(mut cursors) = self.transcript_cursors.lock() {
+            if cursors.len() >= MAX_TRANSCRIPT_CURSORS && !cursors.contains_key(&path) {
+                cursors.clear();
+            }
+            if cursors
+                .get(&path)
+                .is_none_or(|kept| cursor.replaces(kept, len))
+            {
+                cursors.insert(path, cursor);
+            }
+        }
+    }
+
     /// `GET /api/tasks/{tid}/transcript` (read; SPEC-179 WAT-001): the task's latest session as its
     /// watchers read it: the tail without `from`, else the lines from `from`, redacted as session
     /// pages are. With `seen` and `session` naming the current session at its current size the
@@ -768,6 +800,8 @@ impl App {
             .filter(|_| from.is_some() && read.session.as_deref() == Some(session_id.as_str()));
         let limit = read.limit;
         let anchor = self.sandbox_dir(&task.sandbox_id);
+        let cursor = from.and_then(|_| self.transcript_cursor(&path));
+        let cursor_path = path.clone();
         let found = blocking(move || {
             let file = match transcripts::open(&anchor, &path) {
                 Ok(file) => file,
@@ -779,11 +813,16 @@ impl App {
                 return Ok(Some((bytes, None)));
             }
             let page = match from {
-                Some(from) => transcripts::read_page(file, from, limit, MAX_PAGE_CHARS),
-                None => transcripts::read_tail(file, limit, MAX_PAGE_CHARS),
+                Some(from) => {
+                    transcripts::read_page_at(file, cursor.as_ref(), from, limit, MAX_PAGE_CHARS)
+                        .map(|(page, next)| (page, Some(next)))
+                }
+                None => {
+                    transcripts::read_tail(file, limit, MAX_PAGE_CHARS).map(|page| (page, None))
+                }
             };
             match page {
-                Ok(page) => Ok(Some((bytes, Some(page)))),
+                Ok((page, next)) => Ok(Some((bytes, Some((page, next))))),
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(err) => Err(AppError::internal(err)),
             }
@@ -797,10 +836,13 @@ impl App {
             return Ok(view);
         };
         view.bytes = bytes;
-        let Some(page) = page else {
+        let Some((page, next)) = page else {
             view.end = from.unwrap_or_default();
             return Ok(view);
         };
+        if let Some(next) = next {
+            self.keep_transcript_cursor(cursor_path, next, bytes);
+        }
         let mut entries = page.entries;
         self.redact_page_secrets(&task.sandbox_id, &mut entries)
             .await;
