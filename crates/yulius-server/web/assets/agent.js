@@ -350,7 +350,8 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
         // A Ctrl-C would interrupt the new session as it starts (review of slice 9a, F7).
         const keys = data.replace(/\x03/g, '');
         if (keys) held.push(keys);
-        while (heldText().length > HELD_MAX) held.shift();
+        // The newest frame stays whole, also a long paste on its own (review of slice 9a, R3).
+        while (held.length > 1 && heldText().length > HELD_MAX) held.shift();
         return true;
       },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
@@ -358,7 +359,7 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       // leaves the keyboard where it is.
       onReady: () => {
         asked = { focus: false, from: null };
-        // Kept until they are sent: a socket not open yet sends them at the next first screen.
+        // Kept until they are sent: if the socket is not open yet, the next terminal mounted sends them.
         if (held.length && terminal.sendKeys(heldText())) held = [];
       },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },

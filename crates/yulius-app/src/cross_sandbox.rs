@@ -441,7 +441,7 @@ fn unseen(c: char) -> bool {
 
 /// Refuses a request whose texts hold characters the person who approves it cannot see
 /// (SPEC-335 XSR-008): what they read is all that reaches the task.
-fn check_visible(args: &Value) -> AppResult<()> {
+pub(crate) fn check_visible(args: &Value) -> AppResult<()> {
     let Some(map) = args.as_object() else {
         return Ok(());
     };
