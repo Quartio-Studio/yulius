@@ -391,6 +391,7 @@ mod tests {
         assert!(names_word("in AcmeShopService", "acme"));
         assert!(names_word("in AcmeShopService", "shop"));
         assert!(names_word("the ACMEShop logs", "acme"));
+        assert!(names_word("the Api2Shop logs", "shop"));
         assert!(names_word("MyApp broke", "MyApp"));
         assert!(names_word("myapp broke", "MyApp"));
         assert!(!names_word("the Shopping list", "shop"));
