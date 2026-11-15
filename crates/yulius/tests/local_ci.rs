@@ -1459,6 +1459,41 @@ fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
         .ok_or("job")?)
 }
 
+/// Review round 2 of SPEC-493 fix 5: a pull request whose change touches none of its jobs'
+/// `paths` gets a run that passed when it was queued: no lane, no dispatch, its status success
+/// with every job skipped, and the gate's answer Passed.
+#[tokio::test]
+async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n\n\
+         [[ci.jobs]]\nname = \"docs\"\ncommand = 'echo docs ran'\npaths = [\"docs/\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    // No dispatch: nothing ran it.
+    let (run, detail) = run_of(&f, &head).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("every job was skipped")),
+        "{run}"
+    );
+    for name in ["web", "docs"] {
+        assert_eq!(job_named(&detail, name)?["state"], "skipped", "{detail}");
+    }
+    let (state, description, _) = f.last_status(&head).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(description.contains("2 skipped"), "{description}");
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &head).await,
+        yulius_domain::ci::GateResult::Run(Some(yulius_domain::ci::RunState::Passed))
+    );
+    Ok(())
+}
+
 /// Review round 1 of SPEC-493 fix 5: a run queued again (a restart, the disk quota) keeps a job
 /// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
 #[tokio::test]
