@@ -386,6 +386,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [x] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
 - [ ] Fix 1c's independent review answered test-first
 - [ ] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
+- [ ] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
 - [ ] Fix 1d's independent review answered test-first
 - [ ] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
 - [ ] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
@@ -856,4 +857,24 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     one too); the restart test also asserts the cut-off; the architecture text says the new
     rules; the API document names the read's 20,000-round bound; `same_commit` is
     `delivery_merge`'s own; a playground's record reads "the merge".
+- **Review round 3** (delta `2e63bb004..e5a08d7ad`, Opus 5.5 by the policy for a third round).
+  Request changes. It checked every round-2 answer and caught by mutation the playground
+  passing no head or no base, the clean-merge check forced either way, and the restart replay
+  skipping the cut-off. Its runs: 168 of 168 targeted, 1,092 of 1,092 in `yulius-app` and
+  `yulius-domain`, lint and `cargo doc` clean. It found `<merge>^1` sound for squash,
+  merge-commit and rebase merges: the commit is fetched before the check, and a failed fetch
+  counts as "not approved". Answered (all own code):
+  - Minor: no test held the GitHub path's base, because a squash gives the same answer before
+    and after the merge. `delivery::a_merge_commit_merge_judges_the_head_against_the_branch_before_it`
+    merges by merge commit through the person's merge. An approval followed by a clean merge
+    of the integration branch keeps it; one followed by a merged side branch nobody reviewed
+    gets the caveat. Mutations caught: base `None` (the clean case gets the caveat), and the
+    base read after the merge, round 2's behaviour (the side branch counts as clean).
+  - Nit: the comments and the architecture text said "the merge commit's first parent" and
+    "before this merge". They now name what the base is on each path: `<merge>^1`, a rebase
+    merge's previous rewritten copy, or a playground's base after its squash.
+  - Nit, a trade-off: a merge found elsewhere has no base, so a reviewed head followed only by
+    clean merges of the integration branch gets the caveat. Not a defect in this change, since
+    the record only informs. It is fixed in fix 1d's pull request, which reads the merge
+    commit from GitHub (Plan).
 

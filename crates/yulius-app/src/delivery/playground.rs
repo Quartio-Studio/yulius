@@ -289,7 +289,9 @@ impl App {
             pr_number: None,
             updated_at: self.now(),
         };
-        // The squash landed on `base`: what the review is judged against (SPEC-493 REV-005).
+        // `base` (read after the refresh) holds the squash, a new commit: none of the head's
+        // commits are in it, so it serves as the base the review is judged against
+        // (SPEC-493 REV-005).
         let merged = crate::review::MergedHead {
             head: head.clone(),
             base: Some(base.clone()),

@@ -1201,7 +1201,9 @@ models of the runs that worked on the pull request (those still going when the p
 merged, known from its rounds or its own merge record, and every later one), and each round
 with its model, verdict and head. A merge path passes what it merged (`review::MergedHead`):
 an approval counts for that head, or one followed only by clean merges of the integration
-branch as it was before this merge (the merge commit's first parent, or a playground's base);
+branch at a base that holds none of the pull request's commits (`<merge>^1` on GitHub: the
+branch before a squash or merge commit, the previous rewritten copy for a rebase merge; a
+playground's base after its squash);
 a merge found elsewhere has no base, so only the approved head itself counts. When no round
 approved, the record says "no recorded review round approved its head".
 `GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull

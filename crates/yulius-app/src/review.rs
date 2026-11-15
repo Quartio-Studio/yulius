@@ -301,8 +301,8 @@ impl App {
     /// when known: the models of the runs that worked on it (those still going when the
     /// previous pull request merged, and every later one) and each of its review rounds with its
     /// model, verdict and head (SPEC-493 REV-005). A merge whose head no recorded round approved
-    /// (that head, or one followed only by clean merges of the integration branch as it was
-    /// before this merge, the reviewed-head rule) says so; without a known head, any approving
+    /// (that head, or one followed only by clean merges of the integration branch at
+    /// [`MergedHead::base`], the reviewed-head rule) says so; without a known head, any approving
     /// round counts.
     pub async fn record_review_models(
         &self,
@@ -386,8 +386,8 @@ impl App {
             approved = match (merged, round.head.as_deref()) {
                 (None, _) => true,
                 (Some(merged), Some(head)) if same_commit(head, &merged.head) => true,
-                // Followed only by clean merges of the integration branch as it was before this
-                // merge; with that base unknown, only the approved head itself counts.
+                // Followed only by clean merges of the integration branch at the merge's base;
+                // with that base unknown, only the approved head itself counts.
                 (Some(merged), Some(head)) => {
                     match (merged.base.as_deref(), record.worktree_path.as_deref()) {
                         (Some(base), Some(worktree)) => {
@@ -450,13 +450,14 @@ fn same_commit(a: &str, b: &str) -> bool {
     crate::agent_delivery::same_commit(short, long)
 }
 
-/// The head a merge merged, and the integration branch's commit before it when known (the
-/// merge commit's first parent): what a review is judged against (SPEC-493 REV-005).
+/// The head a merge merged, and when known a commit of the integration branch that holds none
+/// of the pull request's own commits: what a review is judged against (SPEC-493 REV-005).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedHead {
     /// The merged head.
     pub head: String,
-    /// The integration branch before the merge (a commit, or `<merge>^1`).
+    /// `<merge>^1` for a GitHub merge: the branch before a squash or merge commit, the previous
+    /// (rewritten) copy for a rebase merge. A playground's base after its own squash.
     pub base: Option<String>,
 }
 
