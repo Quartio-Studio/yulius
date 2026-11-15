@@ -25,6 +25,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::AppResult;
 use crate::model::ReviewRoundRecord;
+use yulius_domain::time::Timestamp;
 
 /// Yulius's reviewer agents.
 const REVIEWERS: [&str; 2] = [REVIEWER_AGENT, LATE_REVIEWER_AGENT];
@@ -248,7 +249,11 @@ impl App {
         let facts: Vec<yulius_domain::review::RoundFact> = rounds
             .into_iter()
             .map(|r| yulius_domain::review::RoundFact {
-                pull: (r.task_id.to_string(), r.pr_number.unwrap_or(0)),
+                // A pull request is its merge: a playground's merges have no number.
+                pull: (
+                    r.task_id.to_string(),
+                    r.merged_at.map_or(0, |at| u64::try_from(at.0).unwrap_or(0)),
+                ),
                 round: r.round,
                 model: r.model_answered.unwrap_or(r.model),
                 verdict: r
@@ -292,18 +297,19 @@ impl App {
     }
 
     /// Writes the merge record of `task`'s pull request `pr`, merged at `at` (the time the
-    /// store closed its rounds) with head `merged_head` when known: the models of the runs that
-    /// worked on it (those still going when the previous pull request merged, and every later
-    /// one), and each of its review rounds with its model, verdict and head (SPEC-493 REV-005).
-    /// A merge whose head no recorded round approved (that head, or one followed only by clean
-    /// merges of the integration branch, the reviewed-head rule) says so; without a known head,
-    /// any approving round counts.
+    /// store closed its rounds) with `merged` (its head and the integration branch before it)
+    /// when known: the models of the runs that worked on it (those still going when the
+    /// previous pull request merged, and every later one) and each of its review rounds with its
+    /// model, verdict and head (SPEC-493 REV-005). A merge whose head no recorded round approved
+    /// (that head, or one followed only by clean merges of the integration branch as it was
+    /// before this merge, the reviewed-head rule) says so; without a known head, any approving
+    /// round counts.
     pub async fn record_review_models(
         &self,
         task: &yulius_domain::ids::TaskId,
         pr: Option<u64>,
-        at: yulius_domain::time::Timestamp,
-        merged_head: Option<&str>,
+        at: Timestamp,
+        merged: Option<&MergedHead>,
     ) {
         let store = &self.deps.store;
         let Ok(all) = store.review_rounds(task, false).await else {
@@ -312,13 +318,26 @@ impl App {
         let Ok(Some(record)) = store.task(task).await else {
             return;
         };
+        let target = match store.sandbox(&record.sandbox_id).await {
+            Ok(Some(sandbox)) => format!("{}#{}", sandbox.slug, record.number),
+            _ => task.to_string(),
+        };
         let (this, before): (Vec<_>, Vec<_>) =
             all.into_iter().partition(|r| r.merged_at == Some(at));
-        // The task's previous pull request: the latest merge before this one.
+        // The task's previous pull request: the latest merge before this one, by its rounds or
+        // by its own merge record (a merge with no recorded round writes one too).
+        let recorded = store
+            .last_audit(&target, "delivery.review.models", Timestamp(0))
+            .await
+            .ok()
+            .flatten()
+            .map(|entry| entry.at)
+            .filter(|earlier| *earlier <= at);
         let since = before
             .iter()
             .filter_map(|r| r.merged_at)
             .filter(|merged| *merged < at)
+            .chain(recorded)
             .max();
         let own = record
             .model
@@ -364,16 +383,26 @@ impl App {
             .iter()
             .filter(|r| r.verdict.as_deref() == Some("approve"))
         {
-            approved = match (merged_head, round.head.as_deref()) {
+            approved = match (merged, round.head.as_deref()) {
                 (None, _) => true,
-                (Some(merged), Some(head)) if same_commit(head, merged) => true,
-                (Some(merged), Some(head)) => match record.worktree_path.as_deref() {
-                    Some(worktree) => {
-                        self.review_covers(&record, Path::new(worktree), head, merged)
+                (Some(merged), Some(head)) if same_commit(head, &merged.head) => true,
+                // Followed only by clean merges of the integration branch as it was before this
+                // merge; with that base unknown, only the approved head itself counts.
+                (Some(merged), Some(head)) => {
+                    match (merged.base.as_deref(), record.worktree_path.as_deref()) {
+                        (Some(base), Some(worktree)) => {
+                            self.review_covers_against(
+                                &record,
+                                Path::new(worktree),
+                                head,
+                                &merged.head,
+                                Some(base),
+                            )
                             .await
+                        }
+                        _ => false,
                     }
-                    None => false,
-                },
+                }
                 (Some(_), None) => false,
             };
             if approved {
@@ -381,8 +410,8 @@ impl App {
             }
         }
         let detail = format!(
-            "pull request #{}: written by {}; review rounds: {}{}",
-            pr.map_or_else(|| "?".to_owned(), |n| n.to_string()),
+            "{}: written by {}; review rounds: {}{}",
+            pr.map_or_else(|| "the merge".to_owned(), |n| format!("pull request #{n}")),
             if written.is_empty() {
                 "unknown".to_owned()
             } else {
@@ -399,10 +428,6 @@ impl App {
                 "; no recorded review round approved its head"
             }
         );
-        let target = match store.sandbox(&record.sandbox_id).await {
-            Ok(Some(sandbox)) => format!("{}#{}", sandbox.slug, record.number),
-            _ => task.to_string(),
-        };
         if let Err(err) = store
             .audit(
                 self.now(),
@@ -418,10 +443,21 @@ impl App {
     }
 }
 
-/// Whether `a` and `b` name the same commit: one is a prefix (at least 7 hex digits) of the other.
+/// Whether `a` and `b` name the same commit: the shorter (at least 7 hex digits) is a prefix of
+/// the longer, as `delivery_merge` reads a reviewed head.
 fn same_commit(a: &str, b: &str) -> bool {
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    short.len() >= 7 && long.starts_with(short)
+    crate::agent_delivery::same_commit(short, long)
+}
+
+/// The head a merge merged, and the integration branch's commit before it when known (the
+/// merge commit's first parent): what a review is judged against (SPEC-493 REV-005).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedHead {
+    /// The merged head.
+    pub head: String,
+    /// The integration branch before the merge (a commit, or `<merge>^1`).
+    pub base: Option<String>,
 }
 
 /// A round as the delivery view shows it.

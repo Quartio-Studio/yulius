@@ -94,7 +94,7 @@ fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
 }
 
 /// Whether a full or abbreviated commit SHA names `head` (at least 7 hex characters).
-fn same_commit(given: &str, head: &str) -> bool {
+pub(crate) fn same_commit(given: &str, head: &str) -> bool {
     let given = given.to_ascii_lowercase();
     given.len() >= 7
         && given.len() <= head.len()

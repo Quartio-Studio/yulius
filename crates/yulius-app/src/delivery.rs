@@ -1410,7 +1410,7 @@ impl App {
         sandbox: &SandboxId,
         expected: &DeliveryStage,
         next: &DeliveryRecord,
-        merged_head: Option<&str>,
+        merged: Option<&crate::review::MergedHead>,
     ) -> AppResult<bool> {
         let written = self.deps.store.transition_delivery(expected, next).await?;
         if written && next.stage != *expected {
@@ -1419,7 +1419,7 @@ impl App {
         // The merge record says who wrote and who reviewed (SPEC-493 REV-005): the store closed
         // the pull request's rounds in the same write.
         if written && next.stage == DeliveryStage::MergedIntegration && *expected != next.stage {
-            self.record_review_models(&next.task_id, next.pr_number, next.updated_at, merged_head)
+            self.record_review_models(&next.task_id, next.pr_number, next.updated_at, merged)
                 .await;
         }
         Ok(written)
@@ -1765,17 +1765,20 @@ impl App {
                 stage: next,
                 updated_at: self.now(),
             };
-            let merged_head = observed
-                .pr
-                .as_ref()
-                .filter(|pull| pull.merged)
-                .map(|pull| pull.head_sha.clone());
+            // Merged elsewhere: the integration branch before it is not known here, so only
+            // an approval of the merged head itself counts.
+            let merged_head = observed.pr.as_ref().filter(|pull| pull.merged).map(|pull| {
+                crate::review::MergedHead {
+                    head: pull.head_sha.clone(),
+                    base: None,
+                }
+            });
             if self
                 .dlv_transition_at(
                     &task.sandbox_id,
                     &observed.record.stage,
                     &reconciled,
-                    merged_head.as_deref(),
+                    merged_head.as_ref(),
                 )
                 .await?
             {
@@ -2149,9 +2152,17 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = pull.merged.then_some(pull.head_sha.as_str());
+                    let merged_head = pull.merged.then(|| crate::review::MergedHead {
+                        head: pull.head_sha.clone(),
+                        base: None,
+                    });
                     let _ = self
-                        .dlv_transition_at(&sandbox.id, &record.stage, &reconciled, merged_head)
+                        .dlv_transition_at(
+                            &sandbox.id,
+                            &record.stage,
+                            &reconciled,
+                            merged_head.as_ref(),
+                        )
                         .await;
                 }
             }
@@ -3837,7 +3848,10 @@ impl App {
             &task.sandbox_id,
             &observed.record.stage,
             &next,
-            Some(&pull.head_sha),
+            Some(&crate::review::MergedHead {
+                head: pull.head_sha.clone(),
+                base: Some(format!("{merge_sha}^1")),
+            }),
         )
         .await?;
         let actor = Self::dlv_actor_login(&ctx.user);

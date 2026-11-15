@@ -609,6 +609,94 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 REV-005 (review round 2 of fix 1c): a playground merge records whether a review
+/// round approved the head it merged: a commit of the task's own after the approval is not
+/// covered; a clean merge of the integration branch after it is, judged against the integration
+/// branch as it was before this merge.
+#[tokio::test]
+async fn a_playground_merge_records_whether_the_merged_head_was_approved() -> TestResult {
+    use yulius_app::model::ReviewRoundRecord;
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_app::ports::store::{AuditStore as _, CoordinationStore as _, SandboxStore as _};
+    use yulius_domain::ids::TaskId;
+    use yulius_domain::time::Timestamp;
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let approve = |task: &str, head: String| {
+        let store = h.store.clone();
+        let task = task.to_owned();
+        async move {
+            store
+                .insert_review_round(&ReviewRoundRecord {
+                    id: format!("round-{task}"),
+                    task_id: TaskId::parse(&task)?,
+                    round: 1,
+                    head: Some(head),
+                    agent: "yulius-reviewer".into(),
+                    model: "claude-fable-5-2".into(),
+                    reason: "round".into(),
+                    subagent_id: Some(format!("rev-{task}")),
+                    model_answered: None,
+                    started_at: Timestamp(1),
+                    ended_at: Some(Timestamp(2)),
+                    verdict: Some("approve".into()),
+                    cut_off: false,
+                    pr_number: None,
+                    merged_at: None,
+                })
+                .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+    };
+    let record_of = |task: &str| {
+        let store = h.store.clone();
+        let task = task.to_owned();
+        async move {
+            let record = store.task(&TaskId::parse(&task)?).await?.ok_or("task")?;
+            let sandbox = store.sandbox(&record.sandbox_id).await?.ok_or("sandbox")?;
+            let mut details = store
+                .audit_details(
+                    &format!("{}#{}", sandbox.slug, record.number),
+                    "delivery.review.models",
+                    1,
+                )
+                .await?;
+            Ok::<_, Box<dyn std::error::Error>>(details.pop().unwrap_or_default())
+        }
+    };
+    // Approved at its head, then a commit of its own: not covered.
+    let first = playground_task(&h, &made.body, "t1", &[("one.txt", "1\n")], &["done"]).await?;
+    approve("t1", git(&first, &["rev-parse", "HEAD"])?.trim().to_owned()).await?;
+    std::fs::write(first.join("more.txt"), "unreviewed\n")?;
+    git(&first, &["add", "-A"])?;
+    git(&first, &["commit", "-q", "-m", "after the review"])?;
+    let merged = merge(&h, &owner, "t1").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    let detail = record_of("t1").await?;
+    assert!(
+        detail.starts_with("the merge: written by ")
+            && detail.ends_with("; no recorded review round approved its head"),
+        "{detail}"
+    );
+    // Approved at its head, then a clean merge of the integration branch (which t1 moved): covered.
+    let second = playground_task(&h, &made.body, "t2", &[("two.txt", "2\n")], &["done"]).await?;
+    approve(
+        "t2",
+        git(&second, &["rev-parse", "HEAD"])?.trim().to_owned(),
+    )
+    .await?;
+    git(&second, &["fetch", "-q", "origin"])?;
+    git(&second, &["merge", "-q", "--no-edit", "origin/dev"])?;
+    let merged = merge(&h, &owner, "t2").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    let detail = record_of("t2").await?;
+    assert!(
+        detail.contains("approve at ") && !detail.contains("no recorded review round approved"),
+        "{detail}"
+    );
+    Ok(())
+}
+
 /// PLY-007: an unfinished task is refused with what to do, and nothing lands.
 #[tokio::test]
 async fn an_unfinished_task_is_not_merged() -> TestResult {

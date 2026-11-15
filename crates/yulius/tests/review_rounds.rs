@@ -18,6 +18,14 @@ use yulius_domain::time::Timestamp;
 /// A round as the test reads it: number, reviewer, why, subagent, verdict.
 type Seen<'a> = (u32, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
 
+/// A merge of `head` whose base is not known (only an approval of that head counts).
+fn merged_at(head: &str) -> yulius_app::review::MergedHead {
+    yulius_app::review::MergedHead {
+        head: head.to_owned(),
+        base: None,
+    }
+}
+
 /// The Agent tool's `PreToolUse` input for a subagent of `kind`.
 fn agent_start(kind: &str) -> Value {
     json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent",
@@ -520,7 +528,12 @@ async fn the_merge_record_names_this_pull_requests_rounds_and_authors() -> TestR
         }
     };
     h.app
-        .record_review_models(&task, Some(4), Timestamp(9_000), Some("c0ffee0123456789"))
+        .record_review_models(
+            &task,
+            Some(4),
+            Timestamp(9_000),
+            Some(&merged_at("c0ffee0123456789")),
+        )
         .await;
     let detail = details().await?.remove(0);
     assert_eq!(
@@ -592,7 +605,7 @@ async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
     let target = format!("{}#{}", sandbox.slug, record.number);
     for (head, approved) in [("aaaaaaa1111111111", true), ("bbbbbbb2222222222", false)] {
         h.app
-            .record_review_models(&task, Some(9), Timestamp(3_000), Some(head))
+            .record_review_models(&task, Some(9), Timestamp(3_000), Some(&merged_at(head)))
             .await;
         let detail = h
             .store
