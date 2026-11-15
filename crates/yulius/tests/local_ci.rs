@@ -1378,6 +1378,29 @@ paths = ["crates/a/**"]
         "{web}"
     );
     assert_eq!(job_of(&detail, "check")?["state"], "passed");
+    assert_eq!(
+        web["exit_code"], 78,
+        "the skip code, as for any skipped job: {web}"
+    );
+    // Its span reads as a job that was skipped, so the stages count runs against skips.
+    {
+        use yulius_app::ports::store_ext::SpanStore as _;
+        let spans =
+            f.h.store
+                .subject_spans(
+                    &yulius_domain::ids::SandboxId::parse("s1")?,
+                    yulius_domain::stages::SubjectKind::CiRun,
+                    run["id"].as_str().ok_or("id")?,
+                    50,
+                )
+                .await?;
+        assert!(
+            spans.iter().any(|s| s.kind == "job"
+                && s.name == "web"
+                && s.outcome.as_deref() == Some("skipped")),
+            "{spans:?}"
+        );
+    }
     let (state, description, _) = f.last_status(&head).ok_or("status")?;
     assert_eq!(state, "success", "{description}");
     assert!(description.contains("1 skipped"), "{description}");
@@ -1436,6 +1459,86 @@ fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
         .ok_or("job")?)
 }
 
+/// Review round 1 of SPEC-493 fix 5: a run queued again (a restart, the disk quota) keeps a job
+/// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
+#[tokio::test]
+async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::ids::SandboxId;
+    use yulius_domain::time::Timestamp;
+    let h = support::harness()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    support::seed_sandbox(&h, "s1", "app", "u1").await?;
+    let run = CiRunRecord {
+        id: "run-1".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::PullRequest(1),
+        sha: "a".repeat(40),
+        source: GateSource::ProjectConfig,
+        state: RunState::Running,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(2)),
+        ended_at: None,
+    };
+    let job = |ordinal: u32, id: &str, state: RunState, reason: Option<&str>| CiJobRecord {
+        id: id.into(),
+        run_id: "run-1".into(),
+        ordinal,
+        name: id.into(),
+        key: id.into(),
+        command: "true".into(),
+        matrix: None,
+        state,
+        reason: reason.map(str::to_owned),
+        exit_code: None,
+        output: String::new(),
+        failures: None,
+        started_at: None,
+        ended_at: None,
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    h.store
+        .insert_ci_run(
+            &run,
+            &[
+                job(
+                    0,
+                    "web",
+                    RunState::Skipped,
+                    Some("no file this job tests changed (paths: a/**)"),
+                ),
+                job(1, "scan", RunState::Skipped, Some("exited 78")),
+                job(2, "check", RunState::Running, None),
+            ],
+        )
+        .await?;
+    assert!(
+        h.store
+            .requeue_ci_run("run-1", "again", Timestamp(3))
+            .await?
+    );
+    let jobs = h.store.ci_jobs("run-1", false).await?;
+    let state = |name: &str| jobs.iter().find(|j| j.name == name).map(|j| j.state);
+    assert_eq!(state("web"), Some(RunState::Skipped), "{jobs:?}");
+    assert_eq!(
+        state("scan"),
+        Some(RunState::Queued),
+        "a job's own skip runs again"
+    );
+    assert_eq!(state("check"), Some(RunState::Queued));
+    Ok(())
+}
+
 /// Review round 1 of SPEC-493 fix 5: a squash merge of a pull request that skipped a `paths` job
 /// gives the integration branch the tree that pull request's run tested, but that run never ran
 /// the job: the integration branch's own run runs it instead of reusing the result (CJP-003).
@@ -1480,9 +1583,11 @@ async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
     let f = fixture_tuned(
         false,
         |_| {
-            "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+            // Each job a CPU, so the runs' budgets fit beside each other and only the turn of
+            // `web` could make the pull request's run wait.
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\ncpus = 1\n\n\
              [[ci.jobs]]\nname = \"web\"\ncommand = 'sleep 6; echo web ran'\nexclusive = true\n\
-             paths = [\"crates/a/**\"]\n"
+             cpus = 1\npaths = [\"crates/a/**\"]\n"
                 .to_owned()
         },
         None,

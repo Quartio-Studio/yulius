@@ -257,6 +257,9 @@ pub const MAX_JOB_PATHS: usize = 50;
 /// The project file that defines the jobs: a change to it runs every job (SPEC-493 CJP-003).
 pub const JOBS_FILE: &str = "yulius.toml";
 
+/// How the reason of a job skipped for its `paths` begins (a requeue keeps that skip).
+pub const PATHS_SKIP_REASON: &str = "no file this job tests changed";
+
 /// A job's `paths` (`["crates/a/**", "docs/"]`), normalized as scope claims are.
 ///
 /// # Errors
@@ -288,12 +291,26 @@ pub fn paths_skip(paths: &[String], changed: Option<&[String]>) -> Option<String
     if paths.is_empty() || changed.iter().any(|file| file == JOBS_FILE) {
         return None;
     }
-    let patterns: Vec<crate::scope::Pattern> = paths
+    let mut patterns: Vec<crate::scope::Pattern> = Vec::with_capacity(paths.len() * 2);
+    for text in paths {
+        // A path that no longer parses tests everything: never skipped on doubt.
+        let Ok(pattern) = crate::scope::Pattern::parse(text) else {
+            return None;
+        };
+        // A name without a glob (`crates/web`) is the file and the folder of that name.
+        if !text.contains(['*', '?'])
+            && let Ok(folder) = crate::scope::Pattern::parse(&format!("{text}/"))
+        {
+            patterns.push(folder);
+        }
+        patterns.push(pattern);
+    }
+    // A changed path no pattern can be matched against (a backslash, a control character)
+    // could be one the job tests: it runs.
+    if changed
         .iter()
-        .filter_map(|text| crate::scope::Pattern::parse(text).ok())
-        .collect();
-    // A path that no longer parses tests everything: never skipped on doubt.
-    if patterns.len() != paths.len() {
+        .any(|file| crate::scope::Pattern::parse(file).is_err())
+    {
         return None;
     }
     let touched = changed.iter().any(|file| {
@@ -301,12 +318,7 @@ pub fn paths_skip(paths: &[String], changed: Option<&[String]>) -> Option<String
             .iter()
             .any(|pattern| crate::scope::pattern_matches(pattern, file))
     });
-    (!touched).then(|| {
-        format!(
-            "no file this job tests changed (paths: {})",
-            paths.join(", ")
-        )
-    })
+    (!touched).then(|| format!("{PATHS_SKIP_REASON} (paths: {})", paths.join(", ")))
 }
 
 /// Validates job definitions and expands their matrices, in order.
@@ -1169,6 +1181,13 @@ mod tests {
         assert_eq!(paths_skip(&paths, None), None, "never skipped on doubt");
         assert_eq!(paths_skip(&[], Some(&["web/x.js".to_owned()])), None);
         assert!(skip(&[]).is_some(), "a change of no file touches none");
+        // A name without a glob is the folder of that name too.
+        let folder = vec!["crates/pomerado".to_owned()];
+        let touches = |file: &str| paths_skip(&folder, Some(&[file.to_owned()])).is_none();
+        assert!(touches("crates/pomerado/src/lib.rs") && touches("crates/pomerado"));
+        assert!(!touches("crates/pomerado2/src/lib.rs"));
+        // A changed path that cannot be matched runs the job.
+        assert_eq!(skip(&["web\\x.js"]), None);
     }
 
     fn target(reference: CiRef, sha: &str) -> Target {

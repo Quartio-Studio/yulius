@@ -845,13 +845,14 @@ impl App {
                         RunState::Queued
                     },
                     reason: skip.clone(),
-                    exit_code: skip.as_ref().map(|_| 0),
+                    exit_code: skip.as_ref().map(|_| dom::SKIP_EXIT_CODE),
                     output: skip
                         .as_ref()
                         .map_or_else(String::new, |why| format!("{why}.\n")),
                     failures: None,
-                    started_at: skip.as_ref().map(|_| queued_at),
-                    ended_at: skip.as_ref().map(|_| queued_at),
+                    // Set below, so the job's span is recorded as any job's is.
+                    started_at: None,
+                    ended_at: None,
                     need: job.need,
                     timeout_minutes: job.timeout_minutes,
                     exclusive: job.exclusive,
@@ -872,6 +873,25 @@ impl App {
             run
         };
         self.deps.store.insert_ci_run(&run, &jobs).await?;
+        // A skipped job's start and end, one after the other: its span reads as a job that was
+        // skipped (the stages count runs against skips).
+        for job in jobs.iter().filter(|job| job.state == RunState::Skipped) {
+            for update in [
+                CiJobUpdate {
+                    started_at: Some(queued_at),
+                    ..CiJobUpdate::default()
+                },
+                CiJobUpdate {
+                    ended_at: Some(queued_at),
+                    ..CiJobUpdate::default()
+                },
+            ] {
+                self.deps
+                    .store
+                    .transition_ci_job(&job.id, &[RunState::Skipped], RunState::Skipped, &update)
+                    .await?;
+            }
+        }
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(sha), reference = %run.reference.key(), jobs = jobs.len(), "CI run queued");
         self.ci_publish(&run.id).await;
         self.ci_wake();

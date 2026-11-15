@@ -773,7 +773,8 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
     let (mut need, mut secrets) = (Need::default(), Vec::new());
-    let (mut timeout_minutes, mut exclusive, mut paths) = (None, false, Vec::new());
+    let (mut timeout_minutes, mut exclusive) = (None, false);
+    let mut paths_entry = None;
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -800,19 +801,23 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 timeout_minutes = Some(u32::try_from(minutes).unwrap_or(u32::MAX));
             }
             "exclusive" => exclusive = bool_value(entry)?,
-            "paths" => {
-                let job = name.as_deref().unwrap_or("?");
-                let items: Vec<String> = match &entry.value {
-                    Value::Array(items) => items.clone(),
-                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-                    _ => Vec::new(),
-                };
-                paths = crate::ci::parse_paths(job, &items)
-                    .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
-            }
+            // Read once the name is known, wherever it stands in the entry.
+            "paths" => paths_entry = Some(entry),
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
+    let paths = match paths_entry {
+        Some(entry) => {
+            let items: Vec<String> = match &entry.value {
+                Value::Array(items) => items.clone(),
+                Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+                _ => Vec::new(),
+            };
+            crate::ci::parse_paths(name.as_deref().unwrap_or("?"), &items)
+                .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?
+        }
+        None => Vec::new(),
+    };
     Ok(JobDef {
         name: name.ok_or_else(|| err(table.line, ConfigProblem::MissingKey("name")))?,
         command: command_text
@@ -2248,6 +2253,17 @@ mod tests {
             "paths = [\"a/**b\"]",
             "paths = [\"a\", \"a\"]",
         ] {
+            // Named even when `paths` comes before `name`.
+            assert_eq!(
+                problem(&format!(
+                    "[[ci.jobs]]\n{extra}\nname = \"x\"\ncommand = \"y\"\n"
+                )),
+                Some((
+                    2,
+                    ConfigProblem::Ci(CiConfigError::InvalidPaths("x".to_owned()))
+                )),
+                "{extra} first"
+            );
             assert_eq!(
                 problem(&job(extra)),
                 Some((
