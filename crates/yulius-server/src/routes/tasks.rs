@@ -155,6 +155,15 @@ pub async fn accept_control(
     Ok(Json(app.accept_task_control(&ctx, &tid).await?))
 }
 
+/// `POST /api/tasks/{tid}/control/take-back` (SPEC-490 OWN-009).
+pub async fn take_back_control(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.take_back_task_control(&ctx, &tid).await?))
+}
+
 pub async fn delete(
     State(app): State<AppState>,
     Auth(ctx): Auth,

@@ -723,6 +723,83 @@ async fn a_stretch_write_applies_only_to_the_state_it_read() -> R {
     Ok(())
 }
 
+/// SPEC-490 OWN-009: a hand-over on request records who gave control, who takes the task back
+/// only while they are that giver; handing on records the new giver, handing back to the giver
+/// and a pass past an absent owner record nobody.
+#[tokio::test]
+async fn the_giver_takes_a_task_back_until_control_moves_again() -> R {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, alice) = seed(&store).await?;
+    for (id, login) in [("u2", "bob"), ("u3", "carol")] {
+        store.insert_user(&user(id, Some(login), false)?).await?;
+    }
+    let (bob, carol) = (UserId::parse("u2")?, UserId::parse("u3")?);
+    let t = store.insert_task(&task("t1", &sid, &alice)?).await?;
+    assert_eq!(store.control_from(&t.id).await?, None);
+    let hand = |from: UserId, to: UserId, at: i64| {
+        let (store, id) = (&store, t.id.clone());
+        async move {
+            assert!(store.request_control(&id, &to, Timestamp(at)).await?);
+            store.pass_control(&id, &from, &to, Timestamp(at + 1)).await
+        }
+    };
+    assert!(hand(alice.clone(), bob.clone(), 10).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(alice.clone()));
+    // Only the giver, from the owner seen; a request waiting meanwhile goes with it.
+    assert!(store.request_control(&t.id, &carol, Timestamp(15)).await?);
+    assert!(
+        !store
+            .take_back_control(&t.id, &bob, &carol, Timestamp(16))
+            .await?
+    );
+    assert!(
+        !store
+            .take_back_control(&t.id, &carol, &alice, Timestamp(16))
+            .await?
+    );
+    assert!(
+        store
+            .take_back_control(&t.id, &bob, &alice, Timestamp(17))
+            .await?
+    );
+    let back = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(
+        (back.owner.clone(), back.updated_at),
+        (alice.clone(), Timestamp(17))
+    );
+    assert_eq!(store.control_from(&t.id).await?, None);
+    assert_eq!(store.control_request(&t.id).await?, None);
+    assert!(
+        !store
+            .take_back_control(&t.id, &alice, &alice, Timestamp(18))
+            .await?
+    );
+
+    // Handed on: the new giver is the one who handed it on.
+    assert!(hand(alice.clone(), bob.clone(), 20).await?);
+    assert!(hand(bob.clone(), carol.clone(), 30).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(bob.clone()));
+    assert!(
+        !store
+            .take_back_control(&t.id, &carol, &alice, Timestamp(32))
+            .await?
+    );
+    // Handed back to its giver: nobody can take it back.
+    assert!(hand(carol.clone(), bob.clone(), 40).await?);
+    assert_eq!(store.control_from(&t.id).await?, None);
+    // Past an absent owner: nobody either.
+    assert!(hand(bob.clone(), alice.clone(), 50).await?);
+    assert_eq!(store.control_from(&t.id).await?, Some(bob.clone()));
+    assert!(
+        store
+            .take_control(&t.id, &alice, &carol, Timestamp(60))
+            .await?
+    );
+    assert_eq!(store.control_from(&t.id).await?, None);
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]

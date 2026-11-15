@@ -181,7 +181,8 @@ async fn only_the_owner_steers_a_task() -> TestResult {
     f.h.store
         .update_user_flags(&UserId::parse("u-admin")?, None, Some(true))
         .await?;
-    for who in [&f.bob, &admin] {
+    let superadmin = crate::support::setup_superadmin_creds(&f.h).await?;
+    for who in [&f.bob, &admin, &superadmin] {
         for (method, path, body) in steering(id) {
             let refused = call(&f.h.router, method.clone(), &path, body, who).await?;
             assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
@@ -1055,5 +1056,165 @@ async fn an_asker_signed_out_of_github_gives_way() -> TestResult {
     let refused = control(&f, Method::POST, "/accept", &f.alice).await?;
     assert_eq!(refused.status, 409, "{}", refused.body);
     assert_eq!(f.h.store.control_request(&f.task.id).await?, None);
+    Ok(())
+}
+
+async fn take_back(
+    f: &Fixture,
+    who: &Creds,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/control/take-back", id_of(f)),
+        None,
+        who,
+    )
+    .await
+}
+
+/// SPEC-490 OWN-009, OWN-010, AC-9: Alice hands her task to Bob on his request and takes it back
+/// without asking: it is hers again, acts on GitHub as her, Bob is refused control again, and the
+/// terminal and the audit say so. Nobody else takes it back, and once she has, nor does she.
+#[tokio::test]
+async fn the_giver_takes_a_task_back() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("write"));
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    // Nobody handed it over: nothing to take back.
+    assert_eq!(take_back(&f, &f.alice).await?.status, 409);
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let passed = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(
+        passed.body["control_from"]["login"], "alice",
+        "{}",
+        passed.body
+    );
+    let said = notices(&mut watch);
+    assert!(
+        said.iter().any(|n| n.contains("@alice can take it back")),
+        "{said:?}"
+    );
+
+    // Bob owns it now: nothing to take back from himself.
+    let own = take_back(&f, &f.bob).await?;
+    assert_eq!(own.status, 409, "{}", own.body);
+    let refused = take_back(&f, &carol).await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("@alice"),
+        "{}",
+        refused.body
+    );
+    let mut events = f.h.app.events.subscribe();
+    let back = take_back(&f, &f.alice).await?;
+    assert_eq!(back.status, 200, "{}", back.body);
+    // Bob, from whom it was taken, is told in his own event stream (OWN-010).
+    let mut told = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::ControlTakenBack { task_id, by, .. } =
+            &envelope.event
+        {
+            told.push((envelope.user.clone(), task_id.clone(), by.clone()));
+        }
+    }
+    assert_eq!(
+        told,
+        vec![(
+            Some(UserId::parse("u-b")?),
+            id_of(&f).to_owned(),
+            "alice".to_owned()
+        )]
+    );
+    assert_eq!(back.body["owner"]["login"], "alice");
+    assert_eq!(back.body["control_from"], serde_json::Value::Null);
+    assert_eq!(github_actor(&f.h, "tt").await?, "alice");
+    assert_eq!(audited(&f.h, "t1", "task.control_taken_back").await?, 1);
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("returned to @alice")
+                && n.contains("acts on GitHub as @alice again")),
+        "{said:?}"
+    );
+    let (alice, bob) = (auth(&f.h, "u-a").await?, auth(&f.h, "u-b").await?);
+    assert!(f.h.app.can_work(&alice, &f.task.id).await);
+    assert!(!f.h.app.can_work(&bob, &f.task.id).await);
+    assert_eq!(take_back(&f, &f.alice).await?.status, 409);
+    Ok(())
+}
+
+/// SPEC-490 OWN-009, AC-9, AC-10: the right ends when control moves again. Handed on by Bob to
+/// Carol, only Bob takes it back; handed back to Alice on her request, nobody does; a giver who
+/// can no longer work is refused.
+#[tokio::test]
+async fn taking_back_ends_when_control_moves_again() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("write"));
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.alice).await?.status,
+        200
+    );
+    assert_eq!(control(&f, Method::POST, "", &carol).await?.status, 200);
+    let on = control(&f, Method::POST, "/accept", &f.bob).await?;
+    assert_eq!(on.body["control_from"]["login"], "bob", "{}", on.body);
+    assert_eq!(take_back(&f, &f.alice).await?.status, 403);
+    // Bob takes it back: his own again, and nobody gave it to him. He hands it to Alice on her
+    // request (he may take it back), and she hands it back to him on his: nobody may then.
+    assert_eq!(take_back(&f, &f.bob).await?.status, 200);
+    assert_eq!(control(&f, Method::POST, "", &f.alice).await?.status, 200);
+    let to_alice = control(&f, Method::POST, "/accept", &f.bob).await?;
+    assert_eq!(
+        to_alice.body["control_from"]["login"], "bob",
+        "{}",
+        to_alice.body
+    );
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let mut events = f.h.app.events.subscribe();
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+    let returned = control(&f, Method::POST, "/accept", &f.alice).await?;
+    // Its notice promises no take-back (review round 2).
+    let said = notices(&mut watch);
+    assert!(
+        said.iter().any(|n| n.contains("from @alice to @bob"))
+            && !said.iter().any(|n| n.contains("can take it back")),
+        "{said:?}"
+    );
+    // Handed back on request: nobody took anything back.
+    while let Ok(envelope) = events.try_recv() {
+        assert!(
+            !matches!(
+                envelope.event,
+                yulius_contracts::events::UiEvent::ControlTakenBack { .. }
+            ),
+            "{:?}",
+            envelope.event
+        );
+    }
+    assert_eq!(returned.body["owner"]["login"], "bob", "{}", returned.body);
+    assert_eq!(returned.body["control_from"], serde_json::Value::Null);
+    assert_eq!(take_back(&f, &f.alice).await?.status, 409);
+
+    // Bob hands it to Alice again; a giver who can no longer work takes nothing back.
+    assert_eq!(control(&f, Method::POST, "", &f.alice).await?.status, 200);
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.bob).await?.status,
+        200
+    );
+    f.h.github.set_perm("bob", "acme/repo", perms("read"));
+    f.h.store
+        .put_access(
+            &UserId::parse("u-b")?,
+            &f.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            f.h.app.now(),
+        )
+        .await?;
+    assert_eq!(take_back(&f, &f.bob).await?.status, 403);
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert_eq!(task.owner.as_str(), "u-a");
     Ok(())
 }

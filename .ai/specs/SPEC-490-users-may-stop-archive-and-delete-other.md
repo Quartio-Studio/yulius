@@ -1,11 +1,11 @@
 ---
-yulius-task: 42c13112-2302-432f-ab26-08ee3802b561
-status: in-progress
+yulius-task: b712b6fe-5df1-41bd-bc2c-3067c851236a
+status: done
 ---
 
 # SPEC-490: anyone who may work in a project stops, archives and deletes its tasks; control passes only by the owner's consent
 
-Status: in-progress
+Status: done
 Date: 2026-11-14
 Owner: Yulius task #473
 Scope authorization: the request of task #473 (by MrFishPL, 2026-11-14): "users should be able
@@ -120,7 +120,10 @@ are their creator's (reported as issue #1289, see Decisions).
   and no access answers 404. The same holds for `task_stop`, `task_archive`, `task_delete`,
   `task_close` and `tasks_bulk {action: "stop"}` with numbers, for the person the caller acts
   for, through the Superagent, the remote MCP and a task's agent; a caller's own task stays
-  refused.
+  refused. A playground's guest, who has write access to it (SPEC-410 GST-003), tidies only
+  their own tasks there: the maker's are refused with "Task #N is @maker's: a guest stops,
+  archives and deletes only their own tasks on this playground.", and the page does not offer
+  them (review round 1).
 - **OWN-003** "All" stays one's own. `tasks_bulk` with `all` and the sidebar's "Archive all"
   take the person's own tasks only (the tool says how many of other people it left, the
   button's title reads "Archive your Done tasks"); another person's task is tidied by naming
@@ -130,8 +133,12 @@ are their creator's (reported as issue #1289, see Decisions).
   with one message: "Task #N is @owner's and only they steer it: it acts on GitHub as them. Ask
   them for control on the task's page. You can still stop, archive or delete it." There is no
   exception for administrators or the superadmin. Start onboarding is control of the
-  onboarding task: one that exists is started by its owner; a sandbox without one gets it
-  created for the person who starts onboarding (never as a side effect of a refused start).
+  onboarding task. One that has run (it has a session on record) is started by its owner, and
+  anyone else is refused before anything is prepared, so a refusal pushes no first commit. One
+  that has never run is nobody's yet, however it was made (by Yulius for a new task, or by
+  another person's start that has not run it yet): whoever starts onboarding takes it, as an
+  audited hand-over (`task.control_passed`); a sandbox without one gets it created for them
+  (review rounds 1 and 2).
 - **OWN-005** The owner learns who tidied. A stop, close-out, archive, restore or deletion of a
   task by someone who does not own it is audited under that person's name with the owner's
   (`task.stopped`, `task.closed_by_person`, `task.archived`, `task.unarchived`,
@@ -155,7 +162,7 @@ are their creator's (reported as issue #1289, see Decisions).
   switched on) that opens the task, and the task's row in the sidebar says "@login asks for
   control" until it is answered. A request waits without a time limit: silence is not consent.
 - **OWN-009** Consent can be withdrawn. A hand-over on request records who gave control
-  (`tasks.control_from`, schema version 59). That person takes the task back without asking
+  (`tasks.control_from`, schema version 60: the file is `0059`, after `dev`'s `0060`). That person takes the task back without asking
   (`POST /api/tasks/{tid}/control/take-back`): one conditional update of the owner and the
   giver, then what a hand-over does (commit identity, fingerprints, a restart for personal MCP
   servers, the terminal notice "Control of this task returned to @a: it acts on GitHub as @a
@@ -180,11 +187,12 @@ are their creator's (reported as issue #1289, see Decisions).
 - [x] A tidy by someone else is audited with the owner and said in the task's terminal
 - [x] The web UI offers tidy on another person's task everywhere and says why control is refused and how to ask
 - [x] The documents and the tools' descriptions say the new rule (api, product, architecture, changes)
-- [ ] Independent review of the first pull request (the rule and the UI), findings fixed
-- [ ] The owner hears of a request anywhere, and control can be asked for from the task menu
-- [ ] The person who handed a task over takes it back (schema 59, the route, the UI)
-- [ ] Independent review of the second pull request (consent), findings fixed
-- [ ] Gates green on the final head, evidence recorded
+- [x] Independent review of the first pull request (the rule and the UI), findings fixed
+- [x] The first review's findings fixed: no side effect of a refused Start onboarding, guests, a stronger action kept, the missing tests
+- [x] The owner hears of a request anywhere, and control can be asked for from the task menu
+- [x] The person who handed a task over takes it back (schema 59, the route, the UI)
+- [x] Independent review of the second pull request (consent), findings fixed
+- [x] Gates green on the final head, evidence recorded
 
 ## Acceptance criteria
 
@@ -212,14 +220,19 @@ are their creator's (reported as issue #1289, see Decisions).
   are enabled and Continue is disabled with the title of OWN-006; Stop asks naming the owner
   and stops the task; the sidebar row has its quick archive; the bar reads as OWN-007; the
   menu's Request control asks and turns into Withdraw request; "Archive all" leaves it.
-- **AC-12** (OWN-004) B starts onboarding of a sandbox without an onboarding task: the task
-  is B's. A start refused for want of a Claude account still creates nothing.
+- **AC-12** (OWN-004) B starts onboarding of a sandbox without an onboarding task, or with
+  A's that never ran (made when A created a task): the task is B's, the second audited as a
+  hand-over. With A's onboarding task that has run, in an empty repository, B is refused
+  naming A and the repository gets no first commit.
+- **AC-13** (OWN-002) A guest of A's playground is refused stop, archive and delete of A's task
+  (nothing changes) and stops their own; A stops the guest's task. The page offers the guest
+  neither Archive nor Delete on A's task, saying why. A start refused for want of a Claude account still creates nothing.
 - **AC-8** (OWN-008; e2e) A request for control on the owner's task, while they look at another
   page, adds a notification that opens the task, and the sidebar row says who asks.
 - **AC-9** (OWN-009) A hands over to B on B's request: `control_from` is A. A takes back: owner
   A, `control_from` null, B refused control again, audit `task.control_taken_back`, the notice.
-  Refused: C (never the giver) 403; A after B handed on to C on C's request (409, the giver is
-  B); A disabled or without write access (403); a stale race (409).
+  Refused: C (never the giver) 403; A after B handed on to C on C's request (403 naming B, the
+  giver now); a giver without write access (403); nobody to take it back from (409).
 - **AC-10** (OWN-009) B hands the task back to A on A's request: `control_from` is null (B
   cannot take it back). An absent owner's task passing to C clears it.
 - **AC-11** (OWN-010; e2e) The giver sees Take back, uses it and gets the terminal back.
@@ -227,7 +240,7 @@ are their creator's (reported as issue #1289, see Decisions).
 ## Test plan
 
 - Unit (`crates/yulius-domain/src/task_access.rs`): AC-4.
-- Store (`crates/yulius-store/tests/store.rs`): migration 59; `pass_control` records the giver,
+- Store (`crates/yulius-store/tests/store.rs`): migration file 0059 (schema version 60); `pass_control` records the giver,
   `take_control` clears it, `take_back_control` refuses stale expectations.
 - Integration (`crates/yulius/tests/task_ownership.rs`): AC-1 to AC-3, AC-5, AC-6, AC-9, AC-10
   through `App` and the HTTP router with two GitHub users and the Superagent's tools; the
@@ -267,12 +280,23 @@ are their creator's (reported as issue #1289, see Decisions).
   another person's running task unless it held their personal secrets. A message decides what
   the agent does next under its owner's name; the request names it ("sending it messages").
   The secrets check is gone with it: nobody but the owner gets that far.
-- **The onboarding task is the starter's.** Refusing everyone but the sandbox's creator would
-  leave a sandbox whose creator is away with no task to ask control of; creating the task for
-  the creator and then refusing would create it as a side effect of a refusal, which SPEC-246
-  forbids. A task that does not exist is nobody's, so it is created for the person who starts
-  onboarding and acts on GitHub as them; one that exists (a start that failed, a stopped
-  onboarding) is its owner's like any task.
+- **An onboarding task that never ran is the starter's.** Refusing everyone but the sandbox's
+  creator would leave a sandbox whose creator is away with no task to ask control of; creating
+  the task for the creator and then refusing would create it as a side effect of a refusal,
+  which SPEC-246 forbids. Yulius also creates it by itself, resting, when someone creates a task
+  in a pending sandbox (SPEC-097), for the sandbox's creator: nobody has given that task
+  anything yet, so whoever starts onboarding takes it. The rule is "never ran", not "made by
+  Yulius": a task another person's start made a moment ago, or whose start failed before a
+  session, has not acted for anyone either, and both people meant to start onboarding (review
+  round 2). One that has run (a start that failed after its session began, a stopped onboarding)
+  is its owner's like any task, and the refusal comes before the empty repository's first commit
+  (review round 1).
+- **A playground's guest tidies only their own tasks.** A guest joined by a link (ADR-0260) and
+  works beside the maker for a while; "users of the instance" are its accounts, and a guest is
+  not one. Deleting the maker's tasks, which cannot be undone, is not what a guest link offers;
+  a guest stops their own, and the maker stops a guest's (review round 1).
+- **A stronger action keeps its check.** `load_task` with `Configure` or `Administer` (no
+  caller today) checks that action on the project, not `Work` (review round 1).
 - **The sandbox's browser is the project's, not a task's.** One Chromium per sandbox is
   shared by its people and its agents (BRW-002); a tab has no owner, and a request to act in
   the browser reaches everyone who may work there. Acting in it types nothing into a task's
@@ -288,3 +312,110 @@ are their creator's (reported as issue #1289, see Decisions).
 - **No agent asks, grants or takes back.** Asking and consenting stay a person's own acts in
   the page or the API: a Superagent reads transcripts and web pages, and consent given on a
   sentence it read there is not the owner's.
+
+## Evidence
+
+Delivered in two pull requests from branch `feat/473-users-may-stop-archive-and-delete-other`.
+
+**Slice 1** (Plan items 1-7): pull request #1292, merged into `dev` on 2026-11-14 at head
+`aa154aec4`, whose own Yulius CI run passed.
+
+- `scripts/dev ci` at `cae995db3`: exit 0, 4389 tests passed (lint, docs, deps, macOS build
+  included). `cd e2e && npx e2e run`: 1036 passed and one of the new tests failed on its timing;
+  it was fixed (`2bd5c0875`) and `ownership.e2e.ts` then passed 9 of 9. The full suite was not
+  run again until slice 2, below.
+- Every route and MCP tool that takes a task was traced down to its check (Context, "Every way
+  to change a task"). Three ways in that asked no owner were found and closed: `task_message`,
+  the attachment restore, Start onboarding.
+- Mutation check (`target/mutants-473.py`, removing each part of the rule): 12 of 12 killed.
+- Review round 1 (a fresh session, `om-code-review`), at `cae995db3`: APPROVE, with seven minor
+  findings, all in this change's code and fixed in slice 2: a stronger action shrinking to
+  `Work`, guests tidying the maker's tasks, a refused Start onboarding pushing a first commit,
+  an onboarding task made for the creator blocking everyone else, no test of a close-out by
+  someone else, the superadmin missing from the steering test, a notice creating a runtime.
+  The merge of `dev` was reviewed apart (APPROVE at `aa154aec4`).
+- Changed existing tests (the old rule refused what is now open): `http_auth.rs` (the
+  superadmin archives another person's task; continue is still refused), `prepared.rs` (a
+  non-owner's stop of a prepared task), `cockpit.rs` (`task_close` and a named `tasks_bulk`
+  stop of another person's task), `secrets_scopes.rs`, `pool_supervision.rs` and
+  `task_message.rs` (a message is refused for being someone else's task, whatever it holds).
+
+**Slice 2** (Plan items 8-12), final head before the review:
+
+- `scripts/dev ci` (after merging `dev` at `50d6efc70`): exit 0, 4414 tests passed, 17
+  skipped.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 84 files passed, 1 skipped; 1041 tests
+  passed, 1 skipped.
+- Mutation check, slice 1's and slice 2's rules together: 19 of 19 killed (guests, the giver
+  check, the giver's access, the giver recorded, the onboarding claim before the push, a
+  close-out said, a stronger action kept).
+- New tests: `task_access::tests` (guest, stronger action), `playground_guests::
+  a_guest_tidies_only_their_own_tasks`, `projects::
+  onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters`, `task_message::
+  someone_else_closes_out_an_idle_task_and_is_named`, `task_ownership::
+  the_giver_takes_a_task_back`, `task_ownership::taking_back_ends_when_control_moves_again`,
+  `store::the_giver_takes_a_task_back_until_control_moves_again`,
+  `yulius-store tests::version_fifty_eight_tasks_have_no_giver`, e2e `ownership.e2e.ts` (the
+  owner hears of a request; the giver takes the task back) and `playground-guests.e2e.ts`.
+- Migration numbering: `dev` merged SPEC-491's `0060_task_spec_status.sql` as schema version
+  59 first; this change's `0059_task_control_from.sql` follows it as version 60 (the position
+  is the version).
+- Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off
+  in Yulius"; nothing was scanned. That is unrun, not passed.
+
+- Review round 2 (a fresh session), at `f1dace4ab`: REQUEST CHANGES. Findings, all in this
+  change's code, each fixed: (major) the person a task was taken back from was told only when
+  their page had seen the task change before, so usually not; now the server sends them a
+  `task.control_taken_back` event (`App::take_back_task_control`, tested in
+  `task_ownership::the_giver_takes_a_task_back`, e2e with no earlier event); (minor) a voluntary
+  hand-back was reported as a take-back, gone with the event (no event on a hand-back, tested);
+  the hand-over notice promised a take-back on a hand-back to the giver, now worded from the
+  stored giver (tested); "schema 59" in the documents, now 60, and `control_from` missing from
+  `TaskSummary` in `docs/api.md`; a request that waited before the page loaded was not under
+  the bell, now added from a sandbox's first loaded list (e2e `controlask=1`); the onboarding
+  rule's wording ("made by Yulius") is now "never ran", as the code decides; the owner's own
+  take-back answers 409 "you already own this task". Left as they are: a take-back during a
+  personal-MCP launch says "ask again once it runs" (the hand-over's existing refusal), and the
+  extra query per task in lists for `control_from` (one indexed read, as for the request).
+
+- Review round 3 (a fresh session), at `debcaeb45`: APPROVE. One minor finding, fixed test-first
+  (a sandbox whose first task list failed was never scanned for waiting requests; e2e "a waiting
+  request is heard once a failed task list loads"), and wording nits fixed (code comments on the
+  onboarding rule, this Test plan's schema number; the Plan item keeps its name "schema 59",
+  which is its step's title). Answered, not changed: a waiting request in a sandbox not opened in
+  this page load reaches the bell when it is opened (its sidebar row is marked); a take-back
+  while the former owner has no page open is not replayed, as no notification is; the event is
+  sent to the person whatever their access now, naming a task they owned; a take-back drops a
+  third person's waiting request without `task.control_dropped`, as an absent owner's pass
+  does.
+- Delta review of round 3's fix and a merge of `dev` (at `7732a83a9`): APPROVE; it saw "a
+  request that waited before the page loaded is heard" fail once in 4 runs (the bell's panel
+  closed, likely by the task page's terminal taking the keyboard). The tests that open the bell
+  now start from the sandbox page, which has no terminal: `ownership.e2e.ts` passed 5 of 5
+  runs (13 tests each) after that. `scripts/dev ci` at `7732a83a9`: exit 0, 4413 tests passed.
+- After round 2's fixes, at `f65ae5520`: `scripts/dev ci` exit 0, 4414 tests passed, 17
+  skipped; `npx e2e run` 84 files passed, 1 skipped, 1042 tests passed, 1 skipped.
+- Delivery: slice 2 was delivered by Yulius task #475 from branch
+  `feat/475-deliver-task-473-s-second-slice-consent`, because task #473's own `delivery_merge`
+  is refused after its first pull request merged (issue #1299). That branch is `dev` at
+  `3523948f3` fast-forwarded to the approved head `df00249f3` (the same tree), plus this
+  spec's `yulius-task` line and this bullet, and two merges of `dev`, which moved meanwhile
+  (#1298 at `3730d963a`, #1300 at `2047ac50b`; both clean, no conflict, and the lines this
+  change adds and removes against `dev` are the same as at `df00249f3`). Run on that branch:
+  `scripts/dev ci` exit 0 three times, 4413 tests passed at `35dd70050` (before `dev` moved),
+  4419 at `9d8580753` (with #1298) and 4422 at `6c440dbcf` (with #1300), 17 skipped each;
+  `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` exit 0 twice, 84 files passed, 1 skipped,
+  1043 tests passed at `35dd70050` and 1045 at `9d8580753`, 1 skipped each (not run again at
+  `6c440dbcf`: #1300 changed nothing under `crates/yulius-server/web` or `e2e`); `yulius
+  security-scan` printed "Security scan disabled" (unrun, not passed). #1298's requests to
+  other sandboxes run the same-sandbox tools as the person, so this change's rule decides
+  them too; it added no migration.
+
+**Not tested here:** the desktop notification of a request (the browser's `Notification` is
+the same path the notification centre's other entries use, and its e2e covers only the bell
+and the toast); real GitHub permissions (the tests use the fake GitHub and cached
+permissions); a real Claude Code session receiving the "Stopped by" notice (the fake agent's
+terminal hub is checked).
+
+**Reported, not changed:** issue #1289, any writer can run their own prompt as another person
+through that person's automation (who an automation runs as).

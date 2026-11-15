@@ -152,6 +152,10 @@ pub fn public() -> Router<AppState> {
             "/api/tasks/{tid}/control-request/accept",
             post(tasks::accept_control),
         )
+        .route(
+            "/api/tasks/{tid}/control/take-back",
+            post(tasks::take_back_control),
+        )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(

@@ -335,6 +335,7 @@ task_number, from?, limit?, max_chars?, tail?}` (≤ 200 entries, ≤ 100 000 ch
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
 | POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, when the asker can no longer work in the project (the request is dropped), or while a task holding the owner's personal MCP servers is starting or switching (SPEC-332); a live run holding them resumes for the new owner (same conversation and subscription, nothing typed), or stops if it cannot |
+| POST | `/api/tasks/{tid}/control/take-back` | write (the giver) | → `TaskSummary` with the giver as `owner` and `control_from` null; the person who handed the task over on request (`TaskSummary.control_from`) takes it back without asking (SPEC-490 OWN-009, ADR-0331): the task acts on GitHub as them again, its terminal says "Control of this task returned to @a", audited `task.control_taken_back`, and the person it was taken from gets the `task.control_taken_back` event; 409 for the owner; 403 for anyone else (naming the giver) or a giver who can no longer work; 409 when nobody can take it back (never handed over on request, handed back to its giver, or passed from an absent owner) or the task changed meanwhile |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
@@ -355,7 +356,10 @@ terminal. The terminal opens read-only (`can_write: false`) for anyone but the o
 API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with a
 `task_id` need the owner too; reading a worktree does not. `POST
 /api/sandboxes/{sid}/onboarding/approve` starts the onboarding task, so it needs that task's
-owner; a sandbox without one gets it created for the person who starts onboarding.
+owner once it has run (refused before the repository's first commit); one that never ran
+passes to the person who starts onboarding (audited `task.control_passed`), and a sandbox
+without one gets it created for them. A playground's guest tidies only their own tasks there
+(403 "… a guest stops, archives and deletes only their own tasks on this playground.").
 
 ```json
 TaskSummary = {
@@ -365,6 +369,7 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
+  "control_from": {"login": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14, "first_total?": 4},
   "archived": false, "account_label": "Claude #2|null", "account_id?": "…",
@@ -1894,7 +1899,7 @@ do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names;
 
 ## UI event stream
 
-`WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
+`WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.control_taken_back","task_id","sandbox_id","number","title","by"}` (only to the person a task was taken back from, SPEC-490 OWN-010), `{"type":"task.removed",
 "task_id"}`, `{"type":"steps.updated","task_id"}`,
 `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
