@@ -707,7 +707,6 @@ mod real {
     use crate::support::TestResult;
     use crate::support::agents::FakeAgentOptions;
     use yulius_app::model::TaskMode;
-    use yulius_app::ports::store::TaskStore as _;
     use yulius_domain::usage::UsageWindow;
     use yulius_ptyhost::test_support::locate_fake_agent;
 
