@@ -352,6 +352,8 @@ struct Live {
     front: Option<DockerFrontRecord>,
     /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
     bound: HashMap<u64, u8>,
+    /// What the journal said of its front's state (SPEC-494 DFJ-005).
+    front_watch: crate::front_gate::StateWatch,
 }
 
 impl Live {
@@ -361,6 +363,7 @@ impl Live {
             relays,
             front: None,
             bound: HashMap::new(),
+            front_watch: crate::front_gate::StateWatch::default(),
         }
     }
 
@@ -796,6 +799,32 @@ impl Manager {
             Err(error) => {
                 tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
             }
+        }
+    }
+
+    /// Journals what grew in the state of `sandbox`'s front since the last tick, each kind at most
+    /// once a minute (SPEC-494 DFJ-005). A state file of an earlier front is ignored.
+    fn watch_front(&self, sandbox: &str, state: &mut SandboxState) {
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let Some(front) = &live.front else {
+            return;
+        };
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let Some(seen) = crate::front_gate::read_state(&paths.docker_state(), front.pid) else {
+            return;
+        };
+        for grew in live.front_watch.observe(&seen, Instant::now()) {
+            tracing::warn!(
+                sandbox,
+                new = grew.new,
+                total = grew.total,
+                held = seen.held,
+                max = seen.max,
+                "the sandbox's Docker front: {}",
+                grew.what
+            );
         }
     }
 
@@ -1653,6 +1682,7 @@ impl Manager {
                         }
                     }
                     self.keep_front(&sandbox, &mut state).await;
+                    self.watch_front(&sandbox, &mut state);
                     self.bind_docker_dirs(&sandbox, &mut state).await;
                     let front = state.live.as_ref().map_or(0, Live::front_pid);
                     let runs = tokio::task::spawn_blocking(move || {
