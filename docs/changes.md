@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- The Superagent sees what happened to a task (SPEC-487 slice 10b, task #469): `task_screen`
+  shows a task's screen, also the last one its crashed run left, with the exit code and reason;
+  `task_usage` the tokens each task used, as the Dashboard counts them; `checkout` how far its
+  repository checkout is behind the integration branch (a stale checkout once gave a wrong "no").
 - A secret's value is typed by its person on the Superagent's panel (SPEC-487 slice 10a, task
   #469, [ADR-0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
   The Superagent could not take a value, so people retyped keys on the Secrets page or pasted

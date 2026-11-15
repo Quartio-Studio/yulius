@@ -1655,6 +1655,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "cd_deploy",
             "cd_rollback",
             "cd_status",
+            "checkout",
             "ci_cancel",
             "ci_prioritize",
             "ci_rerun",
@@ -1703,11 +1704,13 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_pause",
             "task_question_dismiss",
             "task_restart",
+            "task_screen",
             "task_start_now",
             "task_stop",
             "task_switch",
             "task_unpause",
             "task_update",
+            "task_usage",
             "tasks_bulk",
             "tasks_list",
             "tasks_reorder",
@@ -5052,6 +5055,143 @@ async fn wait_for_count(f: &Fixture, count: usize) -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    Ok(())
+}
+
+/// SPEC-487 VIS-001 to VIS-004 (wall 11: "no task cost …, no crash exit code or last screen,
+/// stale checkout"): the Superagent reads a crashed task's exit and the last screen its run left
+/// (redacted as the page's terminal is), a task's tokens and the period's estimated cost as the
+/// Dashboard shows them, and how far the repository's checkout is from its integration branch.
+#[tokio::test]
+async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::task::TaskStatus;
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let said = |record: &Value| record.to_string();
+    let task = support::seed_task(
+        &f.h,
+        "t-crash",
+        sid().as_str(),
+        "u-alice",
+        TaskStatus::Stopped(yulius_domain::task::StopReason::Crashed),
+        None,
+    )
+    .await?;
+    // An agent secret the task printed (review of slice 10b, F2): its value never comes back.
+    let value = "s3cr3t-deploy-token-0123456789";
+    {
+        use yulius_app::ports::store::UserStore as _;
+        let ctx = yulius_app::auth::AuthContext {
+            user: f.h.store.user(&alice).await?.ok_or("alice")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let input: yulius_contracts::api::secrets::AgentSecretInput =
+            serde_json::from_value(json!({"name": "DEPLOY_TOKEN", "value": value}))?;
+        f.h.app
+            .create_agent_secret(&ctx, sid().as_str(), &input)
+            .await?;
+    }
+    let run_dir = f.data.join("runs").join("t-crash-1");
+    std::fs::create_dir_all(&run_dir)?;
+    std::fs::write(
+        run_dir.join("final-screen"),
+        format!(
+            "80 24\nusing {value}\r\nerror: the build ran out of memory\r\nwarning: retry with fewer jobs\r\n"
+        ),
+    )?;
+    f.h.store
+        .insert_attempt(&yulius_app::model::AttemptRecord {
+            id: yulius_domain::ids::AttemptId::parse("a-crash-1")?,
+            task_id: task.id.clone(),
+            seq: 1,
+            harness: yulius_domain::harness::Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: yulius_app::model::LaunchKind::New,
+            model: None,
+            state: yulius_domain::task::AttemptState::Exited,
+            run_dir: run_dir.to_string_lossy().into_owned(),
+            token_hash: "x".into(),
+            host_token: f.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: f.h.app.now(),
+            ended_at: Some(f.h.app.now()),
+            exit_code: Some(137),
+            exit_reason: Some("crashed".into()),
+        })
+        .await?;
+    let (screen, is_error) =
+        cockpit_tool(&f, &token, "task_screen", json!({"number": task.number})).await?;
+    assert!(!is_error, "{screen}");
+    assert!(
+        said(&screen).contains("the build ran out of memory"),
+        "{screen}"
+    );
+    assert!(said(&screen).contains("137"), "{screen}");
+    assert!(said(&screen).contains("crashed"), "{screen}");
+    assert!(!said(&screen).contains(value), "redacted: {screen}");
+    assert!(
+        said(&screen).contains("DEPLOY_TOKEN"),
+        "its label: {screen}"
+    );
+    let (one, _) = cockpit_tool(
+        &f,
+        &token,
+        "task_screen",
+        json!({"number": task.number, "lines": 1}),
+    )
+    .await?;
+    assert_eq!(one["screen"], "warning: retry with fewer jobs", "{one}");
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "task_screen", json!({"number": 999})).await?;
+    assert!(is_error, "{refused}");
+
+    let (usage, is_error) = cockpit_tool(&f, &token, "task_usage", json!({})).await?;
+    assert!(!is_error, "{usage}");
+    assert!(
+        usage["tasks"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["number"] == task.number)),
+        "{usage}"
+    );
+    // Review of slice 10b, F1: the default period is the last 7 days, not all time.
+    assert!(usage["period"]["from"].is_string(), "{usage}");
+    let other = support::seed_task(
+        &f.h,
+        "t-other",
+        sid().as_str(),
+        "u-alice",
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    let (one, is_error) =
+        cockpit_tool(&f, &token, "task_usage", json!({"number": task.number})).await?;
+    assert!(!is_error, "{one}");
+    let numbers: Vec<u64> = one["tasks"]
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter_map(|r| r["number"].as_u64())
+        .collect();
+    assert_eq!(
+        numbers,
+        [u64::from(task.number)],
+        "not #{}: {one}",
+        other.number
+    );
+
+    let (checkout, is_error) = cockpit_tool(&f, &token, "checkout", json!({})).await?;
+    assert!(
+        is_error && said(&checkout).contains("not cloned"),
+        "{checkout}"
+    );
     Ok(())
 }
 
