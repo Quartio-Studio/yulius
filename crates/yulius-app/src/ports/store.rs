@@ -14,9 +14,9 @@ use crate::model::{
     AccountChange, AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess,
     ControlRequest, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord,
     GitHubTokenRecord, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
-    ProviderSessionRecord, RecordReservation, RecountOutcome, RunFacts, SandboxRecord,
-    ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
-    WebSessionRecord,
+    ProviderSessionRecord, RecordReservation, RecountOutcome, ReviewRoundRecord, RunFacts,
+    SandboxRecord, ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord,
+    TaskTimes, UserRecord, WebSessionRecord,
 };
 
 /// Instance singleton and setup.
@@ -715,6 +715,33 @@ pub trait CoordinationStore: Send + Sync {
     /// Messages of a sandbox involving a task (sent or received), newest last: history, for a
     /// project's export.
     async fn task_messages(&self, task: &TaskId, limit: u32) -> AppResult<Vec<MessageRecord>>;
+    /// Inserts a review round (SPEC-493 REV-004).
+    async fn insert_review_round(&self, round: &ReviewRoundRecord) -> AppResult<()>;
+    /// The review rounds of a task, oldest first: those of its open pull request only
+    /// (`open_only`), else all.
+    async fn review_rounds(
+        &self,
+        task: &TaskId,
+        open_only: bool,
+    ) -> AppResult<Vec<ReviewRoundRecord>>;
+    /// Gives the newest open round of `task` that has no subagent yet, and runs as one of
+    /// `agents`, its subagent id; `false` when there is none or the id is known already.
+    async fn link_review_subagent(
+        &self,
+        task: &TaskId,
+        agents: &[&str],
+        subagent: &str,
+    ) -> AppResult<bool>;
+    /// Ends the open round run by `subagent` with its report: when, its verdict, and the model
+    /// that answered when known. `false` when no open round is that subagent's.
+    async fn end_review_round(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        at: Timestamp,
+        verdict: Option<&str>,
+        model_answered: Option<&str>,
+    ) -> AppResult<bool>;
     /// Inserts a scope claim.
     async fn insert_claim(&self, claim: &ScopeClaimRecord) -> AppResult<()>;
     /// Active claims of a sandbox.

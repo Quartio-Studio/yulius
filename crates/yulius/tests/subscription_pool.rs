@@ -54,7 +54,7 @@ fn usage(five: f64, five_resets: Timestamp, week: f64, week_resets: Timestamp) -
     .to_string()
 }
 
-async fn add_account(
+pub(crate) async fn add_account(
     h: &Harness,
     id: &str,
     usage_json: Option<String>,
@@ -80,7 +80,7 @@ async fn add_account(
 }
 
 /// A running task in `mode` whose live attempt (task token [`TOKEN`]) runs on `account`.
-async fn running_task(
+pub(crate) async fn running_task(
     h: &Harness,
     mode: TaskMode,
     account: &AccountId,
@@ -177,7 +177,7 @@ async fn running_task_set_to(
     Ok(task.id)
 }
 
-async fn seed(h: &Harness) -> TestResult {
+pub(crate) async fn seed(h: &Harness) -> TestResult {
     h.store
         .insert_user(&yulius_app::model::UserRecord {
             id: yulius_domain::ids::UserId::parse("u1")?,
@@ -197,7 +197,7 @@ async fn seed(h: &Harness) -> TestResult {
 }
 
 /// POSTs a hook as the agent's hook client would; returns (status, Retry-After, body).
-async fn hook(
+pub(crate) async fn hook(
     internal: &axum::Router,
     event: &str,
     body: serde_json::Value,

@@ -170,6 +170,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
         ("Stop", 694_800),
         ("Notification", 15),
         ("SessionEnd", 15),
+        ("SubagentStart", 15),
+        ("SubagentStop", 15),
     ] {
         assert_eq!(
             settings["hooks"][event],
@@ -191,6 +193,12 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
                 "timeout": 60
             }] },
             { "matcher": "Edit|MultiEdit|Write|NotebookEdit", "hooks": [{
+                "type": "command",
+                "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
+                "timeout": 60
+            }] },
+            // A subagent's start: the reviewer of a review round (SPEC-493 REV-002).
+            { "matcher": "Agent|Task", "hooks": [{
                 "type": "command",
                 "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
                 "timeout": 60

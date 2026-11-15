@@ -149,6 +149,11 @@ fn colour(code: u8, text: &str) -> String {
     format!("\x1b[38;5;{code}m{text}\x1b[39m")
 }
 
+/// Claude Code's tools that start a subagent (the hook client sends their `PreToolUse` here).
+fn yulius_harness_agent_tool(tool: &str) -> bool {
+    matches!(tool, "Agent" | "Task")
+}
+
 impl App {
     /// Handles one hook event for the run owning `token`, sent by its client at `sent_ms` (Unix
     /// ms; none from an older client: now). Unknown events answer empty.
@@ -366,6 +371,14 @@ impl App {
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
             events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
+            events::SUBAGENT_START => {
+                self.review_subagent_started(ctx, input).await;
+                Ok(HookReply::Output(HookOutput::default()))
+            }
+            events::SUBAGENT_STOP => {
+                self.review_subagent_stopped(ctx, input).await;
+                Ok(HookReply::Output(HookOutput::default()))
+            }
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -1207,6 +1220,14 @@ impl App {
     /// documentation, so the way through stays open, and an agent that loops meets the Stop
     /// gate. A failure to decide lets the edit go ahead (the Stop gate still checks).
     async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+        // A subagent's start: a review round's reviewer (SPEC-493 REV-002).
+        if input
+            .tool_name
+            .as_deref()
+            .is_some_and(|tool| yulius_harness_agent_tool(tool))
+        {
+            return self.review_gate(ctx, input).await;
+        }
         match self.edit_gate(&ctx.task, input).await {
             Ok(Some(reason)) => HookOutput::deny_tool(reason),
             Ok(None) => HookOutput::default(),

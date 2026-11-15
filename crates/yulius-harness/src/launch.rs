@@ -50,13 +50,16 @@ pub use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
-/// (`/exit`, Ctrl+C twice, `/clear`, a signal), before the process is gone.
-pub const CLAUDE_HOOK_EVENTS: [&str; 5] = [
+/// (`/exit`, Ctrl+C twice, `/clear`, a signal), before the process is gone. `SubagentStart` and
+/// `SubagentStop` tell it which subagent a review round runs as and its report (SPEC-493).
+pub const CLAUDE_HOOK_EVENTS: [&str; 7] = [
     "SessionStart",
     "UserPromptSubmit",
     "Stop",
     "Notification",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
 /// The pseudo-event of Claude Code's `statusLine` command (`yulius hook claude StatusLine`): it
 /// prints the task's status line and forwards the plan usage Claude Code read from its own API
@@ -575,6 +578,12 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
             }] },
             { "matcher": crate::guard_client::EDIT_TOOLS.map(|(tool, _)| tool).join("|"), "hooks": [{
+                "type": "command",
+                "command": pre_tool_use,
+                "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+            }] },
+            // A subagent's start: Yulius picks a review round's reviewer (SPEC-493 REV-002).
+            { "matcher": crate::guard_client::AGENT_TOOLS.join("|"), "hooks": [{
                 "type": "command",
                 "command": pre_tool_use,
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
