@@ -342,26 +342,29 @@ test('a conflict kept over a reload is still a choice after another reload', asy
   }
 });
 
+// #1246, review round 1 of SPEC-493 fix 2: the test counted every notepad's loads, and the Team
+// notepad's opening load, answered late (it is held here until the count starts), failed and
+// retried inside the window: "expected 4 to be less than or equal to 3". It counts the sandbox
+// notepad's loads now. A resync in the window (events lost: every notepad loads again) leaves a
+// reload already waiting for its pause to that retry: before, it loaded at once.
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await setMock(browser, 'failNoteLoads', true);
   const before = await sandboxLoads(browser);
+  // The Team notepad's opening load is answered (and fails) only now.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
-  // A resync inside the window (#1246), as the mock's sandbox changes and an event-socket
-  // reconnect on a loaded host send: every notepad loads again (events may have been lost), and
-  // the sandbox notepad's own back-off still holds.
   await browser.evaluate(() => new Promise((resolve) => setTimeout(() => {
-    const db = (window as unknown as { __yuliusMock: { eventSockets: Array<{ push: (data: string) => void }> } }).__yuliusMock;
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'resync' }));
+    (window as unknown as { __yuliusMock: { resyncNow: () => void } }).__yuliusMock.resyncNow();
     resolve(null);
   }, 1200)));
   await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1300)));
-  // The load the edit's event asked for, its first retry 1 s later and the resync's; the next
-  // retry waits 2 s.
+  // The load the edit's event asked for and its first retry 1 s later; the resync's waits for
+  // the next retry, 2 s after that.
   const tries = await sandboxLoads(browser);
-  expect(tries - before).toBeLessThanOrEqual(3);
+  expect(tries - before).toBeLessThanOrEqual(2);
   // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
   await expect.poll(() => sandboxLoads(browser)).toBeGreaterThanOrEqual(before + 2);
   await setMock(browser, 'failNoteLoads', false);
