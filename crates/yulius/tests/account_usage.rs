@@ -219,9 +219,10 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
 
 /// SPEC-464 UCL-004, UCL-005, UCL-009: a model's limit stored for a subscription survives a
 /// usage reading, which cannot see it; the API shows it as the model's weekly window beside the
-/// subscription's own usage, and the subscription reads `limited` while the default model cannot
-/// run on it. An allowance whose reset passed is dropped, and a window read at 100 % makes the
-/// subscription `limited` like a limit Claude reported.
+/// subscription's own usage, and the subscription reads `limited` only while the default model
+/// cannot run on it: one that is out of Fable's allowance alone is `ok` (SPEC-493 MDL-001). An
+/// allowance whose reset passed is dropped, and a window read at 100 % makes the subscription
+/// `limited` like a limit Claude reported.
 #[tokio::test]
 async fn a_reading_keeps_a_models_limit_and_the_status_follows_the_windows() -> TestResult {
     let h = harness_with(HarnessOptions {
@@ -274,7 +275,8 @@ async fn a_reading_keeps_a_models_limit_and_the_status_follows_the_windows() -> 
     assert!(usage["weekly_fable"]["resets_at"].is_string(), "{usage}");
     assert_eq!(usage["secondary"]["used_percent"], 7.5, "the week is read");
     assert_eq!(usage["primary"]["used_percent"], 42.0);
-    assert_eq!(out.body["status"], "limited");
+    // Only Fable is used up there: the default model, Opus 5.5, still runs (SPEC-493).
+    assert_eq!(out.body["status"], "ok");
 
     let reset = refresh("a-reset").await?;
     assert!(

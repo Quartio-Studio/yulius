@@ -13,6 +13,13 @@ we're getting errors. Fix.", two screenshots) and their follow-up of the same da
 records and two more requirements (a manual refresh on the Subscriptions page; reset times known
 and used). Issue [#1172](https://github.com/Quartio-Studio/yulius/issues/1172).
 
+Amended 2026-11-15 by [SPEC-493](SPEC-493-faster-from-start-to-merge-opus-writes-f.md) and
+[ADR-0340](../../docs/decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md): the
+default model is Opus 5.5. The pool's rules for "the default model" (UCL-005: a subscription
+reads `limited` while the default model cannot run on it; `available` and `resumes_at` count for
+it) are unchanged and now read the weekly Opus window where they read Fable's allowance; a
+subscription that is only out of Fable's credits is not `limited` and takes default tasks.
+
 ## Goal
 
 A task whose subscription refuses its model for used-up usage credits goes on by itself on a

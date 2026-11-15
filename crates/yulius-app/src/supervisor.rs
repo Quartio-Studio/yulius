@@ -147,6 +147,10 @@ pub struct TaskRuntime {
     /// The limits nothing says the end of that left the task with nowhere to go: how often in a
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
+    /// The model family a limit refused after the session's person switched to it (`/model`),
+    /// written by every placement after a limit and taken by the next launch, which says it
+    /// with the model it runs when it is the launch past that limit (SPEC-493 MDL-002).
+    pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -557,6 +561,7 @@ impl TaskRuntime {
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
             blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
+            switched_limit: Mutex::new(None),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -2048,6 +2053,22 @@ impl App {
         let before = earlier.last().and_then(|run| run.model.as_deref());
         if let Some(said) = model_change_notice(own, before, model) {
             self.runtime(&task.id).hub.notice(said);
+        }
+        // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
+        // with the model this run is launched with, unless that is of the refused family again
+        // (its usage changed since the decision), which the line above says. Every launch takes
+        // it, so a start that is not the one past that limit leaves nothing for a later one.
+        let kept = self
+            .runtime(&task.id)
+            .switched_limit
+            .lock()
+            .ok()
+            .and_then(|mut kept| kept.take());
+        let ran = kept.filter(|_| matches!(start, RunStart::AfterLimit));
+        if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
+            self.runtime(&task.id)
+                .hub
+                .notice(switched_back_notice(ran, model));
         }
         let attempt = AttemptRecord {
             id: attempt_id.clone(),
@@ -5244,6 +5265,16 @@ impl App {
                 .iter()
                 .any(|o| matches!(o, Observation::TurnComplete { .. }));
             if catching_up {
+                // What a review round's reviewer ran on and whether a limit cut it off are facts
+                // to note however late (SPEC-493 REV-004): noting one again changes nothing.
+                for observation in &observations {
+                    if let Observation::SubagentAnswered { .. }
+                    | Observation::SubagentCutOff { .. } = observation
+                    {
+                        self.on_observation(&task_id, &attempt, observation.clone())
+                            .await;
+                    }
+                }
                 // Turns, the goal and a usage limit are applied once, as the replay's final
                 // state: a limit that a later turn overtook (Claude Code continued by itself) is
                 // history (SPEC-072 LRS-001).
@@ -5519,6 +5550,16 @@ impl App {
             }
             // Kept above; its background work is the `BackgroundStarted` beside it.
             Observation::WorkflowLaunched { .. } => {}
+            // What a review round's reviewer really ran on, and whether a limit cut it off
+            // (SPEC-493 REV-004): nothing else depends on it.
+            Observation::SubagentAnswered { agent_id, model } => {
+                self.review_subagent_noted(task_id, &agent_id, Some(&model), false)
+                    .await;
+            }
+            Observation::SubagentCutOff { agent_id, .. } => {
+                self.review_subagent_noted(task_id, &agent_id, None, true)
+                    .await;
+            }
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
@@ -5540,16 +5581,18 @@ impl App {
         runtime.end_turn();
         runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
+        // The limit of the model this run was launched with (SPEC-482 FBK-006), unless it names
+        // another one: the model the session was switched to inside it (SPEC-493 MDL-002).
+        let family = self.run_family_of(attempt).await;
+        let ran = switched_model(&limit, family);
         if let Some(account) = &attempt.account_id {
-            // The limit of the model this run was launched with (SPEC-482 FBK-006).
-            let family = self.run_family_of(attempt).await;
             self.record_limit(account, limit, family).await;
         }
         let app = self.clone();
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
         tokio::spawn(async move {
-            app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+            app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
                 .await;
         });
     }
@@ -5574,6 +5617,22 @@ impl App {
         trigger: Trigger,
         blind: bool,
     ) {
+        self.rotate_past(task_id, current, trigger, blind, None)
+            .await;
+    }
+
+    /// [`Self::rotate_at`]; `ran` is the model family the limit binds when that is not the one
+    /// the run was launched with ([`switched_model`]). The run placed past the limit is the
+    /// task's own model again, so the subscription it sits on still counts, and the session's
+    /// terminal says why it goes on with another model than its person chose inside it.
+    async fn rotate_past(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        current: Option<AccountId>,
+        trigger: Trigger,
+        blind: bool,
+        ran: Option<ModelFamily>,
+    ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -5584,9 +5643,12 @@ impl App {
         {
             return;
         }
-        let Ok(input) = self.rotation_input(&task, current.clone()).await else {
+        let Ok(mut input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
+        if ran.is_some() {
+            input.running = ran;
+        }
         // Remembered for the model this run was launched with: a task of a Fable model may be
         // refused its fallback on the same subscription too (SPEC-482 FBK-007).
         if blind
@@ -5600,6 +5662,11 @@ impl App {
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
+        // Kept for the launch past this limit (now, or when a pause for it ends), which says it
+        // with the model it runs; every limit's decision writes it.
+        if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
+            *kept = ran;
+        }
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
@@ -5655,6 +5722,33 @@ impl App {
             }
         }
     }
+}
+
+/// The model family `limit` names when that is not `family`, the one the run was launched with:
+/// the session's person switched the model inside it (`/model`), which no launch follows, and
+/// Claude Code's record of the refused request named it (SPEC-493 MDL-002). The limit is that
+/// model's alone.
+pub(crate) fn switched_model(limit: &ReportedLimit, family: ModelFamily) -> Option<ModelFamily> {
+    match limit.scope {
+        yulius_domain::usage::LimitScope::Model(Some(named)) if named != family => Some(named),
+        _ => None,
+    }
+}
+
+/// What a session's terminal says when the model its person switched it to (`ran`) is at its
+/// limit and Yulius continues the session with `next`, the model the relaunch runs (the
+/// session's own, or its fallback).
+pub(crate) fn switched_back_notice(ran: ModelFamily, next: &str) -> String {
+    let ran = match ran {
+        ModelFamily::Fable => "Fable",
+        ModelFamily::Opus => "Opus",
+        ModelFamily::Sonnet => "Sonnet",
+        ModelFamily::Any => "That model",
+    };
+    format!(
+        "{ran} is used up on this subscription: this session goes on with {}.",
+        claude_model_name(next)
+    )
 }
 
 /// Whether `observation` is a workflow agent's limit of another model family than `family`, the
@@ -5790,12 +5884,14 @@ fn keeps_subscription(reason: &str) -> bool {
 }
 
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
-/// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
+/// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447)
+/// and a move for a review round's Fable reviewer, whose refused Agent call the agent answers
+/// (SPEC-493 REV-007);
 /// automatic switches come while the agent is idle, or at a usage limit, where its turn can go
 /// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
 /// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover" | "removed")
+    matches!(reason, "manual" | "handover" | "removed") || reason == crate::review::MOVE_FOR_FABLE
 }
 
 #[cfg(test)]
@@ -5973,6 +6069,8 @@ mod tests {
     fn a_hand_over_interrupts_like_a_persons_switch() {
         assert!(super::interrupts_first("manual"));
         assert!(super::interrupts_first("handover"));
+        // SPEC-493 REV-007: the agent goes on after its reviewer was refused for the move.
+        assert!(super::interrupts_first(crate::review::MOVE_FOR_FABLE));
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }

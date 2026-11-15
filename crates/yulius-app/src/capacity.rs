@@ -178,7 +178,7 @@ fn next_weekly_reset(window: &UsageWindow, now: Timestamp) -> Option<Timestamp> 
 }
 
 /// The family of the model a task set to `model` is launched with: the default model's when it
-/// names none (Fable 5.2, whose weekly allowance of usage credits binds it, SPEC-464). A limit
+/// names none (Opus 5.5, bound by the weekly Opus window; SPEC-493). A limit
 /// Claude reports for "the model of the request" is taken as this family's: a model switched
 /// inside the session is not followed, and the next launch runs this one again.
 #[must_use]
@@ -195,7 +195,8 @@ pub(crate) fn default_family() -> ModelFamily {
 }
 
 /// The model a run of a task set to `model` is launched with instead while no subscription can
-/// run that model (SPEC-482): Opus 5.5 for a Fable model, the default one included.
+/// run that model (SPEC-482): Opus 5.5 for a Fable model. None for the default model, which is
+/// Opus 5.5 itself (SPEC-493 MDL-002): a default task waits.
 #[must_use]
 pub(crate) fn fallback_of(model: Option<&str>) -> Option<&'static str> {
     yulius_domain::harness::fallback_model(
@@ -241,7 +242,7 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            // A task without a model runs the default, Fable 5.2.
+            // A task without a model runs the default, Opus 5.5.
             family: model_family(model),
             fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
             running,
@@ -332,9 +333,11 @@ impl App {
     }
 
     /// Where the pool places a run of the default model outside any task (a Superagent), with
-    /// the fallback while no subscription can run the default model (SPEC-482 FBK-011).
-    /// `current` is the subscription a usage limit just cut the run on, with the family of the
-    /// model it was launched with: the run is placed off it unless its model changes.
+    /// the default model's fallback while no subscription can run it (SPEC-482 FBK-011; Opus
+    /// 5.5 has none, so nothing falls back today, SPEC-493). `current` is the subscription a
+    /// usage limit just cut the run on, with the family of the model that limit binds (the
+    /// launched one, or the one its person switched it to): the run is placed off it unless
+    /// its model changes.
     ///
     /// # Errors
     /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
@@ -965,8 +968,9 @@ impl App {
             .map(token_run)
             .collect();
         let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
-        // For a task of the default model: its own weekly window binds too (SPEC-464), and
-        // while no subscription can run it, the task is placed with its fallback (SPEC-482).
+        // For a task of the default model: its own weekly window binds too (SPEC-464). A
+        // default model with a fallback would be placed with that while no subscription can
+        // run it (SPEC-482); Opus 5.5 has none.
         let default_task = RotationInput {
             current: None,
             task_provider: yulius_domain::harness::Provider::Anthropic,
@@ -978,6 +982,16 @@ impl App {
             threshold,
         };
         let placing = rotation::placing_family(&default_task);
+        // Fable work (a task set to a Fable model) runs its fallback while no subscription can
+        // run Fable (SPEC-482): the panel says so. The default model has no fallback (SPEC-493).
+        let fable = yulius_domain::harness::REVIEW_CLAUDE_MODEL;
+        let fable_work = RotationInput {
+            family: model_family(Some(fable)),
+            fallback: fallback_of(Some(fable)).map(|fallback| model_family(Some(fallback))),
+            ..default_task.clone()
+        };
+        let fable_fallback = fallback_of(Some(fable))
+            .filter(|_| rotation::placing_family(&fable_work) != fable_work.family);
         let views = &default_task.accounts;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
@@ -1073,9 +1087,7 @@ impl App {
             recommendation: forecast.recommendation(),
             paused_tasks,
             resumes_at: resumes_at.map(rfc3339),
-            fallback_model: fallback_of(None)
-                .filter(|_| placing != default_task.family)
-                .map(str::to_owned),
+            fallback_model: fable_fallback.map(str::to_owned),
             accounts,
             tokens: pool_view(&pool),
         })
@@ -1144,21 +1156,20 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 mod tests {
     use super::*;
 
-    /// SPEC-482: a task of a Fable model, the default one included, falls back to Opus 5.5; a
-    /// run's family is that of the model its record names, else of its task's (a run recorded
-    /// before the launch model was).
+    /// SPEC-482: a task of a Fable model falls back to Opus 5.5; a default task is an Opus task
+    /// and has no fallback (SPEC-493 MDL-002). A run's family is that of the model its record
+    /// names, else of its task's (a run recorded before the launch model was).
     #[test]
     fn a_runs_family_is_its_launch_models() {
-        assert_eq!(fallback_of(None), Some("claude-opus-5-5"));
-        assert_eq!(
-            fallback_of(Some("claude-fable-5-1")),
-            Some("claude-opus-5-5")
-        );
+        assert_eq!(fallback_of(None), None);
+        for fable in ["claude-fable-5-2", "claude-fable-5-1"] {
+            assert_eq!(fallback_of(Some(fable)), Some("claude-opus-5-5"), "{fable}");
+        }
         assert_eq!(fallback_of(Some("claude-opus-5-5")), None);
         assert_eq!(fallback_of(Some("claude-sonnet-5-5")), None);
         let opus = Some("claude-opus-5-5");
         assert_eq!(run_family(opus, None), ModelFamily::Opus);
-        assert_eq!(run_family(None, None), ModelFamily::Fable);
+        assert_eq!(run_family(None, None), ModelFamily::Opus);
         assert_eq!(
             run_family(None, Some("claude-sonnet-5-5")),
             ModelFamily::Sonnet
@@ -1169,12 +1180,12 @@ mod tests {
         );
     }
 
-    /// SPEC-464: a task that names no model runs the default one, Fable, whose weekly allowance
-    /// of usage credits binds it; a task that names one is bound by that model's family.
+    /// SPEC-464, SPEC-493 MDL-001: a task that names no model runs the default one, Opus 5.5,
+    /// which the weekly Opus window binds; a task that names one is bound by that model's family.
     #[test]
     fn a_tasks_model_family_is_its_models_or_the_defaults() {
-        assert_eq!(default_family(), ModelFamily::Fable);
-        assert_eq!(model_family(None), ModelFamily::Fable);
+        assert_eq!(default_family(), ModelFamily::Opus);
+        assert_eq!(model_family(None), ModelFamily::Opus);
         for (model, family) in [
             ("claude-fable-5-2", ModelFamily::Fable),
             ("claude-fable-5-1", ModelFamily::Fable),

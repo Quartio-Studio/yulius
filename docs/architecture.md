@@ -567,11 +567,23 @@ A limit Claude reports binds either the subscription or the models of one family
 reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
 subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
 The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
-runs on one) is the limit of the model the task is launched with, the default model when it
+runs on one) is the limit of the model the task is launched with, the default model (Opus 5.5,
+[decision 0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)) when it
 names none. So is Claude Code's refusal "You're out of usage credits"
 (`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
 or a reset. A record that carries only the text is the model's when the text names the model or
 a way to another one ("/model to switch models"), else the subscription's.
+
+A refusal names no model, and a person can switch the model inside a session (`/model`), which
+no launch argument shows. Claude Code 2.1.325 writes a record before each request
+(`api-request`, whose `params` name the model): the transcript watch keeps the model the
+session's thread last asked for (`claude::requested_model`), and a limit of "the model the
+request ran" names that model's family (`limit_observation`). When that is not the family the
+run was launched with (`supervisor::switched_model`), the limit is recorded for it alone, and
+the pool places the run past it with the session's own model, for which the subscription it
+sits on still counts: the session starts again there with the model Yulius launches it with,
+continues the cut turn and says so (decision 0340). Without that record (an older Claude Code)
+the limit is the launched model's.
 
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
 `weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
@@ -621,8 +633,9 @@ flowchart TD
     B -- no --> W[Wait until the earliest time either model can run]
 ```
 
-The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model,
-the default one included; no other model has one). The task's own setting is not changed:
+The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model;
+no other model has one, so a default task, which runs Opus 5.5, waits). The task's own setting is
+not changed:
 `choose_account` returns the account with the fallback model from the same snapshot of the pool
 (`Placed`), and the launch gives it to Claude Code. A run records the model it was launched with
 (`attempts.model`; a Superagent's `shell.json`), and that model, not the task's, is what a limit
@@ -633,8 +646,9 @@ the current account out only when the run placed would be of the model the curre
 launched with, so a run that changes its model may stay where it is and one subscription is
 enough. The session's terminal says the change in one line, at the launch that makes it; the
 move's entry names the model; `TaskDetail.fallback_model` and the capacity view's
-`fallback_model` carry it to the task's details, the Capacity panel and the Status line. The
-Superagent is placed by the same rule (`App::place_default_run`).
+`fallback_model` carry it to the task's details, the Capacity panel and the Status line (the
+capacity view's is worked out for Fable work, `REVIEW_CLAUDE_MODEL`, since the default model has
+no fallback). The Superagent is placed by the same rule (`App::place_default_run`).
 
 A run on the fallback sits on a subscription that cannot run the task's own model. A restart
 that asks for the run's subscription only to keep it (a newer Claude Code, a fresh session after
@@ -1147,6 +1161,83 @@ sequenceDiagram
     H->>Y: POST /hooks/claude/Stop
     Y-->>H: block while the spec is missing or invalid, else the turn ends
     H-->>A: the answer
+```
+
+## The review's rounds and models
+
+The independent code review runs as one of two agents Yulius defines at every task launch
+(`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
+`yulius-reviewer` on `claude-fable-5-2` and `yulius-reviewer-opus` on `claude-opus-5-5`, both at
+`high` and by full model id, with the reviewer's contract as their prompt
+(`yulius_domain::review`). Claude Code runs a subagent of such a definition on its model and
+effort whatever the session runs, and a launch definition outranks one in the agent's home; a
+repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the round's record
+then shows the model that answered
+([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
+
+The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+`Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
+`App::review_gate` numbers the round among the rounds of the task's open pull request (a round
+counts once it ended with a report; a reviewer started again for a round without one keeps its
+number and reviewer), picks its reviewer (`review::round_agent`: rounds 1 and 2 Fable, later
+Opus), records it in `review_rounds` and answers: nothing to change, or `updatedInput` with the other
+`subagent_type` and the rest of the input as asked, and in both cases a line of context naming
+the round and its model. When a round would run Fable and the run's subscription cannot run it
+now, the session moves first (REV-007): `rotation::move_to_also_run` picks the best other
+subscription that can run both the session's model and Fable, the Agent call is refused with
+why, and `switch_task_now` (reason `review_fable`, which interrupts the turn first as a person's
+switch does) continues the session there with a prompt asking for the review again. While
+background work runs or a prompt waits in Claude Code's queue the call is refused with that
+reason and nothing moves. The move is announced only after the new session's start was checked
+there (`preflight_start`); with no such subscription, a start that would be refused, a move
+refused moments ago or looks longer than 3 s (the hook client waits 5), the round runs the Opus
+reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
+lets the reviewer start as asked. The same start delivers the head under review (SPEC-493 CIR-001,
+`review::deliver_for_review`): when the spec is valid and the work committed, the head is pushed
+(`try_auto_open_pr` with `DeliveryAsk::Review`, which no step holds, opens the pull request when
+there is none) and `ci_sync_sandbox` queues its Yulius CI run at once, so CI tests it while the
+reviewer reads. A newer head's run supersedes the older one. When the head cannot go out the
+agent is told why, and the reviewer starts anyway. Merging still needs `delivery_merge` with the
+reviewed head and that head's passed run. `SubagentStart`
+links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
+with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
+subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
+pull request's rounds in the same transaction that records its merge
+(`transition_delivery`), so the task's next pull request starts at round 1.
+
+The transcript watch also reads each subagent of the session's own thread
+(`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
+(`Observation::SubagentAnswered`), and a usage limit that refused it
+(`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
+(`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
+`delivery_status`) lists the open pull request's rounds. When a merge is recorded,
+`dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
+models of the runs that worked on the pull request (those still going when the previous one
+merged, known from its rounds or its own merge record, and every later one), and each round
+with its model, verdict and head. A merge path passes what it merged (`review::MergedHead`):
+an approval counts for that head, or one followed only by clean merges of the integration
+branch at a base that holds none of the pull request's commits (`<merge>^1` on GitHub: the
+branch before a squash or merge commit, the previous rewritten copy for a rebase merge; a
+playground's base after its squash). A merge made on GitHub and found afterwards takes its base
+from the merge commit GitHub names (`GhPull::merge_commit_sha`, `MergedHead::of_pull`); without
+one only the approved head itself counts. When no round
+approved, the record says "no recorded review round approved its head".
+`GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull
+requests merged in a range (`review::review_numbers`).
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Claude Code)
+    participant H as yulius hook (sandbox)
+    participant Y as Yulius
+    A->>H: PreToolUse Agent (subagent_type yulius-reviewer)
+    H->>Y: POST /hooks/claude/PreToolUse (tool input)
+    Y->>Y: number the round, pick the reviewer, insert review_rounds
+    Y-->>A: context "round N runs on …" (+ updatedInput yulius-reviewer-opus from round 3)
+    A->>H: SubagentStart (agent_id, agent_type)
+    H->>Y: link the round to the subagent
+    A->>H: SubagentStop (last_assistant_message)
+    H->>Y: end the round with its verdict
 ```
 
 ## Agent feedback

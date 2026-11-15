@@ -572,18 +572,24 @@ impl App {
                 continue;
             }
             // A CI checkout is claimed while its cache goes, so no run starts in it half
-            // deleted; a run that executes (or a claim) keeps it.
-            let claimed = item.ci;
-            if claimed && !self.ci_claim(&sandbox.id) {
-                continue;
-            }
+            // deleted; a run that executes (or a claim) keeps it. The claim goes with the
+            // removal and ends with it, also when this future is dropped meanwhile.
+            let claim = if item.ci {
+                match self.ci_claim_owned(&sandbox.id) {
+                    Some(claim) => Some(claim),
+                    None => continue,
+                }
+            } else {
+                None
+            };
             let (root, path) = (self.sandbox_dir(&sandbox.id), item.path.clone());
-            let removed = tokio::task::spawn_blocking(move || remove_cache(&root, &path))
-                .await
-                .unwrap_or_else(|err| Err(std::io::Error::other(err)));
-            if claimed {
-                self.ci_release(&sandbox.id);
-            }
+            let removed = tokio::task::spawn_blocking(move || {
+                let removed = remove_cache(&root, &path);
+                drop(claim);
+                removed
+            })
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)));
             if let Err(err) = removed {
                 tracing::warn!(
                     path = %item.path.display(),

@@ -147,6 +147,7 @@ fn pull(p: PullRequest) -> GhPull {
         mergeable: p.mergeable,
         behind: p.behind,
         from_fork: p.cross_repository,
+        merge_commit_sha: p.merge_commit_sha,
     }
 }
 

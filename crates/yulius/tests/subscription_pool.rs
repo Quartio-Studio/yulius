@@ -54,7 +54,7 @@ fn usage(five: f64, five_resets: Timestamp, week: f64, week_resets: Timestamp) -
     .to_string()
 }
 
-async fn add_account(
+pub(crate) async fn add_account(
     h: &Harness,
     id: &str,
     usage_json: Option<String>,
@@ -80,7 +80,7 @@ async fn add_account(
 }
 
 /// A running task in `mode` whose live attempt (task token [`TOKEN`]) runs on `account`.
-async fn running_task(
+pub(crate) async fn running_task(
     h: &Harness,
     mode: TaskMode,
     account: &AccountId,
@@ -107,6 +107,18 @@ async fn running_task_of(
     run_dir: &str,
     model: Option<&str>,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    running_task_set_to(h, mode, account, run_dir, None, model).await
+}
+
+/// [`running_task_of`] for a task set to `own` (`None`: the default model, Opus 5.5).
+async fn running_task_set_to(
+    h: &Harness,
+    mode: TaskMode,
+    account: &AccountId,
+    run_dir: &str,
+    own: Option<&str>,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let created = now(h);
     let task = h
         .store
@@ -117,7 +129,7 @@ async fn running_task_of(
             title: "Pool".into(),
             prompt: "Build the thing".into(),
             harness: Agent::ClaudeCode,
-            model: None,
+            model: own.map(str::to_owned),
             effort: None,
             workflow_id: None,
             status: TaskStatus::Running,
@@ -165,7 +177,7 @@ async fn running_task_of(
     Ok(task.id)
 }
 
-async fn seed(h: &Harness) -> TestResult {
+pub(crate) async fn seed(h: &Harness) -> TestResult {
     h.store
         .insert_user(&yulius_app::model::UserRecord {
             id: yulius_domain::ids::UserId::parse("u1")?,
@@ -185,7 +197,7 @@ async fn seed(h: &Harness) -> TestResult {
 }
 
 /// POSTs a hook as the agent's hook client would; returns (status, Retry-After, body).
-async fn hook(
+pub(crate) async fn hook(
     internal: &axum::Router,
     event: &str,
     body: serde_json::Value,
@@ -636,9 +648,11 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
 /// subscription can run the model the run was launched with. One on the fallback is on a
 /// subscription that is out of Fable; once another subscription runs Fable again it is not
 /// restarted for that. A run of the task's own model there (or one recorded before the launch
-/// model was) cannot stay and moves, as before.
+/// model was) cannot stay and moves, as before. The task is set to Fable: a default task runs
+/// Opus 5.5 and has no fallback (SPEC-493).
 #[tokio::test]
 async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again() -> TestResult {
+    let fable = Some("claude-fable-5-2");
     for (launched, stays) in [(Some("claude-opus-5-5"), true), (None, false)] {
         let h = harness()?;
         seed(&h).await?;
@@ -656,7 +670,8 @@ async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again(
             t0.plus_millis(100 * HOUR),
         );
         add_account(&h, "acc-room", Some(room)).await?;
-        let task = running_task_of(&h, TaskMode::Goal, &out, "/nonexistent/run", launched).await?;
+        let run = "/nonexistent/run";
+        let task = running_task_set_to(&h, TaskMode::Goal, &out, run, fable, launched).await?;
 
         let (code, retry_after, body) =
             hook(&h.internal, "Stop", json!({"session_id": "s"})).await?;
@@ -675,31 +690,34 @@ async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again(
     Ok(())
 }
 
-/// SPEC-464 UCL-005: the capacity view counts for the default model. A subscription whose
-/// window of that model is used up is not available, though its 5-hour and weekly windows have
-/// room. Once no subscription runs that model, tasks are placed with its fallback (SPEC-482
-/// FBK-010): the view names it and counts the subscriptions that run it. With neither model
-/// left, nothing is available and the pool resumes at the first reset of either.
+/// SPEC-464 UCL-005, SPEC-493 MDL-001: the capacity view counts for the default model, Opus
+/// 5.5. A subscription whose Opus window is used up is not available, though its 5-hour and
+/// weekly windows have room; one that is only out of Fable's credits is. Once no subscription
+/// runs Fable, the view names the fallback of tasks set to it (SPEC-482 FBK-010); that changes
+/// nothing for the default model, which has none: with Opus used up everywhere nothing is
+/// available and the pool resumes at Opus's first reset.
 #[tokio::test]
 async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     let t0 = now(&h);
     let at = |hours: i64| t0.plus_millis(hours * HOUR);
-    let out_of = |fable: Timestamp, opus: Option<Timestamp>| {
+    let out_of = |fable: Option<Timestamp>, opus: Option<Timestamp>| {
         let full = |resets: Timestamp| json!({"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0});
         let mut usage = json!({
             "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": at(2).0},
             "secondary": {"used_percent": 20.0, "window_minutes": 10080, "resets_at": at(100).0},
-            "weekly_fable": full(fable),
         });
+        if let Some(fable) = fable {
+            usage["weekly_fable"] = full(fable);
+        }
         if let Some(opus) = opus {
             usage["weekly_opus"] = full(opus);
         }
         usage.to_string()
     };
-    let out = add_account(&h, "acc-out", Some(out_of(at(40), None))).await?;
-    let room = add_account(&h, "acc-room", Some(usage(10.0, at(2), 20.0, at(100)))).await?;
+    let out = add_account(&h, "acc-out", Some(out_of(None, Some(at(30))))).await?;
+    let room = add_account(&h, "acc-room", Some(out_of(Some(at(40)), None))).await?;
 
     let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
     assert_eq!(view.status, 200);
@@ -712,23 +730,25 @@ async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
     };
     assert_eq!(view.body["subscriptions"], 2, "{}", view.body);
     assert_eq!(view.body["available"], 1, "{}", view.body);
+    // acc-out still runs Fable, so tasks set to it do not fall back.
     assert!(view.body["fallback_model"].is_null(), "{}", view.body);
     let limited = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
     assert_eq!(limited["available"], false, "{limited}");
     assert_eq!(
-        limited["usage"]["weekly_fable"]["used_percent"], 100.0,
+        limited["usage"]["weekly_opus"]["used_percent"], 100.0,
         "{limited}"
     );
     assert_eq!(
         limited["usage"]["secondary"]["used_percent"], 20.0,
         "{limited}"
     );
+    // Out of Fable's credits only: the default model runs there.
     let free = account(&view.body, "Claude acc-room").ok_or("acc-room")?;
     assert_eq!(free["available"], true, "{free}");
     assert!(view.body["resumes_at"].is_null(), "{}", view.body);
 
-    // The other one runs out of that model too: tasks are placed with the fallback, which both
-    // run.
+    // No subscription runs Fable any more: tasks set to it are placed with the fallback, which
+    // acc-room runs. The count is still the default model's.
     let store = |id: &AccountId, usage: String| {
         let store = h.store.clone();
         let id = id.clone();
@@ -738,35 +758,27 @@ async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
                 .await
         }
     };
-    store(&room, out_of(at(20), None)).await?;
+    store(&out, out_of(Some(at(20)), Some(at(30)))).await?;
     let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
     assert_eq!(
         view.body["fallback_model"], "claude-opus-5-5",
         "{}",
         view.body
     );
-    assert_eq!(view.body["available"], 2, "{}", view.body);
-    for label in ["Claude acc-out", "Claude acc-room"] {
-        let one = account(&view.body, label).ok_or("account")?;
-        assert_eq!(one["available"], true, "{one}");
-    }
+    assert_eq!(view.body["available"], 1, "{}", view.body);
+    let one = account(&view.body, "Claude acc-room").ok_or("acc-room")?;
+    assert_eq!(one["available"], true, "{one}");
     assert!(view.body["resumes_at"].is_null(), "{}", view.body);
 
-    // One is out of the fallback as well: it is not available, the other still is.
-    store(&out, out_of(at(40), Some(at(30)))).await?;
-    let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
-    assert_eq!(view.body["available"], 1, "{}", view.body);
-    let limited = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
-    assert_eq!(limited["available"], false, "{limited}");
-
-    // Neither model is left anywhere: nothing is available until the first reset of either.
-    store(&room, out_of(at(20), Some(at(50)))).await?;
+    // Opus is used up everywhere: nothing is available until its first reset, whatever Fable's
+    // allowance reads (acc-out's resets earlier), and nothing can fall back.
+    store(&room, out_of(Some(at(40)), Some(at(50)))).await?;
     let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
     assert_eq!(view.body["available"], 0, "{}", view.body);
     assert!(view.body["fallback_model"].is_null(), "{}", view.body);
     assert_eq!(
         view.body["resumes_at"],
-        yulius_app::auth::rfc3339(at(20)),
+        yulius_app::auth::rfc3339(at(30)),
         "{}",
         view.body
     );

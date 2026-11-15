@@ -9,6 +9,15 @@ failOnPageErrors();
 // and the waterfalls of a CI run (ci_s2 failed in its test job), a dev deploy and a task.
 // Task #152 (SPEC-161): the Pipeline (stages) is a tab of the Dashboard, at ?section=pipeline.
 
+test('the Pipeline shows its stages without the Review card when the review read fails (SPEC-493 REV-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failReviews?: boolean } }).__yuliusMock.failReviews = true; });
+  await browser.evaluate(() => { location.hash = '#/s/studio/dashboard?section=pipeline'; });
+  await expect(screen.getByRole('region', 'Stages')).toBeVisible();
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect(screen.getByRole('region', 'Review')).toHaveCount(0);
+});
+
 test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard?section=pipeline'));
   await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
@@ -20,6 +29,13 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
   await expect(dev).toContainText(/Change failure rate\s*21%/);
   await expect(dev).toContainText(/Time to restore\s*47 min/);
   await expect(delivery.getByRole('group', 'Production')).toContainText('no failure restored');
+  // SPEC-493 REV-006: the independent review of the pull requests merged in the range.
+  const review = screen.getByRole('region', 'Review');
+  await expect(review).toContainText('independent review of the 12 pull requests merged in this range');
+  await expect(review).toContainText(/First review asked for changes\s*42%\s*5 of 12/);
+  await expect(review).toContainText(/Rounds per pull request\s*2\s*median/);
+  await expect(review).toContainText(/First review cut off\s*8%/);
+  await expect(review).toContainText(/Rounds by model\s*Fable 5\.2 21 · Opus 5\.5 6\s*2 on Opus for want of Fable/);
 
   // The CI run's trend by default: two lines, labelled and in a legend, and a table of every day.
   const trend = screen.getByRole('region', 'Trend: CI · Run');

@@ -518,10 +518,6 @@ mod tests {
         stream.write_all(body.as_bytes())
     }
 
-    fn free_port() -> std::io::Result<u16> {
-        Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
-    }
-
     fn first(rx: &mpsc::Receiver<String>) -> Result<Value, Box<dyn std::error::Error>> {
         let line = rx.recv_timeout(Duration::from_secs(10))?;
         Ok(serde_json::from_str(&line)?)
@@ -530,7 +526,9 @@ mod tests {
     #[test]
     fn a_call_held_through_an_outage_is_answered_once_yulius_is_back()
     -> Result<(), Box<dyn std::error::Error>> {
-        let port = free_port()?;
+        // Held, not listening, until Yulius is back on the very same socket.
+        let held = crate::held_port::HeldPort::new()?;
+        let port = held.port();
         let rx = bridge(
             "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\"}\n",
             port,
@@ -538,7 +536,7 @@ mod tests {
         );
         // Nothing listens yet: the call is held, not answered.
         assert!(rx.recv_timeout(Duration::from_millis(400)).is_err());
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        let listener = held.listen()?;
         let (mut stream, _) = listener.accept()?;
         read_request(&mut stream)?;
         // A body with a line break still reaches Claude Code as one line.
@@ -597,7 +595,8 @@ mod tests {
     #[test]
     fn past_the_outage_bound_the_call_is_answered_as_not_made()
     -> Result<(), Box<dyn std::error::Error>> {
-        let port = free_port()?;
+        let held = crate::held_port::HeldPort::new()?;
+        let port = held.port();
         let rx = bridge(
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\"}\n",
             port,
@@ -614,7 +613,8 @@ mod tests {
 
     #[test]
     fn a_cancelled_held_call_is_never_sent() -> Result<(), Box<dyn std::error::Error>> {
-        let port = free_port()?;
+        let held = crate::held_port::HeldPort::new()?;
+        let port = held.port();
         let (tx, rx) = mpsc::channel();
         let (lines_tx, lines_rx) = mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
@@ -633,7 +633,7 @@ mod tests {
                 .to_vec(),
         )?;
         std::thread::sleep(Duration::from_millis(200));
-        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        let listener = held.listen()?;
         listener.set_nonblocking(true)?;
         std::thread::sleep(Duration::from_millis(500));
         assert!(listener.accept().is_err(), "a cancelled call was sent");

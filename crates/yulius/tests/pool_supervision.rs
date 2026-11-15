@@ -360,6 +360,27 @@ pub(crate) async fn new_task(
     user: &UserId,
     title: &str,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    new_task_of(app, sandbox, user, title, None).await
+}
+
+/// A task a person set to Fable 5.2, started now: the model whose weekly allowance of usage
+/// credits binds it and which falls back to Opus 5.5 (a default task runs Opus 5.5, SPEC-493).
+pub(crate) async fn new_fable_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    new_task_of(app, sandbox, user, title, Some("claude-fable-5-2")).await
+}
+
+async fn new_task_of(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let record = app
         .create_task_internal(NewTask {
             sandbox: sandbox.clone(),
@@ -369,7 +390,7 @@ pub(crate) async fn new_task(
             title: Some(title.into()),
             workflow_id: None,
             steps: Vec::new(),
-            model: None,
+            model: model.map(str::to_owned),
             effort: None,
             origin: TaskOrigin::Ui,
             automation_run: None,

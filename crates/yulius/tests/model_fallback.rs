@@ -5,8 +5,8 @@
 //! launch once a subscription can run it. Real processes, as in `usage_credits.rs`.
 
 use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_with, has_status, new_task, reading, runtime, seed, stop, temp,
-    usage, wait_for,
+    HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, runtime, seed, stop,
+    temp, usage, wait_for,
 };
 use crate::subscription_moves::{live_run, notices, ready, run_accounts};
 use crate::support::TestResult;
@@ -164,10 +164,10 @@ async fn needs_nobody(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// AC-1: one subscription, a default task, and Claude Code refuses Fable for its usage credits
-/// without saying when they reset (2.1.311). Before SPEC-482 the task asked a person
+/// AC-1: one subscription, a task set to Fable 5.2, and Claude Code refuses Fable for its usage
+/// credits without saying when they reset (2.1.311). Before SPEC-482 the task asked a person
 /// (`task.limit_without_end`); now the same session goes on, on the same subscription, launched
-/// with Opus 5.5 past the refused turn, and says so. Its own setting stays "default".
+/// with Opus 5.5 past the refused turn, and says so. Its own setting stays Fable 5.2.
 #[test]
 fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -177,7 +177,7 @@ fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> Tes
         let probe = Arc::new(ScriptedUsage::default());
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(None))?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
-        let id = new_task(&app, &sandbox, &user, "Falls back").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Falls back").await?;
         ready(&app, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.send_input(&id, b"hello\r").await?;
@@ -195,7 +195,7 @@ fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> Tes
         assert_eq!(
             launched(&app, &id).await?,
             [
-                ("None".to_owned(), Some(FABLE.to_owned())),
+                (asked_for(FABLE), Some(FABLE.to_owned())),
                 (asked_for(OPUS), Some(OPUS.to_owned())),
             ]
         );
@@ -204,7 +204,11 @@ fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> Tes
         assert!(has_status(&app, &id, TaskStatus::Running).await);
         needs_nobody(&app, &id).await?;
         let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        assert_eq!(task.model, None, "the task's own setting is kept");
+        assert_eq!(
+            task.model.as_deref(),
+            Some(FABLE),
+            "the task's own setting is kept"
+        );
 
         let mut said = Vec::new();
         wait_for("the fallback's line", Duration::from_secs(30), || {
@@ -249,7 +253,7 @@ fn a_limit_on_the_fallback_binds_the_fallback_model() -> TestResult {
             refused_for_credits(Some(reset_s)),
         )?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
-        let id = new_task(&app, &sandbox, &user, "Refused twice").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Refused twice").await?;
         ready(&app, &id).await?;
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
@@ -309,15 +313,16 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         for account in ["a-first", "b-second"] {
             store_usage(&app, account, true).await?;
         }
-        let id = task_of_model(&app, &sandbox, &user, "Default", None).await?;
+        let id = task_of_model(&app, &sandbox, &user, "Fable", Some(FABLE)).await?;
         ready(&app, &id).await?;
         let mut watch = app.runtime(&id).hub.watch();
         assert_eq!(
             launched(&app, &id).await?,
             [(asked_for(OPUS), Some(OPUS.to_owned()))]
         );
-        // AC-7: the task's detail names the model its run is on, and the capacity view counts
-        // the subscriptions that take a default task on the fallback and names it.
+        // AC-7: the task's detail names the model its run is on, and the capacity view names
+        // the fallback of Fable work; it counts for the default model, Opus 5.5, which both
+        // subscriptions run (SPEC-493 MDL-001).
         let ctx = AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
@@ -326,7 +331,7 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         };
         let detail = app.task_detail(&ctx, id.as_str()).await?;
         assert_eq!(detail.model, FABLE);
-        assert!(detail.model_default);
+        assert!(!detail.model_default);
         assert_eq!(detail.fallback_model.as_deref(), Some(OPUS));
         let capacity = app.capacity_view(&ctx).await?;
         assert_eq!(capacity.fallback_model.as_deref(), Some(OPUS));
@@ -364,10 +369,11 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         .await?;
         let _ = app.resume_round().await;
         assert_eq!(run_accounts(&app, &id).await.len(), 1, "the run stays");
-        // New tasks would run Fable there: the pool is no longer in fallback, this run still is.
+        // New Fable tasks would run Fable there: the pool is no longer in fallback, this run
+        // still is. Both subscriptions run the default model, which "available" counts for.
         let capacity = app.capacity_view(&ctx).await?;
         assert_eq!(capacity.fallback_model, None);
-        assert_eq!(capacity.available, 1);
+        assert_eq!(capacity.available, 2);
         let detail = app.task_detail(&ctx, id.as_str()).await?;
         assert_eq!(detail.fallback_model.as_deref(), Some(OPUS));
 
@@ -387,7 +393,7 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         );
         assert_eq!(
             launched(&app, &id).await?[1],
-            ("None".to_owned(), Some(FABLE.to_owned()))
+            (asked_for(FABLE), Some(FABLE.to_owned()))
         );
         let mut said = Vec::new();
         wait_for("the line", Duration::from_secs(30), || {
@@ -430,7 +436,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
-        let id = new_task(&app, &sandbox, &user, "Neither model").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Neither model").await?;
         ready(&app, &id).await?;
         app.send_input(&id, b"hello\r").await?;
         type_into_run(&app, &id, 2, b"again\r").await?;
@@ -465,7 +471,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         assert_eq!(task.status, TaskStatus::Running, "not paused again");
         assert_eq!(task.activity, Some(Activity::NeedsAttention));
         assert!(app.deps.store.open_pause(&id).await?.is_none());
-        let fable = ("None".to_owned(), Some(FABLE.to_owned()));
+        let fable = (asked_for(FABLE), Some(FABLE.to_owned()));
         let opus = (asked_for(OPUS), Some(OPUS.to_owned()));
         assert_eq!(
             launched(&app, &id).await?,
@@ -499,7 +505,7 @@ fn a_fallback_refused_with_no_end_is_retried_once_then_waits_for_fable() -> Test
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         store_usage(&app, "a-only", true).await?;
         let fable = stored_usage(&app, "a-only").await?["weekly_fable"].clone();
-        let id = new_task(&app, &sandbox, &user, "Fallback refused").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Fallback refused").await?;
         ready(&app, &id).await?;
         let started = app.now();
         let paused = |times: usize| {
@@ -576,7 +582,7 @@ fn a_run_on_the_fallback_moves_off_the_subscription_that_refused_it() -> TestRes
         for account in ["a-first", "b-second"] {
             store_usage(&app, account, true).await?;
         }
-        let id = new_task(&app, &sandbox, &user, "Moves on the fallback").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Moves on the fallback").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         app.send_input(&id, b"hello\r").await?;
@@ -625,7 +631,7 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
         for account in ["a-first", "b-second"] {
             store_usage(&app, account, true).await?;
         }
-        let id = new_task(&app, &sandbox, &user, "Full").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Full").await?;
         wait_for("the first answer", Duration::from_secs(30), || async {
             crate::pool_supervision::screen(&app, &id).contains("ECHO: Full: answer with an echo")
         })
@@ -654,7 +660,7 @@ fn a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again() -> Tes
         );
         assert_eq!(
             launched(&app, &id).await?[1],
-            ("None".to_owned(), Some(FABLE.to_owned()))
+            (asked_for(FABLE), Some(FABLE.to_owned()))
         );
         let mut said = Vec::new();
         wait_for("the line", Duration::from_secs(30), || {

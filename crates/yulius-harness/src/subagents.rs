@@ -63,6 +63,8 @@ pub struct SideLine {
     /// The transcript of the workflow's agent that wrote it; `None` for a sub-agent of the
     /// session's own thread.
     pub agent: Option<PathBuf>,
+    /// The transcript the line was read from.
+    pub file: PathBuf,
 }
 
 /// Keeps a transcript's lines from the first one recorded at or after a time: a resumed
@@ -192,6 +194,7 @@ impl SubagentTails {
                         |line| SideLine {
                             line,
                             agent: workflow.then(|| path.clone()),
+                            file: path.clone(),
                         },
                     )),
                     Err(error) => failed = failed.or(Some(error)),

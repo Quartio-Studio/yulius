@@ -18,7 +18,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:ee8c67880389c043ebeb0dbcb594bbc17695a3805b8bedafad0bdad9dc4ee877
+  content_hash: sha256:570e81643c17c5a8630b363bebd58bac6eb0c4d515d5847ccbccaafebba971e4
 - kind: project-relative
   target: claude
   value: .claude/skills/yulius-primitives
@@ -54,7 +54,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:dedeabd6d8f379bd0f6083b1281d8d288d55f4d0c9c4b78110ebb404d024a50e
+  content_hash: sha256:3112a49c18380a799b0101d719d88784eb8607eaba159337e9141f448fd4d21a
 - kind: project-relative
   target: claude
   value: .claude/skills/yulius-runner
@@ -72,7 +72,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+  content_hash: sha256:6020a5d6d045b860811974311467c8089dd222149c443aa66e17d31f98322cde
 - kind: project-relative
   target: claude
   value: .claude/skills/yulius-rust-slice
@@ -90,7 +90,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  content_hash: sha256:21a0a019d13ff8e4602365df2089d79b05ad0ee6fca18cdb356a49604798124e
 - kind: project-relative
   target: claude
   value: .claude/skills/yulius-spec
@@ -126,7 +126,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
+  content_hash: sha256:30fafb389511af571ee236a5975cded37a120da786763108a44b84b8b8331023
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-git
@@ -144,7 +144,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:ee8c67880389c043ebeb0dbcb594bbc17695a3805b8bedafad0bdad9dc4ee877
+  content_hash: sha256:570e81643c17c5a8630b363bebd58bac6eb0c4d515d5847ccbccaafebba971e4
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-primitives
@@ -180,7 +180,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:dedeabd6d8f379bd0f6083b1281d8d288d55f4d0c9c4b78110ebb404d024a50e
+  content_hash: sha256:3112a49c18380a799b0101d719d88784eb8607eaba159337e9141f448fd4d21a
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-runner
@@ -198,7 +198,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
+  content_hash: sha256:6020a5d6d045b860811974311467c8089dd222149c443aa66e17d31f98322cde
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-rust-slice
@@ -216,7 +216,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  content_hash: sha256:21a0a019d13ff8e4602365df2089d79b05ad0ee6fca18cdb356a49604798124e
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-spec
@@ -252,7 +252,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
+  content_hash: sha256:30fafb389511af571ee236a5975cded37a120da786763108a44b84b8b8331023
 local_deployed_files:
 - .agents/skills/yulius-git
 - .agents/skills/yulius-git/SKILL.md
@@ -283,17 +283,17 @@ local_deployed_files:
 - .claude/skills/yulius-verify
 - .claude/skills/yulius-verify/SKILL.md
 local_deployed_file_hashes:
-  .agents/skills/yulius-git/SKILL.md: sha256:ee8c67880389c043ebeb0dbcb594bbc17695a3805b8bedafad0bdad9dc4ee877
+  .agents/skills/yulius-git/SKILL.md: sha256:570e81643c17c5a8630b363bebd58bac6eb0c4d515d5847ccbccaafebba971e4
   .agents/skills/yulius-primitives/SKILL.md: sha256:a841128f265cc6bdbdaedf9c3d2f2c91291e76afad264f22491ee6f9546faafe
-  .agents/skills/yulius-review/SKILL.md: sha256:dedeabd6d8f379bd0f6083b1281d8d288d55f4d0c9c4b78110ebb404d024a50e
-  .agents/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
-  .agents/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  .agents/skills/yulius-review/SKILL.md: sha256:3112a49c18380a799b0101d719d88784eb8607eaba159337e9141f448fd4d21a
+  .agents/skills/yulius-runner/SKILL.md: sha256:6020a5d6d045b860811974311467c8089dd222149c443aa66e17d31f98322cde
+  .agents/skills/yulius-rust-slice/SKILL.md: sha256:21a0a019d13ff8e4602365df2089d79b05ad0ee6fca18cdb356a49604798124e
   .agents/skills/yulius-spec/SKILL.md: sha256:a8f6f1374bc2f84d7f9227ec82539b48b00c3bdac95fa7373eb83afe6475f36b
-  .agents/skills/yulius-verify/SKILL.md: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
-  .claude/skills/yulius-git/SKILL.md: sha256:ee8c67880389c043ebeb0dbcb594bbc17695a3805b8bedafad0bdad9dc4ee877
+  .agents/skills/yulius-verify/SKILL.md: sha256:30fafb389511af571ee236a5975cded37a120da786763108a44b84b8b8331023
+  .claude/skills/yulius-git/SKILL.md: sha256:570e81643c17c5a8630b363bebd58bac6eb0c4d515d5847ccbccaafebba971e4
   .claude/skills/yulius-primitives/SKILL.md: sha256:a841128f265cc6bdbdaedf9c3d2f2c91291e76afad264f22491ee6f9546faafe
-  .claude/skills/yulius-review/SKILL.md: sha256:dedeabd6d8f379bd0f6083b1281d8d288d55f4d0c9c4b78110ebb404d024a50e
-  .claude/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
-  .claude/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
+  .claude/skills/yulius-review/SKILL.md: sha256:3112a49c18380a799b0101d719d88784eb8607eaba159337e9141f448fd4d21a
+  .claude/skills/yulius-runner/SKILL.md: sha256:6020a5d6d045b860811974311467c8089dd222149c443aa66e17d31f98322cde
+  .claude/skills/yulius-rust-slice/SKILL.md: sha256:21a0a019d13ff8e4602365df2089d79b05ad0ee6fca18cdb356a49604798124e
   .claude/skills/yulius-spec/SKILL.md: sha256:a8f6f1374bc2f84d7f9227ec82539b48b00c3bdac95fa7373eb83afe6475f36b
-  .claude/skills/yulius-verify/SKILL.md: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
+  .claude/skills/yulius-verify/SKILL.md: sha256:30fafb389511af571ee236a5975cded37a120da786763108a44b84b8b8331023

@@ -21,6 +21,29 @@ use yulius_contracts::hooks::edited_file_field;
 /// Largest hook input read.
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 
+/// Claude Code's tools that start a subagent (`Task` before 2.1): their `PreToolUse` goes to
+/// Yulius, which picks a review round's reviewer (SPEC-493 REV-002).
+pub const AGENT_TOOLS: [&str; 2] = ["Agent", "Task"];
+
+/// The request Yulius gets for the `PreToolUse` input `body` of a subagent's start
+/// ([`AGENT_TOOLS`]): the event, the tool and its whole input (the answer may run it with
+/// another one, which repeats the rest). `None` for any other tool or input.
+#[must_use]
+pub fn agent_request(body: &[u8]) -> Option<Vec<u8>> {
+    let event = serde_json::from_slice::<Value>(body).ok()?;
+    let tool = event["tool_name"].as_str()?;
+    if !AGENT_TOOLS.contains(&tool) || !event["tool_input"].is_object() {
+        return None;
+    }
+    let mut request = serde_json::Map::new();
+    for key in ["hook_event_name", "tool_name", "cwd", "tool_input"] {
+        if let Some(value) = event.get(key) {
+            request.insert(key.to_owned(), value.clone());
+        }
+    }
+    serde_json::to_vec(&Value::Object(request)).ok()
+}
+
 /// The request Yulius's edit gate gets for the `PreToolUse` input `body` of an edit tool
 /// ([`EDIT_TOOLS`]): only the event, the tool, the agent's folder and the edited path, never the
 /// file's content (SPEC-426 EDG-001). `None` for any other tool or input.
@@ -284,6 +307,33 @@ pub fn pre_tool_use(input: &mut dyn Read, output: &mut dyn Write) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-493 REV-002: the Agent tool's start goes to Yulius with its whole input (the answer
+    /// may run it with another reviewer and repeats the rest); other tools and malformed input
+    /// do not.
+    #[test]
+    fn a_subagents_start_is_sent_with_its_input() -> Result<(), serde_json::Error> {
+        let body = serde_json::json!({"session_id": "s", "hook_event_name": "PreToolUse",
+            "tool_name": "Agent", "cwd": "/w", "transcript_path": "/t.jsonl",
+            "tool_input": {"subagent_type": "yulius-reviewer", "prompt": "p", "description": "d"}});
+        let sent: Value = serde_json::from_slice(
+            &agent_request(body.to_string().as_bytes()).unwrap_or_default(),
+        )?;
+        assert_eq!(
+            sent,
+            serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "cwd": "/w",
+                "tool_input": {"subagent_type": "yulius-reviewer", "prompt": "p", "description": "d"}})
+        );
+        for other in [
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+            serde_json::json!({"tool_name": "Agent", "tool_input": "not an object"}),
+            serde_json::json!({"tool_name": "Agent"}),
+        ] {
+            assert_eq!(agent_request(other.to_string().as_bytes()), None, "{other}");
+        }
+        assert_eq!(agent_request(b"not json"), None);
+        Ok(())
+    }
 
     #[test]
     fn waits_and_kills_that_match_themselves_are_found() {

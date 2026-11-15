@@ -19,8 +19,14 @@ pub mod events {
     pub const NOTIFICATION: &str = "Notification";
     /// The session ends (`/exit`, Ctrl+C twice, `/clear`, a signal); `reason` says why.
     pub const SESSION_END: &str = "SessionEnd";
-    /// A tool is about to run; output may deny it with a reason (the edit gate, SPEC-426).
+    /// A tool is about to run; output may deny it with a reason (the edit gate, SPEC-426), or
+    /// change its input (the reviewer of a review round, SPEC-493 REV-002).
     pub const PRE_TOOL_USE: &str = "PreToolUse";
+    /// A subagent started, or a cut-off one was resumed (`agent_id`, `agent_type`).
+    pub const SUBAGENT_START: &str = "SubagentStart";
+    /// A subagent ended with its report (`last_assistant_message`). Claude Code 2.1.325 sends
+    /// none for a subagent a usage limit cut off.
+    pub const SUBAGENT_STOP: &str = "SubagentStop";
     /// Not a hook: Claude Code's `statusLine` command, run by the same client. Its input is a
     /// [`super::StatusLineInput`]; the answer is the status line's text.
     pub const STATUS_LINE: &str = "StatusLine";
@@ -110,6 +116,15 @@ pub struct HookInput {
     /// Why the session ends (`SessionEnd`, see [`session_end`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The subagent of `SubagentStart` and `SubagentStop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// The subagent's type (its agent definition's name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// The subagent's last message (`SubagentStop`): its report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_assistant_message: Option<String>,
 }
 
 /// One plan rate-limit window as Claude Code passes it to its status line command:
@@ -169,6 +184,10 @@ pub struct HookSpecificOutput {
     /// `PreToolUse`: why, shown to the agent (`permissionDecisionReason`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_decision_reason: Option<String>,
+    /// `PreToolUse`: the tool's input to run instead of the one asked for (`updatedInput`,
+    /// with `permissionDecision: allow`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_input: Option<serde_json::Value>,
 }
 
 /// The JSON a hook command prints back to the CLI. Unset fields are omitted.
@@ -190,6 +209,8 @@ pub struct HookOutput {
 pub const DECISION_BLOCK: &str = "block";
 /// `PreToolUse` permission decision that keeps the tool from running.
 pub const PERMISSION_DENY: &str = "deny";
+/// `PreToolUse` permission decision that lets the tool run (with an `updatedInput`).
+pub const PERMISSION_ALLOW: &str = "allow";
 
 impl HookOutput {
     /// Output that blocks with `reason` (for `Stop`, the agent continues with the reason).
@@ -229,6 +250,21 @@ impl HookOutput {
         }
     }
 
+    /// `PreToolUse` output that runs the tool with `input` instead, telling the agent `context`.
+    #[must_use]
+    pub fn run_tool_with(input: serde_json::Value, context: impl Into<String>) -> Self {
+        Self {
+            hook_specific_output: Some(HookSpecificOutput {
+                hook_event_name: events::PRE_TOOL_USE.into(),
+                permission_decision: Some(PERMISSION_ALLOW.into()),
+                updated_input: Some(input),
+                additional_context: Some(context.into()),
+                ..HookSpecificOutput::default()
+            }),
+            ..Self::default()
+        }
+    }
+
     /// `true` when nothing is set; such an output is equivalent to printing nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -254,6 +290,37 @@ mod tests {
         assert_eq!(input.stop_hook_active, Some(false));
         assert_eq!(input.cwd.as_deref(), Some("/w"));
         assert_eq!(input.prompt, None);
+        Ok(())
+    }
+
+    /// SPEC-493 REV-002: the subagent hooks' fields as Claude Code 2.1.325 sends them
+    /// (synthetic values), and the answer that runs the Agent tool with another input, as the
+    /// real CLI takes it.
+    #[test]
+    fn subagent_hooks_and_an_updated_tool_input() -> TestResult {
+        let stop: HookInput = serde_json::from_value(json!({
+            "session_id": "s", "hook_event_name": "SubagentStop", "agent_id": "a73a9170080d69b92",
+            "agent_type": "yulius-reviewer", "stop_hook_active": false,
+            "agent_transcript_path": "/h/.claude/projects/-w/s/subagents/agent-a73a.jsonl",
+            "last_assistant_message": "Findings…\nVerdict: approve",
+            "background_tasks": [], "effort": {"level": "high"}
+        }))?;
+        assert_eq!(stop.agent_id.as_deref(), Some("a73a9170080d69b92"));
+        assert_eq!(stop.agent_type.as_deref(), Some("yulius-reviewer"));
+        assert_eq!(
+            stop.last_assistant_message.as_deref(),
+            Some("Findings…\nVerdict: approve")
+        );
+        let out = HookOutput::run_tool_with(
+            json!({"subagent_type": "yulius-reviewer-opus", "prompt": "p"}),
+            "round 3",
+        );
+        assert_eq!(
+            serde_json::to_value(&out)?,
+            json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                "additionalContext": "round 3", "permissionDecision": "allow",
+                "updatedInput": {"subagent_type": "yulius-reviewer-opus", "prompt": "p"}}})
+        );
         Ok(())
     }
 

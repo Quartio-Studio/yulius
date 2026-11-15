@@ -323,8 +323,8 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model a Cockpit was launched with: the default one, Fable 5.2 (SPEC-023), or its fallback
-/// while no subscription could run that (SPEC-482 FBK-011).
+/// The model a Cockpit was launched with: the default one, Opus 5.5 (SPEC-023, SPEC-493), or
+/// the fallback of a default model that has one (SPEC-482 FBK-011; Opus 5.5 has none).
 fn cockpit_model(runtime: &ShellRuntime) -> &str {
     runtime
         .model
@@ -570,8 +570,8 @@ impl App {
         record: &SandboxRecord,
         global: bool,
     ) -> AppResult<ShellInfo> {
-        // The Cockpit runs the default model, Fable 5.2 (SPEC-023), or its fallback while no
-        // subscription can run that (SPEC-482).
+        // The Cockpit runs the default model, Opus 5.5 (SPEC-023, SPEC-493); a default model
+        // with a fallback would run that while no subscription can run it (SPEC-482).
         let account = self.place_default_run(None).await?;
         let seat = if global {
             Seat::Global
@@ -1103,9 +1103,11 @@ impl App {
     ) -> bool {
         let current = runtime.account.get().cloned();
         tracing::info!(shell = %runtime.id(), account = ?current, scope = ?limit.scope, "usage limit reached in the cockpit");
-        // The limit of the model this Cockpit was launched with (SPEC-482 FBK-006).
+        // The limit of the model this Cockpit was launched with (SPEC-482 FBK-006), unless it
+        // names another one: the model its person switched it to (`/model`, SPEC-493 MDL-002).
         let model = cockpit_model(runtime);
         let family = crate::capacity::model_family(Some(model));
+        let ran = crate::supervisor::switched_model(&limit, family);
         if let Some(account) = &current {
             self.record_limit(account, limit, family).await;
         }
@@ -1127,15 +1129,22 @@ impl App {
             return false;
         };
         // Off its subscription, unless the model changes: the fallback may run where the default
-        // model was refused, and the other way round (SPEC-482 FBK-003).
-        let on = current.clone().map(|account| (account, family));
+        // model was refused, and the other way round (SPEC-482 FBK-003); and the default model
+        // runs where the model its person switched it to was refused.
+        let on = current
+            .clone()
+            .map(|account| (account, ran.unwrap_or(family)));
         let Ok(account) = self.place_default_run(on).await else {
             runtime.notice(NO_CAPACITY_NOTICE);
             return false;
         };
         let default = yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
         let next = account.fallback.unwrap_or(default);
-        if let Some(said) = crate::supervisor::model_change_notice(default, Some(model), next) {
+        if let Some(ran) = ran {
+            runtime.notice(&crate::supervisor::switched_back_notice(ran, next));
+        } else if let Some(said) =
+            crate::supervisor::model_change_notice(default, Some(model), next)
+        {
             runtime.notice(&said);
         }
         runtime.switching.store(true, Ordering::SeqCst);

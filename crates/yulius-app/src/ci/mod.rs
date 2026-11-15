@@ -263,6 +263,23 @@ pub(crate) struct GateView {
     pub(crate) workflows: Vec<String>,
 }
 
+/// A claim of a sandbox's CI checkouts ([`App::ci_claim_owned`]): dropping it ends the claim and
+/// wakes the dispatcher, as [`App::ci_release`] does.
+pub(crate) struct CiClaim {
+    busy: Arc<Mutex<HashSet<String>>>,
+    wake: Arc<Notify>,
+    sandbox: String,
+}
+
+impl Drop for CiClaim {
+    fn drop(&mut self) {
+        if let Ok(mut busy) = self.busy.lock() {
+            busy.remove(&self.sandbox);
+        }
+        self.wake.notify_one();
+    }
+}
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -278,8 +295,9 @@ pub struct CiState {
     /// (SPEC-438).
     pub(crate) production_waits: Mutex<Vec<prove::ProductionWait>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
-    /// (`<sandbox>`, disk upkeep).
-    busy: Mutex<HashSet<String>>,
+    /// (`<sandbox>`, disk upkeep). Shared with [`CiClaim`], which ends a claim where it is
+    /// dropped.
+    busy: Arc<Mutex<HashSet<String>>>,
     gates: Mutex<HashMap<String, GateView>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
     /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
@@ -289,7 +307,10 @@ pub struct CiState {
     pub(crate) hygiene_next: Mutex<Option<i64>>,
     /// One hygiene cleanup per sandbox at a time (the round and a person's Clean up).
     pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    wake: Notify,
+    /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
+    /// each reads the runs before it queues, so two at once would queue one head twice.
+    sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
@@ -589,6 +610,18 @@ impl App {
         })
     }
 
+    /// [`App::ci_claim`] as a value that ends the claim when it is dropped, wherever that is: a
+    /// removal running on a blocking thread keeps the claim until it ends, also when the
+    /// future that started it is dropped (review round 2 of SPEC-493 fix 1d). `None` when the
+    /// claim was refused.
+    pub(crate) fn ci_claim_owned(&self, sandbox: &SandboxId) -> Option<CiClaim> {
+        self.ci_claim(sandbox).then(|| CiClaim {
+            busy: Arc::clone(&self.ci.busy),
+            wake: Arc::clone(&self.ci.wake),
+            sandbox: sandbox.as_str().to_owned(),
+        })
+    }
+
     /// Ends a claim of [`App::ci_claim`] and lets the dispatcher start queued runs.
     pub fn ci_release(&self, sandbox: &SandboxId) {
         if let Ok(mut busy) = self.ci.busy.lock() {
@@ -822,6 +855,16 @@ impl App {
     /// # Errors
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
+        // Nothing panics while the map is held; a poisoned map is still the one map.
+        let lock = self
+            .ci
+            .sync_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.id.as_str().to_owned())
+            .or_default()
+            .clone();
+        let _one_at_a_time = lock.lock().await;
         let repo = self.sandbox_repo(&sandbox.id);
         if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
             return Ok(());
@@ -914,6 +957,10 @@ impl App {
             .collect();
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
+        crate::race::reached(
+            crate::race::Point::CiSyncPlanned,
+            Path::new(sandbox.id.as_str()),
+        );
         // A pull request's new head keeps the place in the queue of the run it supersedes: it
         // went to the back at every push before, behind every other pull request (up to 73
         // minutes of waiting, F 2026-10-12).

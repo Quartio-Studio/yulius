@@ -140,6 +140,9 @@ pub struct FakeAgentOptions {
     pub compact_hangs: bool,
     /// The agent answers a launch's first message like a typed one (`--prompt`).
     pub answers_first_message: bool,
+    /// The prompt of any resume reaches the agent, as `claude --resume <id> <prompt>` gives it
+    /// (`--prompt`); without it only a prompt that resumes workflows does.
+    pub resume_prompts: bool,
     /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
     pub trust_prompt: bool,
     /// The transcript's records name the Claude Code version read from this file at each start
@@ -410,7 +413,7 @@ impl HarnessPort for FakeAgentHarness {
             prompt: Some(prompt),
             ..
         } = &launch.mode
-            && prompt.contains("resumeFromRunId")
+            && (self.options.resume_prompts || prompt.contains("resumeFromRunId"))
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }

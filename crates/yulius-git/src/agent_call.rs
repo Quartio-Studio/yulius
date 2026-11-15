@@ -299,6 +299,38 @@ mod tests {
         }
     }
 
+    /// A loopback port bound and not listening (SPEC-493 FLK-001): a connection is refused, and
+    /// nothing else can come to listen on it while it is held.
+    struct HeldPort {
+        _socket: std::os::fd::OwnedFd,
+        port: u16,
+    }
+
+    impl HeldPort {
+        fn new() -> std::io::Result<Self> {
+            use nix::sys::socket::{
+                AddressFamily, SockFlag, SockType, SockaddrIn, bind, getsockname, socket,
+            };
+            use std::os::fd::AsRawFd;
+            let socket = socket(
+                AddressFamily::Inet,
+                SockType::Stream,
+                SockFlag::empty(),
+                None,
+            )?;
+            bind(socket.as_raw_fd(), &SockaddrIn::new(127, 0, 0, 1, 0))?;
+            let port = getsockname::<SockaddrIn>(socket.as_raw_fd())?.port();
+            Ok(Self {
+                _socket: socket,
+                port,
+            })
+        }
+
+        fn port(&self) -> u16 {
+            self.port
+        }
+    }
+
     /// A one-connection server running `serve` on the accepted connection.
     fn server(
         serve: impl FnOnce(BufReader<TcpStream>) -> std::io::Result<()> + Send + 'static,
@@ -327,7 +359,10 @@ mod tests {
 
     #[test]
     fn nothing_listening_is_unsent() -> std::io::Result<()> {
-        let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+        // A port held, not listening: refused, and nothing else can come to listen on it.
+        let held = HeldPort::new()?;
+        let port = held.port();
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_err());
         let result = agent_call("/mcp", b"{}", &env_for(port), LIMITS);
         assert!(matches!(result, Err(CallError::Unsent(_))), "{result:?}");
         Ok(())

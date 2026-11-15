@@ -94,7 +94,7 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     let args = printed(&screen, "cockpit-args")?;
     assert!(
         args.starts_with(
-            "[--setting-sources  --strict-mcp-config --tools  --model claude-fable-5-2 --effort high"
+            "[--setting-sources  --strict-mcp-config --tools  --model claude-opus-5-5 --effort high"
         ),
         "{args}"
     );
@@ -177,10 +177,10 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     Ok(())
 }
 
-/// SPEC-482 FBK-011: with Fable used up on every subscription a Global Superagent starts on
-/// Opus 5.5, and its record keeps the model (a limit it reports binds that model).
+/// SPEC-493 MDL-001: a Global Superagent runs the default model, Opus 5.5, so a subscription
+/// that is only out of Fable's credits takes it, and nothing falls back.
 #[tokio::test]
-async fn a_global_superagent_starts_on_the_fallback_while_fable_is_used_up() -> TestResult {
+async fn a_global_superagent_starts_on_opus_where_fable_is_used_up() -> TestResult {
     let f = fixture().await?;
     let now = f.h.clock.0.load(std::sync::atomic::Ordering::SeqCst);
     let out_of_fable = serde_json::json!({"weekly_fable":
@@ -208,8 +208,10 @@ async fn a_global_superagent_starts_on_the_fallback_while_fable_is_used_up() -> 
         ),
         "{args}"
     );
+    // Its own model, not a fallback: the record names a model only for a fallback.
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
-    assert!(record.contains("\"model\":\"claude-opus-5-5\""), "{record}");
+    assert!(record.contains("\"account\":\"acc-1\""), "{record}");
+    assert!(!record.contains("\"model\""), "{record}");
     f.h.app.end_all_shells().await;
     Ok(())
 }

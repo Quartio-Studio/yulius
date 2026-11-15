@@ -6,6 +6,41 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Yulius CI tests a head while its review runs (SPEC-493 fix 3, task #472,
+  [ADR-0342](decisions/0342-yulius-ci-runs-the-whole-gate-while-the-review-reads.md)): starting
+  the reviewer pushes the committed head, opens the pull request and queues its run at once. One
+  rule for local checks everywhere: run the checks your change touches; the whole gate is Yulius
+  CI's, not a local step before a review or between rounds.
+- The flaky tests of the measurement are fixed at their root (SPEC-493 fix 2, task #472): the
+  unreachable-server tests hold their port instead of letting it go, and the notes back-off
+  test counts the sandbox notepad's loads (a late load of the Team notepad failed it, #1246).
+- A first or second review round whose subscription cannot run Fable 5.2 moves the session to
+  one that can (SPEC-493 fix 1d, task #472): the reviewer's start is refused with why, and the
+  session goes on there with a prompt to start the review again. While background work runs it
+  is refused with that reason; with no such subscription the round runs on Opus 5.5 and the
+  reviewer says so.
+- Who wrote and who reviewed each pull request can be read afterwards (SPEC-493 fix 1c, task
+  #472): a review round records the model that really answered its reviewer and whether a usage
+  limit cut it off; a merge writes `delivery.review.models` (the authors' models and each
+  round's model, verdict and head); the delivery view and `delivery_status` list the rounds; and
+  `GET /api/analytics/reviews` and the Dashboard's Pipeline tab show the share of first reviews
+  that asked for changes, the median rounds per pull request, the share of first reviews cut off
+  and the rounds per model.
+- Yulius picks the model of each review round (SPEC-493 fix 1b, task #472,
+  [ADR-0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)): every task session
+  is launched with two reviewer agents (`yulius-reviewer` on Fable 5.2, `yulius-reviewer-opus`
+  on Opus 5.5, both at high effort); the Agent tool's start reaches Yulius, which numbers the
+  pull request's round, gives rounds 3 and later the Opus reviewer (and any round on a
+  subscription that cannot run Fable then) and records each round with its verdict. Every rule
+  that describes the review names the reviewer agent the same way.
+- Tasks, the Cockpit and the Superagents run Opus 5.5 at high effort by default (SPEC-493 fix 1a,
+  task #472, [ADR-0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)): the
+  person's decision that Opus 5.5 writes and Fable 5.2 reviews. A task set to a Fable model keeps
+  it and still falls back to Opus 5.5 while no subscription can run Fable; a default task has no
+  fallback. The Capacity card and the Status line say when Fable is used up everywhere
+  ("tasks set to it run on Opus 5.5"). A usage limit is booked to the model the refused request
+  asked for, which Claude Code 2.1.325 records: a session its person switched to Fable with
+  `/model` no longer marks Opus as used up, and goes on with the model it was started with.
 - A sandbox's Docker engine runs below the group that holds its limits (SPEC-483 slice 39,
   ADR-0339, task #465). A privileged container could start a nested cgroup namespace and lift
   the engine's task cap and CPU weight, the share that keeps agents a quarter of the sandbox's

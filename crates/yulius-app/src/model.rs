@@ -818,6 +818,42 @@ pub struct MessageRecord {
     pub created_at: Timestamp,
 }
 
+/// One round of a task's independent code review (SPEC-493 REV-002, REV-004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewRoundRecord {
+    /// Id.
+    pub id: String,
+    /// The task whose change it reviews.
+    pub task_id: TaskId,
+    /// Its number among the rounds of the task's pull request (1 for the first).
+    pub round: u32,
+    /// The task branch's head when it started.
+    pub head: Option<String>,
+    /// The reviewer agent it runs as.
+    pub agent: String,
+    /// The model asked for (the agent's).
+    pub model: String,
+    /// Why that model: `round` (the round's number), `kept` (a reviewer started again for a
+    /// round that had no report keeps its model), `no_fable` (no subscription could run Fable).
+    pub reason: String,
+    /// Claude Code's id of the subagent, once it started.
+    pub subagent_id: Option<String>,
+    /// The model that answered, read from the reviewer's transcript.
+    pub model_answered: Option<String>,
+    /// Started.
+    pub started_at: Timestamp,
+    /// When it ended with a report.
+    pub ended_at: Option<Timestamp>,
+    /// The report's verdict (`approve`, `request_changes`), when it had one.
+    pub verdict: Option<String>,
+    /// A usage limit cut the reviewer off.
+    pub cut_off: bool,
+    /// The pull request it reviewed, once that merged.
+    pub pr_number: Option<u64>,
+    /// When that pull request merged; `None` while the round belongs to the open one.
+    pub merged_at: Option<Timestamp>,
+}
+
 /// An advisory scope claim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeClaimRecord {

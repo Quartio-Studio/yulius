@@ -171,6 +171,8 @@ const MIGRATIONS: &[&str] = &[
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0061_capacity_window_indexes.sql"),
+    // Schema version 62 (SPEC-493 REV-002).
+    include_str!("migrations/0062_review_rounds.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -429,6 +431,7 @@ mod tests {
                 61,
                 include_str!("migrations/0061_capacity_window_indexes.sql"),
             ),
+            (62, include_str!("migrations/0062_review_rounds.sql")),
         ];
         for (version, sql) in pinned {
             assert_eq!(
@@ -437,7 +440,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 61, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 62, "a new migration is pinned here too");
     }
 
     /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of

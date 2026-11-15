@@ -289,8 +289,20 @@ impl App {
             pr_number: None,
             updated_at: self.now(),
         };
+        // `base` (read after the refresh) holds the squash, a new commit: none of the head's
+        // commits are in it, so it serves as the base the review is judged against
+        // (SPEC-493 REV-005).
+        let merged = crate::review::MergedHead {
+            head: head.clone(),
+            base: Some(base.clone()),
+        };
         if !self
-            .dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
+            .dlv_transition_at(
+                &task.sandbox_id,
+                &observed.record.stage,
+                &next,
+                Some(&merged),
+            )
             .await?
         {
             // Changed meanwhile (another merge of this task): the view below shows what it is.

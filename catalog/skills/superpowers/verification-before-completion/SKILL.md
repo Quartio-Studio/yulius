@@ -49,7 +49,8 @@ Skipping a step is not verifying.
 
 - "Should", "probably", "seems to".
 - Satisfaction before verification ("Done!", "Perfect!").
-- About to commit, push, open a pull request or mark a step done without running the gates.
+- About to commit, push, open a pull request or mark a step done without running the checks the
+  change touches (the whole gate is Yulius CI's, on the pushed head).
 - Trusting a subagent's or tool's success report.
 - Relying on partial verification, or "just this once".
 

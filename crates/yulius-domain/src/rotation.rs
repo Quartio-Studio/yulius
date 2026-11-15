@@ -322,6 +322,18 @@ fn ranked_for<'a>(
     candidates
 }
 
+/// Where a session moves so that it can also run a subagent of `also` (SPEC-493 REV-007: a
+/// review round's Fable 5.2 reviewer runs on its session's subscription): the best candidate
+/// for the run placed now, other than the current subscription, that is a candidate for `also`
+/// too. `None` when no subscription is.
+#[must_use]
+pub fn move_to_also_run(input: &RotationInput, also: ModelFamily) -> Option<AccountId> {
+    ranked(input, input.current.as_ref())
+        .into_iter()
+        .find(|(account, _)| assess(account, input.now, input.threshold, also).is_some())
+        .map(|(account, _)| account.id.clone())
+}
+
 /// Decides whether and where a task's run should go (SPEC-001 §7.4).
 ///
 /// A run is placed with [`placing_family`]: the task's fallback model while no account can run
@@ -577,6 +589,31 @@ mod tests {
     fn start(accounts: Vec<AccountView>) -> Result<Option<String>, IdError> {
         let rotation = input(None, accounts)?;
         Ok(switched_to(&decide(&rotation, Trigger::Start).0).map(str::to_owned))
+    }
+
+    /// SPEC-493 REV-007: a session whose subscription cannot run a Fable reviewer moves to the
+    /// best other subscription that can run both its own model and Fable; one that runs only
+    /// one of them, or the current one, is never the choice; with none, nowhere.
+    #[test]
+    fn a_session_moves_to_a_subscription_that_also_runs_the_reviewer() -> Result<(), IdError> {
+        let mut rotation = input(
+            Some("a"),
+            vec![
+                account("a", fable_out(10.0, Some(50)))?,
+                account("b", fable_out(5.0, Some(50)))?,
+                account("c", usage(99.5, 10.0, Some(100)))?,
+                account("d", usage(40.0, 50.0, Some(100)))?,
+                account("e", usage(20.0, 30.0, Some(100)))?,
+            ],
+        )?;
+        rotation.family = ModelFamily::Opus;
+        let chosen = move_to_also_run(&rotation, ModelFamily::Fable);
+        assert_eq!(chosen.as_ref().map(AccountId::as_str), Some("e"));
+        rotation
+            .accounts
+            .retain(|a| a.id.as_str() != "e" && a.id.as_str() != "d");
+        assert_eq!(move_to_also_run(&rotation, ModelFamily::Fable), None);
+        Ok(())
     }
 
     /// AC-ROT-9: capacity that expires soon is spent first (use it or lose it).

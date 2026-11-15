@@ -162,6 +162,13 @@ pub enum Point {
     /// the turn's lines and looked at its background work; whether a prompt waits is not asked
     /// yet. The path is the task id.
     SwitchProbed,
+    /// A review round's move for a Fable reviewer (SPEC-493 REV-007) was decided and its switch
+    /// spawned; whether the run it was decided for is still the live one is not asked yet. The
+    /// path is the task id.
+    ReviewMoveDecided,
+    /// A CI sync of a sandbox read its runs and planned what to queue; nothing is queued yet.
+    /// The path is the sandbox id.
+    CiSyncPlanned,
     /// The pool found a prompt waiting in a turn held for capacity that it would move
     /// (SPEC-479): the turn's lines were read; the pause is not asked for again yet and nothing
     /// is released. The path is the task id.

@@ -92,6 +92,14 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
         },
         true,
     ))?;
+    // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
+    let agents = plan.argv[plan
+        .argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("--agents")?
+        + 1]
+    .clone();
     assert_eq!(
         plan.argv,
         [
@@ -103,6 +111,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
+            "--agents",
+            agents.as_str(),
             "--model",
             "claude-opus-4-1",
             "--effort",
@@ -160,6 +170,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
         ("Stop", 694_800),
         ("Notification", 15),
         ("SessionEnd", 15),
+        ("SubagentStart", 15),
+        ("SubagentStop", 15),
     ] {
         assert_eq!(
             settings["hooks"][event],
@@ -181,6 +193,12 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
                 "timeout": 60
             }] },
             { "matcher": "Edit|MultiEdit|Write|NotebookEdit", "hooks": [{
+                "type": "command",
+                "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
+                "timeout": 60
+            }] },
+            // A subagent's start: the reviewer of a review round (SPEC-493 REV-002).
+            { "matcher": "Agent|Task", "hooks": [{
                 "type": "command",
                 "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
                 "timeout": 60
@@ -241,6 +259,14 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
     request.effort = None;
     request.mcp_servers.clear();
     let plan = plan_launch(&request)?;
+    // The reviewer agents (SPEC-493 REV-001): their content is its own test's.
+    let agents = plan.argv[plan
+        .argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("--agents")?
+        + 1]
+    .clone();
     assert_eq!(
         plan.argv,
         [
@@ -252,10 +278,12 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
-            // No model or effort named: Fable 5.2 at high effort, pinned so neither drifts with
+            "--agents",
+            agents.as_str(),
+            // No model or effort named: Opus 5.5 at high effort, pinned so neither drifts with
             // Claude Code's aliases or a subscription's defaults (task #21).
             "--model",
-            "claude-fable-5-2",
+            "claude-opus-5-5",
             "--effort",
             "high",
             "--",
@@ -468,6 +496,67 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 REV-001: a task session knows Yulius's two reviewer agents from its launch, by full
+/// model id and at high effort; their prompt is the reviewer's contract. A Cockpit has none.
+#[test]
+fn a_task_session_is_launched_with_the_reviewer_agents() -> TestResult {
+    let request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: Some("go".into()),
+        },
+        false,
+    );
+    let argv = plan_launch(&request)?.argv;
+    let at = argv
+        .iter()
+        .position(|a| a == "--agents")
+        .ok_or("no --agents")?;
+    let agents: Value = serde_json::from_str(&argv[at + 1])?;
+    let defined: Vec<&str> = agents
+        .as_object()
+        .ok_or("an object")?
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(defined, ["yulius-reviewer", "yulius-reviewer-opus"]);
+    for (name, model) in [
+        ("yulius-reviewer", "claude-fable-5-2"),
+        ("yulius-reviewer-opus", "claude-opus-5-5"),
+    ] {
+        let agent = &agents[name];
+        assert_eq!(agent["model"], model, "{name}");
+        assert_eq!(agent["effort"], "high", "{name}");
+        assert!(
+            agent["prompt"]
+                .as_str()
+                .is_some_and(|p| p.contains("`Verdict: approve` or `Verdict: request changes`")),
+            "{name}"
+        );
+        assert!(agent["description"].as_str().is_some_and(|d| !d.is_empty()));
+    }
+    // An option, before the prompt (the last word).
+    assert_eq!(argv.last().map(String::as_str), Some("go"));
+    assert!(at + 1 < argv.len() - 1);
+    let cockpit = plan_cockpit(&CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/data/users/u1/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        model: None,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+        project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
+        bypass_permissions: false,
+        only_yulius: None,
+        disabled_plugins: Vec::new(),
+    })?;
+    assert!(!cockpit.argv.iter().any(|a| a == "--agents"));
+    Ok(())
+}
+
 #[test]
 fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> TestResult {
     let mut request = claude_request(
@@ -497,9 +586,18 @@ fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> Te
     let argv = plan_launch(&request)?.argv;
     assert!(
         argv.windows(4)
+            .any(|w| w == ["--model", "claude-opus-5-5", "--effort", "high"]),
+        "{argv:?}"
+    );
+    // A task that asks for Fable still gets it (SPEC-493 MDL-002), at the default effort.
+    request.model = Some("claude-fable-5-2".into());
+    let argv = plan_launch(&request)?.argv;
+    assert!(
+        argv.windows(4)
             .any(|w| w == ["--model", "claude-fable-5-2", "--effort", "high"]),
         "{argv:?}"
     );
+    request.model = None;
     // An effort the task chose is kept.
     for chosen in ["max", "low"] {
         request.effort = Some(chosen.into());
@@ -510,8 +608,7 @@ fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> Te
         );
         assert_eq!(argv.iter().filter(|a| *a == "--effort").count(), 1);
         assert!(
-            argv.windows(2)
-                .any(|w| w == ["--model", "claude-fable-5-2"]),
+            argv.windows(2).any(|w| w == ["--model", "claude-opus-5-5"]),
             "{argv:?}"
         );
     }
@@ -537,11 +634,11 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP or prompt (SPEC-021 CKP-002), and uncontained
-    // no approval bypass (SPEC-208 BYP-004): on the default Fable 5.2 at high effort (SPEC-023
+    // no approval bypass (SPEC-208 BYP-004): on the default Opus 5.5 at high effort (SPEC-023
     // DEF-004); `/model` and `/effort` still change it.
     assert_eq!(
         plan.argv,
-        ["claude", "--model", "claude-fable-5-2", "--effort", "high"]
+        ["claude", "--model", "claude-opus-5-5", "--effort", "high"]
     );
     assert_eq!(plan.cwd, PathBuf::from("/data/sandboxes/s1/repo"));
     assert!(plan.files.is_empty());
@@ -583,7 +680,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
             "--resume",
             SESSION,
             "--model",
-            "claude-fable-5-2",
+            "claude-opus-5-5",
             "--effort",
             "high"
         ]
@@ -684,7 +781,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
             "--resume",
             SESSION,
             "--model",
-            "claude-fable-5-2",
+            "claude-opus-5-5",
             "--effort",
             "high",
             "--dangerously-skip-permissions"
@@ -743,7 +840,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             "--allowedTools",
             "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read,mcp__yulius__secrets_list,mcp__yulius__secret_verify,mcp__yulius__sandboxes_list,mcp__yulius__sandbox_task_get,mcp__yulius__sandbox_tasks_list,mcp__yulius__sandbox_requests,mcp__yulius__superagent_checks,mcp__yulius__browser_tabs,mcp__yulius__browser_snapshot,mcp__yulius__browser_screenshot,mcp__yulius__task_delivery,mcp__yulius__merge_queue,mcp__yulius__subscriptions,mcp__yulius__instance,mcp__yulius__ci_runs,mcp__yulius__ci_run,mcp__yulius__cd_status,mcp__yulius__variables_list,mcp__yulius__task_screen,mcp__yulius__task_usage,mcp__yulius__checkout",
             "--model",
-            "claude-fable-5-2",
+            "claude-opus-5-5",
             "--effort",
             "high"
         ]
@@ -824,7 +921,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
     );
     assert_eq!(
         &plan.argv[at + 2..],
-        ["--model", "claude-fable-5-2", "--effort", "high"]
+        ["--model", "claude-opus-5-5", "--effort", "high"]
     );
     assert!(!plan.argv.iter().any(|a| a == "--strict-mcp-config"));
     Ok(())

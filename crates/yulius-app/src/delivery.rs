@@ -1287,7 +1287,7 @@ enum AfterMerge {
 }
 
 impl App {
-    async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
+    pub(crate) async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
             .store
             .sandbox(&task.sandbox_id)
@@ -1400,9 +1400,27 @@ impl App {
         expected: &DeliveryStage,
         next: &DeliveryRecord,
     ) -> AppResult<bool> {
+        self.dlv_transition_at(sandbox, expected, next, None).await
+    }
+
+    /// [`Self::dlv_transition`] of a merge whose merged head is known: the merge record says
+    /// whether a recorded review round approved it (SPEC-493 REV-005).
+    pub(crate) async fn dlv_transition_at(
+        &self,
+        sandbox: &SandboxId,
+        expected: &DeliveryStage,
+        next: &DeliveryRecord,
+        merged: Option<&crate::review::MergedHead>,
+    ) -> AppResult<bool> {
         let written = self.deps.store.transition_delivery(expected, next).await?;
         if written && next.stage != *expected {
             self.publish_pulls(sandbox);
+        }
+        // The merge record says who wrote and who reviewed (SPEC-493 REV-005): the store closed
+        // the pull request's rounds in the same write.
+        if written && next.stage == DeliveryStage::MergedIntegration && *expected != next.stage {
+            self.record_review_models(&next.task_id, next.pr_number, next.updated_at, merged)
+                .await;
         }
         Ok(written)
     }
@@ -1431,6 +1449,21 @@ impl App {
 
     pub(crate) fn dlv_actor_login(user: &UserRecord) -> String {
         user.label()
+    }
+
+    /// Why the head under review cannot go out now (SPEC-493 CIR-001): a spec that is not
+    /// valid, a missing plan or uncommitted changes, as for any delivery; `None` when it can.
+    pub(crate) async fn review_head_not_ready(&self, task: &TaskRecord) -> Option<String> {
+        let worktree = task.worktree_path.as_deref()?;
+        let steps = self.deps.store.steps(&task.id).await.unwrap_or_default();
+        let spec = self.dlv_check_spec(task).await;
+        let dirty = self
+            .deps
+            .git
+            .has_changes(Path::new(worktree))
+            .await
+            .unwrap_or(false);
+        not_ready(&spec, &steps, DeliveryAsk::Review, dirty)
     }
 
     /// Reads and validates the task spec; a task that needs none (DSC-013: research, a
@@ -1747,8 +1780,21 @@ impl App {
                 stage: next,
                 updated_at: self.now(),
             };
+            // Merged elsewhere: its merge commit's first parent is the integration branch
+            // before it, as for a merge of Yulius's own; without it, only an approval of the
+            // merged head itself counts.
+            let merged_head = observed
+                .pr
+                .as_ref()
+                .filter(|pull| pull.merged)
+                .map(crate::review::MergedHead::of_pull);
             if self
-                .dlv_transition(&task.sandbox_id, &observed.record.stage, &reconciled)
+                .dlv_transition_at(
+                    &task.sandbox_id,
+                    &observed.record.stage,
+                    &reconciled,
+                    merged_head.as_ref(),
+                )
                 .await?
             {
                 if reconciled.stage != observed.record.stage {
@@ -1817,6 +1863,7 @@ impl App {
             blocked,
             notes,
             checks_access,
+            review_rounds: Vec::new(),
         }
     }
 
@@ -1897,7 +1944,9 @@ impl App {
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
             .await;
-        Ok(Self::dlv_delivery_of(&profile, &observed, notes, access))
+        let mut view = Self::dlv_delivery_of(&profile, &observed, notes, access);
+        view.review_rounds = self.review_round_views(&task.id).await;
+        Ok(view)
     }
 
     /// The `TaskDetail.delivery` value: the full view, or the stored stage with a note when
@@ -2118,8 +2167,16 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
+                    let merged_head = pull
+                        .merged
+                        .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
-                        .dlv_transition(&sandbox.id, &record.stage, &reconciled)
+                        .dlv_transition_at(
+                            &sandbox.id,
+                            &record.stage,
+                            &reconciled,
+                            merged_head.as_ref(),
+                        )
                         .await;
                 }
             }
@@ -3801,8 +3858,16 @@ impl App {
             pr_number: Some(pull.number),
             updated_at: self.now(),
         };
-        self.dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
-            .await?;
+        self.dlv_transition_at(
+            &task.sandbox_id,
+            &observed.record.stage,
+            &next,
+            Some(&crate::review::MergedHead {
+                head: pull.head_sha.clone(),
+                base: Some(format!("{merge_sha}^1")),
+            }),
+        )
+        .await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         self.dlv_audit(
             &actor,
@@ -5027,6 +5092,7 @@ impl App {
             "blocked": view.blocked,
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
+            "review_rounds": view.review_rounds,
             "profile": profile_to_contract(&profile),
             "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
         }))

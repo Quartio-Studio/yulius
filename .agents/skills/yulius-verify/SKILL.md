@@ -11,8 +11,11 @@ Derive a requirement/evidence checklist from the user's scope before examining
 passing tests. Inspect current Git state and code. Map each behavior to direct
 proof; a green compilation cannot prove cancellation, recovery or a UI flow.
 
-For Rust/tooling changes run `scripts/dev ci`. For isolated prose changes run
-`python3 scripts/check_repository.py`. Run additional integration, property,
+While iterating, run the checks your change touches. The whole gate is Yulius
+CI's job: it tests the head while the reviewer reads. Do not run the whole gate
+locally before a review or between rounds, except to reproduce a CI failure or
+when CI cannot run (a playground without CI, an outage). For isolated prose
+changes run `python3 scripts/check_repository.py`. Run additional integration, property,
 protocol or UI checks only when the change's behavior requires them. Ordinary
 checks must not need model credentials or production infrastructure.
 

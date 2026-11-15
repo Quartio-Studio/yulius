@@ -350,7 +350,7 @@ async fn the_view_says_when_the_binary_could_not_be_read_for_its_models() -> Tes
     assert_eq!(
         view.body["models_unread"],
         "The binary of Claude Code 2.1.322 could not be read for the models it knows, so \
-         whether it knows claude-fable-5-2, Yulius's default model, is not known. It is read \
+         whether it knows claude-opus-5-5, Yulius's default model, is not known. It is read \
          again whenever this page is opened; `yulius doctor --contained` names the install."
     );
     assert_eq!(view.body["unknown_models"], json!([]));
@@ -396,7 +396,7 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
     );
     let problem = view.body["problem"].as_str().ok_or("a problem")?;
     assert!(
-        problem.starts_with("Claude Code 2.1.311 does not know claude-fable-5-2"),
+        problem.starts_with("Claude Code 2.1.311 does not know claude-opus-5-5"),
         "{problem}"
     );
     // The newest release was refused for it: installing on the host would not help.
@@ -405,7 +405,7 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
     assert_eq!(view.body["result"], "refused");
     assert_eq!(
         view.body["result_text"],
-        "Refused, nothing was installed: 2.1.322 does not know claude-fable-5-2 (Yulius's \
+        "Refused, nothing was installed: 2.1.322 does not know claude-opus-5-5 (Yulius's \
          default model)."
     );
     assert_eq!(
