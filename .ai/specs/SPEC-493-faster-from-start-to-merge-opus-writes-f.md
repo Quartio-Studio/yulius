@@ -364,8 +364,8 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 
 ## Plan
 
-- [ ] Fix 1a: tasks and the Superagents run Opus 5.5 by default; a Fable choice is kept and still falls back (MDL-001 to MDL-003)
-- [ ] Fix 1a's documents: the decision amending ADR-0289, ADR-0295 and ADR-0312; SPEC-023, SPEC-464 and SPEC-482 notes; product, API, changes
+- [x] Fix 1a: tasks and the Superagents run Opus 5.5 by default; a Fable choice is kept and still falls back (MDL-001 to MDL-003)
+- [x] Fix 1a's documents: the decision amending ADR-0289, ADR-0295 and ADR-0312; SPEC-023, SPEC-464 and SPEC-482 notes; product, API, changes
 - [ ] Fix 1a's independent review answered test-first
 - [ ] Fix 1b: every task session is launched with the two reviewer agents by full model id (REV-001)
 - [ ] Fix 1b: Yulius sees the reviewer start, counts the pull request's rounds and gives rounds 3 and later the Opus reviewer; each round is a record (REV-002 to REV-004, its start)
@@ -590,4 +590,41 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 
 ## Evidence
 
-Not yet: the work has not started.
+### Fix 1a: the default model (head `1ab29446c` before the review)
+
+- **Test first.** With `DEFAULT_CLAUDE_MODEL` put back to `claude-fable-5-2` on the committed
+  tests, `cargo nextest run -p yulius-domain -p yulius-harness`: 10 of 692 fail
+  (`harness::tests::the_default_model_is_opus_5_5_and_the_review_model_fable_5_2`,
+  `a_fable_model_falls_back_to_opus_5_5`, two release-gap tests, and six launch tests on
+  `--model claude-opus-5-5 --effort high`). With the review model's label taken out of
+  `gap_text`, `a_build_without_the_default_model_is_refused_and_another_gap_is_named` fails. With
+  the capacity view's `fallback_model` tied to the default model again,
+  `subscription_pool::the_capacity_view_counts_for_the_default_model` and
+  `model_fallback::a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again` fail.
+- **What the flip broke, and why each test changed.** The first run of the whole suite after the
+  constant changed: 64 of 4456 failed. All took a default task for a Fable task: launch
+  arguments (now Opus), the Superagent's fallback (it runs the default model, which has none:
+  `a_superagent_refused_its_model_on_the_only_subscription_stays`,
+  `a_global_superagent_starts_on_opus_where_fable_is_used_up`,
+  `a_spent_opus_cap_keeps_the_cockpit_off_a_subscription`), and the fallback, usage-credit and
+  workflow-limit tests, whose task is now set to Fable (`new_fable_task`,
+  `fable_running_on_first`) and whose "limited" assertions follow the rule that a subscription
+  is limited only while the default model cannot run on it. No product rule of SPEC-464 or
+  SPEC-482 changed.
+- `cargo nextest run --workspace --all-features --no-fail-fast`: 4456 passed, 17 skipped.
+- `scripts/dev check`: exit 0. `scripts/dev lint`: exit 0.
+- `cd e2e && npx e2e run`: 84 files passed, 1 skipped; 1050 tests passed, 1 skipped. The first
+  run had 10 failures in `subscriptions.e2e.ts` and `model-fallback.e2e.ts`, all on the mock's
+  subscription that was "limited" by Fable's allowance alone; it is now out of the default
+  model's weekly window too, and the page-unit tests state the new rule (out of Fable alone:
+  not limited, its line still shown).
+- AC-1: `yulius-harness` launch tests (new, resumed, Cockpit, Superagent arguments) and
+  `cockpit::`, `global_superagent::` against the fake `claude`. AC-2: `model_fallback::` (a task
+  set to Fable, 7 tests), `usage_credits::` (19), `capacity::tests::a_runs_family_is_its_launch_models`
+  (`fallback_of(None)` is none). AC-3: `agent_cli::tests::a_build_without_the_default_model_is_refused_and_another_gap_is_named`,
+  `claude_updates::` (a release without the default is refused).
+- Not exercised here: a live Claude Code run on a subscription (the launch arguments are proven
+  against a fake `claude`), and the instance, which gets the change with a promotion and update.
+- `scripts/dev security`: "Security scan disabled" for this project in Yulius: disabled, not
+  passed.
+- The whole gate and the e2e suite also run on Yulius CI at the pull request's head.
