@@ -182,8 +182,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | REL-004 | The approval runs the CD page's `cd_deploy`, `cd_rollback` or `promote_sandbox` with the answering person's browser session and the slug they typed; their checks and refusals at that moment are the answer of the click and of the waiting call. Audited `superagent.cross_task` with the action, never the slug. | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug` (production deployed to v2, rolled back to v2 from v3 with `main` unmoved, a promotion's own "nothing to promote") |
 | REL-005 | `onboarding_start {notes?}`, approved by a click, runs the project page's Start onboarding (`approve_onboarding`) as that person. | `cross_sandbox::onboarding_starts_on_the_persons_click` (the start's own answer: this harness has no Git); `superagent-requests.e2e.ts` (the click) |
 | REL-006 | The three new tools (`cd_rollback`, `promote`, `onboarding_start`) ask in Claude Code first as every changing tool does; the instructions say production, `promote` and `onboarding_start` wait on the panel. | `manage_tools::the_cockpit_asks_before_every_changing_tool`; `cockpit::a_cockpit_manages_the_project_for_its_owner`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
-| SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move) is kept, up to 16 KiB, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back" |
-| SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied (Enter outside a paste, or Ctrl-C), for at most 30 minutes after the last keystroke; its state reads `held`. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
+| SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move, Restart) is kept in whole frames, up to 16 KiB, without Ctrl-C, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. A restart that fails drops it. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back", "what is typed for a restart that fails is not sent to a later session" |
+| SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied, for at most 30 minutes after the last keystroke; its state reads `held`. Text, a paste (also split across frames), Alt-Enter and backslash-Enter type; Enter outside a paste and Ctrl-C empty the box; Esc, Tab, arrows and editing keys do neither. Keystrokes are ordered by their count; a draft's mark is kept with the Superagent's record, so a server restarted for the update knows it. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`, `a_draft_typed_before_the_servers_restart_holds_the_superagents`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
 
 ## Plan
 
@@ -991,3 +991,27 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Not tested:** a real Claude Code's prompt box (the fake agent echoes keys; what empties it is
   read from the keys, Enter and Ctrl-C, not from its screen); a usage-limit move with keys typed
   meanwhile (it is the same `switched` path the e2e test drives).
+- **Gate:** `scripts/dev ci` passed on `4ae29eedc` (4430 tests, 17 skipped;
+  `target/evidence/gate-slice9a.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `4ae29eedc`): request changes, all in this slice's code,
+  answered test-first:
+  - F1 (major), a draft typed before the server restarts for the update was forgotten (the marks
+    lived in memory): the draft's mark is kept in `shell.json` when a draft starts or ends
+    (`a_draft_typed_before_the_servers_restart_holds_the_superagents`, failed first).
+  - F2, a paste split across frames read a line break as Enter, and two keystrokes in one
+    millisecond tied: the paste is followed across frames, and keystrokes are ordered by their
+    count, the clock kept only for the half hour.
+  - F3, F4, Alt-Enter and backslash-Enter read as sent, and Esc, Tab or arrows as a draft:
+    `read_box_keys` reads them as Claude Code does (unit test). Shift-Enter reaches the terminal
+    as a plain Enter, so it still reads as sent (the draft is then not held; nothing else changes).
+  - F5, a held refresh redid its costly steps every pass: the draft is checked first, in
+    `cockpit_refresh_now`.
+  - F6, a restart that failed kept the ended terminal and its held keys for a later session:
+    dropped (e2e "what is typed for a restart that fails is not sent to a later session", failed
+    first). F7: Ctrl-C is left out of held keys, which are kept until sent. F8: held keys are
+    whole frames.
+  - F9, `draft_holds` duplicated `agent_cli::is_draft`: it uses it. F10, F11: the comments.
+  - F12, tests: the paste, Alt-Enter, Esc, a draft across the server's restart and a failed
+    restart are tested now; the half hour in an integration test is not (the unit test holds it).
+  - Docs: "nothing typed is lost" said more than this does; the documents say what is kept.

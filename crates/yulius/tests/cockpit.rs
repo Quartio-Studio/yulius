@@ -4547,6 +4547,56 @@ async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResul
     Ok(())
 }
 
+/// Review of slice 9a, F1: a draft typed before the server restarts for an update is kept with
+/// the Superagent's record, so the adopted Superagent's restart waits for it too.
+#[tokio::test]
+async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    let before = serve(f.h.router.clone()).await?;
+    let mut socket = attach(before.addr, &id, &f.alice).await?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "deploy it when the"}).to_string(),
+        ))
+        .await?;
+    wait_for("the draft to be seen", || f.h.app.cockpit_has_draft(&id)).await?;
+    drop(socket);
+    predate_launch_digest(&f, &id)?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    let served = serve(g.h.router.clone()).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert!(
+        g.h.app.cockpit_has_draft(&id),
+        "the draft came back with its record"
+    );
+    wait_for("the restart to be held by the draft", || {
+        g.h.app.cockpit_refresh_state(&id) == "held"
+    })
+    .await?;
+    let mut socket = attach(served.addr, &id, &g.alice).await?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "\r"}).to_string(),
+        ))
+        .await?;
+    other_cockpit(&g, &id).await?;
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-211 SCF-001, SCF-002, SCF-004 (AC-7): the Superagent stores a key in its person's home as
 /// an agent secret without seeing it, created by the person and audited as their Superagent; the
 /// stored value is the key file with literal `\n` (`secret_verify` matches the file's hash).

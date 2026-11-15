@@ -133,29 +133,94 @@ fn transcript_len(path: &std::path::Path) -> u64 {
 /// update's restart (SPEC-487 SES-002): one left for longer is taken as abandoned.
 pub(crate) const DRAFT_HOLDS_MS: i64 = 30 * 60 * 1000;
 
-/// Records a person's keystrokes into a Cockpit (SPEC-487 SES-002): a frame that ends with
-/// Enter outside a paste, or a Ctrl-C, empties the prompt box; anything else is typed into it.
-pub(crate) fn note_typing(runtime: &ShellRuntime, data: &[u8], now_ms: i64) {
-    if empties_box(data) {
-        runtime.emptied_ms.store(now_ms, Ordering::SeqCst);
+/// What one frame of a person's keys does to Claude Code's prompt box (SPEC-487 SES-002).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum BoxKeys {
+    /// Text went in (characters, a paste, a line break that does not send).
+    Typed,
+    /// It was sent or cleared (Enter, Ctrl-C) and nothing was typed after.
+    Emptied,
+    /// Neither: Esc, Tab, arrows, editing keys.
+    Neither,
+}
+
+/// Reads one frame of a person's keys. `in_paste` carries a bracketed paste across frames (the
+/// page splits a long one): its line breaks are text. Enter sends, unless it follows a
+/// backslash or comes with Alt (Claude Code's line breaks); Ctrl-C clears the box. Escape
+/// sequences (arrows, function keys), Tab and other control keys type nothing. Shift-Enter
+/// reaches the terminal as a plain Enter and reads as one.
+pub(crate) fn read_box_keys(data: &[u8], in_paste: &mut bool) -> BoxKeys {
+    const START: &[u8] = b"\x1b[200~";
+    const END: &[u8] = b"\x1b[201~";
+    let (mut typed, mut emptied) = (false, false);
+    let mut i = 0;
+    while i < data.len() {
+        let rest = &data[i..];
+        if rest.starts_with(START) {
+            *in_paste = true;
+            typed = true;
+            i += START.len();
+        } else if rest.starts_with(END) {
+            *in_paste = false;
+            i += END.len();
+        } else if *in_paste {
+            typed = true;
+            i += 1;
+        } else {
+            match data[i] {
+                0x1b if data.get(i + 1) == Some(&b'\r') => {
+                    typed = true;
+                    i += 2;
+                }
+                0x1b => {
+                    i += 1;
+                    if matches!(data.get(i), Some(b'[' | b'O')) {
+                        i += 1;
+                        while data.get(i).is_some_and(|b| !(0x40..=0x7e).contains(b)) {
+                            i += 1;
+                        }
+                    }
+                    i += 1;
+                }
+                b'\r' if i > 0 && data[i - 1] == b'\\' => {
+                    typed = true;
+                    i += 1;
+                }
+                b'\r' | 0x03 => {
+                    (typed, emptied) = (false, true);
+                    i += 1;
+                }
+                byte if byte >= 0x20 && byte != 0x7f => {
+                    typed = true;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+    }
+    if typed {
+        BoxKeys::Typed
+    } else if emptied {
+        BoxKeys::Emptied
     } else {
-        runtime.typed_ms.store(now_ms, Ordering::SeqCst);
+        BoxKeys::Neither
     }
 }
 
-/// Whether a keystroke frame empties Claude Code's prompt box: Enter (a frame ending with it,
-/// outside a bracketed paste, whose line breaks are text) or Ctrl-C.
-fn empties_box(data: &[u8]) -> bool {
-    let pasted = data.starts_with(b"\x1b[200~");
-    data == b"\x03" || (!pasted && data.last() == Some(&b'\r'))
+/// Whether a Cockpit's prompt box holds a draft its person typed (`typed_seq`, the keystroke it
+/// was typed in) after it was last emptied (`emptied_seq`), recently enough to wait for
+/// ([`DRAFT_HOLDS_MS`] after `typed_ms`). Keystrokes are ordered by their count, not by the
+/// clock, which two of them can share.
+fn draft_holds(typed_seq: u64, emptied_seq: u64, typed_ms: i64, now_ms: i64) -> bool {
+    let (typed, emptied) = (
+        i64::try_from(typed_seq).unwrap_or(i64::MAX),
+        i64::try_from(emptied_seq).unwrap_or(i64::MAX),
+    );
+    yulius_domain::agent_cli::is_draft(typed, emptied)
+        && now_ms.saturating_sub(typed_ms) < DRAFT_HOLDS_MS
 }
 
-/// Whether a Cockpit's prompt box holds a draft its person typed and did not send, recently
-/// enough to wait for ([`DRAFT_HOLDS_MS`]).
-fn draft_holds(typed_ms: i64, emptied_ms: i64, now_ms: i64) -> bool {
-    typed_ms > emptied_ms && now_ms.saturating_sub(typed_ms) < DRAFT_HOLDS_MS
-}
-
+/// Whether a Cockpit's conversation is as it was read idle: nothing was written to it since.
 fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
     seen.is_none_or(|(path, len)| transcript_len(path) == len)
 }
@@ -299,13 +364,40 @@ impl App {
     /// (SPEC-487 SES-002). Public for tests.
     #[must_use]
     pub fn cockpit_has_draft(&self, shell: &str) -> bool {
-        self.shell(shell).is_some_and(|s| {
-            draft_holds(
-                s.typed_ms.load(Ordering::SeqCst),
-                s.emptied_ms.load(Ordering::SeqCst),
-                self.now().0,
-            )
-        })
+        self.shell(shell).is_some_and(|s| self.holds_draft(&s))
+    }
+
+    fn holds_draft(&self, runtime: &ShellRuntime) -> bool {
+        draft_holds(
+            runtime.typed_seq.load(Ordering::SeqCst),
+            runtime.emptied_seq.load(Ordering::SeqCst),
+            runtime.typed_ms.load(Ordering::SeqCst),
+            self.now().0,
+        )
+    }
+
+    /// Records a person's keys into a Cockpit (SPEC-487 SES-002); a draft that starts or ends
+    /// is kept with its record, so a server restarted for an update knows it (review of slice
+    /// 9a, F1).
+    pub(crate) fn note_cockpit_keys(&self, runtime: &ShellRuntime, data: &[u8]) {
+        let mut paste = runtime.in_paste.load(Ordering::SeqCst);
+        let keys = read_box_keys(data, &mut paste);
+        runtime.in_paste.store(paste, Ordering::SeqCst);
+        let was = self.holds_draft(runtime);
+        let seq = || runtime.key_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        match keys {
+            BoxKeys::Typed => {
+                runtime.typed_seq.store(seq(), Ordering::SeqCst);
+                runtime.typed_ms.store(self.now().0, Ordering::SeqCst);
+            }
+            BoxKeys::Emptied => runtime.emptied_seq.store(seq(), Ordering::SeqCst),
+            BoxKeys::Neither => return,
+        }
+        if was != self.holds_draft(runtime)
+            && let Err(err) = self.save_shell(runtime)
+        {
+            tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit's draft mark was not kept");
+        }
     }
 
     /// Whether the live Cockpit `shell` is to start again to get what this Yulius serves:
@@ -859,6 +951,11 @@ impl App {
         if runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE || now < *retry_from {
             return false;
         }
+        // Held by its person's draft, before anything costly (review of slice 9a, F5).
+        if self.holds_draft(runtime) {
+            runtime.refresh.store(REFRESH_HELD, Ordering::SeqCst);
+            return false;
+        }
         runtime.refresh.store(REFRESH_DUE, Ordering::SeqCst);
         match self.refresh_cockpit(runtime, seen).await {
             Refresh::Ended => true,
@@ -910,7 +1007,7 @@ impl App {
         if !still_idle(seen) {
             return Refresh::Busy;
         }
-        if self.cockpit_has_draft(runtime.id()) {
+        if self.holds_draft(runtime) {
             runtime.refresh.store(REFRESH_HELD, Ordering::SeqCst);
             return Refresh::Busy;
         }
@@ -1164,21 +1261,61 @@ impl Drop for CockpitStartSlot<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRAFT_HOLDS_MS, Observation, ReportedLimit, Timestamp, TurnState, draft_holds, empties_box,
-        own_limit,
+        BoxKeys, DRAFT_HOLDS_MS, Observation, ReportedLimit, Timestamp, TurnState, draft_holds,
+        own_limit, read_box_keys,
     };
 
-    /// SPEC-487 SES-002: Enter and Ctrl-C empty the prompt box, a pasted line break does not;
-    /// a draft holds a restart until its person sends it, or for at most [`DRAFT_HOLDS_MS`].
+    /// SPEC-487 SES-002 (review of slice 9a, F2 to F4): Enter and Ctrl-C empty the prompt box;
+    /// a paste's line breaks (also across the frames a long paste is split into), Alt-Enter and
+    /// a backslash before Enter are text; Esc, Tab and arrows type nothing.
     #[test]
     fn a_draft_is_text_typed_since_the_box_was_emptied() {
-        assert!(empties_box(b"\r") && empties_box(b"deploy it\r") && empties_box(b"\x03"));
-        assert!(!empties_box(b"deploy") && !empties_box(b"\x1b[200~a\rb\x1b[201~\r"));
-        assert!(!draft_holds(0, 0, 5));
-        assert!(draft_holds(10, 5, 20));
-        assert!(!draft_holds(10, 10, 20), "sent at once");
+        let read = |data: &[u8]| read_box_keys(data, &mut false);
+        assert_eq!(read(b"\r"), BoxKeys::Emptied);
+        assert_eq!(read(b"deploy it\r"), BoxKeys::Emptied);
+        assert_eq!(read(b"\x03"), BoxKeys::Emptied);
+        assert_eq!(read(b"deploy"), BoxKeys::Typed);
+        assert_eq!(read(b"a\rb"), BoxKeys::Typed, "sent, then typed again");
+        assert_eq!(read(b"line one\x1b\r"), BoxKeys::Typed, "Alt-Enter");
+        assert_eq!(
+            read(b"line one\\\r"),
+            BoxKeys::Typed,
+            "a backslash before Enter"
+        );
+        for keys in [
+            &b"\x1b"[..],
+            b"\t",
+            b"\x1b[A",
+            b"\x1bOP",
+            b"\x7f",
+            b"\x1b[1;5D",
+        ] {
+            assert_eq!(read(keys), BoxKeys::Neither, "{keys:?}");
+        }
+        assert_eq!(read(b"\x1b[200~a\rb\x1b[201~"), BoxKeys::Typed);
+        assert_eq!(
+            read(b"\x1b[200~a\x1b[201~\r"),
+            BoxKeys::Emptied,
+            "pasted, then sent"
+        );
+        let mut paste = false;
+        assert_eq!(
+            read_box_keys(b"\x1b[200~first part", &mut paste),
+            BoxKeys::Typed
+        );
+        assert_eq!(
+            read_box_keys(b"more\r", &mut paste),
+            BoxKeys::Typed,
+            "inside the paste"
+        );
+        assert_eq!(read_box_keys(b"end\x1b[201~", &mut paste), BoxKeys::Typed);
+        assert!(!paste);
+        assert_eq!(read_box_keys(b"\r", &mut paste), BoxKeys::Emptied);
+        assert!(!draft_holds(0, 0, 0, 5));
+        assert!(draft_holds(2, 1, 10, 20));
+        assert!(!draft_holds(1, 2, 10, 10), "sent in the same millisecond");
         assert!(
-            !draft_holds(10, 5, 10 + DRAFT_HOLDS_MS),
+            !draft_holds(2, 1, 10, 10 + DRAFT_HOLDS_MS),
             "left for half an hour"
         );
     }

@@ -2210,13 +2210,16 @@ descriptors, whether the egress proxy is wired and `COCKPIT_LAUNCH_REVISION`; `s
 the proxy before it adopts shells). One adopted after a restart with another digest, or
 none, is due a refresh: its watch tracks whether a turn or background work is open, and once its
 conversation is idle it is ended (`switched`) and started again resuming that conversation, as a
-usage-limit move does but without redoing a turn. Nothing typed is lost to it
+usage-limit move does but without redoing a turn. It keeps its person's text
 ([SPEC-487](../.ai/specs/SPEC-487-the-superagent-can-do-everything-its-per.md) SES-001,
-SES-002): the shell records its person's keystrokes (`typed_ms`, and `emptied_ms` at Enter or
-Ctrl-C), and while text typed since the box was emptied is there (for at most
-`DRAFT_HOLDS_MS`, 30 minutes after the last keystroke) the refresh waits (`held`); the panel keeps
-the ended terminal, and the keyboard in it, until the new session runs, and types what was typed
-meanwhile into it (`onExitedInput`, `sendKeys`).
+SES-002): the shell reads its person's keystrokes (`read_box_keys`: text, a paste across frames,
+Alt-Enter and backslash-Enter type; Enter and Ctrl-C empty the box; Esc, Tab and arrows do
+neither), ordered by their count, and keeps a draft's mark in `shell.json` (`draft_typed_at`), so
+a server restarted for an update knows it; while a draft is there (for at most `DRAFT_HOLDS_MS`, 30
+minutes after its last keystroke) the refresh waits (`held`), checked before anything costly. The
+panel keeps the ended terminal, and the keyboard in it, until the new session runs, and types the
+frames typed meanwhile into it (`onExitedInput`, `sendKeys`; Ctrl-C left out, dropped if the
+restart fails).
 
 ```mermaid
 flowchart LR

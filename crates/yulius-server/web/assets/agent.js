@@ -238,8 +238,13 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   }
 
   /** Opens the session; `focus` only when the person asked for the Superagent (not a new page or sandbox). */
-  /** What the person typed while the session restarted in place, for the new one (SPEC-487 SES-001). */
-  let held = '';
+  /**
+   * What the person typed while the session restarted in place, for the new one (SPEC-487 SES-001):
+   * whole frames, so a cut never splits a key's sequence or a paste's markers.
+   */
+  let held = [];
+  const heldText = () => held.join('');
+
   async function open({ focus: wantFocus = true, keep = false } = {}) {
     if (opening || !alive) return;
     // Where the keyboard was: a slow start does not take it once the person has moved on.
@@ -256,6 +261,9 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       shell = await openShell();
     } catch (err) {
       opening = false;
+      // The restart failed: the ended terminal goes, and what was typed for it with it (review of slice 9a, F6).
+      held = [];
+      if (keep) drop();
       if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the ${name}: ${err.message}`, () => open())));
       return;
     }
@@ -339,7 +347,10 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       // Typed while it restarts in place: kept, and typed into the new session once it runs (SPEC-487 SES-001).
       onExitedInput: (data, exit) => {
         if (exit.status !== 'switched') return false;
-        held = (held + data).slice(-HELD_MAX);
+        // A Ctrl-C would interrupt the new session as it starts (review of slice 9a, F7).
+        const keys = data.replace(/\x03/g, '');
+        if (keys) held.push(keys);
+        while (heldText().length > HELD_MAX) held.shift();
         return true;
       },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
@@ -347,7 +358,8 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       // leaves the keyboard where it is.
       onReady: () => {
         asked = { focus: false, from: null };
-        if (held) { const keys = held; held = ''; terminal.sendKeys(keys); }
+        // Kept until they are sent: a socket not open yet sends them at the next first screen.
+        if (held.length && terminal.sendKeys(heldText())) held = [];
       },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository. The
