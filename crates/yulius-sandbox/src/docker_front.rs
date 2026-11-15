@@ -88,7 +88,6 @@ pub struct Front {
     tasks: Vec<JoinHandle<()>>,
     bridge_forwards: Vec<u16>,
     outbound: PathBuf,
-    gate: Arc<Gate>,
 }
 
 impl Front {
@@ -162,13 +161,8 @@ impl Front {
         tasks.push(tokio::spawn(Arc::clone(&gate).keep_state(
             paths.docker_state(),
             move || {
-                let engine = engine.clone();
-                async move {
-                    match engine {
-                        Some(engine) => engine.running().await,
-                        None => false,
-                    }
-                }
+                let running = engine.as_ref().is_some_and(|engine| engine.running_now());
+                async move { running }
             },
         )));
         Ok(Self {
@@ -178,14 +172,7 @@ impl Front {
             tasks,
             bridge_forwards: bridge_forwards.to_vec(),
             outbound: paths.outbound(),
-            gate,
         })
-    }
-
-    /// Its admission (tests read its state).
-    #[must_use]
-    pub fn gate(&self) -> &Arc<Gate> {
-        &self.gate
     }
 
     /// Whether another process replaced (or removed) the socket this front bound.

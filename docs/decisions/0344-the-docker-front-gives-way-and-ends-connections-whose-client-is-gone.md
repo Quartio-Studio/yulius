@@ -29,11 +29,13 @@ whether the client half-closed or hung up entirely.
   agent asks a person; at most 16 such answers are written at once.
 - **A hung-up client ends its connection.** Once the client's side read EOF, the front asks the
   socket each second whether its peer closed (`POLLHUP`); then it closes the engine's side at
-  once. A half-close is not a hang-up: the Docker CLI half-closes after stdin's EOF and still
-  reads the output.
+  once, unless the engine ends its side within that second (an ordinary call whose client
+  closed after its answer). A half-close is not a hang-up: the Docker CLI half-closes after
+  stdin's EOF and still reads the output.
 - **An ended engine side gives the client 30 s** to close its own before the front closes it.
-- The front writes its events to `docker-front.log` at most once a minute per kind, and its state
-  (held, limit, totals, at-limit since, engine running, build) to `docker-front-state.json` in the
+- The at-limit answer is the whole message (not the engine-missing wrapper that names the
+  operator). The front writes its events to `docker-front.log` at most once a minute per kind, and its state
+  (held, limit, totals, at-limit since, engine running) to `docker-front-state.json` in the
   state directory every 5 s at most when it changed. The server reads that file at its upkeep tick
   and journals what grew, once a minute per sandbox and kind; later slices of SPEC-494 report the
   trouble, repair the front and replace outdated fronts from the same file.

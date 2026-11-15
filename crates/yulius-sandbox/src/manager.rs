@@ -35,9 +35,9 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
 use yulius_contracts::sandbox::{
-    DockerFrontRecord, DockerFrontSpec, DockerFrontState, DockerServe, EngineSpec,
-    HOLDER_RECORD_FILE, HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap, production_holder,
-    production_runs_dir, production_sandbox, valid_holder_name,
+    DockerFrontRecord, DockerFrontSpec, DockerServe, EngineSpec, HOLDER_RECORD_FILE,
+    HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap, production_holder, production_runs_dir,
+    production_sandbox, valid_holder_name,
 };
 
 use crate::base::{BaseInfo, Bases};
@@ -812,12 +812,9 @@ impl Manager {
             return;
         };
         let paths = StatePaths::new(self.state_dir(sandbox));
-        let Ok(seen) = crate::holder::read_json::<DockerFrontState>(&paths.docker_state()) else {
+        let Some(seen) = crate::front_gate::read_state(&paths.docker_state(), front.pid) else {
             return;
         };
-        if seen.pid != front.pid {
-            return;
-        }
         for grew in live.front_watch.observe(&seen, Instant::now()) {
             tracing::warn!(
                 sandbox,

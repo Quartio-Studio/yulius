@@ -91,6 +91,7 @@ pub struct Gate {
     at_limit_since_ms: Mutex<Option<i64>>,
     hangup_check: Duration,
     close_grace: Duration,
+    state_every: Duration,
 }
 
 /// An admitted connection: its client and its place (freed when dropped).
@@ -124,10 +125,20 @@ impl Gate {
             at_limit_since_ms: Mutex::new(None),
             hangup_check,
             close_grace,
+            state_every: STATE_EVERY,
         })
     }
 
-    /// Accepts on `listener` until it fails, admitting each client and handing it to `handle`.
+    /// This gate writing its state every `every` (tests).
+    #[cfg(test)]
+    fn writing_every(mut self: Arc<Self>, every: Duration) -> Arc<Self> {
+        if let Some(gate) = Arc::get_mut(&mut self) {
+            gate.state_every = every;
+        }
+        self
+    }
+
+    /// Accepts on `listener` for as long as it runs, admitting each client and handing it to `handle`.
     pub async fn serve<H, F>(self: Arc<Self>, listener: UnixListener, handle: H)
     where
         H: Fn(Admitted) -> F + Send + Sync + 'static,
@@ -160,7 +171,7 @@ impl Gate {
             self.event(Kind::Refused, &mut io::stderr().lock());
             if let Ok(permit) = Arc::clone(&self.refusing).try_acquire_owned() {
                 tokio::spawn(async move {
-                    crate::engine_supervisor::refuse(client, AT_LIMIT).await;
+                    crate::engine_supervisor::answer_error(client, AT_LIMIT).await;
                     drop(permit);
                 });
             }
@@ -223,9 +234,7 @@ impl Gate {
     #[must_use]
     pub fn state(&self, engine_running: bool) -> DockerFrontState {
         let held = self.places.held();
-        if held < self.max {
-            self.mark_at_limit(false);
-        }
+        self.mark_at_limit(held >= self.max);
         let count = |kind: Kind| self.counts[kind.index()].load(Ordering::Relaxed);
         DockerFrontState {
             pid: std::process::id(),
@@ -273,14 +282,15 @@ impl Gate {
         crate::engine_supervisor::refuse(admitted.client, reason).await;
     }
 
-    /// Writes the state to `path` every [`STATE_EVERY`] when it changed, until aborted;
+    /// Writes the state to `path` at most every [`STATE_EVERY`], when it changed, until aborted;
     /// `engine_running` is asked at each write.
     pub async fn keep_state<R, F>(self: Arc<Self>, path: PathBuf, engine_running: R)
     where
         R: Fn() -> F + Send + Sync,
         F: Future<Output = bool> + Send,
     {
-        let mut every = tokio::time::interval(STATE_EVERY);
+        let mut every = tokio::time::interval(self.state_every);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut written: Option<DockerFrontState> = None;
         loop {
             every.tick().await;
@@ -388,7 +398,12 @@ async fn splice_bounded(
                     _ = &mut down => return End::Done,
                     _ = check.tick() => {
                         if hung_up(&client_read.inner) {
-                            return End::HungUp;
+                            // An ordinary call's client closes too: its engine ends its side a
+                            // moment after the front's end of writing (review round 1).
+                            return match tokio::time::timeout(hangup_check, &mut down).await {
+                                Ok(_) => End::Done,
+                                Err(_) => End::HungUp,
+                            };
                         }
                     }
                 }
@@ -421,8 +436,10 @@ fn hung_up(client: &OwnedReadHalf) -> bool {
 /// since the last state it read, at most once a minute per kind.
 #[derive(Debug, Default)]
 pub struct StateWatch {
-    seen: Option<DockerFrontState>,
-    said: [Option<Instant>; 4],
+    /// The front whose totals were said, by pid.
+    front: Option<u32>,
+    /// When each kind was last said, and its total then.
+    said: [(Option<Instant>, u64); 4],
 }
 
 /// A kind of event that grew, as the journal says it.
@@ -440,28 +457,57 @@ impl StateWatch {
     /// Takes `state` (read at `now`) and returns what to journal. A state of another front
     /// (another pid) counts from zero.
     pub fn observe(&mut self, state: &DockerFrontState, now: Instant) -> Vec<Grew> {
-        let before = self
-            .seen
-            .as_ref()
-            .filter(|seen| seen.pid == state.pid)
-            .map_or([0; 4], counts);
+        if self.front != Some(state.pid) {
+            // A front the server has not watched yet (a new one, or one adopted after the
+            // server's restart) counts from zero: its history is said once.
+            self.front = Some(state.pid);
+            self.said = [(None, 0); 4];
+        }
         let after = counts(state);
-        self.seen = Some(state.clone());
         let mut grew = Vec::new();
         for kind in [Kind::GaveWay, Kind::Refused, Kind::HungUp, Kind::Grace] {
-            let i = kind.index();
-            if after[i] <= before[i] || self.said[i].is_some_and(|at| now - at < WARN_EVERY) {
+            let (last, total) = &mut self.said[kind.index()];
+            let now_total = after[kind.index()];
+            if now_total <= *total || last.is_some_and(|at| now - at < WARN_EVERY) {
                 continue;
             }
-            self.said[i] = Some(now);
             grew.push(Grew {
                 what: kind.says(),
-                new: after[i] - before[i],
-                total: after[i],
+                new: now_total - *total,
+                total: now_total,
             });
+            *last = Some(now);
+            *total = now_total;
         }
         grew
     }
+}
+
+/// Longest state file the server reads.
+const STATE_MAX_BYTES: u64 = 16 * 1024;
+
+/// The state file at `path` when it is a regular file of at most 16 KiB written by the front
+/// `pid` (SPEC-494 DFJ-005): never following a link, never waiting on a FIFO.
+#[must_use]
+pub fn read_state(path: &std::path::Path, pid: u32) -> Option<DockerFrontState> {
+    use nix::fcntl::{OFlag, open};
+    use nix::sys::stat::Mode;
+    use std::io::Read as _;
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let file = std::fs::File::from(open(path, flags, Mode::empty()).ok()?);
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(STATE_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > STATE_MAX_BYTES {
+        return None;
+    }
+    serde_json::from_slice::<DockerFrontState>(&bytes)
+        .ok()
+        .filter(|state| state.pid == pid)
 }
 
 fn counts(state: &DockerFrontState) -> [u64; 4] {
@@ -513,6 +559,14 @@ mod tests {
                             b"late" => {
                                 tokio::time::sleep(Duration::from_millis(600)).await;
                                 let _ = stream.write_all(b"engine:late").await;
+                            }
+                            b"keep" => {
+                                // A keep-alive engine: answers, waits for the client's end, and
+                                // closes a few ms after it, as an HTTP server does.
+                                let _ = stream.write_all(b"engine:keep").await;
+                                let mut rest = [0u8; 64];
+                                while matches!(stream.read(&mut rest).await, Ok(n) if n > 0) {}
+                                tokio::time::sleep(Duration::from_millis(5)).await;
                             }
                             b"bye" => {
                                 let _ = stream.write_all(b"engine:bye").await;
@@ -637,14 +691,16 @@ mod tests {
         until("two held", || gate.state(false).held == 2).await?;
         let refused = answer(send(&socket, "GET /_ping HTTP/1.1\r\n\r\n").await?).await?;
         assert!(refused.starts_with("HTTP/1.1 503 "), "{refused}");
-        assert!(
-            refused.contains("Docker front holds all of its connections"),
-            "{refused}"
-        );
-        assert!(refused.contains("nobody needs to be asked"), "{refused}");
+        let body = refused.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let json: serde_json::Value = serde_json::from_str(body)?;
+        assert_eq!(json["message"].as_str(), Some(AT_LIMIT), "{refused}");
         let state = gate.state(false);
         assert_eq!((state.refused, state.gave_way), (1, 0), "{state:?}");
         assert!(state.at_limit_since_ms.is_some(), "{state:?}");
+        // Below the limit again, it is no longer at its limit.
+        drop(_a);
+        until("room again", || gate.state(false).held == 1).await?;
+        assert_eq!(gate.state(false).at_limit_since_ms, None);
         front.stop(Duration::from_secs(1)).await;
         engine.task.abort();
         Ok(())
@@ -689,6 +745,125 @@ mod tests {
         assert_eq!(state.hung_up, 0, "{state:?}");
         front.stop(Duration::from_secs(1)).await;
         engine.task.abort();
+        Ok(())
+    }
+
+    /// Review round 1: an ordinary call whose client closes right after the answer, while a
+    /// keep-alive engine closes its side a few ms later, is not a hang-up.
+    #[tokio::test]
+    async fn an_ordinary_call_closed_after_its_answer_is_not_a_hang_up() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let engine = Engine::start(dir.path())?;
+        // The engine's end comes 5 ms after the client's; the check's own wait is wide enough
+        // for a loaded machine.
+        let gate = Gate::with(64, IDLE_FLOOR, Duration::from_millis(250), CLOSE_GRACE);
+        let front = front(dir.path(), &engine, Arc::clone(&gate))?;
+        let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
+        for _ in 0..20 {
+            let mut client = send(&socket, "keep").await?;
+            let mut head = [0u8; 11];
+            client.read_exact(&mut head).await?;
+            assert_eq!(&head, b"engine:keep");
+            drop(client);
+        }
+        until("every place free", || gate.state(false).held == 0).await?;
+        assert_eq!(gate.state(false).hung_up, 0, "{:?}", gate.state(false));
+        front.stop(Duration::from_secs(1)).await;
+        engine.task.abort();
+        Ok(())
+    }
+
+    /// Review round 1: a client that shut its writing and later closes entirely is a hang-up
+    /// then, not before.
+    #[tokio::test]
+    async fn a_half_close_followed_by_a_close_ends_at_the_close() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let engine = Engine::start(dir.path())?;
+        let gate = Gate::with(4, IDLE_FLOOR, Duration::from_millis(20), CLOSE_GRACE);
+        let front = front(dir.path(), &engine, Arc::clone(&gate))?;
+        let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
+        let mut client = send(&socket, "hold").await?;
+        client.shutdown().await?;
+        until("held", || gate.state(false).held == 1).await?;
+        // Many checks pass while the client still reads.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(gate.state(false).held, 1, "a half-close is not a hang-up");
+        drop(client);
+        until("the place is free", || gate.state(false).held == 0).await?;
+        assert_eq!(gate.state(false).hung_up, 1);
+        front.stop(Duration::from_secs(1)).await;
+        engine.task.abort();
+        Ok(())
+    }
+
+    /// Review round 1: refusals are answered at most [`REFUSING_AT_ONCE`] at once; beyond, a
+    /// connection is closed unanswered, and an answered refusal returns its permit.
+    #[tokio::test]
+    async fn refusals_are_bounded_and_their_permits_return() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let engine = Engine::start(dir.path())?;
+        let gate = Gate::with(1, IDLE_FLOOR, HANGUP_CHECK, CLOSE_GRACE);
+        let front = front(dir.path(), &engine, Arc::clone(&gate))?;
+        let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
+        let _held = send(&socket, "hold").await?;
+        until("held", || gate.state(false).held == 1).await?;
+        // Refused callers that never send their request's head keep their permits (up to 5 s).
+        let mut silent = Vec::new();
+        for _ in 0..REFUSING_AT_ONCE {
+            silent.push(UnixStream::connect(&socket).await?);
+        }
+        let all = u64::try_from(REFUSING_AT_ONCE)?;
+        until("all refused", || gate.state(false).refused == all).await?;
+        let mut beyond = UnixStream::connect(&socket).await?;
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(4), beyond.read_to_end(&mut out)).await??;
+        assert!(
+            out.is_empty(),
+            "closed unanswered: {}",
+            String::from_utf8_lossy(&out)
+        );
+        drop(silent);
+        // Their refusals end (the head's read ends at their close) and give the permits back.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answered = answer(send(&socket, "GET / HTTP/1.1\r\n\r\n").await?).await?;
+            if answered.starts_with("HTTP/1.1 503") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no permit came back");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        front.stop(Duration::from_secs(1)).await;
+        engine.task.abort();
+        Ok(())
+    }
+
+    /// Review round 1: a front in refuse mode is bounded the same way: at its limit a new caller
+    /// gets the limit's answer, not the mode's.
+    #[tokio::test]
+    async fn a_refusing_front_at_its_limit_says_so() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let paths = StatePaths::new(dir.path().to_path_buf());
+        let gate = Gate::with(1, IDLE_FLOOR, HANGUP_CHECK, CLOSE_GRACE);
+        let front = Front::start_through(
+            &paths,
+            &DockerServe::Refuse {
+                reason: "no engine".into(),
+            },
+            &[],
+            Box::new(|| Ok(())),
+            Arc::clone(&gate),
+        )?;
+        // Holds its place while its refusal waits for a head it never sends.
+        let _silent = UnixStream::connect(paths.docker_socket()).await?;
+        until("held", || gate.state(false).held == 1).await?;
+        let refused = answer(send(&paths.docker_socket(), "GET / HTTP/1.1\r\n\r\n").await?).await?;
+        assert!(
+            refused.contains("holds all of its connections"),
+            "{refused}"
+        );
+        assert!(!refused.contains("no engine"), "{refused}");
+        front.stop(Duration::from_secs(1)).await;
         Ok(())
     }
 
@@ -777,14 +952,18 @@ mod tests {
         let grew = watch.observe(&state_of(7, 5, 1), start + Duration::from_secs(30));
         assert_eq!(grew.len(), 1, "{grew:?}");
         assert!(grew[0].what.contains("hung up"), "{grew:?}");
-        // Nothing grew: nothing said.
+        // Past the minute, the give-ways not yet said are said, though none came since.
+        let grew = watch.observe(&state_of(7, 5, 1), start + Duration::from_secs(90));
+        assert_eq!(grew.len(), 1, "{grew:?}");
+        assert_eq!((grew[0].new, grew[0].total), (2, 5));
+        // Nothing new: nothing said.
         assert!(
             watch
-                .observe(&state_of(7, 5, 1), start + Duration::from_secs(90))
+                .observe(&state_of(7, 5, 1), start + Duration::from_secs(200))
                 .is_empty()
         );
-        // A new front's events count from zero, past the minute.
-        let grew = watch.observe(&state_of(8, 2, 0), start + Duration::from_secs(91));
+        // A new front's events count from zero.
+        let grew = watch.observe(&state_of(8, 2, 0), start + Duration::from_secs(201));
         assert_eq!(grew.len(), 1, "{grew:?}");
         assert_eq!((grew[0].new, grew[0].total), (2, 2));
     }
@@ -860,6 +1039,49 @@ mod tests {
         until("the place is free", || gate.state(false).held == 0).await?;
         assert_eq!(gate.state(false).hung_up, 1);
         front.stop(Duration::from_secs(1)).await;
+        Ok(())
+    }
+
+    /// Review round 1 (DFJ-005): the server reads only a regular, bounded state file of the
+    /// front it knows: never a link, a FIFO (it would wait), a large file or another front's.
+    #[test]
+    fn the_server_reads_only_its_fronts_bounded_regular_state_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("docker-front-state.json");
+        crate::holder::write_json(&path, &state_of(7, 1, 0))?;
+        assert_eq!(read_state(&path, 7), Some(state_of(7, 1, 0)));
+        assert_eq!(read_state(&path, 8), None, "another front's");
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert_eq!(read_state(&link, 7), None, "a link");
+        let fifo = dir.path().join("fifo.json");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600))?;
+        assert_eq!(read_state(&fifo, 7), None, "a FIFO");
+        let large = dir.path().join("large.json");
+        std::fs::write(&large, vec![b' '; 20 * 1024])?;
+        assert_eq!(read_state(&large, 7), None, "too large");
+        assert_eq!(read_state(&dir.path().join("none.json"), 7), None);
+        Ok(())
+    }
+
+    /// Review round 1 (DFJ-005): an unchanged state is not written again.
+    #[tokio::test]
+    async fn an_unchanged_state_is_not_written_again() -> TestResult {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("docker-front-state.json");
+        let gate = Gate::with(4, IDLE_FLOOR, HANGUP_CHECK, CLOSE_GRACE)
+            .writing_every(Duration::from_millis(20));
+        let writer = tokio::spawn(Arc::clone(&gate).keep_state(path.clone(), || async { false }));
+        until("written", || path.exists()).await?;
+        let first = std::fs::metadata(&path)?.ino();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            std::fs::metadata(&path)?.ino(),
+            first,
+            "rewritten unchanged"
+        );
+        writer.abort();
         Ok(())
     }
 

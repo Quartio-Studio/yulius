@@ -241,6 +241,17 @@ impl Supervisor {
         }
     }
 
+    /// Whether the engine runs now, without waiting: a start or a stop in progress (which holds
+    /// the engine's lock for up to a minute) counts as running.
+    pub fn running_now(&self) -> bool {
+        match self.running.try_lock() {
+            Ok(mut running) => running
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
+            Err(_) => true,
+        }
+    }
+
     /// Whether the engine runs now.
     pub async fn running(&self) -> bool {
         self.running
@@ -376,7 +387,17 @@ fn log_tail(path: &Path) -> String {
 /// Answers a client the engine could not serve: its request head is read (bounded), then a
 /// Docker-API error, which `docker` prints as "Error response from daemon: …", naming how the
 /// operator checks the host (SPEC-196 DKL-005).
-pub(crate) async fn refuse(mut client: UnixStream, reason: &str) {
+pub(crate) async fn refuse(client: UnixStream, reason: &str) {
+    let message = format!(
+        "the sandbox's Docker engine is not available: {reason}. The operator checks the host \
+         with `yulius doctor` and `yulius doctor --docker-smoke`"
+    );
+    answer_error(client, &message).await;
+}
+
+/// Answers `client` a Docker-API error (HTTP 503, JSON `message`) of exactly `message`, after
+/// reading its request's head (bounded in size and time).
+pub(crate) async fn answer_error(mut client: UnixStream, message: &str) {
     let mut head = Vec::new();
     let _ = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, async {
         let mut buf = [0u8; 4096];
@@ -388,13 +409,7 @@ pub(crate) async fn refuse(mut client: UnixStream, reason: &str) {
         }
     })
     .await;
-    let body = serde_json::json!({
-        "message": format!(
-            "the sandbox's Docker engine is not available: {reason}. The operator checks the host \
-             with `yulius doctor` and `yulius doctor --docker-smoke`"
-        )
-    })
-    .to_string();
+    let body = serde_json::json!({ "message": message }).to_string();
     let response = format!(
         "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -483,10 +498,16 @@ open(stopped, "w").write("stopped")
         }
 
         fn serve(&self, supervisor: &Arc<Supervisor>) -> io::Result<tokio::task::JoinHandle<()>> {
+            self.serve_through(supervisor, Gate::new())
+        }
+
+        fn serve_through(
+            &self,
+            supervisor: &Arc<Supervisor>,
+            gate: Arc<Gate>,
+        ) -> io::Result<tokio::task::JoinHandle<()>> {
             let listener = UnixListener::bind(&self.socket)?;
-            Ok(tokio::spawn(
-                Arc::clone(supervisor).serve(listener, Gate::new()),
-            ))
+            Ok(tokio::spawn(Arc::clone(supervisor).serve(listener, gate)))
         }
 
         fn starts(&self) -> usize {
@@ -519,6 +540,41 @@ open(stopped, "w").write("stopped")
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        Ok(())
+    }
+
+    /// SPEC-494 review round 1: the engine's front gives way at its limit like the others, and
+    /// a connection that gave way stops counting as the engine's client (or the engine would
+    /// never idle).
+    #[tokio::test]
+    async fn a_full_engine_front_gives_way_and_stops_counting_the_closed_client() -> io::Result<()>
+    {
+        let f = Fixture::new()?;
+        let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
+        let gate = Gate::with(
+            1,
+            Duration::ZERO,
+            crate::front_gate::HANGUP_CHECK,
+            crate::front_gate::CLOSE_GRACE,
+        );
+        let server = f.serve_through(&supervisor, Arc::clone(&gate))?;
+        // Sends nothing: the fake engine keeps it open.
+        let mut idle = UnixStream::connect(&f.socket).await?;
+        until("the idle client counts", || {
+            supervisor.connections.load(Ordering::SeqCst) == 1
+        })
+        .await?;
+        assert_eq!(ask(&f.socket, "ping").await?, "engine:ping");
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(10), idle.read(&mut byte)).await;
+        assert!(matches!(read, Ok(Ok(0) | Err(_))), "it gave way: {read:?}");
+        until("no client counts", || {
+            supervisor.connections.load(Ordering::SeqCst) == 0
+        })
+        .await?;
+        assert_eq!(gate.state(false).gave_way, 1);
+        server.abort();
+        supervisor.stop(Duration::from_millis(300)).await;
         Ok(())
     }
 

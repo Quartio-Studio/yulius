@@ -90,7 +90,9 @@ ever reaches it).
   are written at once, beyond that the connection is closed.
 - **DFJ-002** Once a client has stopped sending (its side read EOF), the front looks every
   `HANGUP_CHECK` (1 s) whether the client hung up entirely (the socket's peer is closed, `POLLHUP`).
-  Then the connection ends at once and the engine's side is closed. A client that only shut its
+  Then the engine's side is closed, and unless the engine ended its own within one more check
+  (an ordinary call whose client closed after its answer, which is not counted) the connection
+  counts as hung up. A client that only shut its
   writing and still reads (`docker run -i … < file`) keeps its connection.
 - **DFJ-003** Once the engine ended its side, the client has `CLOSE_GRACE` (30 s) to close its
   own; then the connection ends.
@@ -100,9 +102,9 @@ ever reaches it).
   directory (not `docker/`, which the engine can write): connections held, the limit, totals of
   give-ways, refusals and ended connections, since when it is at its limit, and whether its
   engine runs. It writes it (replaced atomically) at most every `STATE_EVERY`
-  (5 s) when something changed. The server reads it at each upkeep tick, bounded in size and never
-  following a link, and logs in the journal each kind that grew, at most once a minute per
-  sandbox and kind.
+  (5 s) when something changed. The server reads it at each upkeep tick, a regular file of at
+  most 16 KiB of the front it knows (never a link or a FIFO), and logs in the journal each kind
+  whose total grew since it last said it, at most once a minute per sandbox and kind.
 
 ### Yulius sees a jam once (slice 2)
 
@@ -235,3 +237,22 @@ ever reaches it).
 - `cargo test -p yulius-sandbox -p yulius-contracts`: 177 + 52 + 2 + 6 passed.
 - `cargo clippy -p yulius-sandbox -p yulius-contracts --all-targets`: no warnings.
   `python3 scripts/check_repository.py`: passed.
+
+### Slice 1, review round 1 (request changes; every finding own code, all fixed)
+
+- Ordinary closes counted as hang-ups: `an_ordinary_call_closed_after_its_answer_is_not_a_hang_up`
+  (keep-alive engine closing 5 ms after the client) failed before (hung_up counted), passes
+  after: a hang-up gives the engine one more check to end its side.
+- The at-limit answer named the operator: the test asserts the whole `message` (`AT_LIMIT`),
+  failed before, passes after (`answer_error` writes it whole).
+- Growth lost inside the journal's throttle: `the_server_journals_what_grew_once_a_minute_per_kind`
+  now expects the unsaid give-ways past the minute; failed before, passes after.
+- `read_state`: a link, a FIFO, a file over 16 KiB or another front's pid are not read
+  (`the_server_reads_only_its_fronts_bounded_regular_state_file`).
+- The state writer asks the engine without waiting on its lock (`running_now`); missed ticks are
+  delayed; an unchanged state is not rewritten (`an_unchanged_state_is_not_written_again`).
+- `at_limit_since_ms` follows `held` at each read and clears below the limit (asserted).
+- Added: refusals bounded at 16 and their permits returned, refuse mode at its limit, engine mode
+  giving way with its client count dropping, a half-close followed by a close.
+- `cargo test -p yulius-sandbox --lib -- front_gate:: engine_supervisor:: docker_front::`: 32
+  passed (the gate's tests 8 times in a row: 14 passed each); the real-engine probe passed.
