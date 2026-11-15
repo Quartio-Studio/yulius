@@ -19,7 +19,6 @@ use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
 use yulius_contracts::api::sandboxes::CreateSandbox;
 use yulius_contracts::api::secrets::{AgentSecretPatch, AgentSecretView, HostRequestAnswer};
-use yulius_contracts::api::variables::ProjectVariableInput;
 use yulius_contracts::mcp::{RpcRequest, RpcResponse, ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{Action, TokenScope};
@@ -311,32 +310,6 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
             "Delete one of the project's own agent secrets by name, for example one imported by mistake whose value is ordinary text (a word every [secret:NAME] in files stands for). Global and personal secrets are removed on the Secrets page. Audited; the value is never shown.",
             json!({"secret": {"type": "string", "description": "Secret NAME from secrets_list"}}),
             &["secret"],
-        ),
-        tool(
-            "variables_set",
-            "Create or change project variables, in plain: non-secret values only, never a key, token or password (those are agent secrets: `yulius secrets import`). A name that is an agent secret of the project is refused. An absent description keeps the stored one. Audited without values.",
-            json!({
-                "variables": {
-                    "type": "array",
-                    "description": "At most 200",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "NAME, like an environment variable"},
-                            "value": {"type": "string", "description": "One line, at most 4 KiB"},
-                            "description": {"type": "string", "description": "What it is"}
-                        },
-                        "required": ["name", "value"]
-                    }
-                }
-            }),
-            &["variables"],
-        ),
-        tool(
-            "variable_delete",
-            "Delete a project variable by name. Audited.",
-            json!({"name": {"type": "string", "description": "Variable NAME from variables_list"}}),
-            &["name"],
         ),
     ];
     instance
@@ -911,22 +884,6 @@ impl App {
                 };
                 self.delete_agent_secret(ctx, &own.id).await?;
                 Ok(json!({"deleted": own.name}))
-            }
-            // Project variables (SPEC-275 VAR-005): plain values, never a secret's.
-            "variables_set" => {
-                let inputs: Vec<ProjectVariableInput> =
-                    serde_json::from_value(args.get("variables").cloned().unwrap_or(Value::Null))
-                        .map_err(|e| {
-                        AppError::Invalid(format!(
-                            "`variables` must be a list of {{name, value, description?}}: {e}"
-                        ))
-                    })?;
-                record(&self.set_project_variables(ctx, sid, &inputs, false).await?)
-            }
-            "variable_delete" => {
-                let variable = str_arg(args, "name")?;
-                self.delete_project_variable(ctx, sid, variable).await?;
-                Ok(json!({"deleted": variable}))
             }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         }

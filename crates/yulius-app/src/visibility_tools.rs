@@ -145,12 +145,15 @@ impl App {
             .sum::<u64>()
         };
         rows.sort_by_key(|row| std::cmp::Reverse(used(row)));
+        // How many tasks the period has, when the answer shows fewer (review of slice 10b, n4).
+        let total = rows.len();
         rows.truncate(USAGE_ROWS);
         Ok(json!({
             "period": record(&summary.range)?,
             "tokens": record(&summary.tokens)?,
             "tokens_by_model": record(&summary.tokens_by_model)?,
             "tasks": record(&rows)?,
+            "tasks_in_period": total,
         }))
     }
 
@@ -175,7 +178,8 @@ impl App {
             .git
             .ahead_behind(&repo, &upstream, "HEAD")
             .await
-            .map_err(|_| {
+            .map_err(|err| {
+                tracing::info!(error = %err, "a checkout's distance could not be read");
                 AppError::Conflict(format!(
                     "{upstream} is not in this checkout yet: run git fetch, then look again"
                 ))

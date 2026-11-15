@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task's summary, and the queue's pass for every queued task, read the whole task list again to
   find its supertask holders; listing 200 tasks took 88 ms and grew with the square of the
   list, now 31 ms.
+- A missing ability is reported in one call (SPEC-487 slice 11, task #469,
+  [ADR-0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
+  The Superagent offered to report walls and never could; `ability_report` (also a task's agent's)
+  keeps the report on the instance and answers a link that opens it as a new issue in the Yulius
+  repository for the person to submit. The Superagent also sets and deletes project variables. The
+  product summary now holds the full table of what the Superagent and a task's agent may do, and
+  why.
 - The Superagent sees what happened to a task (SPEC-487 slice 10b, task #469): `task_screen`
   shows a task's screen, also the last one its crashed run left, with the exit code and reason;
   `task_usage` the tokens each task used, as the Dashboard counts them; `checkout` how far its
