@@ -1315,6 +1315,98 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
+/// reason and without running, for a pull request touching none of them, which still passes and
+/// gates nothing; the integration branch's own run runs it; a pull request touching one of them
+/// runs it.
+#[tokio::test]
+async fn a_job_with_paths_runs_only_for_a_change_to_them() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "web"
+command = 'echo web ran'
+paths = ["crates/a/**"]
+"#
+        .to_owned()
+    })
+    .await?;
+    let job_of = |detail: &Value, name: &str| -> BoxResult<Value> {
+        Ok(detail["jobs"]
+            .as_array()
+            .ok_or("jobs")?
+            .iter()
+            .find(|j| j["name"] == name)
+            .cloned()
+            .ok_or("job")?)
+    };
+    let run_at = |sha: String| {
+        let f = &f;
+        async move {
+            let overview = f.get("/api/sandboxes/s1/ci").await?;
+            let run = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .find(|r| r["sha"] == sha.as_str())
+                .cloned()
+                .ok_or("run")?;
+            let detail = f
+                .get(&format!(
+                    "/api/sandboxes/s1/ci/runs/{}",
+                    run["id"].as_str().ok_or("id")?
+                ))
+                .await?;
+            BoxResult::Ok((run, detail))
+        }
+    };
+    // Pull request #1 changes `feature.txt` only.
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (run, detail) = run_at(head.clone()).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let web = job_of(&detail, "web")?;
+    assert_eq!(web["state"], "skipped", "{detail}");
+    let said = web["output"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("no file this job tests changed (paths: crates/a/**)")
+            && !said.contains("web ran"),
+        "{web}"
+    );
+    assert_eq!(job_of(&detail, "check")?["state"], "passed");
+    let (state, description, _) = f.last_status(&head).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(description.contains("1 skipped"), "{description}");
+
+    // The integration branch's own run runs every job.
+    let dev = f.push_dev("other.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (_, detail) = run_at(dev).await?;
+    assert_eq!(job_of(&detail, "web")?["state"], "passed", "{detail}");
+
+    // A change touching one of its paths runs it.
+    std::fs::create_dir_all(f.work.join("crates/a/src"))?;
+    let touched = f.push_feature("crates/a/src/lib.rs", Some("pub fn a() {}\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (_, detail) = run_at(touched).await?;
+    let web = job_of(&detail, "web")?;
+    assert_eq!(web["state"], "passed", "{detail}");
+    assert!(
+        web["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("web ran"),
+        "{web}"
+    );
+    Ok(())
+}
+
 /// SPEC-359 VSB-006: a job is told where its sandbox's Vidoc switch is, so a scan whose key
 /// fails points there.
 #[tokio::test]

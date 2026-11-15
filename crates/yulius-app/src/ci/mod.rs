@@ -818,29 +818,45 @@ impl App {
             started_at: None,
             ended_at: None,
         };
+        // A job naming the files it tests is skipped, with the reason, for a change touching none
+        // of them (SPEC-493 CJP-002); the branches' own runs and an unknown change run it.
+        let changed = if gate.jobs.iter().any(|job| !job.paths.is_empty()) {
+            self.ci_changed_paths(sandbox, &run.reference, sha).await
+        } else {
+            None
+        };
         let jobs: Vec<CiJobRecord> = gate
             .jobs
             .iter()
             .enumerate()
-            .map(|(index, job)| CiJobRecord {
-                id: self.deps.crypto.new_id(),
-                run_id: run.id.clone(),
-                ordinal: u32::try_from(index).unwrap_or(u32::MAX),
-                name: job.name.clone(),
-                key: job.key.clone(),
-                command: job.command.clone(),
-                matrix: job.matrix.clone(),
-                state: RunState::Queued,
-                reason: None,
-                exit_code: None,
-                output: String::new(),
-                failures: None,
-                started_at: None,
-                ended_at: None,
-                need: job.need,
-                timeout_minutes: job.timeout_minutes,
-                exclusive: job.exclusive,
-                waited_ms: None,
+            .map(|(index, job)| {
+                let skip = yulius_domain::ci::paths_skip(&job.paths, changed.as_deref());
+                CiJobRecord {
+                    id: self.deps.crypto.new_id(),
+                    run_id: run.id.clone(),
+                    ordinal: u32::try_from(index).unwrap_or(u32::MAX),
+                    name: job.name.clone(),
+                    key: job.key.clone(),
+                    command: job.command.clone(),
+                    matrix: job.matrix.clone(),
+                    state: if skip.is_some() {
+                        RunState::Skipped
+                    } else {
+                        RunState::Queued
+                    },
+                    reason: skip.clone(),
+                    exit_code: skip.as_ref().map(|_| 0),
+                    output: skip
+                        .as_ref()
+                        .map_or_else(String::new, |why| format!("{why}.\n")),
+                    failures: None,
+                    started_at: skip.as_ref().map(|_| queued_at),
+                    ended_at: skip.as_ref().map(|_| queued_at),
+                    need: job.need,
+                    timeout_minutes: job.timeout_minutes,
+                    exclusive: job.exclusive,
+                    waited_ms: None,
+                }
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
@@ -848,6 +864,29 @@ impl App {
         self.ci_publish(&run.id).await;
         self.ci_wake();
         Ok(run)
+    }
+
+    /// The files the change of a run at `sha` touches (SPEC-493 CJP-002): a pull request's head,
+    /// a merge candidate and a playground task's head against their merge base with the
+    /// integration branch (a candidate is built on it, so that is its members' changes). `None`
+    /// for the branches' own runs (every job tests every merged state, CJP-003) and when the
+    /// files cannot be told.
+    async fn ci_changed_paths(
+        &self,
+        sandbox: &SandboxRecord,
+        reference: &CiRef,
+        sha: &str,
+    ) -> Option<Vec<String>> {
+        if matches!(reference, CiRef::Branch(_)) {
+            return None;
+        }
+        let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
+        self.deps
+            .git
+            .changed_paths(&self.sandbox_repo(&sandbox.id), &integration, sha)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// One scheduling round for a sandbox: fetch, read the heads, queue and supersede.

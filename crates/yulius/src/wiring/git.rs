@@ -17,6 +17,9 @@ use yulius_git::{
     Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
 };
 
+/// Most changed files a CI run's `paths` decision reads; past it every job runs (SPEC-493).
+const CHANGED_PATHS_MAX: usize = 20_000;
+
 /// Git adapter.
 #[derive(Clone)]
 pub struct GitAdapter {
@@ -527,6 +530,21 @@ impl GitPort for GitAdapter {
             insertions: u32::try_from(stat.insertions).unwrap_or(u32::MAX),
             deletions: u32::try_from(stat.deletions).unwrap_or(u32::MAX),
         })
+    }
+
+    async fn changed_paths(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        let (git, repo, base, head) = (
+            self.git(),
+            repo.to_path_buf(),
+            base.to_owned(),
+            head.to_owned(),
+        );
+        blocking(move || git.changed_paths(&repo, &base, &head, CHANGED_PATHS_MAX)).await
     }
 
     async fn ahead_behind(&self, repo: &Path, base: &str, head: &str) -> AppResult<(u32, u32)> {

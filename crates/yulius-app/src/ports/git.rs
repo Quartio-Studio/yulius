@@ -148,6 +148,17 @@ pub trait GitPort: Send + Sync {
     async fn set_identity(&self, worktree: &Path, name: &str, email: &str) -> AppResult<()>;
     /// Diff statistics between two revisions.
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat>;
+    /// The files `head` changed since its merge base with `base` (SPEC-493 CJP-002); `None`
+    /// when that cannot be told (too many, a path that is not UTF-8, an adapter without it):
+    /// every job then runs.
+    async fn changed_paths(
+        &self,
+        _repo: &Path,
+        _base: &str,
+        _head: &str,
+    ) -> AppResult<Option<Vec<String>>> {
+        Ok(None)
+    }
     /// The worktree's changes against its merge base with `base` (committed, uncommitted and
     /// untracked work), bounded, for the task review (UI-031).
     async fn review_changes(&self, worktree: &Path, base: &str) -> AppResult<ReviewChanges>;

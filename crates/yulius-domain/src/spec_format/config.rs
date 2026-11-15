@@ -42,6 +42,11 @@
 //!                                        # default: the instance's (SPEC-435)
 //! exclusive = true                       # one run of it at a time in the sandbox; a later
 //!                                        # run's job waits, outside its limit (SPEC-435)
+//! paths = ["crates/web/**", "docs/"]     # the files it tests (1-50 globs): a pull request or
+//!                                        # merge candidate touching none of them skips it,
+//!                                        # with the reason; the integration and production
+//!                                        # branches, a change to yulius.toml and an unknown
+//!                                        # change run it (SPEC-493 CJP)
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -303,7 +308,7 @@ const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str =
-    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive";
+    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive, paths";
 const CD_DEV_KEYS: &str =
     "stage, deploy, verify, secrets, states, variables, about, rollback, migrations, parts";
 const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
@@ -768,7 +773,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
     let (mut need, mut secrets) = (Need::default(), Vec::new());
-    let (mut timeout_minutes, mut exclusive) = (None, false);
+    let (mut timeout_minutes, mut exclusive, mut paths) = (None, false, Vec::new());
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -795,6 +800,16 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 timeout_minutes = Some(u32::try_from(minutes).unwrap_or(u32::MAX));
             }
             "exclusive" => exclusive = bool_value(entry)?,
+            "paths" => {
+                let job = name.as_deref().unwrap_or("?");
+                let items: Vec<String> = match &entry.value {
+                    Value::Array(items) => items.clone(),
+                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+                    _ => Vec::new(),
+                };
+                paths = crate::ci::parse_paths(job, &items)
+                    .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
+            }
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
@@ -807,6 +822,7 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
         secrets,
         timeout_minutes,
         exclusive,
+        paths,
     })
 }
 
@@ -1396,6 +1412,10 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         }
         if job.exclusive {
             out.push_str("exclusive = true\n");
+        }
+        if !job.paths.is_empty() {
+            let items: Vec<String> = job.paths.iter().map(|p| quote(p)).collect();
+            out.push_str(&format!("paths = [{}]\n", items.join(", ")));
         }
     }
     let profile = &config.delivery;
@@ -2082,6 +2102,7 @@ mod tests {
                         secrets: Vec::new(),
                         timeout_minutes: None,
                         exclusive: false,
+                        paths: Vec::new(),
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -2094,6 +2115,7 @@ mod tests {
                         secrets: vec!["VIDOC_API_KEY".to_owned()],
                         timeout_minutes: Some(120),
                         exclusive: true,
+                        paths: Vec::new(),
                     },
                 ],
                 ..ProjectConfig::default()
@@ -2195,6 +2217,46 @@ mod tests {
             Some((4, ConfigProblem::ExpectedBool("exclusive".to_owned())))
         );
         assert!(parse_yulius_toml(&job("timeout_minutes = 360\nexclusive = false")).is_ok());
+        Ok(())
+    }
+
+    /// SPEC-493 CJP-001 (AC-16): a job names the files it tests, as scope-claim globs (a folder's
+    /// trailing `/` normalized), its matrix jobs inherit them, they render back, and a bad list
+    /// is a configuration error naming the job.
+    #[test]
+    fn ci_jobs_name_the_files_they_test() -> TestResult {
+        let text = "[[ci.jobs]]\nname = \"websites\"\ncommand = \"scripts/gate websites\"\n\
+                    matrix = \"a b\"\npaths = [\"crates/pomerado/\", \"connectors/**/*.rs\"]\n";
+        let config = parse_yulius_toml(text)?;
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert!(
+            jobs.iter()
+                .all(|j| j.paths == ["crates/pomerado/**", "connectors/**/*.rs"]),
+            "{jobs:?}"
+        );
+        let rendered = render_yulius_toml(&config);
+        assert!(
+            rendered.contains("paths = [\"crates/pomerado/**\", \"connectors/**/*.rs\"]"),
+            "{rendered}"
+        );
+        assert_eq!(parse_yulius_toml(&rendered)?, config);
+        let job = |extra: &str| format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n{extra}\n");
+        for extra in [
+            "paths = []",
+            "paths = [\"../up\"]",
+            "paths = [\"/abs\"]",
+            "paths = [\"a/**b\"]",
+            "paths = [\"a\", \"a\"]",
+        ] {
+            assert_eq!(
+                problem(&job(extra)),
+                Some((
+                    4,
+                    ConfigProblem::Ci(CiConfigError::InvalidPaths("x".to_owned()))
+                )),
+                "{extra}"
+            );
+        }
         Ok(())
     }
 

@@ -1801,6 +1801,7 @@ mod tests {
             secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
             timeout_minutes: None,
             exclusive: false,
+            paths: Vec::new(),
         };
         let gate = |source| Gate {
             jobs: vec![job("scan", &["VIDOC_API_KEY"]), job("lint", &[])],

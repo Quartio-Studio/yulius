@@ -158,6 +158,45 @@ impl Git {
         parse_numstat(&output.stdout)
     }
 
+    /// The files changed from the merge base of `base` and `head` to `head` (`base...head`),
+    /// renames as their new path, at most `limit` (`None` past it: too many to tell). A path
+    /// that is not UTF-8 is left out of the list but makes it `None` too (SPEC-493 CJP-003:
+    /// never decided on doubt).
+    pub fn changed_paths(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<String>>, GitError> {
+        let base = self.rev_parse(repo, base)?;
+        let head = self.rev_parse(repo, head)?;
+        let output = self.run_ok(
+            Invocation::new(self, "diff", Some(repo))
+                .args([
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--end-of-options",
+                ])
+                .arg(format!("{base}...{head}"))
+                .arg("--"),
+        )?;
+        let mut paths = Vec::new();
+        for raw in output.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            let Ok(path) = std::str::from_utf8(raw) else {
+                return Ok(None);
+            };
+            if paths.len() == limit {
+                return Ok(None);
+            }
+            paths.push(path.to_owned());
+        }
+        Ok(Some(paths))
+    }
+
     /// Commits unique to `a` (`ahead`) and to `b` (`behind`).
     pub fn ahead_behind(&self, repo: &Path, a: &str, b: &str) -> Result<AheadBehind, GitError> {
         let a = self.rev_parse(repo, a)?;
