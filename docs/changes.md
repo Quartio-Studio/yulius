@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Yulius picks the model of each review round (SPEC-493 fix 1b, task #472,
+  [ADR-0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)): every task session
+  is launched with two reviewer agents (`yulius-reviewer` on Fable 5.2, `yulius-reviewer-opus`
+  on Opus 5.5, both at high effort); the Agent tool's start reaches Yulius, which numbers the
+  pull request's round, gives rounds 3 and later the Opus reviewer (and any round on a
+  subscription that cannot run Fable then) and records each round with its verdict. Every rule
+  that describes the review names the reviewer agent the same way.
 - Tasks, the Cockpit and the Superagents run Opus 5.5 at high effort by default (SPEC-493 fix 1a,
   task #472, [ADR-0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)): the
   person's decision that Opus 5.5 writes and Fable 5.2 reviews. A task set to a Fable model keeps

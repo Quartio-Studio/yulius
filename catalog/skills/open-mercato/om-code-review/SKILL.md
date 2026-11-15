@@ -12,9 +12,12 @@ produce actionable findings with a clear verdict.
 
 **Independent by construction.** The reviewer is never the author's context: run this skill in a
 fresh session or a subagent that receives only the diff range (or pull request number), the spec
-path and this skill. The reviewer is read-only: no fixes, commits or pushes; it judges the code
-and the tests separately. The author fixes findings test-first (`om-fix`, `test-driven-development`)
-and asks for a new round, up to 3 rounds (see Own code or pre-existing).
+path and this skill. In a Yulius task: start the independent code review with the Agent tool and
+the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first
+two rounds, then Opus 5.5). The reviewer runs at high effort, never max. The reviewer is
+read-only: no fixes, commits or pushes; it judges the code and the tests separately. The author
+fixes findings test-first (`om-fix`, `test-driven-development`) and asks for a new round, up to 3
+rounds (see Own code or pre-existing).
 
 ## Input
 

@@ -62,7 +62,9 @@ Read [Git workflow](docs/engineering/git.md) before changing branches, publishin
 merging. Every local branch, including `dev` and `main`, must have its own worktree.
 Create a typed branch and worktree together from `origin/dev` with `git worktree add -b`;
 never switch an existing worktree to another branch. Never work directly on
-`dev` or `main`. Passing gates + an independent review in a fresh session of the exact head →
+`dev` or `main`. Start the independent code review with the Agent tool and the
+`yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
+rounds, then Opus 5.5). Passing gates + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
 merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there.
 Promotion (`dev` → `main`, merge commit) is a person's, on the CD page (ADR-0110); a task that

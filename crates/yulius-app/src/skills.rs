@@ -1048,6 +1048,68 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 REV-008: every place that describes the independent review names the reviewer
+    /// the same way: the `yulius-reviewer` agent, whose model Yulius picks (Fable 5.2 for a pull
+    /// request's first two rounds, then Opus 5.5). The briefing, the definition of done and a
+    /// tool's description, which have a size budget, say its short form.
+    #[test]
+    fn every_place_names_the_reviewer_agent_and_who_picks_its_model() -> TestResult {
+        const RULE: &str = "start the independent code review with the agent tool and the \
+            `yulius-reviewer` agent: yulius picks the round's model (fable 5.2 for a pull \
+            request's first two rounds, then opus 5.5).";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+            "docs/engineering/git.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        // The workflows' instructions have a budget (1,444 bytes): the short form.
+        for rel in ["catalog/workflows/feature.md", "catalog/workflows/fix.md"] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains("agent `yulius-reviewer`") && text.contains("yulius picks its model"),
+                "{rel} does not name the reviewer agent"
+            );
+        }
+        for (place, text) in [
+            (
+                "briefing.rs",
+                fs::read_to_string(root.join("crates/yulius-domain/src/briefing.rs"))?,
+            ),
+            (
+                "request.rs",
+                fs::read_to_string(root.join("crates/yulius-domain/src/request.rs"))?,
+            ),
+            (
+                "mcp.rs",
+                fs::read_to_string(root.join("crates/yulius-app/src/mcp.rs"))?,
+            ),
+        ] {
+            let text = normal(&text.replace("\\\n", " "));
+            assert!(
+                text.contains("agent `yulius-reviewer`") && text.contains("yulius picks its model"),
+                "{place} does not name the reviewer agent"
+            );
+        }
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {

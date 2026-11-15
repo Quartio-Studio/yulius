@@ -86,6 +86,7 @@ mod recovery;
 mod reference_repo;
 mod remote_mcp;
 mod restart;
+mod review_rounds;
 mod run_metrics;
 mod sandbox_docker;
 mod secrets;

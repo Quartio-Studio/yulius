@@ -105,7 +105,9 @@ pub fn run_hook_with(
         {
             return 0;
         }
-        let Some(request) = crate::guard_client::edit_request(&body) else {
+        let Some(request) = crate::guard_client::edit_request(&body)
+            .or_else(|| crate::guard_client::agent_request(&body))
+        else {
             return crate::guard_client::pre_tool_use(&mut body.as_slice(), output);
         };
         if let Ok(answer) = forward(

@@ -430,7 +430,11 @@ mod tests {
             for word in instructions.split('`').skip(1).step_by(2) {
                 let looks_like_skill = word.contains('-')
                     && word.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-                    && !word.starts_with("ci-");
+                    && !word.starts_with("ci-")
+                    // Yulius's reviewer agents are agents, not skills (SPEC-493 REV-001).
+                    && !yulius_domain::review::REVIEWER_MODELS
+                        .iter()
+                        .any(|(agent, _)| *agent == word);
                 if looks_like_skill {
                     assert!(bundled.contains(&word), "{id} names unknown skill {word}");
                 }

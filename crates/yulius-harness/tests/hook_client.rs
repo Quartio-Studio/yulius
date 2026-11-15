@@ -602,6 +602,56 @@ fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 REV-002 (review round 1 of fix 1b): the Agent tool's `PreToolUse` goes to Yulius
+/// with its whole input, and Yulius's answer (another reviewer as the tool's new input) is
+/// printed for Claude Code. With no server it fails open: nothing is printed.
+#[test]
+fn a_subagents_start_goes_to_yulius_and_its_answer_is_printed() -> TestResult {
+    let body = br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"subagent_type":"yulius-reviewer-opus","prompt":"p"}}}"#;
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    let (url, server) = serve_once(response)?;
+    let payload = br#"{"hook_event_name":"PreToolUse","tool_name":"Agent","cwd":"/w","session_id":"s","tool_use_id":"toolu_1","tool_input":{"subagent_type":"yulius-reviewer","prompt":"p","description":"d","run_in_background":true}}"#;
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(output, body);
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/claude/PreToolUse HTTP/1.1"
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "cwd": "/w",
+            "tool_input": {"subagent_type": "yulius-reviewer", "prompt": "p", "description": "d",
+                "run_in_background": true}})
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let gone = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    drop(listener);
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &payload[..],
+        &mut output,
+        &env_with(gone, Some("t")),
+    );
+    assert_eq!((code, output.is_empty()), (0, true));
+    Ok(())
+}
+
 /// SPEC-426 EDG-001 (review round 1): an edit's `PreToolUse` fails open like every hook (no
 /// server, a 500) and is never held: a `202` prints nothing and is not asked again. A `Write`
 /// larger than the forwarding bound still reaches the gate, trimmed.

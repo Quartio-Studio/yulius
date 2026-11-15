@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    MessageRecord, RecordReservation, ScopeClaimRecord, StepRecord, StepTiming,
+    MessageRecord, RecordReservation, ReviewRoundRecord, ScopeClaimRecord, StepRecord, StepTiming,
 };
 use yulius_app::ports::store::CoordinationStore;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
@@ -69,6 +69,27 @@ fn keep_first_plan_size(tx: &rusqlite::Transaction<'_>, task: &str) -> rusqlite:
 }
 
 const MSG_COLS: &str = "m.id, m.sandbox_id, m.from_task, m.from_user, m.to_task, m.kind, m.subject, m.body, m.created_at";
+
+fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
+    let task: String = row.get("task_id")?;
+    Ok(ReviewRoundRecord {
+        id: row.get("id")?,
+        task_id: TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?,
+        round: to_u32(row.get("round")?),
+        head: row.get("head")?,
+        agent: row.get("agent")?,
+        model: row.get("model")?,
+        reason: row.get("reason")?,
+        subagent_id: row.get("subagent_id")?,
+        model_answered: row.get("model_answered")?,
+        started_at: Timestamp(row.get("started_at")?),
+        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        verdict: row.get("verdict")?,
+        cut_off: row.get("cut_off")?,
+        pr_number: row.get::<_, Option<i64>>("pr_number")?.map(to_u64),
+        merged_at: row.get::<_, Option<i64>>("merged_at")?.map(Timestamp),
+    })
+}
 
 #[async_trait]
 impl CoordinationStore for SqliteStore {
@@ -278,6 +299,129 @@ impl CoordinationStore for SqliteStore {
             let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(db)?;
             out.reverse();
             Ok(out)
+        })
+        .await
+    }
+
+    async fn insert_review_round(&self, round: &ReviewRoundRecord) -> AppResult<()> {
+        let r = round.clone();
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO review_rounds (id, task_id, round, head, agent, model, reason, \
+                 subagent_id, model_answered, started_at, ended_at, verdict, cut_off, pr_number, \
+                 merged_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                params![
+                    r.id,
+                    r.task_id.as_str(),
+                    i64::from(r.round),
+                    r.head,
+                    r.agent,
+                    r.model,
+                    r.reason,
+                    r.subagent_id,
+                    r.model_answered,
+                    r.started_at.0,
+                    r.ended_at.map(|t| t.0),
+                    r.verdict,
+                    r.cut_off,
+                    r.pr_number.map(to_i64),
+                    r.merged_at.map(|t| t.0),
+                ],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn review_rounds(
+        &self,
+        task: &TaskId,
+        open_only: bool,
+    ) -> AppResult<Vec<ReviewRoundRecord>> {
+        let t = task.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT id, task_id, round, head, agent, model, reason, subagent_id, \
+                     model_answered, started_at, ended_at, verdict, cut_off, pr_number, merged_at \
+                     FROM review_rounds WHERE task_id = ?1 AND (?2 = 0 OR merged_at IS NULL) \
+                     ORDER BY started_at, rowid",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![t, open_only], review_round_from_row)
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn link_review_subagent(
+        &self,
+        task: &TaskId,
+        agents: &[&str],
+        subagent: &str,
+    ) -> AppResult<bool> {
+        let t = task.as_str().to_owned();
+        let agents: Vec<String> = agents.iter().map(|a| (*a).to_owned()).collect();
+        let s = subagent.to_owned();
+        self.call(move |c| {
+            let known: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM review_rounds WHERE task_id = ?1 AND subagent_id = ?2)",
+                    params![t, s],
+                    |r| r.get(0),
+                )
+                .map_err(db)?;
+            if known {
+                return Ok(false);
+            }
+            let open: Option<(String, String)> = c
+                .query_row(
+                    "SELECT id, agent FROM review_rounds WHERE task_id = ?1 AND merged_at IS NULL \
+                     AND subagent_id IS NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                    params![t],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            let Some((id, _agent)) = open.filter(|(_, agent)| agents.contains(agent)) else {
+                return Ok(false);
+            };
+            c.execute(
+                "UPDATE review_rounds SET subagent_id = ?1 WHERE id = ?2",
+                params![s, id],
+            )
+            .map_err(db)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn end_review_round(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        at: Timestamp,
+        verdict: Option<&str>,
+        model_answered: Option<&str>,
+    ) -> AppResult<bool> {
+        let (t, s) = (task.as_str().to_owned(), subagent.to_owned());
+        let (v, m) = (
+            verdict.map(str::to_owned),
+            model_answered.map(str::to_owned),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE review_rounds SET ended_at = ?1, verdict = ?2, \
+                     model_answered = COALESCE(?3, model_answered) \
+                     WHERE task_id = ?4 AND subagent_id = ?5 AND merged_at IS NULL",
+                    params![at.0, v, m, t, s],
+                )
+                .map_err(db)?;
+            Ok(n > 0)
         })
         .await
     }

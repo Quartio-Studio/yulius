@@ -115,6 +115,20 @@ impl DeliveryStore for SqliteStore {
                 ],
             )
             .map_err(db)?;
+            // A merged pull request takes its review rounds along: the task's next one starts
+            // at round 1 (SPEC-493 REV-002). Here, so every way a merge is recorded does it.
+            if next.stage == DeliveryStage::MergedIntegration {
+                tx.execute(
+                    "UPDATE review_rounds SET pr_number = ?1, merged_at = ?2 \
+                     WHERE task_id = ?3 AND merged_at IS NULL",
+                    params![
+                        next.pr_number.map(to_i64),
+                        next.updated_at.0,
+                        next.task_id.as_str()
+                    ],
+                )
+                .map_err(db)?;
+            }
             tx.commit().map_err(db)?;
             Ok(true)
         })

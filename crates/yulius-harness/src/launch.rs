@@ -50,13 +50,16 @@ pub use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
-/// (`/exit`, Ctrl+C twice, `/clear`, a signal), before the process is gone.
-pub const CLAUDE_HOOK_EVENTS: [&str; 5] = [
+/// (`/exit`, Ctrl+C twice, `/clear`, a signal), before the process is gone. `SubagentStart` and
+/// `SubagentStop` tell it which subagent a review round runs as and its report (SPEC-493).
+pub const CLAUDE_HOOK_EVENTS: [&str; 7] = [
     "SessionStart",
     "UserPromptSubmit",
     "Stop",
     "Notification",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 ];
 /// The pseudo-event of Claude Code's `statusLine` command (`yulius hook claude StatusLine`): it
 /// prints the task's status line and forwards the plan usage Claude Code read from its own API
@@ -503,6 +506,33 @@ fn plugins_off(plugins: &[String]) -> Option<Value> {
     })
 }
 
+/// The independent code review's agents (`--agents`, SPEC-493 REV-001): each by its full model
+/// id and at the reviewer's effort, with the reviewer's contract as its prompt. Claude Code
+/// 2.1.325 runs a subagent of such a definition on its `model` and `effort`, whatever the
+/// session runs, and a definition given at the launch outranks one of the same name in the
+/// agent's home (measured with the real CLI, SPEC-493 Context).
+fn reviewer_agents() -> Value {
+    use yulius_domain::review::{REVIEWER_EFFORT, REVIEWER_MODELS, REVIEWER_PROMPT};
+    let mut agents = Map::new();
+    for (name, model) in REVIEWER_MODELS {
+        agents.insert(
+            name.to_owned(),
+            json!({
+                "description": format!(
+                    "Independent code review of a change (a diff range and its spec), read-only, \
+                     on {}. Yulius picks the round's model: start every review with \
+                     yulius-reviewer.",
+                    yulius_domain::harness::claude_model_name(model)
+                ),
+                "prompt": REVIEWER_PROMPT,
+                "model": model,
+                "effort": REVIEWER_EFFORT,
+            }),
+        );
+    }
+    Value::Object(agents)
+}
+
 fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential;
     check(
@@ -548,6 +578,12 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
             }] },
             { "matcher": crate::guard_client::EDIT_TOOLS.map(|(tool, _)| tool).join("|"), "hooks": [{
+                "type": "command",
+                "command": pre_tool_use,
+                "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+            }] },
+            // A subagent's start: Yulius picks a review round's reviewer (SPEC-493 REV-002).
+            { "matcher": crate::guard_client::AGENT_TOOLS.join("|"), "hooks": [{
                 "type": "command",
                 "command": pre_tool_use,
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
@@ -622,6 +658,10 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         "--mcp-config".into(),
         utf8(&mcp_path, "run_dir")?.to_owned(),
         "--strict-mcp-config".into(),
+        // Yulius's reviewer agents, defined here out of the agent's reach (its home's agents
+        // folder is its own): their model and effort are this launch's (SPEC-493 REV-001).
+        "--agents".into(),
+        reviewer_agents().to_string(),
     ]);
     let model = request.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
     argv.extend(["--model".into(), model.to_owned()]);
