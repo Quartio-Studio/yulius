@@ -232,6 +232,10 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// CLI device sign-in starts per client key (rate limiting, #169).
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Where each watched transcript's reads go on (SPEC-483 slice 36): a poll reads only what
+    /// was written since; bounded by [`crate::session_docs::MAX_TRANSCRIPT_CURSORS`].
+    pub(crate) transcript_cursors:
+        Mutex<HashMap<std::path::PathBuf, crate::transcripts::ReadCursor>>,
     /// GitHub sign-in starts per client key in the last minute (SPEC-483 A4).
     pub(crate) github_starts: Mutex<HashMap<String, Vec<i64>>>,
     /// Looks at and joins through playground guest links per client key (SPEC-410 GST-002).
@@ -351,6 +355,7 @@ impl App {
             events,
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
+            transcript_cursors: Mutex::new(HashMap::new()),
             github_starts: Mutex::new(HashMap::new()),
             guest_attempts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
