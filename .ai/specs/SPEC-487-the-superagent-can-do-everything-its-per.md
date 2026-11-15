@@ -83,7 +83,8 @@ pull request delivers that part.
 | 8b | Production deploy and rollback, promotion to `main` and a project's onboarding behind one confirmation in the panel with the typed project slug (the person's decision of 2026-11-13) | wall 4 (production) |
 | 9a | Nothing typed to the Superagent is lost in a restart: keys typed while it restarts reach the new session, and an update's restart waits for text left in its prompt box | wall 8 |
 | 9b | Its standing jobs have a durable home: scheduled checks held by Yulius, kept across restarts, typed into its session when it is idle | wall 8 |
-| 10 | Secrets (a value entered masked beside the chat, never seen by the agent) and visibility (cost, load, a crash's exit and last screen, a checkout that is current) | walls 10, 11 |
+| 10a | Secrets: a value the person types masked on the Superagent's panel goes to the vault; the agent sees its name only | wall 10 |
+| 10b | Visibility: a task's cost and load, a crash's exit and last screen, a checkout that is current | wall 11 |
 | 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
 
 ### The ability table (target)
@@ -206,7 +207,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
 - [ ] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
 - [ ] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
-- [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
+- [ ] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
+- [ ] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
 - [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
 ## Acceptance criteria
