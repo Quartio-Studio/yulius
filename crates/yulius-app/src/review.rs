@@ -1,7 +1,7 @@
 //! The independent code review's rounds as Yulius sees them (SPEC-493 REV-002 to REV-004).
 //!
 //! A task starts its review with the Agent tool and [`REVIEWER_AGENT`]. Its `PreToolUse` reaches
-//! [`App::review_gate`], which numbers the round among those of the task's open pull request,
+//! `App::review_gate`, which numbers the round among those of the task's open pull request,
 //! decides the reviewer it runs as ([`round_agent`]) and records it; a different reviewer than
 //! the one asked for is given back as the tool's new input. `SubagentStart` links the round to
 //! Claude Code's subagent, `SubagentStop` ends it with the report's verdict. A merge closes the
