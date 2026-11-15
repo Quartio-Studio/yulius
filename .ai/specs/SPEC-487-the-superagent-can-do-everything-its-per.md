@@ -1073,3 +1073,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   by a draft end to end, the Enter after the paste (the shell runs it: the screen shows the label
   as a command), the Global Superagent (its token is not a Cockpit's), two due together, saves at
   once, the panel's long paste.
+  Mutants of the fixes: thirteen, each failed by a named test once the rules were drawn out into
+  `ready_for_check`, `backing_off`, `backoff_wait` and `sound` with their unit test
+  (`checks_wait_their_turn_and_are_checked_when_read`) and the integration test read back a
+  hand-edited check out of bounds (`target/evidence/mutants-slice9b-r1.log`: `survived=0`).
