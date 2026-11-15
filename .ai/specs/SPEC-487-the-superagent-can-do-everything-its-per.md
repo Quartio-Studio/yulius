@@ -81,7 +81,8 @@ pull request delivers that part.
 | 7 | The instance: version, health, update status, checks, Update now and Restart with the buttons' refusals; reconnection after a restart | wall 1 |
 | 8a | Requests to the person that last: cross-sandbox requests stored, amendable, still there later; a pending decision of the Superagent's own; another sandbox's task list | walls 6, 9 |
 | 8b | Production deploy and rollback, promotion to `main` and a project's onboarding behind one confirmation in the panel with the typed project slug (the person's decision of 2026-11-13) | wall 4 (production) |
-| 9 | The Superagent's session lasts: standing instructions and checks survive a restart, a message typed during one is kept, a tool list that changes restarts nothing | wall 8 |
+| 9a | Nothing typed to the Superagent is lost in a restart: keys typed while it restarts reach the new session, and an update's restart waits for text left in its prompt box | wall 8 |
+| 9b | Its standing jobs have a durable home: scheduled checks held by Yulius, kept across restarts, typed into its session when it is idle | wall 8 |
 | 10 | Secrets (a value entered masked beside the chat, never seen by the agent) and visibility (cost, load, a crash's exit and last screen, a checkout that is current) | walls 10, 11 |
 | 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
 
@@ -196,7 +197,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 7: the instance (version, health, update status, checks, Update now and Restart, sessions reconnect after a restart)
 - [x] Slice 8a: requests to the person that last (cross-sandbox requests stored and amendable, a pending decision, another sandbox's task list)
 - [x] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
-- [ ] Slice 9: the Superagent's session lasts (standing instructions survive a restart, a message typed during one is kept, a changed tool list restarts nothing)
+- [ ] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
+- [ ] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
 - [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
 - [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
