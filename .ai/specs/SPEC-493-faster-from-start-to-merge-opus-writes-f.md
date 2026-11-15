@@ -1155,8 +1155,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   with "no file this job tests changed (paths: …)"; a touched path, `yulius.toml` and an unknown
   change run it; `*` stays in its folder). `GitPort::changed_paths` (`base...head`, NUL-separated;
   `None` past 20,000 files or a non-UTF-8 path; an adapter without it says `None`).
-  `ci_queue_placed` decides at queueing: a job is created `skipped`, its reason and output set,
-  and never takes a lane.
+  `ci_queue_placed` decides at queueing: a job is created `skipped` with its reason, output and
+  skip code. The executor starts only the queued jobs. A run whose every job is skipped passes
+  at queueing and takes no lane.
   `local_ci::a_job_with_paths_runs_only_for_a_change_to_them`, real Git and real jobs:
   - the pull request touching `feature.txt` passes with `web` skipped, its reason in its output
     and nothing run, and its status reads "1 skipped";
@@ -1172,3 +1173,31 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - How to read it a week later: in quartio-v2 once it sets `paths` on `websites`, that job's
   runs against skips per day (the Pipeline tab's job stages), and the median minutes to merge
   of pull requests that do not touch it.
+- **Review round 1** (Opus 5.5: the Fable 5.2 reviewer was cut off at its start by Fable's
+  weekly limit, which resets 17 Nov 04:00 UTC; head `b0234dc7a`). Request changes. Answered
+  (all own code):
+  - Major: tree reuse carried a paths skip into the integration branch's own run, because a
+    squash-merged pull request gives dev the tree its run tested. `ci_reuse_tree` no longer
+    reuses into a branch's run a source that skipped a `paths` job.
+    `local_ci::the_integration_branch_runs_a_paths_job_a_merged_tree_skipped` (reproduced first:
+    `web` copied as skipped).
+  - Major: the executor sent pre-skipped jobs through `ci_job`, where they waited for an
+    `exclusive` turn and a slot and took a budget share. It now starts only the queued jobs, and
+    a run of skipped jobs passes at queueing.
+    `local_ci::a_skipped_exclusive_job_does_not_wait_for_its_turn` (3 lanes, a CPU each: the pull
+    request's run ends while dev's `web` holds its turn). Without the fix it ran until dev's
+    ended.
+  - Major: `--name-only` listed a rename by its new path only, so a file moved out of `paths`
+    did not count. `--no-renames` lists both. Tested at the adapter:
+    `git_ops::changed_paths_list_renames_deletions_and_stop_at_the_limit`, with the rename, a
+    deletion, the base's own later commit left out, and `None` past the limit.
+  - Minors:
+    - A requeue (restart, disk quota) keeps a paths skip, while a job's own skip runs again
+      (`local_ci::a_requeued_run_keeps_its_paths_skip`).
+    - A skipped job gets its start and end after insertion, so its `job` span is recorded with
+      outcome `skipped` (asserted in the paths test).
+    - A path without a glob is the folder of that name too, and a changed path no glob can
+      match runs the job (unit).
+  - Nits: the skip code is 78 as for any skipped job. `paths` before `name` names the job
+    (config test). The train note replacing the reason stays: a copied verdict says where it
+    comes from.

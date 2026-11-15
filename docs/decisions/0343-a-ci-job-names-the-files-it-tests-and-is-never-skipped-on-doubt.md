@@ -24,19 +24,25 @@ job depends on the rest of the code.
   (`ci_queue_placed`, after `ci_gate_for_head` decided the jobs in force). For a pull request's
   head, a merge candidate and a playground task's head, the changed files are the head against
   its merge base with the integration branch (`base...head`). A candidate is built on the
-  integration branch, so that is its members' changes. A job whose `paths` none of them match
-  ends **skipped** at once, with "no file this job tests changed (paths: …)" as its reason and
-  output, without taking a lane or starting its command. A skipped job blocks no merge, and the
-  run page and `ci_status` show it with its reason (ADR-0133).
+  integration branch, so that is its members' changes (`--no-renames`: a file moved out of a
+  job's paths counts there). A job whose `paths` none of them match ends **skipped** at once,
+  with "no file this job tests changed (paths: …)" as its reason and output and the skip code
+  78. It never starts its command, waits for no `exclusive` turn or slot, and takes no share of
+  the run's budget. A run whose every job is skipped passes at once and takes no lane. A skipped
+  job blocks no merge, and the run page and `ci_status` show it with its reason (ADR-0133). A
+  path without a glob (`crates/web`) is that file and that folder. A requeued run (a restart,
+  the disk quota) keeps the skip.
 - **It runs regardless**:
   - on the integration and production branches' own runs, so every merged state and a
     promotion's head are tested by every job;
   - when the change touches `yulius.toml`, the job's own definition;
   - when the changed files cannot be told: no merge base, a failed diff, more than 20,000 files,
-    or a path that is not UTF-8.
+    a path that is not UTF-8, or one no glob can be matched against (a backslash, a control
+    character).
   Never skipped on doubt.
-- **A rerun decides again** with the same rule; a copied verdict (a train's, a reused tree's)
-  keeps the skipped state, as for any skipped job.
+- **A rerun decides again** with the same rule. A copied verdict (a train's, a reused tree's)
+  keeps the skipped state, as for any skipped job, except into a branch's own run: a tree
+  whose source skipped a job for its `paths` is run again there.
 
 ## Alternatives
 
