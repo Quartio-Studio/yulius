@@ -163,6 +163,7 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0060_task_spec_status.sql"),
+    include_str!("migrations/0061_capacity_window_indexes.sql"),
     // Schema version 60 (SPEC-490 OWN-009). The file is 0059, the number `record_number` gave
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
@@ -406,6 +407,40 @@ pub(crate) fn to_u32(value: i64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of
+    /// their window through an index, never a scan of every run ever recorded.
+    #[tokio::test]
+    async fn the_capacity_views_read_their_window_through_an_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = SqliteStore::open_in_memory()?;
+        for sql in [
+            crate::capacity::TOKEN_RUNS_SQL.to_owned(),
+            crate::capacity::pauses_since_sql("id, started_at"),
+            crate::accounts::ACCOUNT_TOKENS_SQL.to_owned(),
+        ] {
+            let plan: Vec<String> = store
+                .call(move |c| {
+                    let mut statement = c
+                        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                        .map_err(db)?;
+                    let details = statement
+                        .query_map([0_i64], |r| r.get::<_, String>(3))
+                        .map_err(db)?
+                        .collect::<Result<Vec<String>, _>>()
+                        .map_err(db)?;
+                    Ok(details)
+                })
+                .await?;
+            for step in &plan {
+                assert!(
+                    !(step.starts_with("SCAN a") || step.starts_with("SCAN capacity_pauses")),
+                    "{step} in {plan:?}"
+                );
+            }
+        }
+        Ok(())
+    }
 
     /// A version-2 database (deployed before the Claude-only change) keeps its rows when
     /// version 3 drops the harness-switching columns.
