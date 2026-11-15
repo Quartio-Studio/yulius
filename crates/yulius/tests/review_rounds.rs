@@ -690,3 +690,90 @@ async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
     }
     Ok(())
 }
+
+/// SPEC-493 REV-007 (AC-8) end to end: a real session on a subscription out of Fable 5.2 asks
+/// for the reviewer through the real hook client; the Agent call is refused, the turn is
+/// interrupted and the session goes on on the subscription that runs both models, its first
+/// prompt asking for the review again.
+mod real {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::first_message::{hooked, new_task, start_with};
+    use crate::pool_supervision::{
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage, wait_for,
+    };
+    use crate::subscription_moves::{live_run, ready, run_accounts};
+    use crate::support::TestResult;
+    use crate::support::agents::FakeAgentOptions;
+    use yulius_app::model::TaskMode;
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::usage::UsageWindow;
+    use yulius_ptyhost::test_support::locate_fake_agent;
+
+    #[test]
+    fn a_session_out_of_fable_moves_and_is_asked_for_the_review_again() -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            // The first has the most room for Opus, so the task starts there, but its Fable
+            // allowance is used up; the second runs both.
+            let mut first = usage(5.0, 4 * HOUR, 10.0, 100);
+            first.weekly_fable = Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(10_080),
+                resets_at: first.secondary.as_ref().and_then(|w| w.resets_at),
+            });
+            probe.set("a-first", first);
+            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            let person = app.deps.store.task(&id).await?.ok_or("task")?.created_by;
+            let ctx = yulius_app::auth::AuthContext {
+                user: app.deps.store.user(&person).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            let attach = app
+                .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+                .await?;
+            app.terminal_input(&ctx, &attach, b"/agent yulius-reviewer", false)
+                .await?;
+            app.terminal_input(&ctx, &attach, b"\r", false).await?;
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("run Fable 5.2 for the review round you asked for")
+            })
+            .await;
+            assert!(asked.is_ok(), "{}", screen(&app, &id));
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            assert_eq!(switches[0].reason, "review_fable");
+            assert_eq!(switches[0].outcome, "completed", "{switches:?}");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+}

@@ -609,7 +609,9 @@ mod tests {
         rotation.family = ModelFamily::Opus;
         let chosen = move_to_also_run(&rotation, ModelFamily::Fable);
         assert_eq!(chosen.as_ref().map(AccountId::as_str), Some("e"));
-        rotation.accounts.retain(|a| a.id.as_str() != "e" && a.id.as_str() != "d");
+        rotation
+            .accounts
+            .retain(|a| a.id.as_str() != "e" && a.id.as_str() != "d");
         assert_eq!(move_to_also_run(&rotation, ModelFamily::Fable), None);
         Ok(())
     }
