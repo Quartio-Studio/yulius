@@ -3188,3 +3188,5 @@ later slices follow.
   - ADR-0339 gains the stop's order and the bound.
   - Mutations (`mutations-r2.log`): 19 of 19 caught (new: no engine-first undo, settling while
     stopping, no busy at the bound).
+- **Gate after round 2.** `scripts/dev ci` at `3b4ca452e`: exit 0; `4457 tests run: 4457 passed
+  (1 slow), 17 skipped` (`gate3.log`).
