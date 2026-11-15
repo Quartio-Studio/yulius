@@ -1089,3 +1089,27 @@ the function the web UI's route calls, with the person's rights checked at the c
   `ready_for_check`, `backing_off`, `backoff_wait` and `sound` with their unit test
   (`checks_wait_their_turn_and_are_checked_when_read`) and the integration test read back a
   hand-edited check out of bounds (`target/evidence/mutants-slice9b-r1.log`: `survived=0`).
+
+### Slice 10a (2026-11-15)
+
+- **Slice 9b is merged:** pull request #1310 into `dev` at `4aa43cdca`, whose own Yulius CI run
+  passed.
+- **Review of slice 9b, round 2 notes**, answered first: G1, the 20-second grace is called a
+  heuristic in ADR-0335; G2, a check pasted but not sent is not pasted again; G3, a retry leaves
+  a check replaced meanwhile alone, a gone Superagent's back-off goes with its checks, checks out
+  of bounds are logged when dropped; G4, G5 answered in words (a few milliseconds of a file write
+  under the terminal held; after a clock set forward, the 30-second gap spaces the checks).
+- **Tests and code:** `a_secret_value_typed_on_the_panel_reaches_the_vault_only` was written
+  first: refusals before asking, the card (its title is the secret's name), no value, a short
+  one and a cut key refused with the request kept, a multi-line key stored (`secret_verify`
+  matches it with its line breaks as literal `\n`), nothing of it in the call, its outcome, the
+  requests file or the audit, and asked again: `updated`. The panel: the e2e test failed before
+  the card (19 of 19 now). The answer's fields became one `RequestAnswer` (clippy's bound on
+  arguments).
+- **Mutation:** seven mutants (`target/evidence/mutants-slice10a.py`, `mutants-slice10a.log`):
+  five failed by a named test; `empty-value-taken` is equivalent (the vault's own check refuses
+  an empty value too); `check-repasted` (slice 9b's G2) survives: it needs a terminal whose
+  Enter fails after its paste went in, which no test fixture gives.
+- **Not tested:** a Superagent's call that waited past its 4 minutes and the value stored later
+  (the same lasting request as XRQ-001, tested there); a person without the right to manage the
+  scope (the vault's own refusal, answered to both the click and the call).
