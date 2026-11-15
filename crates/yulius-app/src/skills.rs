@@ -1147,7 +1147,10 @@ mod tests {
             "catalog/skills/yulius/delivery-pipeline/SKILL.md",
         ] {
             let text = read(rel)?;
-            assert!(text.contains(&normal(RULE)), "{rel} does not state the rule");
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
         }
         for rel in [
             "catalog/workflows/feature.md",
@@ -1155,7 +1158,10 @@ mod tests {
             "catalog/workflows/chore.md",
             "crates/yulius-domain/src/briefing.rs",
         ] {
-            assert!(read(rel)?.contains(SHORT), "{rel} does not say the short form");
+            assert!(
+                read(rel)?.contains(SHORT),
+                "{rel} does not say the short form"
+            );
         }
         // The reviewer reads the head's run and runs the tests it doubts.
         let review = read("catalog/skills/open-mercato/om-code-review/SKILL.md")?;
