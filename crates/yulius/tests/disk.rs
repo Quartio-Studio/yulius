@@ -1101,6 +1101,49 @@ async fn a_linked_ci_jobs_folder_never_reaches_another_sandbox() -> BoxResult<()
     Ok(())
 }
 
+/// Review round 2 of SPEC-493 fix 1d: an upkeep cut off while it removes a CI checkout's cache
+/// (its caller gave up waiting) does not keep the sandbox's CI claimed: the claim ends once the
+/// removal it was taken for has ended, and runs start again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upkeep_cut_off_mid_removal_frees_the_ci_lane() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    w.pressed();
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (removing, started) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(yulius_app::race::Point::CachePrune, &checkout, move || {
+        removing.send(()).ok();
+        held.recv_timeout(std::time::Duration::from_secs(20)).ok();
+    });
+    let app = w.h.app.clone();
+    let sandbox = w.sandbox.clone();
+    let upkeep = tokio::spawn(async move { app.disk_upkeep(&sandbox, true).await });
+    tokio::task::spawn_blocking(move || started.recv_timeout(std::time::Duration::from_secs(20)))
+        .await??;
+    // The caller gives up while the cache is being removed.
+    upkeep.abort();
+    assert!(upkeep.await.is_err_and(|err| err.is_cancelled()));
+    assert!(
+        !w.h.app.ci_claim(&w.sandbox.id),
+        "no run starts in a checkout half removed"
+    );
+    release.send(())?;
+    let mut free = false;
+    for _ in 0..400 {
+        if w.h.app.ci_claim(&w.sandbox.id) {
+            free = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        free,
+        "the sandbox's CI stayed claimed after the removal ended"
+    );
+    w.h.app.ci_release(&w.sandbox.id);
+    Ok(())
+}
+
 /// #649 (SPEC-263 DUL-001): a linked `ci`, the same.
 #[tokio::test]
 async fn a_linked_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {

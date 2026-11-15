@@ -263,6 +263,23 @@ pub(crate) struct GateView {
     pub(crate) workflows: Vec<String>,
 }
 
+/// A claim of a sandbox's CI checkouts ([`App::ci_claim_owned`]): dropping it ends the claim and
+/// wakes the dispatcher, as [`App::ci_release`] does.
+pub(crate) struct CiClaim {
+    busy: Arc<Mutex<HashSet<String>>>,
+    wake: Arc<Notify>,
+    sandbox: String,
+}
+
+impl Drop for CiClaim {
+    fn drop(&mut self) {
+        if let Ok(mut busy) = self.busy.lock() {
+            busy.remove(&self.sandbox);
+        }
+        self.wake.notify_one();
+    }
+}
+
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
@@ -278,8 +295,9 @@ pub struct CiState {
     /// (SPEC-438).
     pub(crate) production_waits: Mutex<Vec<prove::ProductionWait>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
-    /// (`<sandbox>`, disk upkeep).
-    busy: Mutex<HashSet<String>>,
+    /// (`<sandbox>`, disk upkeep). Shared with [`CiClaim`], which ends a claim where it is
+    /// dropped.
+    busy: Arc<Mutex<HashSet<String>>>,
     gates: Mutex<HashMap<String, GateView>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
     /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
@@ -289,7 +307,7 @@ pub struct CiState {
     pub(crate) hygiene_next: Mutex<Option<i64>>,
     /// One hygiene cleanup per sandbox at a time (the round and a person's Clean up).
     pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-    wake: Notify,
+    wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
@@ -586,6 +604,18 @@ impl App {
     pub fn ci_claim(&self, sandbox: &SandboxId) -> bool {
         self.ci.busy.lock().is_ok_and(|mut busy| {
             !busy_in(&busy, sandbox.as_str()) && busy.insert(sandbox.as_str().to_owned())
+        })
+    }
+
+    /// [`App::ci_claim`] as a value that ends the claim when it is dropped, wherever that is: a
+    /// removal running on a blocking thread keeps the claim until it ends, also when the
+    /// future that started it is dropped (review round 2 of SPEC-493 fix 1d). `None` when the
+    /// claim was refused.
+    pub(crate) fn ci_claim_owned(&self, sandbox: &SandboxId) -> Option<CiClaim> {
+        self.ci_claim(sandbox).then(|| CiClaim {
+            busy: Arc::clone(&self.ci.busy),
+            wake: Arc::clone(&self.ci.wake),
+            sandbox: sandbox.as_str().to_owned(),
         })
     }
 
