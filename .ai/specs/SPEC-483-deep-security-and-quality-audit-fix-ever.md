@@ -3107,3 +3107,5 @@ later slices follow.
   the tab may leave for the other origin. The reviewer's own probe showed the POST delivered.
   `subscription-touch.e2e.ts` predates the slice and opens its own browser.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Gate.** `scripts/dev ci` at `0779ed67f`: exit 0; `4456 tests run: 4456 passed (1 slow), 17
+  skipped` (`target/audit/slice39/gate.log`).
