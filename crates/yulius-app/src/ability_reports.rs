@@ -40,8 +40,9 @@ fn take_report(sent: &mut Vec<i64>, now: i64) -> bool {
     true
 }
 
-/// The longest case: what the filing link takes even of text dense with punctuation (review of
-/// slice 11, R3-3).
+/// The longest case: what the filing link takes of plain ASCII prose with the other texts at
+/// their caps (review of slice 11, R3-3); other text, up to 9 bytes a character in the link,
+/// can meet [`MAX_LINK_BYTES`] first, and that refusal gives the size.
 const MAX_CASE_CHARS: usize = 1500;
 
 /// The longest filing link answered: GitHub's new-issue form refuses much longer ones.
@@ -49,14 +50,44 @@ const MAX_LINK_BYTES: usize = 6000;
 
 /// Whether `text` holds `name` as a whole word (any case): bounded by what is not a letter or
 /// a digit, so a compound of it (`shop-api`, `shop_db`) holds it too (review of slice 11,
-/// R3-1); a name shorter than 3 characters is no name.
+/// R3-1), and by a camelCase change (`ShopApi`, `ACMEShop`), the name's own humps or none;
+/// a name shorter than 3 characters is no name.
 fn names_word(text: &str, name: &str) -> bool {
-    let (text, name) = (text.to_lowercase(), name.to_lowercase());
     if name.chars().count() < 3 {
         return false;
     }
+    lowercase_holds(&text.to_lowercase(), &name.to_lowercase())
+        || lowercase_holds(&camel_split(text), &camel_split(name))
+}
+
+/// `text` lowercased with a space at each camelCase change: before an upper-case letter after a
+/// lower-case letter or a digit, and before the last capital of a run followed by a lower-case
+/// letter (`ACMEShop` holds `acme shop`).
+fn camel_split(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    for (at, &c) in chars.iter().enumerate() {
+        let before = at.checked_sub(1).map(|b| chars[b]);
+        let next = chars.get(at + 1);
+        let hump = c.is_uppercase()
+            && before.is_some_and(|b| {
+                b.is_lowercase()
+                    || b.is_numeric()
+                    || (b.is_uppercase() && next.is_some_and(|n| n.is_lowercase()))
+            });
+        if hump {
+            out.push(' ');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+/// Whether the lowercased `text` holds the lowercased `name` bounded by what is not a letter or
+/// a digit.
+fn lowercase_holds(text: &str, name: &str) -> bool {
     let word = char::is_alphanumeric;
-    text.match_indices(name.as_str()).any(|(at, found)| {
+    text.match_indices(name).any(|(at, found)| {
         let before = text[..at].chars().next_back();
         let after = text[at + found.len()..].chars().next();
         !before.is_some_and(word) && !after.is_some_and(word)
@@ -86,13 +117,25 @@ fn project_named<'a>(
     .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
 }
 
+/// The case, refused empty or past [`MAX_CASE_CHARS`].
+fn checked_case(case: &str) -> AppResult<()> {
+    if case.trim().is_empty() || case.chars().count() > MAX_CASE_CHARS {
+        return Err(AppError::Invalid(format!(
+            "the case is 1 to {MAX_CASE_CHARS} characters: what was asked, and what stopped you"
+        )));
+    }
+    Ok(())
+}
+
 /// The filing link, refused past [`MAX_LINK_BYTES`] (R2-1).
 fn checked_link(ability: &str, asked: &ReportArgs, from: &str) -> AppResult<String> {
     let link = filing_link(ability, asked, from);
     if link.len() > MAX_LINK_BYTES {
-        return Err(AppError::Invalid(
-            "the report is too long for a link: shorten the case".into(),
-        ));
+        return Err(AppError::Invalid(format!(
+            "the report's link is {} bytes, at most {MAX_LINK_BYTES} (a letter outside ASCII \
+             takes up to 9): shorten the case, the ability or needed_for",
+            link.len()
+        )));
     }
     Ok(link)
 }
@@ -176,11 +219,7 @@ impl App {
                 "the ability is 1 to 200 characters on one line".into(),
             ));
         }
-        if asked.case.trim().is_empty() || asked.case.chars().count() > MAX_CASE_CHARS {
-            return Err(AppError::Invalid(format!(
-                "the case is 1 to {MAX_CASE_CHARS} characters: what was asked, and what stopped you"
-            )));
-        }
+        checked_case(&asked.case)?;
         if asked
             .needed_for
             .as_ref()
@@ -309,8 +348,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        HOUR_MS, MAX_CASE_CHARS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_link,
-        filing_link, issue_body, names_word, project_named, query_value, take_report,
+        HOUR_MS, MAX_CASE_CHARS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_case,
+        checked_link, filing_link, issue_body, names_word, project_named, query_value, take_report,
     };
 
     /// R2-2: the project's names are refused, but not the Yulius project's own.
@@ -347,6 +386,14 @@ mod tests {
         assert!(names_word("deploy my-app-2 now", "my-app"));
         assert!(names_word("the shop-api and acme-shop broke", "shop"));
         assert!(names_word("the shop_db is full", "shop"));
+        // Review of slice 11 round 3's follow-up, m2: a camelCase compound too.
+        assert!(names_word("the ShopApi client threw", "shop"));
+        assert!(names_word("in AcmeShopService", "acme"));
+        assert!(names_word("in AcmeShopService", "shop"));
+        assert!(names_word("the ACMEShop logs", "acme"));
+        assert!(names_word("MyApp broke", "MyApp"));
+        assert!(names_word("myapp broke", "MyApp"));
+        assert!(!names_word("the Shopping list", "shop"));
         assert!(!names_word("ab", "ab"), "too short to be a name");
     }
 
@@ -369,19 +416,44 @@ mod tests {
         assert!(checked_link("a", &long, "A Superagent").is_err());
     }
 
-    /// Review of slice 11, R3-3: a case at its stated cap, even dense with punctuation, fits
-    /// the link; one past the cap is refused before.
+    /// Review of slice 11, R3-3: a case of plain ASCII prose at its cap fits the link with the
+    /// other texts at theirs; the cap itself is inclusive.
     #[test]
-    fn a_case_at_its_cap_fits_the_link() {
-        let dense = "a, b.\n".repeat(MAX_CASE_CHARS / 6);
-        assert!(dense.chars().count() <= MAX_CASE_CHARS);
+    fn a_prose_case_at_its_cap_fits_the_link() {
+        let prose: String = "The build failed, and the log said why. "
+            .chars()
+            .cycle()
+            .take(MAX_CASE_CHARS)
+            .collect();
+        assert!(checked_case(&prose).is_ok());
+        assert!(checked_case(&format!("{prose}x")).is_err());
+        assert!(checked_case(" \n").is_err());
         let asked = ReportArgs {
-            ability: "a".repeat(200),
-            case: dense,
-            needed_for: Some("n".repeat(1000)),
+            ability: "read a task's whole scrollback ".repeat(7)[..200].to_string(),
+            case: prose,
+            needed_for: Some("answer from the whole output ".repeat(40)[..1000].to_string()),
         };
         assert!(checked_link(&asked.ability, &asked, "A Superagent").is_ok());
         assert_eq!(MAX_CASE_CHARS, 1500);
+    }
+
+    /// Follow-up review, m1 and m6: other text meets the link's bound first; the refusal gives
+    /// the link's size and the bound, and names every text it holds.
+    #[test]
+    fn a_link_past_the_bound_says_its_size() {
+        let asked = ReportArgs {
+            ability: "a".into(),
+            case: "ż".repeat(MAX_CASE_CHARS),
+            needed_for: None,
+        };
+        let size = filing_link("a", &asked, "A Superagent").len();
+        let Err(refused) = checked_link("a", &asked, "A Superagent") else {
+            panic!("a link of {size} bytes is refused");
+        };
+        let said = refused.to_string();
+        assert!(said.contains(&format!("{size} bytes")), "{said}");
+        assert!(said.contains("at most 6000"), "{said}");
+        assert!(said.contains("needed_for"), "{said}");
     }
 
     /// SPEC-487 ABL-003 (review of slice 11, m4): five an hour, and the window moves on.
