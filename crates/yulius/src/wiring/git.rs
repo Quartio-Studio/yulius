@@ -1071,6 +1071,10 @@ fn changed_file(file: FileDiff) -> ChangedFile {
     }
 }
 
+// The adapter and the rule measure lines alike (SPEC-493 fix 6).
+const _: () =
+    assert!(yulius_git::MAX_COUNTED_LINE_BYTES == yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES);
+
 #[cfg(test)]
 mod tests {
     use super::base64_encode;
@@ -1084,7 +1088,3 @@ mod tests {
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 }
-
-// The adapter and the rule measure lines alike (SPEC-493 fix 6).
-const _: () =
-    assert!(yulius_git::MAX_COUNTED_LINE_BYTES == yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES);
