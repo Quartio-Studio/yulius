@@ -213,11 +213,10 @@ impl App {
             return String::new();
         }
         // Only the message waits for this look, within its bound: the delivery checks again.
-        match tokio::time::timeout(READY_LOOK, self.review_head_not_ready(task)).await {
-            Ok(Some(reason)) => {
-                return format!(" No Yulius CI run starts for this head: {reason}.");
-            }
-            Ok(None) | Err(_) => {}
+        if let Ok(Some(reason)) =
+            tokio::time::timeout(READY_LOOK, self.review_head_not_ready(task)).await
+        {
+            return format!(" No Yulius CI run starts for this head: {reason}.");
         }
         let app = Arc::clone(self);
         let task_id = task.id.clone();
