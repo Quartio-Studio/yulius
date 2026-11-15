@@ -4731,6 +4731,27 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "started for its check"
     );
 
+    // Review of slice 9b, F6: a disabled person's Superagent is not started for a check, and a
+    // removed sandbox's checks go.
+    f.h.app.end_all_shells().await;
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    f.h.store
+        .execute_for_tests("UPDATE users SET disabled_at = 1 WHERE id = 'u-alice'")
+        .await?;
+    assert_eq!(
+        f.h.app.start_superagents_for_due_checks().await,
+        0,
+        "disabled"
+    );
+    f.h.store
+        .execute_for_tests("UPDATE users SET disabled_at = NULL WHERE id = 'u-alice'")
+        .await?;
+    assert_eq!(
+        f.h.app.start_superagents_for_due_checks().await,
+        1,
+        "enabled again"
+    );
+
     let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
     let (deleted, is_error) = cockpit_tool(
         &f,
@@ -4742,7 +4763,35 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
     assert!(!is_error, "{deleted}");
     let (listed, _) = cockpit_tool(&f, &token, "superagent_checks", json!({})).await?;
     assert_eq!(listed["checks"], json!([]), "{listed}");
+    let (set, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "superagent_check_set",
+        json!({"name": "gone", "every_minutes": 5, "prompt": "p"}),
+    )
+    .await?;
+    assert!(!is_error, "{set}");
     f.h.app.end_all_shells().await;
+    f.h.clock.0.fetch_add(5 * 60_000, Ordering::SeqCst);
+    f.h.store
+        .execute_for_tests("UPDATE sandboxes SET removed_at = 1 WHERE id = 's1'")
+        .await?;
+    assert_eq!(f.h.app.start_superagents_for_due_checks().await, 0);
+    assert_eq!(
+        f.h.app.tool_superagent_checks(&caller)?["checks"],
+        json!([]),
+        "a removed sandbox's checks go"
+    );
+
+    // F8: a file that cannot be read is kept as `.bad`, never written over.
+    let file = f.data.join("superagent-checks.json");
+    std::fs::write(&file, b"[not json")?;
+    let again = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    again.restore_superagent_checks();
+    assert_eq!(
+        std::fs::read(file.with_extension("json.bad"))?,
+        b"[not json"
+    );
     Ok(())
 }
 

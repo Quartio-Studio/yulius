@@ -12,6 +12,7 @@
 //! - when one is due and its Superagent is not running, Yulius starts it as opening its panel
 //!   would, with its person's rights at that moment.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,6 +41,16 @@ pub const MAX_CHECK_PROMPT_BYTES: usize = 2048;
 pub(crate) const QUIET_AFTER_TYPING_MS: i64 = 60_000;
 /// Between the paste and the Enter that submits it (as a task's message).
 const SUBMIT_DELAY: Duration = Duration::from_millis(300);
+/// How long after its start a Superagent takes no check: Claude Code's prompt box is not up yet
+/// (review of slice 9b, F2).
+pub(crate) const CHECK_START_GRACE_MS: i64 = 20_000;
+/// The least time between two checks typed into one Superagent: its transcript shows the first
+/// turn only after a moment (review of slice 9b, F5).
+pub(crate) const CHECK_GAP_MS: i64 = 30_000;
+/// When a check could not be typed, it is tried again after this long (F3).
+const CHECK_RETRY_MS: i64 = 60_000;
+/// The longest wait between two starts tried for a Superagent that would not start (F6).
+const START_BACKOFF_MAX_MS: i64 = 60 * 60_000;
 
 /// One check, as kept.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,6 +70,10 @@ struct Check {
 #[derive(Default)]
 pub struct SuperagentChecks {
     checks: Mutex<Vec<Check>>,
+    /// Serializes the writes of [`CHECKS_FILE`] (review of slice 9b, F1).
+    file: Mutex<()>,
+    /// Per person and sandbox, after a start that failed: when to try again, and how many failed.
+    backoff: Mutex<HashMap<(String, String), (i64, u32)>>,
 }
 
 impl SuperagentChecks {
@@ -103,6 +118,20 @@ pub(crate) fn may_type_check(draft: bool, last_key_ms: i64, now_ms: i64) -> bool
     !draft && (last_key_ms == 0 || now_ms.saturating_sub(last_key_ms) >= QUIET_AFTER_TYPING_MS)
 }
 
+/// Whether a kept check is one `superagent_check_set` could have made (a hand-edited file is not
+/// trusted; review of slice 9b, F8).
+fn sound(check: &Check) -> bool {
+    (MIN_EVERY_MINUTES..=MAX_EVERY_MINUTES).contains(&check.every_minutes)
+        && !check.prompt.trim().is_empty()
+        && check.prompt.len() <= MAX_CHECK_PROMPT_BYTES
+        && !check.name.is_empty()
+        && !check.name.chars().any(char::is_control)
+}
+
+fn every_ms(check: &Check) -> i64 {
+    i64::from(check.every_minutes) * 60_000
+}
+
 /// What is typed for a check: one bracketed paste of its label and prompt.
 fn check_paste(check: &Check) -> Vec<u8> {
     format!(
@@ -127,13 +156,30 @@ impl App {
         self.config.data_dir.join(CHECKS_FILE)
     }
 
+    /// Writes [`CHECKS_FILE`] whole (owner-only: it holds prompts) and renames it into place,
+    /// one writer at a time, from the checks as they are then (review of slice 9b, F1, F8).
     fn save_superagent_checks(&self) {
+        let _writing = self
+            .superagent_checks
+            .file
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let checks = self.superagent_checks.lock().clone();
         let path = self.checks_path();
         let tmp = path.with_extension("json.tmp");
         let written = serde_json::to_vec(&checks)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&tmp, bytes))
+            .and_then(|bytes| {
+                use std::io::Write as _;
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create(true).truncate(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt as _;
+                    options.mode(0o600);
+                }
+                options.open(&tmp)?.write_all(&bytes)
+            })
             .and_then(|()| std::fs::rename(&tmp, &path));
         if let Err(err) = written {
             tracing::warn!(error = %err, "the Superagents' checks were not saved");
@@ -148,7 +194,18 @@ impl App {
             return;
         };
         match serde_json::from_slice::<Vec<Check>>(&bytes) {
-            Ok(checks) => *self.superagent_checks.lock() = checks,
+            Ok(checks) => {
+                let now = self.now().0;
+                *self.superagent_checks.lock() = checks
+                    .into_iter()
+                    .filter(sound)
+                    .map(|mut check| {
+                        // A clock set back does not push a check past one interval (F7).
+                        check.next_at = check.next_at.min(now.saturating_add(every_ms(&check)));
+                        check
+                    })
+                    .collect();
+            }
             Err(err) => {
                 let kept = path.with_extension("json.bad");
                 tracing::warn!(error = %err, kept = %kept.display(), "the Superagents' checks could not be read");
@@ -209,9 +266,9 @@ impl App {
         let asked: SetArgs = parse(args)?;
         crate::cross_sandbox::check_visible(args)?;
         let name = asked.name.trim().to_owned();
-        if name.is_empty() || name.chars().count() > 60 || name.contains(['\n', '\r']) {
+        if name.is_empty() || name.chars().count() > 60 || name.chars().any(char::is_control) {
             return Err(AppError::Invalid(
-                "the name is 1 to 60 characters on one line".into(),
+                "the name is 1 to 60 characters on one line, without control characters".into(),
             ));
         }
         if !(MIN_EVERY_MINUTES..=MAX_EVERY_MINUTES).contains(&asked.every_minutes) {
@@ -292,38 +349,63 @@ impl App {
     }
 
     /// Types the Superagent's first due check into its session, if it may take one now
-    /// (CHK-003): called by its watch when its conversation is idle. The next interval counts
-    /// from now, typed or not reachable, so a check never piles up.
+    /// (CHK-003): called by its watch when its conversation is idle. Not in the first seconds
+    /// after its start (its prompt box is not up yet), nor within [`CHECK_GAP_MS`] of the last
+    /// check typed, nor while its person holds its prompt box (checked again with the terminal
+    /// held, so no keystroke comes between). The next interval counts from now; a check that
+    /// could not be typed is tried again a minute later.
     pub(crate) async fn type_due_check(&self, runtime: &ShellRuntime) {
+        use std::sync::atomic::Ordering;
         if runtime.global {
             return;
         }
         let now = self.now().0;
-        if !may_type_check(
-            self.cockpit_has_draft(runtime.id()),
-            runtime
-                .last_key_ms
-                .load(std::sync::atomic::Ordering::SeqCst),
-            now,
-        ) {
+        if now.saturating_sub(runtime.started_ms()) < CHECK_START_GRACE_MS
+            || now.saturating_sub(runtime.check_typed_ms.load(Ordering::SeqCst)) < CHECK_GAP_MS
+        {
             return;
         }
-        let due = {
+        let quiet = || {
+            may_type_check(
+                self.cockpit_has_draft(runtime.id()),
+                runtime.last_key_ms.load(Ordering::SeqCst),
+                self.now().0,
+            )
+        };
+        if !quiet() {
+            return;
+        }
+        let mine = |c: &Check| {
+            c.user == runtime.creator().as_str() && c.sandbox == runtime.sandbox().as_str()
+        };
+        let is_due = {
             let mut checks = self.superagent_checks.lock();
-            let Some(check) = checks.iter_mut().find(|c| {
-                c.user == runtime.creator().as_str()
-                    && c.sandbox == runtime.sandbox().as_str()
-                    && c.next_at <= now
-            }) else {
+            for check in checks.iter_mut().filter(|c| mine(c)) {
+                // A clock set back does not push a check past one interval (F7).
+                check.next_at = check.next_at.min(now.saturating_add(every_ms(check)));
+            }
+            checks.iter().any(|c| mine(c) && c.next_at <= now)
+        };
+        if !is_due {
+            return;
+        }
+        let mut writer = runtime.writer.lock().await;
+        if !quiet() {
+            return;
+        }
+        let (due, before) = {
+            let mut checks = self.superagent_checks.lock();
+            let Some(check) = checks.iter_mut().find(|c| mine(c) && c.next_at <= now) else {
                 return;
             };
+            let before = check.last_run_at;
             check.last_run_at = Some(now);
-            check.next_at = now.saturating_add(i64::from(check.every_minutes) * 60_000);
-            check.clone()
+            check.next_at = now.saturating_add(every_ms(check));
+            (check.clone(), before)
         };
         self.save_superagent_checks();
+        runtime.check_typed_ms.store(now, Ordering::SeqCst);
         let typed = async {
-            let mut writer = runtime.writer.lock().await;
             let writer = writer
                 .as_mut()
                 .ok_or_else(|| AppError::Conflict("the Superagent has ended".into()))?;
@@ -332,12 +414,21 @@ impl App {
             writer.input(b"\r").await
         }
         .await;
+        drop(writer);
         match typed {
             Ok(()) => {
                 tracing::info!(shell = %runtime.id(), check = %due.name, "a Superagent's check was typed")
             }
             Err(err) => {
-                tracing::warn!(shell = %runtime.id(), check = %due.name, error = %err, "a Superagent's check was not typed")
+                tracing::warn!(shell = %runtime.id(), check = %due.name, error = %err, "a Superagent's check was not typed: tried again in a minute");
+                {
+                    let mut checks = self.superagent_checks.lock();
+                    if let Some(check) = checks.iter_mut().find(|c| mine(c) && c.name == due.name) {
+                        check.last_run_at = before;
+                        check.next_at = now.saturating_add(CHECK_RETRY_MS);
+                    }
+                }
+                self.save_superagent_checks();
             }
         }
     }
@@ -357,17 +448,44 @@ impl App {
         wanted.sort();
         wanted.dedup();
         let mut started = 0;
+        let mut gone: Vec<(String, Option<String>)> = Vec::new();
         for (user, sandbox) in wanted {
+            let key = (user.clone(), sandbox.clone());
+            let waiting = self
+                .superagent_checks
+                .backoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&key)
+                .copied();
+            if waiting.is_some_and(|(next_try, _)| next_try > now) {
+                continue;
+            }
             let (Ok(user_id), Ok(sandbox_id)) = (UserId::parse(&user), SandboxId::parse(&sandbox))
             else {
+                gone.push((user, Some(sandbox)));
                 continue;
             };
             if self.running_cockpit(&user_id, &sandbox_id).is_some() {
                 continue;
             }
-            let Ok(Some(person)) = self.deps.store.user(&user_id).await else {
-                continue;
+            // A person or a sandbox that is gone takes its checks with it (F6).
+            let person = match self.deps.store.user(&user_id).await {
+                Ok(Some(person)) => person,
+                Ok(None) => {
+                    gone.push((user, None));
+                    continue;
+                }
+                Err(_) => continue,
             };
+            match self.deps.store.sandbox(&sandbox_id).await {
+                Ok(Some(record)) if record.removed_at.is_none() => {}
+                Ok(_) => {
+                    gone.push((user, Some(sandbox)));
+                    continue;
+                }
+                Err(_) => continue,
+            }
             if person.disabled_at.is_some() {
                 continue;
             }
@@ -377,12 +495,47 @@ impl App {
                 session_hash: None,
                 token: None,
             };
+            let backoff = || {
+                let mut map = self
+                    .superagent_checks
+                    .backoff
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let failed = map
+                    .get(&key)
+                    .map_or(0, |(_, failed)| *failed)
+                    .saturating_add(1);
+                let wait = 60_000_i64
+                    .saturating_mul(1_i64 << failed.min(6))
+                    .min(START_BACKOFF_MAX_MS);
+                map.insert(key.clone(), (now.saturating_add(wait), failed));
+                failed
+            };
             match self.cockpit_open(&ctx, sandbox_id.as_str()).await {
-                Ok(_) => started += 1,
+                Ok(_) => {
+                    self.superagent_checks
+                        .backoff
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&key);
+                    started += 1;
+                }
                 Err(err) => {
-                    tracing::info!(user = %user, sandbox = %sandbox, error = %err, "a Superagent was not started for its check")
+                    if backoff() == 1 {
+                        tracing::info!(user = %user, sandbox = %sandbox, error = %err, "a Superagent was not started for its check: tried again later");
+                    } else {
+                        tracing::debug!(user = %user, sandbox = %sandbox, error = %err, "a Superagent was again not started for its check");
+                    }
                 }
             }
+        }
+        if !gone.is_empty() {
+            self.superagent_checks.lock().retain(|c| {
+                !gone.iter().any(|(user, sandbox)| {
+                    c.user == *user && sandbox.as_ref().is_none_or(|s| c.sandbox == *s)
+                })
+            });
+            self.save_superagent_checks();
         }
         started
     }

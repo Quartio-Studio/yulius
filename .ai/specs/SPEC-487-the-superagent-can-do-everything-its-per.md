@@ -185,9 +185,9 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move, Restart) is kept in whole frames, up to 16 KiB, without Ctrl-C, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. A restart that fails drops it. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back", "what is typed for a restart that fails is not sent to a later session" |
 | SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied, for at most 30 minutes after the last keystroke; its state reads `held`. Text, a paste (also split across frames), Alt-Enter and backslash-Enter type; Enter outside a paste and Ctrl-C empty the box; Esc, Tab, arrows and editing keys do neither. Keystrokes are ordered by their count; a draft's mark is kept with the Superagent's record, so a server restarted for the update knows it. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`, `a_draft_typed_before_the_servers_restart_holds_the_superagents`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
 | CHK-001 | `superagent_check_set {name, every_minutes, prompt}` creates or replaces a check of the Superagent's (a name of 1 to 60 characters on one line, 5 to 1440 minutes, a prompt of 1 to 2048 bytes, no invisible characters, no unknown arguments; at most 10); `superagent_checks` lists them with when each runs next and ran last; `superagent_check_delete {name}` deletes one. Audited `superagent.check` without the prompt. | `cockpit::the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle` |
-| CHK-002 | The checks are kept in `superagent-checks.json` beside the database and read back at a start before the server takes calls; a file that cannot be read is kept as `.bad`. | the same test (a second `App` on the same data) |
-| CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute: one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then; one check at a time. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
-| CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then. | the same test (`start_superagents_for_due_checks` after the Superagent ended) |
+| CHK-002 | The checks are kept in `superagent-checks.json` beside the database (owner-only, one writer at a time) and read back at a start before the server takes calls; a check out of bounds is dropped, and a file that cannot be read is kept as `.bad`. | the same test (a second `App` on the same data; the `.bad` file) |
+| CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute (checked again with its terminal held): one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then, a minute if it could not be typed; not in the first 20 seconds after the Superagent started, nor within 30 seconds of the last check typed into it. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
+| CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then: not for a disabled person; a start that fails is tried again after 2, 4, … up to 60 minutes; the checks of a person or a sandbox that is gone are deleted. | the same test (`start_superagents_for_due_checks` after the Superagent ended, for a disabled person, for a removed sandbox) |
 | CHK-005 | The three tools are the Superagent's only; `superagent_checks` is pre-allowed, the other two ask in Claude Code first; the instructions send standing jobs to `superagent_check_set`, never to a timer of the Superagent's own. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
 
 ## Plan
@@ -1055,3 +1055,21 @@ the function the web UI's route calls, with the person's rights checked at the c
   rule; the watch calls it only when idle); a Superagent that cannot be started for its check (no
   capacity: logged, tried again the next minute); an unreadable checks file (kept as `.bad`, as
   the requests file, whose test covers the same code shape).
+- **Gate:** `scripts/dev ci` passed on `fe68dc671` (4436 tests, 17 skipped;
+  `target/evidence/gate-slice9b.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `fe68dc671`): request changes, all in this slice's code:
+  F1, two saves at once could write an older list last: one writer at a time now, the list read
+  under it; F2, a check typed into a Superagent that had just started could be swallowed: none in
+  its first 20 seconds; F3, a check that could not be typed waited a whole interval: a minute;
+  F4, a keystroke between the check of the prompt box and the paste: checked again with the
+  terminal held; F5, checks due together went in one a second: 30 seconds apart; F6, a
+  Superagent that would not start was tried every minute and gone people's or sandboxes' checks
+  stayed: a back-off up to an hour, and their checks are deleted (tested: a disabled person, a
+  removed sandbox); F7, a clock set back pushed checks past their interval: clamped; F8, a kept
+  check is checked again when read, the file is owner-only, and the `.bad` file is tested; F9,
+  control characters in a name are refused; R1's nit (a paste ending in a backslash, then
+  Enter) is fixed. F10's other cases stay untested and listed under "Not tested": a check held
+  by a draft end to end, the Enter after the paste (the shell runs it: the screen shows the label
+  as a command), the Global Superagent (its token is not a Cockpit's), two due together, saves at
+  once, the panel's long paste.

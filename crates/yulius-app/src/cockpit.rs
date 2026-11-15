@@ -188,6 +188,7 @@ pub(crate) fn read_box_keys(data: &[u8], state: &mut KeyState) -> BoxKeys {
             i += START.len();
         } else if rest.starts_with(END) {
             *in_paste = false;
+            *after_backslash = false;
             i += END.len();
         } else if *in_paste {
             typed = true;

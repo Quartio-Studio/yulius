@@ -2226,10 +2226,13 @@ A Superagent's standing jobs are scheduled checks held by Yulius
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`
 keep them in `App::superagent_checks` and `superagent-checks.json`, read back at the start before
 the listeners serve (`restore_superagent_checks`). The Cockpit watch types the first due check into
-its session when the conversation is idle and no restart is pending (`type_due_check`: no draft,
-no keystroke in the last minute; one paste and Enter, the next interval counted from then), and a
-background tick every minute starts the Superagent of a due check that is not running, through
-`cockpit_open` with its person's rights (`start_superagents_for_due_checks`).
+its session when the conversation is idle and no restart is pending (`type_due_check`: not in
+the first 20 seconds of the Superagent, nor within 30 seconds of the last check; no draft and no
+keystroke in the last minute, checked again with its terminal held; one paste and Enter, the next
+interval counted from then, a minute if it could not be typed), and a background tick every
+minute starts the Superagent of a due check that is not running, through `cockpit_open` with its
+person's rights (`start_superagents_for_due_checks`; a failed start backs off up to an hour, a
+gone person's or sandbox's checks are deleted).
 
 ```mermaid
 flowchart LR

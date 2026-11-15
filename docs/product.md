@@ -209,7 +209,8 @@ watching, steering and unblocking.
   what they type while it restarts reaches the new session (SPEC-487). A standing job its person
   asks for ("keep monitoring the deploy", "check the disk every hour") is a scheduled check Yulius
   holds, not a timer of its session: due, it is typed into the Superagent when it is idle, after
-  any restart, and a Superagent that is not running is started for it
+  any restart, and a Superagent that is not running (its person ended it, the machine restarted)
+  is started for it
   ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)).
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
   Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab

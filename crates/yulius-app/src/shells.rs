@@ -203,6 +203,8 @@ pub struct ShellRuntime {
     /// When its person's last keystroke frame came, and when a draft's mark was last kept.
     pub(crate) last_key_ms: AtomicI64,
     pub(crate) draft_saved_ms: AtomicI64,
+    /// When Yulius last typed one of its checks into this Cockpit (SPEC-487 CHK-003).
+    pub(crate) check_typed_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
@@ -302,6 +304,11 @@ impl ShellRuntime {
         } else {
             Seat::Sandbox(self.sandbox.clone())
         }
+    }
+
+    /// When this shell started (ms), for a Cockpit the start of its process.
+    pub(crate) fn started_ms(&self) -> i64 {
+        self.created_at.0
     }
 
     /// The user who opened the shell.
@@ -921,6 +928,7 @@ impl App {
             key_state: Mutex::new(crate::cockpit::KeyState::default()),
             last_key_ms: AtomicI64::new(0),
             draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
@@ -1562,6 +1570,7 @@ impl App {
             key_state: Mutex::new(crate::cockpit::KeyState::default()),
             last_key_ms: AtomicI64::new(0),
             draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
