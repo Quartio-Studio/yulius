@@ -546,8 +546,9 @@ open(stopped, "w").write("stopped")
     }
 
     /// SPEC-201 DBX-005 (#614): `yulius.service` stops with `KillMode=process`, and systemd then
-    /// prunes the unit's empty groups, the leaf of an idle engine among them. The next start
-    /// recreates that leaf (only it) before the engine joins it.
+    /// prunes the unit's empty groups, those of an idle engine among them. The next start
+    /// recreates them (the engine's group and its root below, SPEC-483 C4; nothing else) before
+    /// the engine joins the root.
     #[tokio::test]
     async fn a_start_recreates_the_engine_leaf_a_restart_pruned() -> io::Result<()> {
         let f = Fixture::new()?;
@@ -564,7 +565,7 @@ open(stopped, "w").write("stopped")
         };
         let sandbox = f.path("sandbox");
         std::fs::create_dir_all(&sandbox)?;
-        let leaf = sandbox.join("engine");
+        let leaf = sandbox.join("engine/inside");
         let supervisor = Supervisor::with_start_timeout(
             joining(&leaf),
             f.path("control.sock"),
@@ -575,11 +576,11 @@ open(stopped, "w").write("stopped")
             Duration::from_secs(20),
         );
         supervisor.connect().await.map_err(io::Error::other)?;
-        assert!(leaf.is_dir(), "the leaf is back");
+        assert!(leaf.is_dir(), "the root and the engine's group are back");
         supervisor.stop(Duration::from_secs(10)).await;
 
         // Without the sandbox's group, nothing is made up in its place (it would have no limits).
-        let orphan_leaf = f.path("gone/engine");
+        let orphan_leaf = f.path("gone/engine/inside");
         let orphan = Supervisor::with_start_timeout(
             joining(&orphan_leaf),
             f.path("control.sock"),
@@ -592,7 +593,7 @@ open(stopped, "w").write("stopped")
         let reason = orphan.connect().await.err().unwrap_or_default();
         // Review round 1 (low): refused before the engine is spawned, naming the group.
         assert!(reason.starts_with("the engine's cgroup "), "{reason}");
-        assert!(reason.contains("gone/engine"), "{reason}");
+        assert!(reason.contains("gone/engine/inside"), "{reason}");
         assert!(!f.path("gone").exists());
         Ok(())
     }

@@ -629,7 +629,7 @@ impl Manager {
         }
         match self.group_paths(&request.id) {
             Some(groups) => DockerServe::Engine {
-                engine: self.engine_spec(request, &groups.engine),
+                engine: self.engine_spec(request, &groups.engine_root),
             },
             None => DockerServe::Refuse {
                 reason: DOCKER_NO_DELEGATION.to_owned(),
@@ -750,7 +750,7 @@ impl Manager {
                     .is_some_and(|f| f.mode == "engine" || f.mode == "relay")
                     && let Some(groups) = self.group_paths(sandbox)
                 {
-                    match crate::cgroup::restore_leaf(&groups.engine) {
+                    match crate::cgroup::restore_leaf(&groups.engine_root) {
                         Ok(true) => tracing::info!(sandbox, "recreated the engine's cgroup"),
                         Ok(false) => {}
                         Err(error) => {
@@ -2411,9 +2411,17 @@ while True:
         assert_eq!(manager.adopt().await, 1);
         let front = front_of(&manager).await.ok_or("no front")?;
         assert_eq!(front.mode, mode);
-        let leaf = manager.group_paths("s1").ok_or("no delegation")?.engine;
+        let groups = manager.group_paths("s1").ok_or("no delegation")?;
+        let leaf = groups.engine_root;
         assert!(leaf.is_dir());
+        if !holder_engine {
+            // SPEC-483 C4: the front starts the engine in the root below the engine's group.
+            let served = served_engine_group(&StatePaths::new(manager.state_dir("s1")));
+            assert_eq!(served.as_deref(), Some(leaf.to_string_lossy().as_ref()));
+        }
+        // A restart of the service prunes both empty groups.
         std::fs::remove_dir(&leaf)?;
+        std::fs::remove_dir(&groups.engine)?;
         {
             let entry = manager.entry("s1");
             let mut guard = entry.lock().await;
