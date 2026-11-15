@@ -1361,3 +1361,39 @@ async fn a_custom_production_stage_environment_waits_for_the_person() -> TestRes
     );
     Ok(())
 }
+
+/// SPEC-487 VIS-003 (wall 11: "153 commits behind produced a wrong no"): the checkout tool says
+/// how far the project's checkout is from its integration branch, as of its last fetch.
+#[tokio::test]
+async fn the_checkout_says_how_far_it_is_from_the_integration_branch() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    let sandbox =
+        f.h.store
+            .sandbox(&yulius_domain::ids::SandboxId::parse("s1")?)
+            .await?
+            .ok_or("sandbox")?;
+    let repo =
+        f.h.app
+            .config
+            .data_dir
+            .join("sandboxes")
+            .join("s1")
+            .join("repo");
+    let checkout = f.h.app.checkout_for_person(&sandbox).await?;
+    assert_eq!(checkout["integration_branch"], "dev", "{checkout}");
+    let before = checkout["behind"].as_u64().ok_or("behind")?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    let fetched = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["fetch", "--quiet", "origin"])
+        .status()?;
+    assert!(fetched.success());
+    let after = f.h.app.checkout_for_person(&sandbox).await?;
+    assert_eq!(after["behind"].as_u64(), Some(before + 1), "{after}");
+    assert!(after["fetched_at"].is_string(), "{after}");
+    Ok(())
+}
