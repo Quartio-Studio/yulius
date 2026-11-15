@@ -41,6 +41,14 @@ whether the client half-closed or hung up entirely.
   and journals what grew, once a minute per sandbox and kind; later slices of SPEC-494 report the
   trouble, repair the front and replace outdated fronts from the same file.
 
+- **A full front is its sandbox's trouble, told once** (SPEC-494 slice 2). The upkeep reports the
+  state file to SPEC-361's registry as a `docker` trouble: it begins when the front refused since
+  the last read or holds its whole limit, and ends once it holds at most seven eighths and
+  refused nothing since. The panel's pill and the notification center show it once. Every 15 s
+  the tasks of that sandbox with a live session are told once, typed into their session, that
+  Docker is full and nobody needs to be asked; once the trouble ends, the tasks told hear that
+  Docker works again. What was told lives in memory.
+
 ## Alternatives
 
 - **A larger limit**: delays the jam by the same leak's rate; does not end it.
@@ -48,6 +56,8 @@ whether the client half-closed or hung up entirely.
   `docker wait` calls that are idle by nature.
 - **Ending a connection at any half-close**: breaks `docker run -i … < file` and `docker exec -i`,
   which half-close and then read the output for minutes.
+- **Telling only the tasks whose calls were refused**: the front sees bytes on a socket, not
+  which run made a call; every live task of the sandbox shares the one Docker, so all are told.
 - **A socket from the front to the server for its events**: the front outlives server restarts
   and would need reconnection; the upkeep already ticks for each sandbox and reads its files.
 

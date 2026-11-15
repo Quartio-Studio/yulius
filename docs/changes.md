@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A full Docker front is seen once (SPEC-494 slice 2, task #476, ADR-0344): it is its sandbox's
+  `docker` connection trouble ("Docker full: <sandbox>" in the tab row, one notification), and
+  each running task of the sandbox is told once in its session not to ask a person, then told
+  when Docker works again. The front's log lines carry their UTC time.
 - A sandbox's Docker front no longer jams (SPEC-494 slice 1, task #476,
   [ADR-0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)):
   at its 256-connection limit it closes the longest-idle connection for a new call, or answers a

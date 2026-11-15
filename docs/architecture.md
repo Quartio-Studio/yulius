@@ -160,7 +160,9 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   past 300 s gives way, else the call gets a Docker-API 503 saying so (from slice 3 of SPEC-494, that Yulius repairs it). A connection
   whose client hung up ends within about two seconds, one whose engine side ended gives the client 30 s. The
   front logs these once a minute per kind and writes `docker-front-state.json`, which the upkeep
-  reads each tick and journals.
+  reads each tick, journals and reports: a full or refusing front is its sandbox's `docker`
+  connection trouble (the panel's pill, once), and the sandbox's live tasks are told once in
+  their session, and again when Docker works.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`

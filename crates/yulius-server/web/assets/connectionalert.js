@@ -49,7 +49,7 @@ function describe(trouble) {
   if (trouble.limit === 'docker') {
     return {
       text: `Docker full: ${sandbox}`,
-      title: `${sandbox}’s Docker front holds ${trouble.held} of its ${trouble.max} connections (SPEC-494): its runs’ Docker calls and its CI jobs’ containers fail while none gives way. Its running tasks are told once, so they need not ask. If it stays full, restarting the front frees it (Operations, “A full front”).`,
+      title: `${sandbox}’s Docker front holds ${trouble.held} of its ${trouble.max} connections: its runs’ Docker calls and its CI jobs’ containers fail while none gives way. Its running tasks are told once, so they need not ask. If it stays full, restarting the front frees it (Operations, “A full front”).`,
       route: null,
     };
   }

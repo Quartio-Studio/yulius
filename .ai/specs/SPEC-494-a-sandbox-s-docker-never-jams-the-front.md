@@ -112,9 +112,12 @@ ever reaches it).
   of its sandbox (`docker`), in SPEC-361's registry: it begins at the first state read that shows
   it, ends once the front holds at most seven eighths of its limit and refused nothing since the
   last read, and shows once on the panel and in the notification center like the other troubles.
-- **DFJ-007** The tasks of the sandbox with a live run are told once per trouble, in their
-  session, that the sandbox's Docker is jammed, that Yulius repairs it and that they should not
-  ask a person; the refusal's message says the same to the calls that hit it.
+- **DFJ-007** The tasks of the sandbox with a live session are told once per trouble, in their
+  session (a pass every 15 s; a session that takes no typed text now is told at a later pass),
+  that the sandbox's Docker is full and that they should not ask a person; once the trouble
+  ends, the tasks told hear that Docker works again. A trouble that ends and begins again
+  before they heard it goes on as one for them. The refusal's message says the same to the
+  calls that hit it. (Slice 3 adds that Yulius repairs it.)
 
 ### Yulius repairs it itself (slice 3)
 
@@ -161,8 +164,8 @@ ever reaches it).
 - [x] The front logs its events and writes its state; the server journals them
 - [ ] Slice 1 reviewed independently, findings fixed test-first
 - [x] Slice 1's round-2 review notes fixed test-first
-- [ ] A jammed front is a sandbox trouble on the panel
-- [ ] The sandbox's tasks are told once per trouble
+- [x] A jammed front is a sandbox trouble on the panel
+- [x] The sandbox's tasks are told once per trouble
 - [ ] Slice 2 reviewed independently, findings fixed test-first
 - [ ] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [ ] The Superagent restarts its sandbox's Docker
@@ -270,3 +273,14 @@ states its compatibility rule and an older front's state is read; `running_now` 
 lock as running; the front's log lines start with their UTC time. The reviewer's other cause,
 a container start in the sandbox failing a parallel e2e job's page loads, is commented on
 #1331.
+
+### Slice 2 (the jam seen once)
+
+- Pill: `npx e2e run tests/connection-health.e2e.ts`: the new "a full Docker front says the
+  sandbox’s Docker is full …" failed before (no "Docker full: studio"), 4 passed after.
+- `a_full_front_is_one_docker_trouble_of_its_sandbox_until_it_has_room` (front_gate) and
+  `the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble` (manager, through
+  `watch_front`; another front's file is not read): passed.
+- `cargo test -p yulius --test main -- docker_trouble_notices::` (fake agent): told once, nothing
+  more within the trouble, told once that it works again; another sandbox's trouble says
+  nothing: passed.

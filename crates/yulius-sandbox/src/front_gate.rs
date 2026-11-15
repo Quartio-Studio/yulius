@@ -44,9 +44,9 @@ pub const STATE_EVERY: Duration = Duration::from_secs(5);
 const WARN_EVERY: Duration = Duration::from_secs(60);
 /// The refusal at the limit, for the calls that meet it (DFJ-001, DFJ-007).
 pub const AT_LIMIT: &str = "the sandbox's Docker front holds all of its connections and none \
-     has been idle long enough to give way: retry in a minute. The front's log and the server's \
-     journal say it; if it stays so, restarting the front frees it (docs/operations.md, \"A \
-     full front\")";
+     has been idle long enough to give way: retry in a minute. Yulius shows this to the \
+     sandbox's people and tells its tasks, so do not raise a Needs you about it; if it stays so, \
+     restarting the front frees it (docs/operations.md, \"A full front\")";
 
 /// What ended a connection, besides both sides closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -35,6 +35,7 @@ mod cross_sandbox;
 mod cross_sandbox_live;
 mod delivery;
 mod disk;
+mod docker_trouble_notices;
 mod files;
 mod first_message;
 mod fixture_hygiene;
