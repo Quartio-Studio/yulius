@@ -13,6 +13,7 @@
 //! | `root/` | the holder's mount namespace | the merged system layer (empty on the host) |
 //! | `docker.json` | server | [`DockerFrontSpec`] (ADR-0158) |
 //! | `docker-front.json` | server | [`DockerFrontRecord`] once the front serves |
+//! | `docker-front-state.json` | the Docker front | [`DockerFrontState`]: its connections and events (ADR-0344) |
 //! | `docker/docker.sock` | the Docker front | the sandbox's Docker socket, `docker/` bound into runs |
 //!
 //! Relay frames: a client of `in.sock` sends [`INBOUND_CONNECT`] and the port (big-endian `u16`);
@@ -82,6 +83,8 @@ pub const DOCKER_FRONT_SPEC_FILE: &str = "docker.json";
 pub const DOCKER_FRONT_RECORD_FILE: &str = "docker-front.json";
 /// The front's diagnostics.
 pub const DOCKER_FRONT_LOG_FILE: &str = "docker-front.log";
+/// The front's state, written by the front for the server (SPEC-494 DFJ-005).
+pub const DOCKER_FRONT_STATE_FILE: &str = "docker-front-state.json";
 /// Where the engine sees its control directory.
 pub const ENGINE_CONTROL_IN_ENGINE: &str = "/run/yulius-engine";
 
@@ -418,6 +421,32 @@ pub struct DockerFrontRecord {
     pub reason: Option<String>,
     /// When it started serving (ms since the epoch).
     pub started_at_ms: i64,
+}
+
+/// A front's connections and events (`docker-front-state.json`), written by the front at most
+/// every few seconds when they changed (SPEC-494 DFJ-005). Totals count since the front started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DockerFrontState {
+    /// The front process.
+    pub pid: u32,
+    /// Connections held now.
+    pub held: usize,
+    /// Its limit.
+    pub max: usize,
+    /// Connections closed at the limit for a new one.
+    pub gave_way: u64,
+    /// Connections refused at the limit.
+    pub refused: u64,
+    /// Connections ended because their client hung up.
+    pub hung_up: u64,
+    /// Connections closed after the engine's end outlived the grace.
+    pub closed_after_grace: u64,
+    /// Since when it holds its whole limit (ms since the epoch), if it does.
+    #[serde(default)]
+    pub at_limit_since_ms: Option<i64>,
+    /// Whether its engine runs (engine mode).
+    #[serde(default)]
+    pub engine_running: bool,
 }
 
 /// A running holder (`host.json`), written once it is ready.

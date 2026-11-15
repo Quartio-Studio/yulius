@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use yulius_contracts::sandbox::{
     DOCKER_FRONT_RECORD_FILE, DOCKER_FRONT_SPEC_FILE, DockerFrontRecord, DockerFrontSpec,
@@ -31,6 +30,7 @@ use yulius_contracts::sandbox::{
 };
 
 use crate::engine_supervisor::{Prepare, Supervisor};
+use crate::front_gate::Gate;
 use crate::holder::StatePaths;
 
 /// The front's readiness line.
@@ -66,6 +66,12 @@ impl StatePaths {
     pub fn docker_record(&self) -> PathBuf {
         self.dir.join(DOCKER_FRONT_RECORD_FILE)
     }
+    /// `docker-front-state.json` (SPEC-494 DFJ-005).
+    #[must_use]
+    pub fn docker_state(&self) -> PathBuf {
+        self.dir
+            .join(yulius_contracts::sandbox::DOCKER_FRONT_STATE_FILE)
+    }
     /// `docker-front.log`.
     #[must_use]
     pub fn docker_log(&self) -> PathBuf {
@@ -82,6 +88,7 @@ pub struct Front {
     tasks: Vec<JoinHandle<()>>,
     bridge_forwards: Vec<u16>,
     outbound: PathBuf,
+    gate: Arc<Gate>,
 }
 
 impl Front {
@@ -95,6 +102,20 @@ impl Front {
         serve: &DockerServe,
         bridge_forwards: &[u16],
         prepare: Prepare,
+    ) -> io::Result<Self> {
+        Self::start_through(paths, serve, bridge_forwards, prepare, Gate::new())
+    }
+
+    /// [`Front::start`] admitting through `gate` (tests use small ones).
+    ///
+    /// # Errors
+    /// The socket cannot be bound.
+    pub fn start_through(
+        paths: &StatePaths,
+        serve: &DockerServe,
+        bridge_forwards: &[u16],
+        prepare: Prepare,
+        gate: Arc<Gate>,
     ) -> io::Result<Self> {
         std::fs::create_dir_all(paths.docker_dir())?;
         let socket = paths.docker_socket();
@@ -116,17 +137,40 @@ impl Front {
                     Duration::from_secs(engine.idle_secs),
                     prepare,
                 );
-                tasks.push(tokio::spawn(Arc::clone(&engine).serve(listener)));
+                tasks.push(tokio::spawn(
+                    Arc::clone(&engine).serve(listener, Arc::clone(&gate)),
+                ));
                 tasks.push(tokio::spawn(Arc::clone(&engine).watch_idle()));
                 supervisor = Some(engine);
             }
             DockerServe::Relay { socket } => {
-                tasks.push(tokio::spawn(relay(listener, PathBuf::from(socket))));
+                tasks.push(tokio::spawn(relay(
+                    listener,
+                    PathBuf::from(socket),
+                    Arc::clone(&gate),
+                )));
             }
             DockerServe::Refuse { reason } => {
-                tasks.push(tokio::spawn(refuse_all(listener, reason.clone())));
+                tasks.push(tokio::spawn(refuse_all(
+                    listener,
+                    reason.clone(),
+                    Arc::clone(&gate),
+                )));
             }
         }
+        let engine = supervisor.clone();
+        tasks.push(tokio::spawn(Arc::clone(&gate).keep_state(
+            paths.docker_state(),
+            move || {
+                let engine = engine.clone();
+                async move {
+                    match engine {
+                        Some(engine) => engine.running().await,
+                        None => false,
+                    }
+                }
+            },
+        )));
         Ok(Self {
             socket,
             inode,
@@ -134,7 +178,14 @@ impl Front {
             tasks,
             bridge_forwards: bridge_forwards.to_vec(),
             outbound: paths.outbound(),
+            gate,
         })
+    }
+
+    /// Its admission (tests read its state).
+    #[must_use]
+    pub fn gate(&self) -> &Arc<Gate> {
+        &self.gate
     }
 
     /// Whether another process replaced (or removed) the socket this front bound.
@@ -221,47 +272,32 @@ fn own_umask() -> io::Result<()> {
     Ok(())
 }
 
-async fn relay(listener: UnixListener, target: PathBuf) {
-    let limit = Arc::new(Semaphore::new(crate::relay::MAX_CONNECTIONS));
-    loop {
-        let Ok((client, _)) = listener.accept().await else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        };
-        let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-            continue;
-        };
-        let target = target.clone();
-        tokio::spawn(async move {
+async fn relay(listener: UnixListener, target: PathBuf, gate: Arc<Gate>) {
+    let through = Arc::clone(&gate);
+    gate.serve(listener, move |admitted| {
+        let (gate, target) = (Arc::clone(&through), target.clone());
+        async move {
             match UnixStream::connect(&target).await {
-                Ok(engine) => crate::relay::splice(client, engine).await,
+                Ok(engine) => {
+                    gate.splice(admitted, engine).await;
+                }
                 Err(error) => {
                     let reason =
                         format!("the sandbox holder's Docker socket does not answer: {error}");
-                    crate::engine_supervisor::refuse(client, &reason).await;
+                    Gate::refuse(admitted, &reason).await;
                 }
             }
-            drop(permit);
-        });
-    }
+        }
+    })
+    .await;
 }
 
-async fn refuse_all(listener: UnixListener, reason: String) {
-    let limit = Arc::new(Semaphore::new(crate::relay::MAX_CONNECTIONS));
-    loop {
-        let Ok((client, _)) = listener.accept().await else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        };
-        let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-            continue;
-        };
+async fn refuse_all(listener: UnixListener, reason: String, gate: Arc<Gate>) {
+    gate.serve(listener, move |admitted| {
         let reason = reason.clone();
-        tokio::spawn(async move {
-            crate::engine_supervisor::refuse(client, &reason).await;
-            drop(permit);
-        });
-    }
+        async move { Gate::refuse(admitted, &reason).await }
+    })
+    .await;
 }
 
 /// Serves `front` until `SIGTERM`/`SIGINT`, until `holder_alive` says no, or until its socket is

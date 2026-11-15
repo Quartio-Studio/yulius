@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A sandbox's Docker front no longer jams (SPEC-494 slice 1, task #476,
+  [ADR-0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)):
+  at its 256-connection limit it closes the longest-idle connection for a new call, or answers a
+  Docker error saying Yulius repairs it, instead of dropping calls without a word; a connection
+  whose client hung up ends at once (the leak that jammed quartio-v2: an exec the engine never
+  ends), and one whose engine side ended closes after 30 s. Events go to `docker-front.log` and
+  the journal once a minute per kind; the front's state to `docker-front-state.json`.
 - An armed pull request whose base moved waits about one CI run, not two (SPEC-493 fix 4, task
   #472, [ADR-0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md)
   amended): its merge candidate runs beside its own run, and it merges once both passed; a member

@@ -9,8 +9,8 @@
 //! cgroup (a container). Stopping closes the engine's stdin, which `yulius sandbox-host engine`
 //! takes as "stop `dockerd`", then kills it after [`STOP_GRACE`].
 //!
-//! The holder serves at most [`crate::relay::MAX_CONNECTIONS`] clients at once; one start runs at
-//! a time and later clients wait for it. The engine can write its control directory, so the
+//! Clients are admitted through the front's [`Gate`] (SPEC-494, ADR-0344); one start runs at a
+//! time and later clients wait for it. The engine can write its control directory, so the
 //! holder never follows a link there (`connect_control`).
 
 use std::io;
@@ -23,7 +23,26 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Child;
-use tokio::sync::Semaphore;
+
+use crate::front_gate::Gate;
+
+/// A client of the engine while its connection lasts: it keeps the engine from idling.
+struct Client(Arc<Supervisor>);
+
+impl Client {
+    fn new(supervisor: &Arc<Supervisor>) -> Self {
+        supervisor.connections.fetch_add(1, Ordering::SeqCst);
+        supervisor.touch();
+        Self(Arc::clone(supervisor))
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.connections.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Bound on the engine becoming ready after it is started.
 pub const START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -107,30 +126,23 @@ impl Supervisor {
             .unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
-    /// Serves the sandbox's socket until the listener fails.
-    pub async fn serve(self: Arc<Self>, listener: UnixListener) {
-        let limit = Arc::new(Semaphore::new(crate::relay::MAX_CONNECTIONS));
-        loop {
-            let Ok((client, _)) = listener.accept().await else {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            };
-            let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-                continue;
-            };
-            let supervisor = Arc::clone(&self);
-            tokio::spawn(async move {
-                supervisor.connections.fetch_add(1, Ordering::SeqCst);
-                supervisor.touch();
+    /// Serves the sandbox's socket through `gate` until the listener fails (SPEC-494 DFJ-001).
+    pub async fn serve(self: Arc<Self>, listener: UnixListener, gate: Arc<Gate>) {
+        let through = Arc::clone(&gate);
+        gate.serve(listener, move |admitted| {
+            let (supervisor, gate) = (Arc::clone(&self), Arc::clone(&through));
+            async move {
+                // Counted until the connection ends, also when it gave way mid-call.
+                let _client = Client::new(&supervisor);
                 match supervisor.connect().await {
-                    Ok(engine) => crate::relay::splice(client, engine).await,
-                    Err(reason) => refuse(client, &reason).await,
+                    Ok(engine) => {
+                        gate.splice(admitted, engine).await;
+                    }
+                    Err(reason) => Gate::refuse(admitted, &reason).await,
                 }
-                supervisor.touch();
-                supervisor.connections.fetch_sub(1, Ordering::SeqCst);
-                drop(permit);
-            });
-        }
+            }
+        })
+        .await;
     }
 
     /// A connection to the engine, started first when it does not run.
@@ -472,7 +484,9 @@ open(stopped, "w").write("stopped")
 
         fn serve(&self, supervisor: &Arc<Supervisor>) -> io::Result<tokio::task::JoinHandle<()>> {
             let listener = UnixListener::bind(&self.socket)?;
-            Ok(tokio::spawn(Arc::clone(supervisor).serve(listener)))
+            Ok(tokio::spawn(
+                Arc::clone(supervisor).serve(listener, Gate::new()),
+            ))
         }
 
         fn starts(&self) -> usize {
