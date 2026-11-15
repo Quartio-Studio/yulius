@@ -100,6 +100,7 @@ pub mod skills;
 pub mod stages;
 pub mod start_change;
 pub mod status;
+pub mod superagent_checks;
 mod supertask;
 pub mod supervisor;
 pub mod sweep;

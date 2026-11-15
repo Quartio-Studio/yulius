@@ -505,7 +505,11 @@ impl App {
     }
 
     /// The caller's running Cockpit in `sandbox`.
-    fn running_cockpit(&self, user: &UserId, sandbox: &SandboxId) -> Option<Arc<ShellRuntime>> {
+    pub(crate) fn running_cockpit(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> Option<Arc<ShellRuntime>> {
         self.sandbox_shells(sandbox).into_iter().find(|shell| {
             shell.kind == ShellKind::Cockpit && !shell.global && shell.creator() == user
         })
@@ -747,6 +751,10 @@ impl App {
                 {
                     return;
                 }
+                // Idle, with no conversation: a due check may start one (SPEC-487 CHK-003).
+                if runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE {
+                    self.type_due_check(&runtime).await;
+                }
                 continue;
             };
             // Its length before the poll: everything up to it is read by the poll, so a prompt
@@ -812,6 +820,13 @@ impl App {
                 } else {
                     runtime.refresh.store(REFRESH_WAITING, Ordering::SeqCst);
                 }
+            }
+            // Idle, nothing to restart for: a due check is typed (SPEC-487 CHK-003).
+            if history_read
+                && turn.idle(now)
+                && runtime.refresh.load(Ordering::SeqCst) == REFRESH_NONE
+            {
+                self.type_due_check(&runtime).await;
             }
         }
     }
