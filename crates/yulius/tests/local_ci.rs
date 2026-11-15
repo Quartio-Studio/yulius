@@ -1407,6 +1407,116 @@ paths = ["crates/a/**"]
     Ok(())
 }
 
+/// The run of `reference` and its detail, once there is one.
+async fn run_of(f: &Fixture, sha: &str) -> BoxResult<(Value, Value)> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == sha)
+        .cloned()
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    Ok((run, detail))
+}
+
+fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
+    Ok(detail["jobs"]
+        .as_array()
+        .ok_or("jobs")?
+        .iter()
+        .find(|j| j["name"] == name)
+        .cloned()
+        .ok_or("job")?)
+}
+
+/// Review round 1 of SPEC-493 fix 5: a squash merge of a pull request that skipped a `paths` job
+/// gives the integration branch the tree that pull request's run tested, but that run never ran
+/// the job: the integration branch's own run runs it instead of reusing the result (CJP-003).
+#[tokio::test]
+async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+         [[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (_, detail) = run_of(&f, &head).await?;
+    assert_eq!(job_named(&detail, "web")?["state"], "skipped", "{detail}");
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let web = job_named(&detail, "web")?;
+    assert_eq!(web["state"], "passed", "{detail}");
+    assert!(
+        web["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("web ran"),
+        "{web}"
+    );
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 5: a job skipped for its `paths` waits for nothing: not for its
+/// `exclusive` turn while another run's job of that name runs, nor for a slot.
+#[tokio::test]
+async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |_| {
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+             [[ci.jobs]]\nname = \"web\"\ncommand = 'sleep 6; echo web ran'\nexclusive = true\n\
+             paths = [\"crates/a/**\"]\n"
+                .to_owned()
+        },
+        None,
+        |config| config.ci.lanes = 3,
+    )
+    .await?;
+    // The integration branch's run takes `web`'s turn for 6 s; the pull request skips it.
+    let dev = f.push_dev("other.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        f.h.app.ci_dispatch().await;
+        if let Ok((run, _)) = run_of(&f, &head).await
+            && run["state"] != "queued"
+            && run["state"] != "running"
+        {
+            assert_eq!(run["state"], "passed", "{run}");
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the pull request's run did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (dev_run, _) = run_of(&f, &dev).await?;
+    assert_eq!(
+        dev_run["state"], "running",
+        "the pull request ended while dev's web still held its turn: {dev_run}"
+    );
+    f.settle().await?;
+    Ok(())
+}
+
 /// SPEC-359 VSB-006: a job is told where its sandbox's Vidoc switch is, so a scan whose key
 /// fails points there.
 #[tokio::test]

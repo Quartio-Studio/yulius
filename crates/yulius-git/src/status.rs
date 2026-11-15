@@ -159,7 +159,8 @@ impl Git {
     }
 
     /// The files changed from the merge base of `base` and `head` to `head` (`base...head`),
-    /// renames as their new path, at most `limit` (`None` past it: too many to tell). A path
+    /// a rename as its old path and its new one (a file moved out of a folder counts there), at
+    /// most `limit` (`None` past it: too many to tell). A path
     /// that is not UTF-8 is left out of the list but makes it `None` too (SPEC-493 CJP-003:
     /// never decided on doubt).
     pub fn changed_paths(
@@ -176,6 +177,7 @@ impl Git {
                 .args([
                     "diff",
                     "--name-only",
+                    "--no-renames",
                     "-z",
                     "--no-ext-diff",
                     "--no-textconv",

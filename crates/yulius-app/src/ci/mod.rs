@@ -859,6 +859,18 @@ impl App {
                 }
             })
             .collect();
+        // Every job skipped for its paths: nothing to run, so the run takes no lane and passes now.
+        let run = if !jobs.is_empty() && jobs.iter().all(|job| job.state == RunState::Skipped) {
+            CiRunRecord {
+                state: RunState::Passed,
+                reason: Some("every job was skipped: no file they test changed".to_owned()),
+                started_at: Some(queued_at),
+                ended_at: Some(queued_at),
+                ..run
+            }
+        } else {
+            run
+        };
         self.deps.store.insert_ci_run(&run, &jobs).await?;
         tracing::info!(sandbox = %sandbox.slug, run = %run.id, sha = %short(sha), reference = %run.reference.key(), jobs = jobs.len(), "CI run queued");
         self.ci_publish(&run.id).await;
@@ -1080,6 +1092,18 @@ impl App {
         };
         // Its jobs keep the verdict they had there: a skipped one stays skipped (SPEC-162).
         let tested = self.deps.store.ci_jobs(&source.id, false).await?;
+        // A branch's own run runs every job (SPEC-493 CJP-003): a source that skipped a job for
+        // its `paths` never ran it, so this tree is tested anew.
+        if matches!(target.reference, CiRef::Branch(_))
+            && gate.jobs.iter().any(|job| {
+                !job.paths.is_empty()
+                    && tested.iter().any(|t| {
+                        t.key == job.key && t.matrix == job.matrix && t.state == RunState::Skipped
+                    })
+            })
+        {
+            return Ok(false);
+        }
         let now = self.now();
         let note = format!(
             "not run again: {} has the same tree as {} ({}), which passed",

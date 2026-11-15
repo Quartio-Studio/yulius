@@ -350,6 +350,13 @@ impl App {
         }
         self.ci_publish(&run.id).await;
         let jobs = store.ci_jobs(&run.id, false).await.unwrap_or_default();
+        // Only the queued jobs run: one skipped when it was queued (its `paths`, SPEC-493) waits
+        // for no turn or slot and takes no share of the budget.
+        let to_run: Vec<CiJobRecord> = jobs
+            .iter()
+            .filter(|job| job.state == RunState::Queued)
+            .cloned()
+            .collect();
         let sandbox = match store.sandbox(&run.sandbox_id).await {
             Ok(Some(sandbox)) if sandbox.removed_at.is_none() => Some(sandbox),
             _ => None,
@@ -399,12 +406,12 @@ impl App {
                         }
                     });
                 }
-                let mut handles = Vec::with_capacity(jobs.len());
-                let share = jobs.len();
+                let mut handles = Vec::with_capacity(to_run.len());
+                let share = to_run.len().max(1);
                 // One job-end publish at a time, each reading the jobs afresh: the count on
                 // GitHub never goes back (SPEC-198).
                 let publishing = Arc::new(tokio::sync::Mutex::new(()));
-                for job in &jobs {
+                for job in &to_run {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs, lane);
