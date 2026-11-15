@@ -13,6 +13,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   fallback. The Capacity card and the Status line say when Fable is used up everywhere
   ("tasks set to it run on Opus 5.5"), and a Claude Code release without Fable 5.2 is reported as
   lacking "the independent review's model".
+- A sandbox's Docker engine runs below the group that holds its limits (SPEC-483 slice 39,
+  ADR-0339, task #465). A privileged container could start a nested cgroup namespace and lift
+  the engine's task cap and CPU weight, the share that keeps agents a quarter of the sandbox's
+  tasks; the engine now runs in `engine/inside`, and an engine group an older engine left
+  threaded is made plain again once it is idle.
+- The web UI runs under a strict content security policy (SPEC-483 slice 38, ADR-0338, task
+  #465). Pages sent only `frame-ancestors 'none'`; now scripts, styles, fonts, images, media,
+  connections and workers come from Yulius only, with no inline or evaluated script, plugins,
+  frames or `<base>`. The e2e server sends the same policy file, and an e2e test fails when the
+  page itself is refused a load.
 - `ability_report` refuses a compound of the project's name too (`shop-api`, `ShopApi`), names
   the word it refused and how it was written, caps the case at 1500 characters (what its filing
   link takes of plain ASCII prose) and gives the link's size when it is too long (SPEC-487,

@@ -1026,13 +1026,13 @@ async fn docker_end_to_end(
     .await?;
     assert!(screen.contains("built-in-the-sandbox"), "{screen}");
 
-    // The engine lives in the sandbox's engine group, below its limits.
-    let engine_group = delegation.unit.join("sandboxes/s1/engine");
+    // The engine lives below the sandbox's engine group, which holds its limits (ADR-0339).
+    let engine_group = delegation.unit.join("sandboxes/s1/engine/inside");
     assert!(
         !std::fs::read_to_string(engine_group.join("cgroup.procs"))?
             .trim()
             .is_empty(),
-        "the engine runs in sandboxes/s1/engine"
+        "the engine runs in sandboxes/s1/engine/inside"
     );
 
     // In a user's shell: compose, one service reaching the other by its name.

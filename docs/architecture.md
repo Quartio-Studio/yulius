@@ -156,7 +156,8 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
-  joins `sandboxes/<sandbox>/engine` and execs `bwrap`, then `yulius sandbox-host engine`
+  joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
+  view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`
   supervises `dockerd`. The front splices each connection to the engine's own socket (for a
   holder of SPEC-187, to that holder's own engine).
 - **The engine's process.** `dockerd` is root of the sandbox's user namespace, in the sandbox's
