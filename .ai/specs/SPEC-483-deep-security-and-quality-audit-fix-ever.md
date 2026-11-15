@@ -3219,3 +3219,5 @@ slices follow.
   project fails `supertask::a_new_supertask_relabels_the_queue_at_the_session_limit`
   (`mutations-r1.log`, 3 cases, none survives); the supertask, queue, supervision and capacity
   tests: 95 passed.
+- **Gate after it.** `scripts/dev ci` at `9a0388054`: exit 0; `4441 tests run: 4441 passed (1
+  slow), 17 skipped` (`gate2.log`).
