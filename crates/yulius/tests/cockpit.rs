@@ -4600,6 +4600,29 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
     Ok(())
 }
 
+/// Reads the terminal until `text` shows more than `seen` times.
+async fn wait_for_more(
+    socket: &mut Socket,
+    screen: &mut String,
+    text: &str,
+    seen: usize,
+) -> TestResult {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while screen.matches(text).count() <= seen {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .map_err(|_| format!("timed out waiting for {text:?} again; screen: {screen:?}"))?
+            .ok_or("socket closed")??;
+        if let Message::Binary(bytes) = message
+            && let Some((kind, _, payload)) = decode_binary(&bytes)
+            && (kind == KIND_OUTPUT || kind == KIND_SNAPSHOT)
+        {
+            screen.push_str(&String::from_utf8_lossy(payload));
+        }
+    }
+    Ok(())
+}
+
 /// SPEC-487 CHK-001 to CHK-005 (wall 8: "no monitoring for 15 hours while the person believed
 /// it was on"): the Superagent's scheduled checks are held by Yulius, not by its session: set,
 /// listed and deleted with its tools, kept in a file beside the database, typed into its
@@ -4667,6 +4690,21 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
     assert!(screen.contains("disk"), "{screen}");
     let (listed, _) = cockpit_tool(&f, &token, "superagent_checks", json!({})).await?;
     assert!(listed["checks"][0]["last_run_at"].is_string(), "{listed}");
+
+    // Due again, now with a conversation that is idle: typed again.
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    let first = screen.matches("Yulius check").count();
+    wait_for_more(&mut socket, &mut screen, "Yulius check", first).await?;
 
     // Kept across a restart of Yulius.
     let next = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
