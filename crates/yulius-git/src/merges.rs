@@ -537,9 +537,12 @@ pub struct CommitFileLines {
     pub opaque: bool,
 }
 
+/// One file of `--numstat`: its path and its added and removed counts (`None`: binary to Git).
+type NumStat = (String, Option<(usize, usize)>);
+
 /// `diff-tree --numstat -z` output: each file's path and its added and removed counts
 /// (`None` for a binary file); `None` when it does not parse.
-fn parse_numstat_z(bytes: &[u8]) -> Option<Vec<(String, Option<(usize, usize)>)>> {
+fn parse_numstat_z(bytes: &[u8]) -> Option<Vec<NumStat>> {
     let mut out = Vec::new();
     for record in bytes.split(|&b| b == 0).filter(|r| !r.is_empty()) {
         let text = String::from_utf8_lossy(record);
