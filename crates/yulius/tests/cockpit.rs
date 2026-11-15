@@ -1636,6 +1636,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_eq!(
         names,
         [
+            "ability_report",
             "attachments_trash",
             "automation_create",
             "automation_delete",
@@ -5191,6 +5192,110 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
     assert!(
         is_error && said(&checkout).contains("not cloned"),
         "{checkout}"
+    );
+    Ok(())
+}
+
+/// SPEC-487 ABL-001 to ABL-004 (wall 12: "three offers to report defects were never acted
+/// on"): a missing ability is reported in one call, by the Superagent or a task's agent: always
+/// audited on this instance, and opened as an issue in the Yulius repository under the person's
+/// GitHub name when their access reaches it, without the project's name; bounded per hour.
+#[tokio::test]
+async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    use yulius_domain::task::TaskStatus;
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let said = |record: &Value| record.to_string();
+    let report = json!({
+        "ability": "read a task's terminal scrollback past its screen",
+        "case": "The person asked why a build failed; the error scrolled off the screen.",
+        "needed_for": "Answer from the full output instead of asking the person to scroll."
+    });
+    for (args, why) in [
+        (json!({"ability": "", "case": "c"}), "ability"),
+        (json!({"ability": "a\u{202e}b", "case": "c"}), "cannot see"),
+        (json!({"ability": "a", "case": "c", "x": 1}), "unknown"),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "ability_report", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+
+    // The person's access does not reach the Yulius repository: kept here, said so.
+    let (kept, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+    assert!(!is_error, "{kept}");
+    assert!(kept["issue"].is_null(), "{kept}");
+    assert!(said(&kept).contains("kept on this instance"), "{kept}");
+    let rows =
+        f.h.store
+            .audit_details(sid().as_str(), "ability.reported", 10)
+            .await?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("scrollback"), "{rows:?}");
+
+    // It does: an issue under alice's name, ready to triage, without the project's name.
+    f.h.github
+        .set_perm("alice", "Quartio-Studio/yulius", perms("read"));
+    let (opened, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+    assert!(!is_error, "{opened}");
+    assert!(opened["issue"].is_number(), "{opened}");
+    let (login, issue) =
+        f.h.github
+            .issues
+            .lock()
+            .map_err(|_| "lock")?
+            .last()
+            .cloned()
+            .ok_or("issue")?;
+    assert_eq!(login, "alice");
+    assert_eq!(
+        issue.title,
+        "Missing ability: read a task's terminal scrollback past its screen"
+    );
+    assert!(
+        issue.body.contains("## Acceptance criteria"),
+        "{}",
+        issue.body
+    );
+    assert!(
+        !issue.body.contains("fixture"),
+        "no project name: {}",
+        issue.body
+    );
+    assert!(
+        issue.labels.iter().any(|l| l == "type: enhancement"),
+        "{:?}",
+        issue.labels
+    );
+
+    // A task's agent reports too, as its owner.
+    support::seed_task(
+        &f.h,
+        "t-ab",
+        sid().as_str(),
+        "u-alice",
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t-ab", "tk-ability").await?;
+    let from_task = support::mcp_tool(&f.h, "tk-ability", "ability_report", report.clone()).await?;
+    assert_eq!(from_task["isError"], false, "{from_task}");
+
+    // At most 5 an hour per person.
+    for _ in 0..2 {
+        let (more, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+        assert!(!is_error, "{more}");
+    }
+    let (refused, is_error) = cockpit_tool(&f, &token, "ability_report", report.clone()).await?;
+    assert!(
+        is_error && said(&refused).contains("last hour"),
+        "{refused}"
     );
     Ok(())
 }

@@ -320,6 +320,8 @@ pub struct App {
     pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
     /// The Superagents' scheduled checks (SPEC-487 CHK-001).
     pub(crate) superagent_checks: crate::superagent_checks::SuperagentChecks,
+    /// Missing abilities reported in the last hour (SPEC-487 ABL-004).
+    pub(crate) ability_reports: crate::ability_reports::AbilityReports,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
     pub(crate) supertask_holds: crate::supertask::Holds,
     /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
@@ -394,6 +396,7 @@ impl App {
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
             superagent_checks: crate::superagent_checks::SuperagentChecks::default(),
+            ability_reports: crate::ability_reports::AbilityReports::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
             leftovers: crate::leftovers::LeftoverState::default(),

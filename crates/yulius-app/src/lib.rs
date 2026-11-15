@@ -1,6 +1,7 @@
 //! Yulius application layer: use cases, authorization decisions and ports implemented by
 //! adapters (SPEC-002 §3). Use cases are `impl App` blocks grouped by area.
 
+pub mod ability_reports;
 pub mod access;
 mod account_email;
 pub mod account_gate;
