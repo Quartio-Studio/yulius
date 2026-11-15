@@ -5315,6 +5315,20 @@ async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
         is_error && said(&refused).contains("last hour"),
         "{refused}"
     );
+
+    // Review of slice 11, m2: a task's owner who may no longer work in the project reports
+    // nothing through it (checked before the hour's bound).
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock.0.fetch_add(
+        f.h.app.config.permission_ttl_ms + 1,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let gone = support::mcp_tool(&f.h, "tk-ability", "ability_report", report.clone()).await?;
+    assert_eq!(gone["isError"], true, "{gone}");
+    assert!(
+        !said(&gone).contains("last hour"),
+        "refused for access: {gone}"
+    );
     Ok(())
 }
 
