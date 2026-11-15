@@ -40,17 +40,22 @@ fn take_report(sent: &mut Vec<i64>, now: i64) -> bool {
     true
 }
 
+/// The longest case: what the filing link takes even of text dense with punctuation (review of
+/// slice 11, R3-3).
+const MAX_CASE_CHARS: usize = 1500;
+
 /// The longest filing link answered: GitHub's new-issue form refuses much longer ones.
 const MAX_LINK_BYTES: usize = 6000;
 
-/// Whether `text` holds `name` as a whole word (any case): bounded by what is not a letter,
-/// digit, `-` or `_`; a name shorter than 3 characters is no name.
+/// Whether `text` holds `name` as a whole word (any case): bounded by what is not a letter or
+/// a digit, so a compound of it (`shop-api`, `shop_db`) holds it too (review of slice 11,
+/// R3-1); a name shorter than 3 characters is no name.
 fn names_word(text: &str, name: &str) -> bool {
     let (text, name) = (text.to_lowercase(), name.to_lowercase());
     if name.chars().count() < 3 {
         return false;
     }
-    let word = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    let word = char::is_alphanumeric;
     text.match_indices(name.as_str()).any(|(at, found)| {
         let before = text[..at].chars().next_back();
         let after = text[at + found.len()..].chars().next();
@@ -59,9 +64,15 @@ fn names_word(text: &str, name: &str) -> bool {
 }
 
 /// Which of the project's names one of `texts` holds as a whole word (review of slice 11,
-/// R2-2): `name`, `repository's name` or `owner's name`; none for the Yulius repository's own
-/// project, whose name is the product's.
-fn project_named(texts: &[&str], slug: &str, owner: &str, repo: &str) -> Option<&'static str> {
+/// R2-2): `name`, `repository's name` or `owner's name`, with the name itself so the refusal
+/// can say it (R3-2); none for the Yulius repository's own project, whose name is the
+/// product's.
+fn project_named<'a>(
+    texts: &[&str],
+    slug: &'a str,
+    owner: &'a str,
+    repo: &'a str,
+) -> Option<(&'static str, &'a str)> {
     let (yulius_owner, yulius_repo) = YULIUS_REPO;
     if owner.eq_ignore_ascii_case(yulius_owner) && repo.eq_ignore_ascii_case(yulius_repo) {
         return None;
@@ -73,7 +84,6 @@ fn project_named(texts: &[&str], slug: &str, owner: &str, repo: &str) -> Option<
     ]
     .into_iter()
     .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
-    .map(|(kind, _)| kind)
 }
 
 /// The filing link, refused past [`MAX_LINK_BYTES`] (R2-1).
@@ -166,10 +176,10 @@ impl App {
                 "the ability is 1 to 200 characters on one line".into(),
             ));
         }
-        if asked.case.trim().is_empty() || asked.case.chars().count() > 4000 {
-            return Err(AppError::Invalid(
-                "the case is 1 to 4000 characters: what was asked, and what stopped you".into(),
-            ));
+        if asked.case.trim().is_empty() || asked.case.chars().count() > MAX_CASE_CHARS {
+            return Err(AppError::Invalid(format!(
+                "the case is 1 to {MAX_CASE_CHARS} characters: what was asked, and what stopped you"
+            )));
         }
         if asked
             .needed_for
@@ -186,15 +196,15 @@ impl App {
             asked.case.as_str(),
             asked.needed_for.as_deref().unwrap_or(""),
         ];
-        if let Some(kind) = project_named(
+        if let Some((kind, name)) = project_named(
             &texts,
             &sandbox.slug,
             &sandbox.repo_owner,
             &sandbox.repo_name,
         ) {
             return Err(AppError::Invalid(format!(
-                "write the report in general terms: it holds this project's {kind} (the report \
-                 is meant for the Yulius repository)"
+                "write the report in general terms: it holds this project's {kind} `{name}` (the \
+                 report is meant for the Yulius repository)"
             )));
         }
         for text in texts {
@@ -299,18 +309,21 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        HOUR_MS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_link, filing_link,
-        issue_body, names_word, project_named, query_value, take_report,
+        HOUR_MS, MAX_CASE_CHARS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, checked_link,
+        filing_link, issue_body, names_word, project_named, query_value, take_report,
     };
 
     /// R2-2: the project's names are refused, but not the Yulius project's own.
     #[test]
     fn a_report_naming_the_project_is_known_but_not_yulius_own() {
         let texts = ["the CI of acme/shop failed"];
-        assert_eq!(project_named(&texts, "shop", "acme", "shop"), Some("name"));
+        assert_eq!(
+            project_named(&texts, "shop", "acme", "shop"),
+            Some(("name", "shop"))
+        );
         assert_eq!(
             project_named(&["Acme said no"], "web", "acme", "site"),
-            Some("owner's name")
+            Some(("owner's name", "acme"))
         );
         assert_eq!(
             project_named(&["yulius restarted"], "yulius", "Quartio-Studio", "yulius"),
@@ -330,7 +343,10 @@ mod tests {
         assert!(!names_word("the shopping list", "shop"));
         assert!(!names_word("an application error", "app"));
         assert!(names_word("deploy my-app now", "my-app"));
-        assert!(!names_word("deploy my-app-2 now", "my-app"));
+        // Review of slice 11, R3-1: a compound of the name holds the name.
+        assert!(names_word("deploy my-app-2 now", "my-app"));
+        assert!(names_word("the shop-api and acme-shop broke", "shop"));
+        assert!(names_word("the shop_db is full", "shop"));
         assert!(!names_word("ab", "ab"), "too short to be a name");
     }
 
@@ -351,6 +367,21 @@ mod tests {
         assert!(filing_link("a", &long, "A Superagent").len() > MAX_LINK_BYTES);
         assert!(checked_link("a", &short, "A Superagent").is_ok());
         assert!(checked_link("a", &long, "A Superagent").is_err());
+    }
+
+    /// Review of slice 11, R3-3: a case at its stated cap, even dense with punctuation, fits
+    /// the link; one past the cap is refused before.
+    #[test]
+    fn a_case_at_its_cap_fits_the_link() {
+        let dense = "a, b.\n".repeat(MAX_CASE_CHARS / 6);
+        assert!(dense.chars().count() <= MAX_CASE_CHARS);
+        let asked = ReportArgs {
+            ability: "a".repeat(200),
+            case: dense,
+            needed_for: Some("n".repeat(1000)),
+        };
+        assert!(checked_link(&asked.ability, &asked, "A Superagent").is_ok());
+        assert_eq!(MAX_CASE_CHARS, 1500);
     }
 
     /// SPEC-487 ABL-003 (review of slice 11, m4): five an hour, and the window moves on.

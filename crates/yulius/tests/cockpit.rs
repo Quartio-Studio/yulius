@@ -5258,6 +5258,16 @@ async fn a_missing_ability_is_reported_in_one_call() -> TestResult {
             json!({"ability": "a", "case": "the CI of acme/fixture failed"}),
             "general terms",
         ),
+        // Review of slice 11, R3-1 and R3-2: a compound too, and the refusal names the word.
+        (
+            json!({"ability": "a", "case": "the fixture-api broke"}),
+            "name `fixture`",
+        ),
+        // R3-3: the case is as long as the filing link takes.
+        (
+            json!({"ability": "a", "case": "c".repeat(1501)}),
+            "1 to 1500 characters",
+        ),
         (
             json!({"ability": "a", "case": format!("it printed {secret}")}),
             "secret",
