@@ -5130,6 +5130,30 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         "{usage}"
     );
     assert!(usage.get("period").is_some(), "{usage}");
+    let other = support::seed_task(
+        &f.h,
+        "t-other",
+        sid().as_str(),
+        "u-alice",
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    let (one, is_error) =
+        cockpit_tool(&f, &token, "task_usage", json!({"number": task.number})).await?;
+    assert!(!is_error, "{one}");
+    let numbers: Vec<u64> = one["tasks"]
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter_map(|r| r["number"].as_u64())
+        .collect();
+    assert_eq!(
+        numbers,
+        [u64::from(task.number)],
+        "not #{}: {one}",
+        other.number
+    );
 
     let (checkout, is_error) = cockpit_tool(&f, &token, "checkout", json!({})).await?;
     assert!(
