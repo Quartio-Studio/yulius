@@ -1222,3 +1222,49 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     another commit with the same tree ran `web`; the integration branch's run reuses it, not the
     newer pull request's run that skipped `web`. With `return` instead of `continue` it runs
     again.
+
+### Fix 6: an approval survives a small follow-up
+
+- APR-001, APR-003: `Git::follow_up_since` walks the first parents from the head to the reviewed
+  commit (at most 64 commits). A merge passes only when its second parent is on the integration
+  branch and its tree is what `merge-tree` gives; any other merge, or a reviewed commit off that
+  way, is `None` (refused). Every other commit is counted by `Git::commit_lines` (`git show -U0
+  --no-renames --first-parent`; unit `unified_zero_hunks_give_line_numbers`).
+  `App::follow_up_since_review` then refuses a file of the reviewed change that left the pull
+  request's change (`changed_paths` of the reviewed commit and the head).
+- APR-002: `follow_up::ProductRule` (unit `product_code_is_every_file_but_tests_and_documents`)
+  and `FileLines::product_lines` (unit `a_follow_up_counts_product_lines_commit_by_commit`: a
+  Rust file's lines from its first `#[cfg(test)]` on do not count; the bound is 20, 21 is over).
+  `[review] product` / `not_product` in `yulius.toml` (`parse_yulius_toml_review`; unit
+  `the_review_table_sets_what_counts_as_product_code`: unknown keys, an empty list, `/etc`, `..`
+  and `[[review]]` are errors, in the whole contract too). The integration branch's table is
+  read, so a pull request does not loosen its own count; one that does not parse refuses.
+- APR-004: the summary and the armed merge's audit entry end with "[reviewed at X; since then N
+  product lines in M files: a 12, b 3]"; a refusal says the count and the files, or the reason.
+- AC-17: `delivery::an_approval_carries_across_a_small_follow_up`, real Git through the agent's
+  MCP `delivery_merge`:
+  - 20 product lines plus 150 test and 50 document lines: armed, "since then 20 product lines in
+    1 file: src/extra.rs 20" recorded;
+  - 21 lines and two commits of 12 (24): refused with the count;
+  - 40 lines in a Rust test module plus 3 lines: accepted, 3 counted;
+  - `src/feature.rs` of the reviewed change removed: refused naming it;
+  - a clean merge of `dev` plus 5 lines: accepted;
+  - a conflicted merge, a clean merge that changed another file too, and a merge of a side
+    branch: refused;
+  - dev's `[review] not_product = ["src/gen/"]`: 25 lines there do not count; a `[review]`
+    that does not parse refuses, naming it.
+- Mutation checks (each restored after): dropping the left-the-change check, the test-module
+  line, the tree check, the second parent's ancestor check, the bound, the configured rule (the
+  default instead) or the parse refusal fails the test, each one. The tree and ancestor checks
+  survived the first version of the test (a conflicted merge is refused by `merge-tree` alone);
+  the clean merge that changed more and the side-branch merge were added for them.
+- APR-005: the rule's sentence in `delivery-pipeline`, `om-code-review`, `git-hygiene`,
+  `yulius-review`, `yulius-git`, the workflow, git.md and AGENTS.md, and the bound in
+  `delivery_merge`'s description; `skills::every_place_states_the_follow_up_bound` holds them
+  (dropping it from AGENTS.md fails it). The briefing has no byte to spare and says nothing new.
+- ADR-0345 (amends ADR-0066 point 3), api.md's `[review]`, the `yulius.toml` reference in
+  `config.rs`, changes.
+- How to read it a week later: `SELECT at, detail FROM audit_log WHERE action IN
+  ('delivery.agent.merge', 'delivery.agent.merge_armed') AND detail LIKE '%since then%product
+  line%'` lists the merges that used the bound, with their counts; the analytics read's rounds
+  per pull request (fix 1's) says whether rounds fell.

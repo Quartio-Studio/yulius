@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- An approval carries across a small follow-up (SPEC-493 fix 6, task #472,
+  [ADR-0345](decisions/0345-an-approval-carries-across-a-follow-up-of-at-most-20-product-lines.md)):
+  `delivery_merge` with the approved head takes a head at most 20 product lines past it (counted
+  commit by commit; tests and documents do not count; `[review]` in `yulius.toml` sets what
+  counts) and records "since then N product lines in M files: …"; more, a file leaving the
+  change or a conflicted merge needs a new round.
 - A CI job can name the files it tests (SPEC-493 fix 5, task #472,
   [ADR-0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md)):
   `paths = [...]` on a `[[ci.jobs]]` entry skips it, with the reason, for a pull request or merge
