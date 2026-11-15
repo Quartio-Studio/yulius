@@ -569,11 +569,12 @@ pub fn read_page(file: File, from: u64, limit: usize, max_chars: usize) -> io::R
 }
 
 impl ReadCursor {
-    /// Whether this point should replace `kept` for the same transcript: it is of another file,
-    /// or as far on or farther (two watchers at different lines keep the farther point).
+    /// Whether this point should replace `kept` for the same transcript, now `len` bytes long:
+    /// it is of another file, or as far on or farther (two watchers at different lines keep the
+    /// farther point), or the file was shortened in place below the kept point.
     #[must_use]
-    pub fn replaces(&self, kept: &Self) -> bool {
-        self.file != kept.file || self.line >= kept.line
+    pub fn replaces(&self, kept: &Self, len: u64) -> bool {
+        self.file != kept.file || self.line >= kept.line || kept.byte > len
     }
 }
 
@@ -1116,7 +1117,6 @@ mod tests {
         )?);
         text.push('\n');
         std::fs::write(&dotenv, &text)?;
-        std::fs::write(&dotenv, &text)?;
         for point in [&at_end, &at_page] {
             let (page, _) =
                 read_page_at(File::open(&dotenv)?, Some(point), 2, 100, MAX_PAGE_CHARS)?;
@@ -1165,12 +1165,15 @@ mod tests {
         let (_, early) = read_page_at(File::open(&path)?, None, 0, 2, MAX_PAGE_CHARS)?;
         let (_, far) = read_page_at(File::open(&path)?, None, 0, 100, MAX_PAGE_CHARS)?;
         assert!(early.line < far.line);
-        assert!(far.replaces(&early) && !early.replaces(&far) && far.replaces(&far));
+        let len = far.byte;
+        assert!(far.replaces(&early, len) && !early.replaces(&far, len) && far.replaces(&far, len));
+        // A file shortened in place (same inode) below the kept point: the kept point goes.
+        assert!(early.replaces(&far, far.byte - 1));
         let copy = dir.path().join("copy.jsonl");
         std::fs::copy(&path, &copy)?;
         let (_, other) = read_page_at(File::open(&copy)?, None, 0, 2, MAX_PAGE_CHARS)?;
         assert!(
-            other.replaces(&far),
+            other.replaces(&far, len),
             "another file's point replaces a farther one"
         );
         Ok(())

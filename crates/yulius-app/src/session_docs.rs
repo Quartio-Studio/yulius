@@ -761,12 +761,15 @@ impl App {
     /// Keeps where a read of `path` ended, unless a point farther on in the same file is kept.
     /// The map is bounded: past
     /// [`MAX_TRANSCRIPT_CURSORS`] it starts afresh (a read without a cursor reads from the start).
-    fn keep_transcript_cursor(&self, path: PathBuf, cursor: transcripts::ReadCursor) {
+    fn keep_transcript_cursor(&self, path: PathBuf, cursor: transcripts::ReadCursor, len: u64) {
         if let Ok(mut cursors) = self.transcript_cursors.lock() {
             if cursors.len() >= MAX_TRANSCRIPT_CURSORS && !cursors.contains_key(&path) {
                 cursors.clear();
             }
-            if cursors.get(&path).is_none_or(|kept| cursor.replaces(kept)) {
+            if cursors
+                .get(&path)
+                .is_none_or(|kept| cursor.replaces(kept, len))
+            {
                 cursors.insert(path, cursor);
             }
         }
@@ -838,7 +841,7 @@ impl App {
             return Ok(view);
         };
         if let Some(next) = next {
-            self.keep_transcript_cursor(cursor_path, next);
+            self.keep_transcript_cursor(cursor_path, next, bytes);
         }
         let mut entries = page.entries;
         self.redact_page_secrets(&task.sandbox_id, &mut entries)
