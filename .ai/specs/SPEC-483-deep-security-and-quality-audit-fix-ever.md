@@ -1274,9 +1274,10 @@ went; two of the auditors' items had gained a user since and stay.
 - **EFF-002** A poll that goes on from where the last read of the same transcript ended reads
   from that byte on, with the dotenv calls seen before it, and answers what a read from the
   start answers; where it ended is kept by the server (never sent to the reader, whose own
-  state could leave a dotenv read out), for at most 256 transcripts at once, used only while it
-  is still at a line's start and at or before the asked line, and forgotten when a transcript
-  is rewritten in place (`reindex_session`).
+  state could leave a dotenv read out), for at most 256 transcripts at once (two watchers keep
+  the farther point), used only in the same file (device and inode), while still at a line's
+  start and at or before the asked line, and forgotten when a transcript is rewritten in place
+  (`reindex_session`).
 
 ## Plan
 
@@ -1966,7 +1967,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 
 - **AC-156** A read from a resume point gives the entries, `end` and `next` a read from the start
   gives, the dotenv read before the point still redacted; a point past the asked line or off a
-  line's start is read past; through the API, the next poll of a watched transcript reads on
+  line's start, or of a file that replaced the transcript (its dotenv read ending exactly at the
+  old point), is read past; through the API, the next poll of a watched transcript reads on
   from the last read's end (a newline slipped into an earlier line does not renumber what
   follows); on a 30 MB transcript a poll took 497 ms from the start and 18 µs from the point
   (EFF-002).
@@ -2232,6 +2234,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 36: `yulius-app` `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`,
+  `the_farther_point_of_a_file_is_kept`, `a_point_after_an_overlong_line_is_at_the_next_line`,
   `yulius` `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since` (AC-156),
   the transcript, watch and session tests; a timing probe (not kept).
 - Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`,
@@ -2357,9 +2360,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   remote's address stays the clone's for now (ADR-0323 says why).
 - Slice 36 (no decision record: a cache). The resume point is the server's, not the
   reader's: the dotenv calls seen decide what is redacted, and a reader's cursor could be one
-  that leaves a dotenv read out. A transcript is append-only; one rewritten in place (stepped
-  back over a usage limit, SPEC-034) already calls `reindex_session`, which now forgets every
-  point, and a point whose byte is no longer after a newline is not used. The map is
+  that leaves a dotenv read out. A transcript is append-only; one stepped back over a usage
+  limit (SPEC-034) is a rewritten copy renamed over it, so a point carries the file's device and
+  inode and is not used on another file; `reindex_session`, which the step-back calls, forgets
+  every point too, but a poll in flight could keep an old point after it (review of slice
+  36), so the identity is the guard. A point whose byte is no longer after a newline is not
+  used either. The map is
   bounded by clearing it whole past 256 (a read without a point is a read from the start, as
   before): simpler than an LRU for a cache refilled by the next poll. The tail read (a
   watcher's first) still reads the whole file: it has no earlier point to go on from.
@@ -3105,10 +3111,24 @@ slices follow.
   handler reading from the start or keeping no point: each failed its test. The two that drop
   the dotenv calls at the point survived the first test, whose dotenv value is also caught by
   the token patterns: a case with a value only the dotenv rule hides was added and both fail
-  (`mutations-b.log`). Not tested on its own: the clear in `reindex_session` (a step-back
-  shortens the transcript, which the tested line-start check already refuses).
+  (`mutations-b.log`). Not tested on its own: the clear in `reindex_session` (see round 1:
+  the file identity is the guard; the reason first given here was wrong).
 - **Timing probe** (a test not kept, release build, `probe-timing.log`): a poll at the end of a
   30 MB transcript of 125 830 lines took 497 ms read from the start and 18 µs from the point.
 - **Gate.** `scripts/dev ci` at `3c9919d85`: exit 0; `4433 tests run: 4433 passed (1 slow), 17
   skipped` (`gate.log`).
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
+- **Review, round 1** (a fresh session, head `7ba75f9e9`): request changes. Minor, own code,
+  security-relevant: the point had no file identity, and a step-back renames a rewritten copy
+  over the transcript; a poll in flight could keep a point of the old file after
+  `reindex_session`'s clear, and once the resumed session grew past it with a newline before
+  the byte, the point was used on the new file: the reviewer's probe showed
+  `DB_PASSWORD=plainword` where a read from the start redacts it. The Evidence's reason for
+  not testing the clear (a step-back shortens the file) held only until the file grew again.
+  Nits: an earlier point overwrote a farther one; the byte count of an over-long line had no
+  test. The reviewer found the byte counting (complete, over-long, partial last line, CRLF),
+  the page and end points, the carried dotenv calls, the bound and the map's sharing right.
+  Answered: the point records the file's device and inode (the reviewer's case, a replacing
+  file whose dotenv read ends exactly at the old point, failed first with `plainword` shown);
+  the farther point is kept; a test of an over-long line. Each new test fails without its fix
+  (`mutations-r1.log`, `mutations-r1b.log`, 10 cases, none survives).
