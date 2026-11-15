@@ -469,6 +469,12 @@ impl App {
         state: &mut SandboxTrains,
         train: Train,
     ) -> Option<Train> {
+        // A member whose own run did not pass leaves, whatever the candidate's run says: the
+        // others form a candidate again without it (SPEC-493 MQC-002).
+        if let Some(reason) = self.member_left(sandbox, &train).await {
+            self.dissolve(sandbox, &train, &reason).await;
+            return None;
+        }
         let run = match self.deps.store.ci_run(&train.run).await {
             Ok(Some(run)) => run,
             Ok(None) => {
@@ -495,6 +501,17 @@ impl App {
                 self.drive_train(sandbox, state, train).await
             }
             RunState::Failed => {
+                // A member's own run that still goes may say why: it is waited for (within the
+                // test limit), and a member whose own run fails then leaves instead of the
+                // candidate being halved (SPEC-493 MQC-002).
+                let mut going = false;
+                for index in 0..train.members.len() {
+                    going |= self.own_run_going(sandbox, &train, index).await;
+                }
+                if going && !(train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS)
+                {
+                    return Some(train);
+                }
                 self.bisect(sandbox, state, &train).await;
                 None
             }
@@ -514,6 +531,47 @@ impl App {
                 None
             }
         }
+    }
+
+    /// Why a member leaves `train` (SPEC-493 MQC-002): its own run at the head it was armed with
+    /// ended failed, errored or cancelled. A merged member, and one whose own run passed or still
+    /// goes, stays.
+    async fn member_left(&self, sandbox: &SandboxRecord, train: &Train) -> Option<String> {
+        for member in &train.members {
+            let Ok(task) = TaskId::parse(&member.task) else {
+                continue;
+            };
+            if matches!(
+                self.deps.store.delivery(&task).await,
+                Ok(Some(record)) if past_merge(&record.stage)
+            ) {
+                continue;
+            }
+            if let GateResult::Run(Some(state)) = self.ci_gate_result(sandbox, &member.head).await
+                && matches!(
+                    state,
+                    RunState::Failed | RunState::Error | RunState::Cancelled
+                )
+            {
+                return Some(format!(
+                    "#{}'s own run at {} ended {}: it leaves the candidate",
+                    member.pr,
+                    short(&member.head),
+                    state.as_str()
+                ));
+            }
+        }
+        None
+    }
+
+    /// Whether member `index`'s own run at its armed head still goes: it merges only once that
+    /// run passed too (SPEC-493 MQC-001).
+    async fn own_run_going(&self, sandbox: &SandboxRecord, train: &Train, index: usize) -> bool {
+        matches!(
+            self.ci_gate_result(sandbox, &train.members[index].head)
+                .await,
+            GateResult::Run(Some(RunState::Queued | RunState::Running))
+        )
     }
 
     /// A train whose run failed (SPEC-441 MQ-004): of two or more members, the next train takes
@@ -669,6 +727,16 @@ impl App {
                 );
                 self.dissolve(sandbox, &train, &reason).await;
                 return None;
+            }
+            // Its own run still goes: the train waits for it, within the time a candidate's own
+            // run may take, not the time GitHub may take to show a head.
+            if self.own_run_going(sandbox, &train, index).await {
+                if train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS {
+                    self.dissolve(sandbox, &train, "a member's own run took too long")
+                        .await;
+                    return None;
+                }
+                return Some(train);
             }
             match self.train_step(sandbox, &train, index).await {
                 Step::Merged => train.waiting_since = None,
@@ -1183,9 +1251,13 @@ impl App {
             if up_to_date && passed {
                 return None;
             }
-            // Only one whose own run passed (its pre-check finishes first, SPEC-441 MQ-001) and
-            // is behind its base.
-            if !passed
+            // One whose own run passed or still goes (SPEC-493 MQC-001: the candidate's run goes
+            // beside it, and the member merges once both passed), behind its base.
+            let going = matches!(
+                checks,
+                GateResult::Run(Some(RunState::Queued | RunState::Running))
+            );
+            if !(passed || going)
                 || up_to_date
                 || state
                     .held_back

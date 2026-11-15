@@ -1226,8 +1226,8 @@ async fn a_merge_train_survives_a_restart() -> TestResult {
 
 /// SPEC-441 MQ-001: the integration branch moving while an armed pull request's own run (its
 /// pre-check) is queued or running changes nothing: Yulius does not merge the base into it, so
-/// the run is not superseded. Once that run passed, the pull request lands on top of the moved
-/// base.
+/// the run is not superseded. Its merge candidate runs beside it (SPEC-493 MQC-001), and once
+/// both passed the pull request lands on top of the moved base.
 #[tokio::test]
 async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     let f = fixture().await?;
@@ -1252,18 +1252,10 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(pre_check.len(), 1, "{runs:?}");
     assert_eq!(pre_check[0].sha, head);
     assert!(pre_check[0].state.is_active(), "{runs:?}");
-    assert!(
-        f.train_runs(&app).await?.is_empty(),
-        "no merge candidate before its pre-check passed"
-    );
+    // Its candidate goes beside the pre-check (SPEC-493 MQC-001); nothing is merged into it.
+    assert_eq!(f.train_runs(&app).await?.len(), 1, "{runs:?}");
     let state = f.wait(1, &worktree).await?;
     assert_eq!(state["merge_armed"], true);
-    assert!(
-        state["merge_train"]
-            .as_str()
-            .is_some_and(|n| n.starts_with("Pull request #1 waits for its own Yulius CI run")),
-        "{state}"
-    );
 
     // The pre-check finishes, then the pull request lands on top of the moved base.
     f.settle(&app).await?;
@@ -1287,6 +1279,120 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(first.state, RunState::Passed, "{first:?}");
     let dev = git(&f.origin, &["show", "dev:other.txt"])?;
     assert_eq!(dev, "other");
+    Ok(())
+}
+
+/// SPEC-493 MQC-001 (AC-13): two armed pull requests behind their base whose own runs are still
+/// queued: their merge candidate forms at once and its run goes beside their own runs, nothing is
+/// merged into them meanwhile, and both merge once the candidate and their own runs passed: one CI
+/// cycle, not an own run and then a candidate.
+#[tokio::test]
+async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    let two = f.task(2, &[("b.txt", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    let heads = [
+        git(&one, &["rev-parse", "HEAD"])?,
+        git(&two, &["rev-parse", "HEAD"])?,
+    ];
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    let trains = f.train_runs(&app).await?;
+    assert_eq!(
+        trains.len(),
+        1,
+        "a candidate beside the own runs: {trains:?}"
+    );
+    let runs = f.runs(&app).await?;
+    for (n, head) in (1..).zip(&heads) {
+        let own: Vec<&CiRunRecord> = runs
+            .iter()
+            .filter(|r| r.reference == CiRef::PullRequest(n))
+            .collect();
+        assert_eq!(own.len(), 1, "{runs:?}");
+        assert!(own[0].state.is_active() && &own[0].sha == head, "{own:?}");
+    }
+    assert_eq!(
+        git(&one, &["rev-parse", "HEAD"])?,
+        heads[0],
+        "nothing merged into it"
+    );
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    let executed = f.executed(&app).await?;
+    let own = executed
+        .iter()
+        .filter(|r| matches!(r.reference, CiRef::PullRequest(_)))
+        .count();
+    let candidates = executed
+        .iter()
+        .filter(|r| matches!(r.reference, CiRef::Train(_)))
+        .count();
+    assert_eq!((own, candidates), (2, 1), "{executed:#?}");
+    // Each merged only once its own run had passed too.
+    let runs = f.runs(&app).await?;
+    for (n, head) in (1..).zip(&heads) {
+        assert!(
+            runs.iter().any(|r| r.reference == CiRef::PullRequest(n)
+                && &r.sha == head
+                && r.state == RunState::Passed),
+            "#{n}'s own run: {runs:#?}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-493 MQC-002 (AC-13): a member whose own run fails leaves the candidate: the candidate is
+/// formed again from the other, which merges, and the failed member's armed merge ends with its
+/// run named, as a failed own run ends it outside a candidate.
+#[tokio::test]
+async fn a_member_whose_own_run_fails_leaves_the_candidate() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    // Its own change fails the check alone.
+    let two = f.task(2, &[("clash-1", "x\n"), ("clash-2", "x\n")]).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &one).await?;
+    f.arm(2, &two).await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.wait(2, &two).await?["merge_armed"] == false)
+    })
+    .await?;
+    assert!(!f.merged(&app, 2).await?);
+    let outcome = f.wait(2, &two).await?["merge_outcome"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(outcome.contains("failed"), "{outcome}");
+    let dissolved = yulius_app::ports::store::AuditStore::audit_details(
+        app.deps.store.as_ref(),
+        "app",
+        "delivery.train.dissolved",
+        10,
+    )
+    .await?;
+    assert!(
+        dissolved.iter().any(|d| d.contains("#2's own run")),
+        "{dissolved:?}"
+    );
     Ok(())
 }
 
