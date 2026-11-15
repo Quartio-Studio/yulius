@@ -147,6 +147,10 @@ pub struct TaskRuntime {
     /// The limits nothing says the end of that left the task with nowhere to go: how often in a
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
+    /// The model family a limit refused after the session's person switched to it (`/model`),
+    /// kept by the placement past that limit for the relaunch, whose terminal names the model it
+    /// runs instead (SPEC-493 MDL-002). Taken by the next switch past a limit.
+    pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -557,6 +561,7 @@ impl TaskRuntime {
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
             blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
+            switched_limit: Mutex::new(None),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -4080,7 +4085,19 @@ impl App {
         };
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
-        let fallback = match self.preflight_start(&task, account.as_ref()).await {
+        let preflight = self.preflight_start(&task, account.as_ref()).await;
+        // The model a limit refused after the session was switched to it: said with the model
+        // this launch runs, the one the placement just chose (SPEC-493 MDL-002).
+        let ran = if matches!(start, RunStart::AfterLimit) {
+            self.runtime(task_id)
+                .switched_limit
+                .lock()
+                .ok()
+                .and_then(|mut kept| kept.take())
+        } else {
+            None
+        };
+        let fallback = match preflight {
             Ok(fallback) => fallback,
             Err(err) => {
                 self.refuse_switch(&task, account.as_ref(), reason, &err)
@@ -4088,6 +4105,12 @@ impl App {
                 return Err(err);
             }
         };
+        if let Some(ran) = ran {
+            let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+            self.runtime(task_id)
+                .hub
+                .notice(switched_back_notice(ran, fallback.unwrap_or(own)));
+        }
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -5626,16 +5649,9 @@ impl App {
             Decision::Switch { account } => {
                 // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
                 let reason = format!("{reason:?}");
-                if let (true, Some(ran)) = (limit, ran) {
-                    // The model the relaunch runs: the task's own, or its fallback when the
-                    // same snapshot places the run with that (as `choose_account` will).
-                    let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
-                    let next = crate::capacity::fallback_of(task.model.as_deref())
-                        .filter(|_| rotation::placing_family(&input) != input.family)
-                        .unwrap_or(own);
-                    self.runtime(task_id)
-                        .hub
-                        .notice(switched_back_notice(ran, next));
+                if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
+                    // Said by the relaunch, which knows the model it runs.
+                    *kept = ran;
                 }
                 let switched = if limit {
                     self.switch_after_limit(task_id, Some(account), &reason)

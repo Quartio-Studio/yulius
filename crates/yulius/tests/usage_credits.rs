@@ -1475,6 +1475,51 @@ fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with
     Ok(())
 }
 
+/// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
+/// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
+/// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.
+#[test]
+fn a_fable_task_switched_to_opus_goes_on_with_fable_and_says_so() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let fable = "claude-fable-5-2";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(fable)).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[Line::Prompt, Line::OpusCapRefusal, Line::TurnDuration],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model.as_deref(), Some(fable));
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        needs_nobody(&app, &id).await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Opus is used up on this subscription: this session goes on with Fable 5.2."),
+            "{said:?}"
+        );
+        let (_status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A request that says "the task does not go on by itself" ends when Yulius takes the task on
 /// at a usage limit, by pausing it as by moving it (SPEC-464 UCL-007; review round 3): the pool
 /// resumes the task past the limit by itself, so nobody has to send it a message. Here the
@@ -1860,6 +1905,8 @@ enum Line {
     /// The record Claude Code 2.1.325 writes before a request, here one that asks for Fable 5.2:
     /// the session's person switched the model inside it (`/model`).
     RequestOfFable,
+    /// The refusal at the weekly Opus cap (`seven_day_opus`), which names its family.
+    OpusCapRefusal,
 }
 
 /// Appends `lines` to `transcript`, written now, to the millisecond as Claude Code writes them.
@@ -1921,6 +1968,14 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
             Line::TurnDuration => (
                 "system",
                 json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
+            ),
+            Line::OpusCapRefusal => (
+                "assistant",
+                json!({"isApiErrorMessage": true, "error": "rate_limit",
+                    "apiError": "usage_limit_reached", "apiErrorStatus": 429,
+                    "apiErrorParams": {"rate_limit_info":
+                        {"status": "rejected", "rateLimitType": "seven_day_opus"}},
+                    "message": refusal(&uuid, "You've hit your Opus limit")}),
             ),
             Line::RequestOfFable => (
                 "api-request",
