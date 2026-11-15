@@ -4787,6 +4787,28 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
         "a removed sandbox's checks go"
     );
 
+    // F8: a kept check out of bounds (hand-edited) is not read back.
+    f.h.store
+        .execute_for_tests("UPDATE sandboxes SET removed_at = NULL WHERE id = 's1'")
+        .await?;
+    let check = |name: &str, every: u32| {
+        json!({"user": "u-alice", "sandbox": "s1", "name": name, "every_minutes": every,
+            "prompt": "p", "created_at": 0, "next_at": 0})
+    };
+    std::fs::write(
+        f.data.join("superagent-checks.json"),
+        serde_json::to_vec(&json!([check("sound", 5), check("every-tick", 0)]))?,
+    )?;
+    let read = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    read.restore_superagent_checks();
+    let names: Vec<String> = read.tool_superagent_checks(&caller)?["checks"]
+        .as_array()
+        .ok_or("checks")?
+        .iter()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(names, ["sound"]);
+
     // F8: a file that cannot be read is kept as `.bad`, never written over.
     let file = f.data.join("superagent-checks.json");
     std::fs::write(&file, b"[not json")?;
