@@ -168,9 +168,8 @@ person's decision is read as holding after an approval).
   session fills Fable's window on the subscription, not the window of the model it was launched
   with, and goes on at once with the model Yulius runs it with (its own, or the fallback of a task
   set to Fable while no subscription runs Fable), wherever the pool places it, the same
-    subscription included, continuing the cut turn and saying with which model. With a Claude Code
-  that writes no such record the limit
-  stays the launched model's.
+  subscription included, continuing the cut turn and saying with which model. With a Claude
+  Code that writes no such record the limit stays the launched model's.
 - **MDL-003** A Claude Code release that lacks Opus 5.5 (the default) never runs in a sandbox, as
   before; one that lacks Fable 5.2 is installed and the gap reported. Naming Fable 5.2 there as
   "the independent review's model" comes with fix 1b, when reviews run it.
@@ -677,11 +676,11 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `api-request` records of sub-agents only in their own files, and two mutations
   (`limit_observation(limit, None)`; no `input.running = ran`) failed the new tests. Answered:
   - Minor (own code): the notice named the task's own model, not the model the relaunch runs
-    (a task set to Fable on its fallback, switched to Fable and refused, read "goes on with Fable
-      5.2"). Test first:
-  `usage_credits::a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with`
-    failed with that notice; the notice now names the model the same snapshot places the run
-    with ("Fable is used up on this subscription: this session goes on with Opus 5.5.").
+    (a task set to Fable on its fallback, switched to Fable and refused, read "goes on with
+    Fable 5.2"). Test first:
+    `usage_credits::a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with`
+    failed with that notice; the notice now names the model of the relaunch ("Fable is used up
+    on this subscription: this session goes on with Opus 5.5.").
   - Minor (made stale): ADR-0020 and ADR-0055 status lines point to ADR-0340.
   - Nits: a moved doc comment in `claude.rs`, `use super::*` first in `tasks.rs` tests, the
     `ui_contract.rs` example, MDL-002's wording on where the session goes on.
@@ -701,3 +700,17 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with` fails; with
   it naming the fallback whenever there is one, the new test fails. `usage_credits::`,
   `cockpit::`, `model_fallback::`: 105 passed. Long lines rewrapped.
+- **Review round 4** (delta `5b399be20..3ec7234dc`, Opus 5.5): request changes. Own code: the
+  notice was still said from the preflight's placement, and the launch places the run again
+  once the old one has ended (reproduced by holding the switch at `SwitchDecided` and changing
+  the usage); and the kept family could outlive a switch that returned early (read in the code,
+  not reproduced). Answered: the launch says the notice where it sets `--model`, from the
+  model it runs; a relaunch of the refused family again (its usage changed meanwhile) says only
+  "Fable 5.2 can run again" (the existing line); every limit decision writes the kept family
+  (none unless it moves the run) and a failed switch clears it. Test first:
+  `usage_credits::the_notice_past_a_switched_limit_names_the_model_the_launch_runs` (holds the
+  switch, gives Fable room again) failed with "Fable is used up …: goes on with Opus 5.5" while
+  the relaunch ran Fable 5.2; it passes now. Mutations: the notice naming the task's own model
+  fails the fallback test; no same-family filter fails the new test. `usage_credits::`,
+  `cockpit::`, `model_fallback::`, `subscription_moves::`, `claude_code_moves::`: 176 passed;
+  `scripts/dev lint` exit 0. Spec indentation nit fixed.
