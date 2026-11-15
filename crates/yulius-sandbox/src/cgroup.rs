@@ -52,9 +52,9 @@ pub(crate) const ENGINE_LEAF: &str = "engine";
 /// of its cgroup namespace (SPEC-483 C4). A process of the engine that moves to a group of its
 /// own and starts a cgroup namespace there may write the files of every group in its view but
 /// its namespace's root, the kernel's only check (`nsdelegate`); the limits are therefore one
-/// group up, out of its view. No controller passes down to it: none did below the engine's group
-/// before either (SPEC-187 DKR-005), and an engine still running in [`ENGINE_LEAF`] itself from
-/// an earlier version keeps starting there until its front starts again.
+/// group up, out of its view. `cpu` and `pids` pass down to it as they reached the engine before
+/// (`settle_engine_group`); an engine still running in [`ENGINE_LEAF`] itself from an earlier
+/// version keeps starting there until its front starts again.
 pub(crate) const ENGINE_ROOT_LEAF: &str = "inside";
 /// A sandbox group's `cpu.weight` while none of its CI jobs runs (the kernel's default).
 const BASE_WEIGHT: u32 = 100;
@@ -726,36 +726,40 @@ pub(crate) fn remove_tree(dir: &Path, depth: usize) {
     let _ = std::fs::remove_dir(dir);
 }
 
-/// Takes back every controller `group` passes down, one write each: one a remaining child still
-/// uses must not keep the others.
-pub(crate) fn drop_controllers(group: &Path) {
-    for controller in lines(&group.join("cgroup.subtree_control")) {
-        let _ = std::fs::write(
-            group.join("cgroup.subtree_control"),
-            format!("-{controller}"),
-        );
-    }
-}
-
-/// Makes the engine's group `engine` plain again once no engine of the old layout runs in it
-/// (SPEC-483 C4): that engine ran in the group itself, and runc made its subtree threaded and
-/// passed `cpu` and `pids` down, which leaves a domain group below it, [`ENGINE_ROOT_LEAF`],
-/// invalid (no container starts there). With no process in the group itself and none below but
-/// in its root, every other group below goes (emptied ones only) and the controllers are taken
-/// back; an engine that still runs there keeps its groups until its front starts again.
+/// Readies the engine's group `engine` for an engine in its root (SPEC-483 C4), unless something
+/// runs in it but below the root: an engine of the old layout, which ran in the group itself.
+/// That engine's first container made runc turn the subtree threaded (`engine/docker` threaded),
+/// which leaves a domain group below it, [`ENGINE_ROOT_LEAF`], invalid: no container starts
+/// there. So the emptied groups beside the root go, and `cpu` and `pids` pass down to the root
+/// (one write each; both can be threaded), as the engine's group had them from the sandbox's
+/// before: containers keep `--cpus` and `--pids-limit`, which runc passes on in threaded mode.
+/// `memory` cannot be threaded and never reached them. A group whose `cgroup.procs` cannot be
+/// read counts as busy; an engine that runs there keeps its groups until its front starts again.
 fn settle_engine_group(engine: &Path) {
     let root = engine.join(ENGINE_ROOT_LEAF);
     let others: Vec<PathBuf> = subgroups(engine)
         .into_iter()
         .filter(|child| *child != root)
         .collect();
-    if !lines(&engine.join("cgroup.procs")).is_empty() || others.iter().any(|g| populated(g)) {
+    let busy = match std::fs::read_to_string(engine.join("cgroup.procs")) {
+        Ok(procs) => !procs.trim().is_empty(),
+        Err(error) => error.kind() != io::ErrorKind::NotFound,
+    };
+    if busy || others.iter().any(|g| populated(g)) {
         return;
     }
     for child in &others {
         remove_tree(child, 0);
     }
-    drop_controllers(engine);
+    let available = lines(&engine.join("cgroup.controllers"));
+    for controller in ["cpu", "pids"] {
+        if available.iter().any(|c| c == controller) {
+            let _ = std::fs::write(
+                engine.join("cgroup.subtree_control"),
+                format!("+{controller}"),
+            );
+        }
+    }
 }
 
 /// Creates the engine's root `dir` (`engine/inside`) and the engine's group above it when
@@ -1082,11 +1086,12 @@ mod tests {
         let engine = root.path().join("s1/engine");
         std::fs::create_dir(engine.join("docker"))?;
         std::fs::write(engine.join("cgroup.subtree_control"), "cpu\n")?;
+        std::fs::write(engine.join("cgroup.controllers"), "cpu\n")?;
         assert!(restore_leaf(&leaf)?);
         assert!(!engine.join("docker").exists());
         assert_eq!(
             std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
-            "-cpu"
+            "+cpu"
         );
         std::fs::write(leaf.join("cgroup.procs"), "")?;
         assert!(!restore_leaf(&leaf)?, "already there");
@@ -1177,9 +1182,9 @@ mod tests {
             "24"
         );
         // SPEC-483 C4: the engine runs in, and sees as its `/sys/fs/cgroup`, a group below the one
-        // that holds its limits, so nothing in the engine can reach them; no controller passes
-        // down to it (none did below the engine's group before, DKR-005), so an engine still
-        // running in the group itself from before keeps working.
+        // that holds its limits, so nothing in the engine can reach them. (Controllers pass down
+        // as the group lists them: none in this fake, see
+        // `the_engine_root_gets_the_threaded_controllers`.)
         assert_eq!(groups.engine_root, groups.engine.join("inside"));
         assert!(groups.engine_root.is_dir());
         assert!(!groups.engine_root.join("pids.max").exists());
@@ -1333,6 +1338,7 @@ mod tests {
             std::fs::create_dir_all(engine.join("docker/c1"))?;
             std::fs::write(engine.join("cgroup.procs"), engine_procs)?;
             std::fs::write(engine.join("cgroup.subtree_control"), "cpu pids\n")?;
+            std::fs::write(engine.join("cgroup.controllers"), "cpu pids\n")?;
             if !events.is_empty() {
                 std::fs::write(engine.join("docker/cgroup.events"), events)?;
             }
@@ -1342,10 +1348,11 @@ mod tests {
         let engine = old(&dir, "", "")?;
         let groups = delegation.sandbox_group("s1", &Limits::default())?;
         assert!(!engine.join("docker").exists(), "the leftovers are gone");
-        // One write each; a fake file keeps the last.
+        // The threaded controllers pass down to the root again, one write each (a fake file
+        // keeps the last); see `the_engine_root_gets_the_threaded_controllers`.
         assert_eq!(
             std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
-            "-pids"
+            "+pids"
         );
         assert!(groups.engine_root.is_dir());
         // A new engine in `inside` is never touched.
@@ -1365,6 +1372,36 @@ mod tests {
                 "cpu pids\n"
             );
         }
+        Ok(())
+    }
+
+    /// SPEC-483 slice 39, review round 1 (F1): the engine's root gets `cpu` and `pids` from the
+    /// engine's group, as the engine's group had them from the sandbox's before, so containers
+    /// keep `--cpus` and `--pids-limit` (runc passes them on in threaded mode). `memory` never
+    /// was and is not: it cannot be threaded. An unreadable `cgroup.procs` counts as busy.
+    #[test]
+    fn the_engine_root_gets_the_threaded_controllers() -> Result<(), Box<dyn std::error::Error>> {
+        for (available, last) in [("cpu memory pids\n", "+pids"), ("cpu memory\n", "+cpu")] {
+            let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+            let engine = dir.join("engine");
+            std::fs::create_dir_all(&engine)?;
+            std::fs::write(engine.join("cgroup.controllers"), available)?;
+            delegation.sandbox_group("s1", &Limits::default())?;
+            assert_eq!(
+                std::fs::read_to_string(engine.join("cgroup.subtree_control"))?,
+                last,
+                "{available:?}"
+            );
+        }
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let engine = dir.join("engine");
+        std::fs::create_dir_all(engine.join("cgroup.procs"))?;
+        std::fs::write(engine.join("cgroup.controllers"), "cpu pids\n")?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert!(
+            !engine.join("cgroup.subtree_control").exists(),
+            "an unreadable `cgroup.procs` is a busy group"
+        );
         Ok(())
     }
 

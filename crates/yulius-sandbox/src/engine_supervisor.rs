@@ -40,8 +40,6 @@ const LOG_MAX_BYTES: u64 = 8 << 20;
 const REQUEST_HEAD_MAX: usize = 64 * 1024;
 /// Time a client has to send its request head before an error answer.
 const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
-/// Directories below the engine's cgroup looked at for containers.
-const MAX_GROUPS: usize = 4096;
 
 /// Prepares the namespaces before each start (the holder mounts the engine's sysfs).
 pub type Prepare = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
@@ -332,35 +330,13 @@ async fn stop(mut child: Child, grace: Duration) {
 }
 
 /// Whether a process runs in a group below `cgroup` (a container: the engine itself lives in
-/// `cgroup`), bounded to 4096 directories.
+/// `cgroup`). Read from each child's `cgroup.events` (`populated`, which counts the groups
+/// below too): runc makes the containers' groups threaded, where `cgroup.procs` cannot be read.
 #[must_use]
 pub fn containers_running(cgroup: &Path) -> bool {
-    let mut stack: Vec<PathBuf> = children(cgroup);
-    let mut seen = 0usize;
-    while let Some(dir) = stack.pop() {
-        seen += 1;
-        if seen > MAX_GROUPS {
-            return true;
-        }
-        let procs = std::fs::read_to_string(dir.join("cgroup.procs")).unwrap_or_default();
-        if !procs.trim().is_empty() {
-            return true;
-        }
-        stack.extend(children(&dir));
-    }
-    false
-}
-
-fn children(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .map(|e| e.path())
-                .collect()
-        })
-        .unwrap_or_default()
+    crate::cgroup::subgroups(cgroup)
+        .iter()
+        .any(|group| crate::cgroup::populated(group))
 }
 
 fn log_tail(path: &Path) -> String {
@@ -443,7 +419,7 @@ open(stopped, "w").write("stopped")
         fn new() -> io::Result<Self> {
             let dir = tempfile::tempdir()?;
             std::fs::create_dir_all(dir.path().join("cg/docker/c1"))?;
-            std::fs::write(dir.path().join("cg/docker/c1/cgroup.procs"), "")?;
+            std::fs::write(dir.path().join("cg/docker/cgroup.events"), "populated 0\n")?;
             let socket = dir.path().join("docker.sock");
             Ok(Self { dir, socket })
         }
@@ -756,10 +732,10 @@ open(stopped, "w").write("stopped")
         })
         .await?;
         // A container: a process in a group below the engine's.
-        std::fs::write(f.path("cg/docker/c1/cgroup.procs"), "4242\n")?;
+        std::fs::write(f.path("cg/docker/cgroup.events"), "populated 1\nfrozen 0\n")?;
         assert!(!supervisor.stop_if_idle().await);
         assert!(supervisor.running().await);
-        std::fs::write(f.path("cg/docker/c1/cgroup.procs"), "")?;
+        std::fs::write(f.path("cg/docker/cgroup.events"), "populated 0\nfrozen 0\n")?;
         assert!(supervisor.stop_if_idle().await);
         server.abort();
 
@@ -818,19 +794,23 @@ open(stopped, "w").write("stopped")
         Ok(())
     }
 
+    /// A container is a process below the engine's group, read from `cgroup.events` (hierarchical,
+    /// and there in every group): runc makes the containers' groups threaded, where
+    /// `cgroup.procs` cannot be read (SPEC-483 slice 39, review round 1: an engine counted idle
+    /// and stopped while its containers ran).
     #[test]
     fn only_processes_below_the_engines_group_are_containers() -> io::Result<()> {
         let dir = tempfile::tempdir()?;
         let cg = dir.path();
         // The engine itself lives in the group: not a container.
         std::fs::write(cg.join("cgroup.procs"), "1\n2\n")?;
+        std::fs::write(cg.join("cgroup.events"), "populated 1\nfrozen 0\n")?;
         assert!(!containers_running(cg));
         std::fs::create_dir_all(cg.join("docker/a/nested"))?;
-        std::fs::write(cg.join("docker/cgroup.procs"), "")?;
-        std::fs::write(cg.join("docker/a/cgroup.procs"), "")?;
-        std::fs::write(cg.join("docker/a/nested/cgroup.procs"), "")?;
+        std::fs::write(cg.join("docker/cgroup.events"), "populated 0\nfrozen 0\n")?;
         assert!(!containers_running(cg));
-        std::fs::write(cg.join("docker/a/nested/cgroup.procs"), "77\n")?;
+        // A threaded group: no readable `cgroup.procs`, only its events.
+        std::fs::write(cg.join("docker/cgroup.events"), "populated 1\nfrozen 0\n")?;
         assert!(containers_running(cg));
         assert!(!containers_running(&cg.join("missing")));
         Ok(())

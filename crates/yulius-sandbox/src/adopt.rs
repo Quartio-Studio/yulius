@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::cgroup::{
-    ENGINE_LEAF, LEGACY_LEAF, MAX_DEPTH, MAX_GROUPS, SANDBOXES, drop_controllers, lines, populated,
-    remove_tree, subgroups,
+    ENGINE_LEAF, LEGACY_LEAF, MAX_DEPTH, MAX_GROUPS, SANDBOXES, lines, populated, remove_tree,
+    subgroups,
 };
 
 /// The subgroup systemd places the server in (`DelegateSubgroup=server`).
@@ -307,7 +307,9 @@ pub fn adopt(
     // Also with nothing to move: a unit that keeps its place with a process left in `server/`
     // still passes its controllers down, and systemd 258 starts no unit that does. One write
     // each: a controller a remaining group still uses must not keep the others.
-    drop_controllers(old);
+    for controller in lines(&old.join("cgroup.subtree_control")) {
+        let _ = std::fs::write(old.join("cgroup.subtree_control"), format!("-{controller}"));
+    }
     for child in &children {
         if child.is_dir() && populated(child) {
             done.left
