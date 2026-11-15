@@ -601,8 +601,6 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 }
 
 impl App {
-    /// Reads the cohort for a request: visible sandboxes (or one, which must be visible) and
-    /// an optional inclusive day range.
     /// The sandboxes and the window of an analytics read: `sandbox` (one the caller may view)
     /// or every sandbox they see, and `[from, to]` in days (`YYYY-MM-DD`, UTC), as times with the
     /// end exclusive.
@@ -651,6 +649,8 @@ impl App {
         ))
     }
 
+    /// Reads the cohort for a request: visible sandboxes (or one, which must be visible) and
+    /// an optional inclusive day range.
     async fn analytics_cohort(
         &self,
         ctx: &AuthContext,

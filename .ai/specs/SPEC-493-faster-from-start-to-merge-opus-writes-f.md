@@ -200,9 +200,11 @@ person's decision is read as holding after an approval).
   (`attempts.model`) and each round's number, model, verdict and head; the rounds get the pull
   request's number and the merge time. `delivery_status` and the task's delivery view
   (`GET /api/tasks/{id}/delivery`) list the current pull request's rounds. A merge whose head no
-  recorded round approved says so in the same record ("no recorded review round approved …"); it
-  is not refused for it.
-- **REV-006** One read gives the numbers of the request: `GET /api/analytics/reviews?since=`
+  recorded round approved (that head, or one followed only by clean merges of the integration
+  branch) says so in the same record ("no recorded review round approved its head"); it is not
+  refused for it. The runs that wrote it are those still going when the task's previous pull
+  request merged and every later one.
+- **REV-006** One read gives the numbers of the request: `GET /api/analytics/reviews?from=&to=`
   (sandbox members; the Dashboard's Pipeline tab shows it) answers, for the pull requests merged
   since then, the share of first rounds that asked for changes, the median rounds per pull
   request, the share of first rounds with no report, and the rounds per model.
@@ -573,7 +575,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   reads the decision as holding after an approval; of the re-reviews after a request for changes
   the table does not say how many blocked, so there is no evidence here for more.
 - **How to read the numbers a week later** (each fix's number, on the instance):
-  - Fix 1: `GET /api/analytics/reviews?since=<date>` (the Dashboard's Pipeline tab): share of
+  - Fix 1: `GET /api/analytics/reviews?from=<day>&to=<day>` (the Dashboard's Pipeline tab): share of
     first rounds that asked for changes (baseline 47 %, Fable reviewing Fable's work), median
     rounds per pull request (baseline 3), per model. With the reviewer held at Fable for round 1,
     a higher share than 47 % means Opus's first versions are worse than Fable's were; the same
@@ -810,4 +812,29 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - Decision: the person reads the round records three ways (the task's delivery view while the
   pull request is open, the merge record afterwards, the analytics read for the week); no
   separate page.
+- **Review round 1** (head `d4bc49815`, Opus 5.5: Fable out until 14:00 UTC). Request changes.
+  Answered (all own code):
+  - Major: the authors skipped a run that started before the previous merge. Now a run counts
+    unless it ended before that merge, and "the previous merge" is the latest one before this
+    one (the new test caught it taking a later merge).
+    `review_rounds::the_merge_record_names_this_pull_requests_rounds_and_authors` asserts the
+    two records word for word.
+  - Major: "no recorded review round approved" ignored the merged head. The merge paths that
+    know it (the agent's or person's merge, a merge found on GitHub) pass it, and an approval
+    counts for that head or one followed only by clean merges of the integration branch
+    (`review_covers`). `review_rounds::an_approval_counts_for_the_head_it_approved`.
+  - Major: the reviews read's scoping had no test:
+    `analytics::the_reviews_read_counts_only_visible_sandboxes` (a member of one sandbox of
+    two; the other by id is 404).
+  - Minors: the delivery test asserts the exact record; rounds are matched to the merge by its
+    time, not its number (a playground has none); a reviewer's transcript reaches its round in
+    a live session (`usage_credits::a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round`,
+    a second reviewer without a cut-off), and while a restart catches up
+    (`usage_credits::a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart`
+    fails with the replay's noting disabled); rounds by model count rounds, not reviewer runs;
+    the read is capped at 20,000 rounds, newest merges first; the Pipeline shows its stages
+    without the Review card when the read fails (`pipeline.e2e.ts`, 16 passed); the spec's
+    query is `from`/`to`.
+  - Nits: the doubled doc comment; heads cut by characters; a run without a recorded model
+    counts as its task's model.
 

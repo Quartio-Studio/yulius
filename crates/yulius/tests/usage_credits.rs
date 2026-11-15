@@ -1632,7 +1632,6 @@ fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult 
 /// runs.
 #[test]
 fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResult {
-    use yulius_app::ports::store::CoordinationStore as _;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -1727,7 +1726,6 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
 /// down still reaches its round: the restart reads it while it catches up.
 #[test]
 fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() -> TestResult {
-    use yulius_app::ports::store::CoordinationStore as _;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let probe = Arc::new(ScriptedUsage::default());

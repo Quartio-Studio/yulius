@@ -9,6 +9,15 @@ failOnPageErrors();
 // and the waterfalls of a CI run (ci_s2 failed in its test job), a dev deploy and a task.
 // Task #152 (SPEC-161): the Pipeline (stages) is a tab of the Dashboard, at ?section=pipeline.
 
+test('the Pipeline shows its stages without the Review card when the review read fails (SPEC-493 REV-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failReviews?: boolean } }).__yuliusMock.failReviews = true; });
+  await browser.evaluate(() => { location.hash = '#/s/studio/dashboard?section=pipeline'; });
+  await expect(screen.getByRole('region', 'Stages')).toBeVisible();
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect(screen.getByRole('region', 'Review')).toHaveCount(0);
+});
+
 test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard?section=pipeline'));
   await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
