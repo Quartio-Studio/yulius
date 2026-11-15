@@ -1163,6 +1163,48 @@ sequenceDiagram
     H-->>A: the answer
 ```
 
+## The review's rounds and models
+
+The independent code review runs as one of two agents Yulius defines at every task launch
+(`--agents`, `harness::launch::reviewer_agents`), out of the agent's reach:
+`yulius-reviewer` on `claude-fable-5-2` and `yulius-reviewer-opus` on `claude-opus-5-5`, both at
+`high` and by full model id, with the reviewer's contract as their prompt
+(`yulius_domain::review`). Claude Code runs a subagent of such a definition on its model and
+effort whatever the session runs, and a launch definition outranks one in the agent's home; a
+repository's own `.claude/agents/yulius-reviewer.md` would outrank it, and the round's record
+then shows the model that answered
+([decision 0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)).
+
+The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matcher
+`Agent|Task`) reaches Yulius with the tool's whole input (`guard_client::agent_request`), and
+`App::review_gate` numbers the round among the rounds of the task's open pull request (a round
+counts once it ended with a report; a reviewer started again for a round without one keeps its
+number and reviewer), picks its reviewer (`review::round_agent`: rounds 1 and 2 Fable, later
+Opus; the Opus reviewer when the run's subscription cannot run Fable now), records it in
+`review_rounds` and answers: nothing to change, or `updatedInput` with the other
+`subagent_type` and the rest of the input as asked, and in both cases a line of context naming
+the round and its model. A failure to decide lets the reviewer start as asked. `SubagentStart`
+links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
+with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
+subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
+pull request's rounds in the same transaction that records its merge
+(`transition_delivery`), so the task's next pull request starts at round 1.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Claude Code)
+    participant H as yulius hook (sandbox)
+    participant Y as Yulius
+    A->>H: PreToolUse Agent (subagent_type yulius-reviewer)
+    H->>Y: POST /hooks/claude/PreToolUse (tool input)
+    Y->>Y: number the round, pick the reviewer, insert review_rounds
+    Y-->>A: context "round N runs on …" (+ updatedInput yulius-reviewer-opus from round 3)
+    A->>H: SubagentStart (agent_id, agent_type)
+    H->>Y: link the round to the subagent
+    A->>H: SubagentStop (last_assistant_message)
+    H->>Y: end the round with its verdict
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),

@@ -374,10 +374,10 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 
 - [x] Fix 1a: tasks and the Superagents run Opus 5.5 by default; a Fable choice is kept and still falls back (MDL-001 to MDL-003)
 - [x] Fix 1a's documents: the decision amending ADR-0289, ADR-0295 and ADR-0312; SPEC-023, SPEC-464 and SPEC-482 notes; product, API, changes
-- [ ] Fix 1a's independent review answered test-first
-- [ ] Fix 1b: every task session is launched with the two reviewer agents by full model id (REV-001)
-- [ ] Fix 1b: Yulius sees the reviewer start, counts the pull request's rounds and gives rounds 3 and later the Opus reviewer; each round is a record (REV-002 to REV-004, its start)
-- [ ] Fix 1b: the rules name the reviewer agent the same way everywhere, held by a test (REV-008)
+- [x] Fix 1a's independent review answered test-first
+- [x] Fix 1b: every task session is launched with the two reviewer agents by full model id (REV-001)
+- [x] Fix 1b: Yulius sees the reviewer start, counts the pull request's rounds and gives rounds 3 and later the Opus reviewer; each round is a record (REV-002 to REV-004, its start)
+- [x] Fix 1b: the rules name the reviewer agent the same way everywhere, held by a test (REV-008)
 - [ ] Fix 1b's independent review answered test-first
 - [ ] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
 - [ ] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
@@ -727,3 +727,38 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `model_fallback::`, `subscription_moves::`, `claude_code_moves::`; lint exit 0. Its nits
   (a launch that places again after its account was removed, a failed spawn after the notice)
   behave as the existing `model_change_notice` does, and the lines that follow correct them.
+
+### Fix 1b: the reviewer agents and their rounds
+
+- Fix 1a merged as pull request #1321 at `be80395aa`, on its own green Yulius CI run.
+- Round 6's note on fix 1a (the switched-limit notice's `AfterLimit` filter had no test) is
+  answered first here: `usage_credits::a_switched_limit_is_not_said_at_a_later_start` (a task
+  paused at a switched limit, stopped and continued, says nothing of it) fails with the filter
+  removed and passes with it.
+- **REV-001.** Test first: `launch::a_task_session_is_launched_with_the_reviewer_agents` failed
+  (no `--agents`); passes. Real CLI 2.1.325 against the stand-in API, with the launch's exact
+  `--agents` JSON, an Opus session and `subagent_type: yulius-reviewer`: the subagent's request
+  names `claude-fable-5-2` and `output_config.effort: high`, `resolvedModel` is
+  `claude-fable-5-2` (probe `$HOME/.cache/yulius-task-472/probe`, scenario `review`).
+- **REV-002 to REV-004.** `review_rounds::the_third_round_of_a_pull_request_runs_the_opus_reviewer`
+  (rounds 1 and 2 as asked, round 3 `updatedInput` `yulius-reviewer-opus` with the rest of the
+  input; a cut-off round keeps its number and reviewer; verdicts from the last line; a merge
+  closes the rounds and the next pull request starts at round 1; another subagent untouched),
+  `a_resumed_reviewer_and_other_subagents_change_no_round`,
+  `a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer` (failed before the rule:
+  Fable was asked on a subscription out of Fable), `review::tests::*` (round policy, verdict
+  line), `hooks::tests::subagent_hooks_and_an_updated_tool_input` (the contract's JSON as the
+  real CLI takes it), `guard_client::tests::a_subagents_start_is_sent_with_its_input`, and the
+  launch snapshot with the `Agent|Task` matcher and the `SubagentStart`/`SubagentStop` hooks.
+  Migration 0062 is pinned in the store's migration test.
+- **REV-008.** `skills::tests::every_place_names_the_reviewer_agent_and_who_picks_its_model`
+  failed on the first place before the edits; passes. The briefing's wording is the same length
+  as before (139 bytes); the Fix workflow stays within its 1,444-byte budget by shorter wording
+  elsewhere in it (no rule dropped: `review_findings_in_own_code_are_never_deferred` passes).
+- `cargo nextest run --workspace --all-features`: 4476 passed, 17 skipped (before the last
+  test above). `check_repository.py` passed; `apm install --force` regenerated the two
+  repository skills' copies.
+- Not exercised here: a whole task session on a subscription reviewing through Yulius (the hook
+  path is proven through the internal API with fakes, the agent definitions with the real CLI
+  and the stand-in API).
+
