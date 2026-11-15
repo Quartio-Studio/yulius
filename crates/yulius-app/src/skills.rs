@@ -1229,7 +1229,9 @@ mod tests {
                 "{rel} does not state the rule"
             );
         }
-        let tool = normal(&fs::read_to_string(root.join("crates/yulius-app/src/mcp.rs"))?);
+        let tool = normal(&fs::read_to_string(
+            root.join("crates/yulius-app/src/mcp.rs"),
+        )?);
         assert!(
             tool.contains("across at most 20 product lines after it"),
             "delivery_merge does not say the bound"

@@ -339,7 +339,11 @@ impl Git {
 
     /// The lines `commit` added and removed against its first parent, per file, by line number
     /// (`-U0`, renames as a deletion and an addition, binary files as no line).
-    pub fn commit_lines(&self, repo: &Path, commit: &str) -> Result<Vec<CommitFileLines>, GitError> {
+    pub fn commit_lines(
+        &self,
+        repo: &Path,
+        commit: &str,
+    ) -> Result<Vec<CommitFileLines>, GitError> {
         let commit = self.rev_parse(repo, commit)?;
         let output = self.run_ok(
             Invocation::new(self, "show", Some(repo))
@@ -522,8 +526,10 @@ fn parse_unified_zero(text: &str) -> Vec<CommitFileLines> {
             };
             let (old_start, old_count) = range(old);
             let (new_start, new_count) = range(new);
-            file.removed.extend(old_start..old_start.saturating_add(old_count));
-            file.added.extend(new_start..new_start.saturating_add(new_count));
+            file.removed
+                .extend(old_start..old_start.saturating_add(old_count));
+            file.added
+                .extend(new_start..new_start.saturating_add(new_count));
         }
     }
     files
