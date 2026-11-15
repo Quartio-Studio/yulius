@@ -365,3 +365,39 @@ async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
     assert_eq!(rounds(&h, &task, true).await?[0].reason, "round");
     Ok(())
 }
+
+/// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
+/// answered (the latest), and that a usage limit cut it off, which its later report keeps.
+#[tokio::test]
+async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev-1", None).await?;
+    let store = &h.store;
+    store
+        .note_review_subagent(&task, "rev-1", Some("claude-fable-5-2"), false)
+        .await?;
+    store
+        .note_review_subagent(&task, "rev-1", None, true)
+        .await?;
+    // A subagent that is no round's changes nothing.
+    store
+        .note_review_subagent(&task, "other", Some("claude-haiku-4-5"), true)
+        .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].model_answered.as_deref(), Some("claude-fable-5-2"));
+    assert!(open[0].cut_off);
+    hook(
+        &h.internal,
+        "SubagentStop",
+        json!({"agent_id": "rev-1", "agent_type": "yulius-reviewer",
+            "last_assistant_message": "Verdict: approve"}),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert!(open[0].cut_off && open[0].verdict.as_deref() == Some("approve"));
+    Ok(())
+}

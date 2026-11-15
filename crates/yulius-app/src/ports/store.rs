@@ -732,6 +732,15 @@ pub trait CoordinationStore: Send + Sync {
         agents: &[&str],
         subagent: &str,
     ) -> AppResult<bool>;
+    /// Notes on the open round run by `subagent` the model that answered it (when given) and
+    /// that a usage limit cut it off (when `cut_off`).
+    async fn note_review_subagent(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: Option<&str>,
+        cut_off: bool,
+    ) -> AppResult<()>;
     /// Ends the open round run by `subagent` with its report: when, its verdict, and the model
     /// that answered when known. `false` when no open round is that subagent's.
     async fn end_review_round(

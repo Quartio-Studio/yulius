@@ -318,6 +318,7 @@ impl HarnessPort for HarnessAdapter {
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
             requested: None,
+            subagent_models: std::collections::HashMap::new(),
         }))
     }
 
@@ -414,6 +415,8 @@ struct Watch {
     /// The model the thread's last request asked for, when Claude Code records its requests
     /// (SPEC-493 MDL-002): a limit of "the model the request ran" is that model's.
     requested: Option<String>,
+    /// The model that last answered each subagent of the thread, by its id (SPEC-493 REV-004).
+    subagent_models: std::collections::HashMap<String, String>,
 }
 
 /// A usage limit met by a dynamic workflow's agent is the session's (SPEC-486 WFL-002): Claude
@@ -625,6 +628,39 @@ impl WorkflowAgents {
     }
 }
 
+/// The id of the subagent whose transcript is `file` (`agent-<id>.jsonl`).
+fn subagent_id(file: &Path) -> Option<String> {
+    let name = file.file_name()?.to_str()?;
+    let id = name.strip_prefix("agent-")?.strip_suffix(".jsonl")?;
+    yulius_domain::harness::valid_session_id(id).then(|| id.to_owned())
+}
+
+impl Watch {
+    /// What a line of the subagent `id`'s transcript says of it (SPEC-493 REV-004): the model of
+    /// an answer when it is not the one last seen, or that a usage limit cut it off.
+    fn subagent_fact(&mut self, id: &str, observed: &Observed) -> Option<Observation> {
+        match observed {
+            Observed::AssistantMessage {
+                model: Some(model), ..
+            } if model != "<synthetic>" => {
+                let known = self.subagent_models.get(id) == Some(model);
+                (!known).then(|| {
+                    self.subagent_models.insert(id.to_owned(), model.clone());
+                    Observation::SubagentAnswered {
+                        agent_id: id.to_owned(),
+                        model: model.clone(),
+                    }
+                })
+            }
+            Observed::LimitReached { at, .. } => Some(Observation::SubagentCutOff {
+                agent_id: id.to_owned(),
+                at: *at,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// A limit record of the session's own thread as the application hears it. A limit of "the
 /// model the request ran" (`LimitScope::Model(None)`, a model's usage credits) names the family
 /// of `requested`, the model the thread last asked for, when that is known and has a window of
@@ -660,11 +696,21 @@ impl TranscriptWatch for Watch {
         let lines = self.tail.poll().map_err(io)?;
         // Usage counts from a sub-agent's lines, and from a workflow agent's its usage limit
         // too (SPEC-486); one that cannot be read leaves the session's own observations alone.
+        let mut out: Vec<Observation> = Vec::new();
         match self.subagents.poll_sides() {
             Ok(side) => {
                 for side in side {
+                    // A subagent of the thread: `agent-<id>.jsonl` in the subagents folder.
+                    let subagent = side
+                        .agent
+                        .is_none()
+                        .then(|| subagent_id(&side.file))
+                        .flatten();
                     for observed in claude::observe_line(&side.line) {
                         self.acc.observe_side(&observed);
+                        if let Some(id) = &subagent {
+                            out.extend(self.subagent_fact(id, &observed));
+                        }
                         if let Some(agent) = &side.agent {
                             self.limits.side(agent, observed);
                         }
@@ -673,7 +719,6 @@ impl TranscriptWatch for Watch {
             }
             Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
         }
-        let mut out: Vec<Observation> = Vec::new();
         let mut heard = 0;
         for line in lines {
             if !self.since.keep(&line) {
@@ -813,6 +858,7 @@ mod tests {
                 acc: UsageAccumulator::new(),
                 limits: WorkflowLimits::default(),
                 requested: None,
+                subagent_models: std::collections::HashMap::new(),
             };
             let seen = watch.poll().map_err(|err| err.to_string())?;
             let added =
@@ -841,6 +887,7 @@ mod tests {
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
             requested: None,
+            subagent_models: std::collections::HashMap::new(),
         })
     }
 
@@ -915,6 +962,90 @@ mod tests {
         );
         let session = r#"{"isSidechain":false,"type":"assistant","timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}},"error":"rate_limit","isApiErrorMessage":true}"#;
         assert_eq!(scope_of(&[prompt, &fable, session])?, LimitScope::Account);
+        Ok(())
+    }
+
+    /// SPEC-493 REV-004: a subagent of the session's own thread names the model that answered
+    /// it (once, and again when it changes), and a usage limit that refuses it says it was cut
+    /// off. A workflow agent's lines say neither, and a refusal's own record names no model.
+    #[test]
+    fn a_subagents_model_and_its_cut_off_are_read_from_its_transcript()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s1.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-15T10:00:00.000Z","sessionId":"s1","promptSource":"typed","message":{"role":"user","content":"go"}}"#.to_owned() + "\n",
+        )?;
+        let answer = |id: &str, model: &str| {
+            format!(
+                r#"{{"type":"assistant","isSidechain":true,"agentId":"a1","timestamp":"2026-11-15T10:00:01.000Z","message":{{"id":"{id}","model":"{model}","role":"assistant","content":[{{"type":"text","text":"x"}}],"usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#
+            )
+        };
+        let sub = yulius_harness::subagents::subagent_dir(&path);
+        std::fs::create_dir_all(&sub)?;
+        let agent = sub.join("agent-a73a9170080d69b92.jsonl");
+        std::fs::write(
+            &agent,
+            [
+                answer("m1", "claude-fable-5-2"),
+                answer("m2", "claude-fable-5-2"),
+            ]
+            .join("\n")
+                + "\n",
+        )?;
+        let mut watch = watch_of(&path)?;
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        let answered: Vec<&Observation> = seen
+            .iter()
+            .filter(|o| matches!(o, Observation::SubagentAnswered { .. }))
+            .collect();
+        assert_eq!(
+            answered,
+            [&Observation::SubagentAnswered {
+                agent_id: "a73a9170080d69b92".into(),
+                model: "claude-fable-5-2".into()
+            }]
+        );
+        let mut file = std::fs::OpenOptions::new().append(true).open(&agent)?;
+        writeln!(file, "{}", answer("m3", "claude-opus-5-5"))?;
+        writeln!(file, "{}", refusal("2026-11-15T10:00:02.000Z"))?;
+        drop(file);
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        assert!(seen.contains(&Observation::SubagentAnswered {
+            agent_id: "a73a9170080d69b92".into(),
+            model: "claude-opus-5-5".into()
+        }));
+        assert!(
+            seen.iter().any(
+                |o| matches!(o, Observation::SubagentCutOff { agent_id, at: Some(_) }
+                if agent_id == "a73a9170080d69b92")
+            ),
+            "{seen:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|o| matches!(o, Observation::SubagentAnswered { model, .. }
+                if model == "<synthetic>")),
+            "{seen:?}"
+        );
+        // A workflow agent's lines are not a subagent's of the thread.
+        let run = yulius_harness::subagents::workflow_dir(&path).join("wf_1");
+        std::fs::create_dir_all(&run)?;
+        std::fs::write(
+            run.join("agent-w1.jsonl"),
+            answer("m9", "claude-haiku-4-5") + "\n",
+        )?;
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        assert!(
+            !seen
+                .iter()
+                .any(|o| matches!(o, Observation::SubagentAnswered { .. })),
+            "{seen:?}"
+        );
+        let _ = sub;
         Ok(())
     }
 

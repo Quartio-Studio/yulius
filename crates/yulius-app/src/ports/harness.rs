@@ -204,6 +204,22 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// A subagent of the session's own thread was answered by `model` (its first answer, and
+    /// each change of model since): the model that really ran a review round (SPEC-493 REV-004).
+    SubagentAnswered {
+        /// Claude Code's id of the subagent (its transcript `agent-<id>.jsonl`).
+        agent_id: String,
+        /// The model of its answer.
+        model: String,
+    },
+    /// A usage limit refused a subagent of the session's own thread: Claude Code ends it with
+    /// no report (and no `SubagentStop`); a message to it resumes it (SPEC-493 REV-004).
+    SubagentCutOff {
+        /// Claude Code's id of the subagent.
+        agent_id: String,
+        /// When it was refused, if known.
+        at: Option<Timestamp>,
+    },
     /// The session launched a dynamic workflow (Claude Code's Workflow tool; SPEC-486 WFL-003),
     /// beside the [`Observation::BackgroundStarted`] of the same `task`.
     WorkflowLaunched {

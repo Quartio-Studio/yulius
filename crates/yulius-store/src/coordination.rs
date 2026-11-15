@@ -399,6 +399,31 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn note_review_subagent(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: Option<&str>,
+        cut_off: bool,
+    ) -> AppResult<()> {
+        let (t, s, m) = (
+            task.as_str().to_owned(),
+            subagent.to_owned(),
+            model.map(str::to_owned),
+        );
+        self.call(move |c| {
+            c.execute(
+                "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
+                 cut_off = cut_off OR ?2 WHERE task_id = ?3 AND subagent_id = ?4 \
+                 AND merged_at IS NULL",
+                params![m, cut_off, t, s],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn end_review_round(
         &self,
         task: &TaskId,

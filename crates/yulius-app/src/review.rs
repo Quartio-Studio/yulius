@@ -158,6 +158,25 @@ impl App {
             })
     }
 
+    /// What a subagent's transcript says of a review round's reviewer: the model that answered
+    /// it, or that a usage limit cut it off. A subagent that is no round's changes nothing.
+    pub(crate) async fn review_subagent_noted(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        subagent: &str,
+        model: Option<&str>,
+        cut_off: bool,
+    ) {
+        if let Err(err) = self
+            .deps
+            .store
+            .note_review_subagent(task, subagent, model, cut_off)
+            .await
+        {
+            tracing::warn!(error = %err, task = %task, "review round not noted");
+        }
+    }
+
     /// `SubagentStart`: links a reviewer's subagent to the round that started it. A resumed
     /// subagent (the same id) changes nothing.
     pub(crate) async fn review_subagent_started(&self, ctx: &AgentContext, input: &HookInput) {

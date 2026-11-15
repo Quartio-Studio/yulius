@@ -5540,6 +5540,16 @@ impl App {
             }
             // Kept above; its background work is the `BackgroundStarted` beside it.
             Observation::WorkflowLaunched { .. } => {}
+            // What a review round's reviewer really ran on, and whether a limit cut it off
+            // (SPEC-493 REV-004): nothing else depends on it.
+            Observation::SubagentAnswered { agent_id, model } => {
+                self.review_subagent_noted(task_id, &agent_id, Some(&model), false)
+                    .await;
+            }
+            Observation::SubagentCutOff { agent_id, .. } => {
+                self.review_subagent_noted(task_id, &agent_id, None, true)
+                    .await;
+            }
             // In the order of the lines: the count is ahead of nothing the watcher applied.
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
