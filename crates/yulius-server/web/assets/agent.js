@@ -498,6 +498,8 @@ const OPTION_LABELS = {
   expect: (v) => `Commit: ${v}`,
   release: (v) => `Release: ${v}`,
   part: (v) => `Part: ${v}`,
+  // Whose a secret asked for is (SPEC-487, review of slice 10a, M2).
+  scope: (v) => (v === 'personal' ? 'Yours only (personal)' : 'This project’s (sandbox)'),
 };
 
 /**
@@ -521,7 +523,7 @@ function askedFor(request) {
       return { heading: 'you to decide', own: true, answer: true, button: 'Yes', decline: 'No', done: 'Answered yes', failed: 'answer', declined: 'answered no', text: 'Question' };
     // SPEC-487 SEC-001: a secret's value, typed masked here and sent to the vault; never shown.
     case 'secret':
-      return { heading: `you for the secret ${request.title}`, own: true, secret: true, button: 'Store', done: `Stored ${request.title}`, failed: `store ${request.title}`, declined: 'nothing was stored', text: request.prompt ? 'What it is for' : null };
+      return { heading: `you for the secret ${request.title} in `, secret: true, button: 'Store', done: `Stored ${request.title}`, failed: `store ${request.title}`, declined: 'nothing was stored', text: request.prompt ? 'What it is for' : null };
     // SPEC-487 REL-001: production, on the Superagent's own panel; the slug typed, as on the CD page.
     case 'deploy': {
       const env = (request.options && request.options.environment) || 'production';
@@ -624,7 +626,10 @@ function createRequests(ctx, sandbox, onCount) {
     // A production release takes the project's slug typed (SPEC-487 REL-001), as the CD page does.
     const typed = asked.typed ? h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Type ${slug} to confirm`, onInput: () => update() }) : null;
     // A secret's value (SPEC-487 SEC-002): masked, line breaks kept, sent once and cleared.
-    const secretField = asked.secret ? h('textarea', { class: 'input agent-request-secret', rows: 3, autocomplete: 'off', spellcheck: 'false', 'aria-label': `${request.title}’s value`, onInput: () => update() }) : null;
+    // Masked as typed; where a browser cannot mask a text box, a password field (one line).
+    const masks = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
+    const fieldAttrs = { class: 'input agent-request-secret', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'data-1p-ignore': '', 'data-lpignore': 'true', 'aria-label': `${request.title}’s value`, onInput: () => update() };
+    const secretField = !asked.secret ? null : masks ? h('textarea', { ...fieldAttrs, rows: 3 }) : h('input', { ...fieldAttrs, type: 'password' });
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
     let armed = false;
@@ -663,8 +668,9 @@ function createRequests(ctx, sandbox, onCount) {
         const body = { approve, revision: request.revision || 0 };
         if (typed && approve) body.confirm = typed.value.trim();
         if (secretField && approve) body.value = secretField.value;
-        if (secretField) secretField.value = '';
         const answer = await ctx.api.post(`${path}/${enc(request.id)}`, body);
+        // Taken: the value leaves the page (kept while the server refuses it; review of slice 10a, M4).
+        if (secretField) secretField.value = '';
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
@@ -697,7 +703,8 @@ function createRequests(ctx, sandbox, onCount) {
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,
         typed ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Type “${slug}” to confirm`), typed) : null,
-        secretField ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Value (hidden; nobody but the vault sees it)'), secretField) : null,
+        request.replaces ? h('div', { class: 'agent-request-title' }, `Replaces the value of ${request.title}`) : null,
+        secretField ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Value (hidden; never shown to your Superagent)'), secretField) : null,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
       revision: request.revision || 0,

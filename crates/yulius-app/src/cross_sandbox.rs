@@ -383,8 +383,9 @@ struct SavedRequests {
     answered: Vec<Answered>,
 }
 
-/// The person's answer to one request (`POST …/superagent/requests/{id}`).
-#[derive(Clone, Debug, Default, Deserialize)]
+/// The person's answer to one request (`POST …/superagent/requests/{id}`). Its `Debug` never
+/// shows a secret's value (review of slice 10a, m3).
+#[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestAnswer {
     /// Approved, or declined.
@@ -398,6 +399,17 @@ pub struct RequestAnswer {
     /// A secret's value the person typed on the panel (SPEC-487 SEC-002).
     #[serde(default)]
     pub value: Option<String>,
+}
+
+impl std::fmt::Debug for RequestAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestAnswer")
+            .field("approve", &self.approve)
+            .field("revision", &self.revision)
+            .field("confirm", &self.confirm)
+            .field("value", &self.value.as_ref().map(|_| "<hidden>"))
+            .finish()
+    }
 }
 
 impl RequestAnswer {
@@ -747,7 +759,9 @@ impl App {
             // A release is checked as the CD page checks it, before anyone is asked (REL-002).
             match action {
                 CrossAction::Ask => {}
-                CrossAction::SecretValue => crate::release_requests::checked_secret_request(args)?,
+                CrossAction::SecretValue => {
+                    self.checked_secret_request(&user, &own, args).await?;
+                }
                 _ => self.checked_release(&user, &own, action, args).await?,
             }
             (user, own)
@@ -756,6 +770,12 @@ impl App {
                 .await?
         };
         let mut task_args = without_sandbox(args);
+        // A secret's card says whose it is: the default scope named (review of slice 10a, M2).
+        if action == CrossAction::SecretValue
+            && let Some(map) = task_args.as_object_mut()
+        {
+            map.entry("scope").or_insert_with(|| json!("sandbox"));
+        }
         let mut starts_now = false;
         let task = if action == CrossAction::Create || action.own_sandbox() {
             None
@@ -899,6 +919,15 @@ impl App {
         };
         let mut out = Vec::with_capacity(listed.len());
         for (mut view, named) in listed {
+            // A secret's card says when the value replaces one of the person's (SPEC-487,
+            // review of slice 10a, M2).
+            if view["action"] == "secret" {
+                let mut args = json!({"name": view["title"]});
+                if let Some(scope) = view["options"]["scope"].as_str() {
+                    args["scope"] = json!(scope);
+                }
+                view["replaces"] = json!(self.secret_replaced(ctx, sid, &args).await.is_some());
+            }
             if let Some(named) = named {
                 // Up to 4 minutes may have passed: the card names the task as it is now.
                 let now = match TaskId::parse(&named.id) {
@@ -937,7 +966,7 @@ impl App {
                 "only a person answers a Superagent's request, on the Yulius page".into(),
             ));
         }
-        let mut stored_value: Option<String> = None;
+        let mut stored_value: Option<zeroize::Zeroizing<String>> = None;
         let request = {
             let mut waiting = self.cross_requests.lock();
             match waiting.get(id) {
@@ -992,7 +1021,7 @@ impl App {
         request: Waiting,
         approve: bool,
         person: AuthContext,
-        secret_value: Option<String>,
+        secret_value: Option<zeroize::Zeroizing<String>>,
     ) -> AppResult<Value> {
         self.announce_cross_requests(&request.user, &request.source);
         let caller = ProjectCaller {

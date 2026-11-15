@@ -4839,6 +4839,11 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
         (json!({"name": "deploy key"}), "name"),
         (json!({"name": "DEPLOY_KEY", "x": 1}), "unknown"),
         (json!({"name": "DEPLOY_KEY", "scope": "instance"}), "scope"),
+        // Review of slice 10a, M3, m1: what the vault would refuse, refused before asking.
+        (
+            json!({"name": "VIDOC_API_KEY", "scope": "personal"}),
+            "reserved",
+        ),
     ] {
         let (refused, is_error) =
             cockpit_tool(&f, &token, "secret_request_value", args.clone()).await?;
@@ -4880,6 +4885,7 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
     assert_eq!(card["action"], "secret", "{card}");
     assert_eq!(card["title"], "DEPLOY_KEY", "{card}");
     assert_eq!(card["prompt"], "the dev VM's SSH key", "{card}");
+    assert_eq!(card["replaces"], false, "{card}");
     let id = card["id"].as_str().ok_or("id")?.to_owned();
     let ctx = yulius_app::auth::AuthContext {
         user: f.h.store.user(&alice).await?.ok_or("alice")?,
@@ -4955,6 +4961,7 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
         &f.alice,
     )
     .await?;
+    assert_eq!(listed.body[0]["replaces"], true, "{}", listed.body);
     let id2 = listed.body[0]["id"].as_str().ok_or("id")?.to_owned();
     let replaced =
         f.h.app
@@ -4970,6 +4977,65 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
             .await?;
     assert_eq!(replaced["stored"], "updated", "{replaced}");
     tokio::time::timeout(WAIT, again).await???;
+
+    // Review of slice 10a, M1: the project's DEPLOY_KEY is another secret than alice's own of
+    // that name: created beside it, never written over it.
+    let internal = f.h.internal.clone();
+    let bearer = Creds {
+        bearer: Some(token.clone()),
+        ..Creds::default()
+    };
+    let project = tokio::spawn(async move {
+        call(
+            &internal,
+            Method::POST,
+            "/mcp",
+            Some(
+                json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {
+                "name": "secret_request_value",
+                "arguments": {"name": "DEPLOY_KEY", "scope": "sandbox"}}}),
+            ),
+            &bearer,
+        )
+        .await
+        .map(|resp| resp.body)
+        .map_err(|err| err.to_string())
+    });
+    wait_for_count(&f, 1).await?;
+    let listed = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/superagent/requests", sid()),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(listed.body[0]["replaces"], false, "{}", listed.body);
+    let id3 = listed.body[0]["id"].as_str().ok_or("id")?.to_owned();
+    let created =
+        f.h.app
+            .superagent_request_answer(
+                &ctx,
+                sid().as_str(),
+                &id3,
+                &yulius_app::cross_sandbox::RequestAnswer {
+                    value: Some("a-project-token-0123456789".into()),
+                    ..yulius_app::cross_sandbox::RequestAnswer::approve()
+                },
+            )
+            .await?;
+    assert_eq!(created["stored"], "created", "{created}");
+    tokio::time::timeout(WAIT, project).await???;
+    let scopes: Vec<String> =
+        f.h.app
+            .agent_secrets(&ctx, sid().as_str())
+            .await?
+            .into_iter()
+            .filter(|s| s.name == "DEPLOY_KEY")
+            .map(|s| s.scope)
+            .collect();
+    assert_eq!(scopes.len(), 2, "{scopes:?}");
+    assert!(scopes.contains(&"personal".to_owned()) && scopes.contains(&"sandbox".to_owned()));
     Ok(())
 }
 

@@ -480,17 +480,27 @@ test('a secret the Superagent asks for is typed masked on its panel and stored',
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'secret', title: 'DEPLOY_KEY', prompt: "the dev VM's SSH key", options: { scope: 'personal' } });
-  const card = screen.getByRole('group', 'Your Superagent asks you for the secret DEPLOY_KEY');
+  const card = screen.getByRole('group', 'Your Superagent asks you for the secret DEPLOY_KEY in studio');
   await expect(card).toBeVisible();
   await expect(card).toHaveText(/the dev VM's SSH key/);
+  // Review of slice 10a, M2: whose it is, said on the card.
+  await expect(card).toHaveText(/Yours only \(personal\)/);
+  await expect(card).not.toHaveText(/Replaces/);
   const field = browser.locator('.agent-request textarea[aria-label="DEPLOY_KEY’s value"]');
   await expect(field).toBeVisible();
   expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.agent-request textarea')!).getPropertyValue('-webkit-text-security'))).toBe('disc');
+  expect(await field.getAttribute('data-1p-ignore')).not.toBeNull();
   const store = screen.getByRole('button', 'Store');
   await expect(store).toBeDisabled();
   expect(await axeViolations(browser)).toEqual([]);
-  await field.fill('-----BEGIN KEY-----\nAAAA\n-----END KEY-----');
+  // M4: a value the server refuses stays typed, and the card waits.
+  await field.fill('1234567\n');
   await expect(store).toBeEnabled();
+  await store.click();
+  await expect(browser.locator('.toast:has-text("Couldn’t store DEPLOY_KEY")')).toBeVisible();
+  await expect(card).toBeVisible();
+  await expect(field).toHaveValue('1234567\n');
+  await field.fill('-----BEGIN KEY-----\nAAAA\n-----END KEY-----');
   await store.click();
   await expect(card).toBeHidden();
   await expect(browser.locator('.toast:has-text("Stored DEPLOY_KEY")')).toBeVisible();
@@ -498,4 +508,10 @@ test('a secret the Superagent asks for is typed masked on its panel and stored',
     .toEqual([{ name: 'DEPLOY_KEY', value: '-----BEGIN KEY-----\nAAAA\n-----END KEY-----' }]);
   // Nothing of it stays on the page.
   expect(await browser.evaluate(() => document.body.innerText.includes('AAAA'))).toBe(false);
+
+  // A project secret that replaces one says so.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'secret', title: 'API_TOKEN', prompt: null, options: { scope: 'sandbox' }, replaces: true });
+  const second = screen.getByRole('group', 'Your Superagent asks you for the secret API_TOKEN in studio');
+  await expect(second).toHaveText(/This project’s \(sandbox\)/);
+  await expect(second).toHaveText(/Replaces the value of API_TOKEN/);
 });
