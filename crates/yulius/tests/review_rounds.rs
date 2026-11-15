@@ -15,6 +15,9 @@ use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
 use yulius_domain::time::Timestamp;
 
+/// A round as the test reads it: number, reviewer, why, subagent, verdict.
+type Seen<'a> = (u32, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
+
 /// The Agent tool's `PreToolUse` input for a subagent of `kind`.
 fn agent_start(kind: &str) -> Value {
     json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent",
@@ -149,7 +152,7 @@ async fn the_third_round_of_a_pull_request_runs_the_opus_reviewer() -> TestResul
     .await?;
 
     let open = rounds(&h, &task, true).await?;
-    let seen: Vec<(u32, &str, &str, Option<&str>, Option<&str>)> = open
+    let seen: Vec<Seen<'_>> = open
         .iter()
         .map(|r| {
             (
