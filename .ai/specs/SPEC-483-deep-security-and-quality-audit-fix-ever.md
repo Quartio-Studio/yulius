@@ -3014,3 +3014,6 @@ later slices follow.
   changes entry say the page's own document, and the ADR names the gap (another tab, a worker).
   F4 reworded. F5: `task_prompt.rs` already pins it (`sandbox` in the attachment's policy,
   through the router).
+- **After round 1.** The whole e2e suite: 85 files, 1054 passed, 1 skipped (`e2e-all3.log`).
+  `scripts/dev ci` at `b959635c5`: exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped`
+  (`gate3.log`).
