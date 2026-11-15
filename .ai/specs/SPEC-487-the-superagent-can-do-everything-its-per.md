@@ -1015,3 +1015,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   - F12, tests: the paste, Alt-Enter, Esc, a draft across the server's restart and a failed
     restart are tested now; the half hour in an integration test is not (the unit test holds it).
   - Docs: "nothing typed is lost" said more than this does; the documents say what is kept.
+  Ten mutants now (`target/evidence/mutants-slice9a-r1.py`, `mutants-slice9a-r1.log`); nine are
+  failed by a named test, after Alt-Enter on its own was added; one survives on purpose: taking
+  out the early draft check in `cockpit_refresh_now` leaves the same behaviour (the check before
+  the end still holds the restart) and only costs the work F5 named.
