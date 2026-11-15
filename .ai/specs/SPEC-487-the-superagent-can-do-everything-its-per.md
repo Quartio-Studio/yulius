@@ -121,6 +121,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
 | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
 | Instance: Update now, Restart, Cancel, Check | yes, a superadmin's (slice 7; not the Global Superagent) | no | The buttons' rights and refusals |
+| A task's screen, live or its last run's, and how that run ended (exit code, reason) | yes (`task_screen`, slice 10b) | no | The page's terminal shows it to anyone who sees the task; a task's agent reads its own transcript, not another's screen |
+| A task's tokens, the period's by model | yes (`task_usage`, slice 10b; cost as tokens: no price per task is kept) | no | The Dashboard's figures |
+| A task's or the host's load | the host's (`instance`); a task's: no | no | Yulius measures the host and the sessions per sandbox, not each task's processes |
+| How far the repository's checkout is from its integration branch | yes (`checkout`, slice 10b) | it has its own branch and `git` | A stale checkout gave a wrong "no" |
 | Instance: logs, `yulius doctor` | no: no page shows them; `instance` shows health (load, memory, disk, sessions) | no | The logs and the doctor are the host's (`journalctl`, the CLI), outside what Yulius serves |
 | Another sandbox: list and read tasks | yes (slice 8a) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
 | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting, amended, withdrawn in slice 8a) | no | ADR-0227, ADR-0333 |
@@ -194,6 +198,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one these rules refuse, or none, leaves the request waiting and the value typed on the card. | the same test (no value, a short one, a cut key: refused, still waiting) |
 | SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: the new value of their secret of that name in the scope asked, or a new agent secret there; never another scope's or a global one; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`; the project's of the same name: `created` beside the personal one) |
 | SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
+| VIS-001 | `task_screen {task_id \| number, lines?}` answers a task's screen as its page's terminal shows it: live while it runs, else the last screen its last run left (redacted of agent secrets again before it is read), its last 40 lines that hold something (at most 200), with how that run ended: state, exit code, reason, start and end. | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`; `visibility_tools::tests::a_screen_is_cut_to_its_last_lines` |
+| VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for a period (default: its last 7 days) and the period's totals by model. | the same test |
+| VIS-003 | `checkout` answers how many commits the project's repository checkout is behind and ahead of its integration branch on the remote as of its last fetch, and when that was; a project not cloned is said so. It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
+| VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
 ## Plan
 
@@ -517,6 +525,14 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 10b: what the page shows, read; nothing measured anew** (VIS-001 to VIS-004). A
+  task's screen, its tokens and the checkout's distance are what the page, the Dashboard and Git
+  already know. A task's load is left open: Yulius measures the host and the sessions per
+  sandbox, not each task's processes, and `instance` shows the host's; the evidence's case
+  (a task of its own blamed on other projects) is now answered by the host's load beside its
+  sessions and the task's tokens. Cost is answered as tokens: no price per task is kept, and a
+  price per model would be a figure of its own. The checkout fetches nothing: a fetch would change
+  the person's working copy's view under them; the answer says when it was last fetched.
 - **Slice 10a: a secret's value is typed on the panel** (SEC-001 to SEC-004, ADR-0336), the
   person's decision. The rest of wall 10 stays as decided before: binding a secret to hosts and
   copying it into `.env` keep a person's allowance (`secret_request_hosts`, `secret_copy_to_env`
