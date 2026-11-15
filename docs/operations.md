@@ -1265,7 +1265,8 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    Opus 5.5 until it can run again", a task's details name the model its session runs on, and each
    session runs Fable again at its next start once a subscription can. Such a task waits, or asks
    a person, only when neither model can run. A default task runs Opus 5.5 (ADR-0340) and waits
-   when no subscription can run it. A usage reading does not end that limit. After buying credits, press **Refresh**
+   when no subscription can run it. A usage reading does not end that limit. After buying
+   credits, press **Refresh**
    on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
    when the model answers the limit ends at once and the tasks that wait for it go on
    (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed

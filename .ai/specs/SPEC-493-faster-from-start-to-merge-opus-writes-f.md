@@ -168,7 +168,8 @@ person's decision is read as holding after an approval).
   session fills Fable's window on the subscription, not the window of the model it was launched
   with, and goes on at once with the model Yulius runs it with (its own, or the fallback of a task
   set to Fable while no subscription runs Fable), wherever the pool places it, the same
-  subscription included, continuing the cut turn and saying with which model. With a Claude Code that writes no such record the limit
+    subscription included, continuing the cut turn and saying with which model. With a Claude Code
+  that writes no such record the limit
   stays the launched model's.
 - **MDL-003** A Claude Code release that lacks Opus 5.5 (the default) never runs in a sandbox, as
   before; one that lacks Fable 5.2 is installed and the gap reported. Naming Fable 5.2 there as
@@ -635,8 +636,10 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   not limited, its line still shown).
 - AC-1: `yulius-harness` launch tests (new, resumed, Cockpit, Superagent arguments) and
   `cockpit::`, `global_superagent::` against the fake `claude`. AC-2: `model_fallback::` (a task
-  set to Fable, 7 tests), `usage_credits::` (19), `capacity::tests::a_runs_family_is_its_launch_models`
-  (`fallback_of(None)` is none). AC-3: `agent_cli::tests::a_build_without_the_default_model_is_refused_and_another_gap_is_named`,
+    set to Fable, 7 tests), `usage_credits::` (19),
+  `capacity::tests::a_runs_family_is_its_launch_models`
+    (`fallback_of(None)` is none). AC-3:
+  `agent_cli::tests::a_build_without_the_default_model_is_refused_and_another_gap_is_named`,
   `claude_updates::` (a release without the default is refused).
 - Not exercised here: a live Claude Code run on a subscription (the launch arguments are proven
   against a fake `claude`), and the instance, which gets the change with a promotion and update.
@@ -675,7 +678,8 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   (`limit_observation(limit, None)`; no `input.running = ran`) failed the new tests. Answered:
   - Minor (own code): the notice named the task's own model, not the model the relaunch runs
     (a task set to Fable on its fallback, switched to Fable and refused, read "goes on with Fable
-    5.2"). Test first: `usage_credits::a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with`
+      5.2"). Test first:
+  `usage_credits::a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with`
     failed with that notice; the notice now names the model the same snapshot places the run
     with ("Fable is used up on this subscription: this session goes on with Opus 5.5.").
   - Minor (made stale): ADR-0020 and ADR-0055 status lines point to ADR-0340.
@@ -685,3 +689,15 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     model", still read as the launched model after `/model` (SPEC-486 code). Not changed here.
 - After round 2: `cargo nextest run -p yulius-harness -p yulius-app`: 748 passed;
   `usage_credits::`, `cockpit::`, `model_fallback::`: 104 passed; `scripts/dev lint` exit 0.
+- **Review round 3** (delta `63bb46fdd..5b399be20`, Opus 5.5 by the policy for a third round):
+  approve, with two own-code minors of one cause. The notice was worked out from a separate
+  read of capacity, so a branch went untested (a Fable task on Fable, switched to Opus and
+  refused) and a usage write between the two reads could make it name another model than the
+  launch runs. Answered: the placement keeps the refused family (`switched_limit`) and the
+  relaunch says the notice after its preflight, with the model it runs. Test first:
+  `usage_credits::a_fable_task_switched_to_opus_goes_on_with_fable_and_says_so` (passed
+  before, so the reviewer's surviving mutant is now checked instead): with the notice naming
+  the task's own model,
+  `a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with` fails; with
+  it naming the fallback whenever there is one, the new test fails. `usage_credits::`,
+  `cockpit::`, `model_fallback::`: 105 passed. Long lines rewrapped.

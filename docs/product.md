@@ -396,7 +396,8 @@ watching, steering and unblocking.
   reset. A session whose person switched it to Fable inside it (`/model`) runs Fable while the
   subscription has credits for it; refused, the limit is recorded as Fable's and the session
   goes on with the model Yulius runs it with (its own, or the fallback of a task set to Fable),
-  wherever the pool places it, the same subscription included, and says so (SPEC-493). Its Capacity card says what
+  wherever the pool places it, the same subscription included, and says so (SPEC-493). Its
+  Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude

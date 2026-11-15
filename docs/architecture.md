@@ -634,7 +634,8 @@ flowchart TD
 ```
 
 The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model;
-no other model has one, so a default task, which runs Opus 5.5, waits). The task's own setting is not changed:
+no other model has one, so a default task, which runs Opus 5.5, waits). The task's own setting is
+not changed:
 `choose_account` returns the account with the fallback model from the same snapshot of the pool
 (`Placed`), and the launch gives it to Claude Code. A run records the model it was launched with
 (`attempts.model`; a Superagent's `shell.json`), and that model, not the task's, is what a limit
