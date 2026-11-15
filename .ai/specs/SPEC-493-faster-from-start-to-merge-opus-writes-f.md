@@ -837,4 +837,23 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     query is `from`/`to`.
   - Nits: the doubled doc comment; heads cut by characters; a run without a recorded model
     counts as its task's model.
+- **Review round 2** (head `2e63bb004`, on Fable 5.2: the reviewer was cut off at its first
+  request by the Fable limit and resumed with a message after the 14:00 UTC reset, not started
+  again). Request changes. Answered (all own code):
+  - Major: the playground merge recorded without its head, so any approval counted. Every
+    merge path now passes `MergedHead` (the head and, where known, the integration branch
+    before the merge). `playground::a_playground_merge_records_whether_the_merged_head_was_approved`
+    merges through the real path: an own commit after the approval gets the caveat, a clean
+    merge of `dev` after it does not. Mutations caught: the playground passing no head; the
+    clean-merge check forced to true; forced to false.
+  - The clean-merge check ran after the merge, unsound for merge-commit merges (the merged
+    head is then in the integration branch): it is now judged against the integration branch
+    as it was before the merge (`review_covers_against` with the merge commit's first parent,
+    or the playground's base); a merge found elsewhere has no base and counts only the
+    approved head itself.
+  - The analytics read keys a pull request by its merge (a playground merges with no number);
+    the previous merge also comes from the earlier merge record (a merge with no round writes
+    one too); the restart test also asserts the cut-off; the architecture text says the new
+    rules; the API document names the read's 20,000-round bound; `same_commit` is
+    `delivery_merge`'s own; a playground's record reads "the merge".
 

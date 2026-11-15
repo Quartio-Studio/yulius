@@ -1196,9 +1196,14 @@ The transcript watch also reads each subagent of the session's own thread
 (`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
 (`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
 `delivery_status`) lists the open pull request's rounds. When a merge is recorded,
-`dlv_transition` writes the merge record `delivery.review.models` (actor `yulius`): the models
-the task's runs were launched with since its previous pull request merged, and each round with
-its model, verdict and head, and "no recorded review round approved it" when none did.
+`dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
+models of the runs that worked on the pull request (those still going when the previous one
+merged, known from its rounds or its own merge record, and every later one), and each round
+with its model, verdict and head. A merge path passes what it merged (`review::MergedHead`):
+an approval counts for that head, or one followed only by clean merges of the integration
+branch as it was before this merge (the merge commit's first parent, or a playground's base);
+a merge found elsewhere has no base, so only the approved head itself counts. When no round
+approved, the record says "no recorded review round approved its head".
 `GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull
 requests merged in a range (`review::review_numbers`).
 

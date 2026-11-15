@@ -1772,23 +1772,36 @@ fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() ->
         "timestamp": at, "message": {"id": "msg_down_1", "model": "claude-fable-5-2",
         "role": "assistant", "content": [{"type": "text", "text": "reading"}],
         "usage": {"input_tokens": 3, "output_tokens": 10}}});
-    std::fs::write(sub.join("agent-c3c3c3c3c3.jsonl"), format!("{answer}\n"))?;
+    let refused = json!({"type": "assistant", "isSidechain": true, "agentId": "c3c3c3c3c3",
+        "timestamp": at, "isApiErrorMessage": true, "error": "rate_limit",
+        "apiError": "usage_limit_reached", "apiErrorStatus": 429,
+        "apiErrorParams": {"rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"}},
+        "message": {"id": "msg_down_2", "model": "<synthetic>", "role": "assistant",
+            "content": [{"type": "text", "text": "You've hit your 5-hour limit"}]}});
+    std::fs::write(
+        sub.join("agent-c3c3c3c3c3.jsonl"),
+        format!("{answer}\n{refused}\n"),
+    )?;
 
     let second = runtime()?;
     second.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         app.reconcile().await?;
-        wait_for("the round's model", Duration::from_secs(30), || async {
-            app.deps
-                .store
-                .review_rounds(&id, true)
-                .await
-                .is_ok_and(|rounds| {
-                    rounds
-                        .first()
-                        .is_some_and(|r| r.model_answered.as_deref() == Some("claude-fable-5-2"))
-                })
-        })
+        wait_for(
+            "the round's model and cut-off",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .review_rounds(&id, true)
+                    .await
+                    .is_ok_and(|rounds| {
+                        rounds.first().is_some_and(|r| {
+                            r.model_answered.as_deref() == Some("claude-fable-5-2") && r.cut_off
+                        })
+                    })
+            },
+        )
         .await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
