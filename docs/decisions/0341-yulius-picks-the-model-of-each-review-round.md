@@ -45,7 +45,9 @@ Measured with Claude Code 2.1.325 against a local stand-in for the model API:
   why and the session continues there, its turn interrupted first as a person's switch is, with
   a prompt asking for the review again. Holding the hook instead would need every session
   launched again (the hook client never holds `PreToolUse`). Background work or a queued
-  prompt, which a move would end, refuses the call with that reason and moves nothing.
+  prompt, which a move would end, refuses the call with that reason and moves nothing. The move
+  is said only once the new session's start there was checked, so the agent is never told to
+  wait for a move that is then refused.
 - **With no such subscription the round gets the Opus reviewer** (reason `no_fable`): its prompt
   and the agent are told to say so in the review's summary: a reviewer refused at its first
   request helps nobody, and Yulius never waits for Fable.

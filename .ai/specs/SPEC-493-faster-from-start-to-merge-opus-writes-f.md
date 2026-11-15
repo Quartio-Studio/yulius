@@ -916,3 +916,32 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `review_fable`.
 - Gate: `scripts/dev ci` exit 0 (4,496 tests passed, 17 skipped; lint, docs and repository
   checks). Security scan: disabled for this project in Yulius, not run.
+- **Review round 1** (head `d931781d2`, Fable 5.2). Request changes. Answered (all own code):
+  - Major: a move refused after its refusal had said "moves" left the agent told to wait for
+    nothing (reproduced: no clone, so the switch was refused at its start check). The hook now
+    runs `preflight_start` for the chosen subscription before it answers. A start it would
+    refuse sends the round to the Opus reviewer, and nothing moves.
+    `review_rounds::a_round_out_of_fable_whose_move_cannot_start_runs_the_opus_reviewer` (the
+    reproduction) replaces the in-memory move test, which had accepted a refused switch. The real
+    process test is the evidence of the move itself. What remains: the switch can still be
+    refused between that check and its start (a quota reached in that second), as for every
+    switch; the session then stays as it was.
+  - Major: four guards without a test, each now with one, and each mutation caught:
+    - round 3 does not move (`a_third_round_out_of_fable_does_not_move`);
+    - the cooldown after a refused switch (`a_round_after_a_refused_move_runs_the_opus_reviewer`);
+    - the queued prompt (`a_round_out_of_fable_is_refused_while_a_move_would_lose_work`);
+    - `review_fable` interrupts first (`a_hand_over_interrupts_like_a_persons_switch`).
+  - Minor: the Opus reviewer asked for by name gets the prompt line too
+    (`the_opus_reviewer_asked_for_by_name_is_told_why`, mutation caught). The busy refusal and
+    the queued-prompt refusal have their own sentences ("answer it or end your turn"). The
+    second reconcile path, the sandbox's Git page, is in the merge-commit test; base `None`
+    there is caught. The line no longer says "no subscription can run Fable" when the reason is
+    a start refused or the cooldown: "cannot run Fable 5.2 now and cannot move to a
+    subscription that can".
+  - Nit: the looks are bounded by 3 s (the hook client waits 5 s), after which the round runs
+    Opus. The spawned switch moves only the run the decision was made for, so a late second
+    start cannot restart the session the first move made.
+  - Met on the way: the real-process test read the switch's outcome once, which can still be
+    "started" when the new run already printed its prompt (an 800 ms delay before the outcome
+    is written fails the old assertion, as one parallel run did); it now waits for the outcome.
+    `--stress-count 15` of the review tests and 6 runs of the three groups passed.

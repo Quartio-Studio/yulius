@@ -1188,8 +1188,10 @@ subscription that can run both the session's model and Fable, the Agent call is 
 why, and `switch_task_now` (reason `review_fable`, which interrupts the turn first as a person's
 switch does) continues the session there with a prompt asking for the review again. While
 background work runs or a prompt waits in Claude Code's queue the call is refused with that
-reason and nothing moves. With no such subscription, or a move refused moments ago, the round
-runs the Opus reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
+reason and nothing moves. The move is announced only after the new session's start was checked
+there (`preflight_start`); with no such subscription, a start that would be refused, a move
+refused moments ago or looks longer than 3 s (the hook client waits 5), the round runs the Opus
+reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
 lets the reviewer start as asked. `SubagentStart`
 links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
 with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
