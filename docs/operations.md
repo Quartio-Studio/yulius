@@ -361,8 +361,9 @@ server {
 cookie `__Host-` prefixed) for `https` URLs, and the `Origin` of WebSockets and of every
 cookie-authenticated API request is checked against it.
 
-Yulius itself sends `X-Frame-Options: DENY`, a strict `Content-Security-Policy` (scripts, styles,
-fonts, images and connections from Yulius itself only, no `eval`, and `frame-ancestors 'none'`:
+Yulius itself sends `X-Frame-Options: DENY`, a strict `Content-Security-Policy` (scripts and
+connections from Yulius itself only, no `eval`; styles, fonts, images and media also inline or
+as `data:`/`blob:`; and `frame-ancestors 'none'`:
 nothing may frame Yulius, not even its own browser panel; ADR-0338),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin` and `X-Yulius: <process tag>`
 on every response (stricter route policies are kept). A proxy in front must pass these headers

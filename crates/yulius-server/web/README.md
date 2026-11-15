@@ -18,9 +18,9 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 
   ```
   default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-  img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
-  worker-src 'self' blob:; frame-src 'none'; object-src 'none';
-  base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:;
+  connect-src 'self'; worker-src 'self' blob:; frame-src 'none'; object-src 'none';
+  base-uri 'none'; frame-ancestors 'none'
   ```
 
   There are no inline scripts (`boot.js` is a file) and nothing is evaluated (Monaco and the shader
@@ -31,7 +31,9 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
   sandbox Chrome's video (WebCodecs) and JPEG frames (`blob:`) on a canvas and opens preview
   origins only in new windows. The e2e server (`e2e/serve.py`) sends the same file (a lab page,
   `?lab=`, may also load Google Fonts), and `e2e/tests/support.ts` fails a test on any load the
-  policy refuses; `boot.js` makes the app refuse to run inside any frame.
+  policy refuses in the page itself (not in a tab it opens or a worker). Attached recordings
+  open from `blob:` URLs (`media-src`); the GitHub App's manifest is posted to GitHub from a
+  tab the page opens, so there is no `form-action`; `boot.js` makes the app refuse to run inside any frame.
 - `README.md` files are documentation and need not be embedded. `assets/mock.js` is not embedded
   either: it runs the e2e suite and local UI work from this directory, and a real instance answers
   a page link with `?mock=1` by redirecting to the same page without it (ADR-0206).

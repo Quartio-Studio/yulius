@@ -1196,16 +1196,17 @@ async fn public_responses_carry_security_headers() -> TestResult {
                 .map(str::to_owned)
         };
         assert_eq!(header("x-frame-options").as_deref(), Some("DENY"), "{path}");
-        // W1b of SPEC-483: scripts, styles, fonts, images, connections and workers only from
-        // Yulius itself (the editor's workers and pasted images are `blob:`, icons `data:`), no
-        // plugins, frames, `<base>` or foreign form targets, and nothing may frame Yulius.
+        // W1b of SPEC-483: scripts, styles, fonts, images, media, connections and workers only
+        // from Yulius itself (the editor's workers, pasted images and attached recordings are
+        // `blob:`, icons `data:`), no plugins, frames or `<base>`, and nothing may frame Yulius.
+        // No `form-action`: the GitHub App's manifest is posted to GitHub (review round 1, F1).
         assert_eq!(
             header("content-security-policy").as_deref(),
             Some(
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-                 img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \
-                 worker-src 'self' blob:; frame-src 'none'; object-src 'none'; \
-                 base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+                 img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; \
+                 connect-src 'self'; worker-src 'self' blob:; frame-src 'none'; \
+                 object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
             ),
             "{path}"
         );

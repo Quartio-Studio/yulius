@@ -45,10 +45,10 @@ pub fn public_router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
-/// The web UI's policy (SPEC-483 W1b): everything from Yulius itself, the editor's workers and
-/// pasted images as `blob:`, icons as `data:`, inline styles (xterm and Monaco add `<style>`
-/// elements), never inline or evaluated script, plugins, frames, `<base>` or foreign form targets.
-/// `e2e/serve.py` sends the same file, so every e2e test runs under it.
+/// The web UI's policy (SPEC-483 W1b, ADR-0338): everything from Yulius itself, the editor's
+/// workers, pasted images and attached recordings as `blob:`, icons as `data:`, inline styles
+/// (xterm and Monaco add `<style>` elements), never inline or evaluated script, plugins, frames
+/// or `<base>`. `e2e/serve.py` sends the same file, so every e2e test runs under it.
 const CONTENT_SECURITY_POLICY: &str = include_str!("content-security-policy.txt").trim_ascii_end();
 
 /// Baseline security headers on every public response, unless the route set its own (the

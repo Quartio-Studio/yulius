@@ -26,16 +26,17 @@ Every public response not answered by a route with its own policy carries:
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self';
-worker-src 'self' blob:; frame-src 'none'; object-src 'none';
-base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:;
+connect-src 'self'; worker-src 'self' blob:; frame-src 'none'; object-src 'none';
+base-uri 'none'; frame-ancestors 'none'
 ```
 
 - **One file**: `crates/yulius-server/src/content-security-policy.txt`. The server includes it
   at build time; `e2e/serve.py` sends the same file, so every e2e test runs under the
   production policy. The browser only logs a refused load, so the suite's page instrumentation
-  (`e2e/tests/support.ts`) records each `securitypolicyviolation` as a page error, and the test
-  fails on it. The one difference: a brand lab page (`?lab=`, mock only, never shipped) may load
+  (`e2e/tests/support.ts`) records each `securitypolicyviolation` of the page's own document as
+  a page error, and the test fails on it. It does not see a tab the page opens or a worker: a
+  refusal there shows only as a test that waits in vain for what was refused. The one difference: a brand lab page (`?lab=`, mock only, never shipped) may load
   the Google Fonts families it previews (`fonts.googleapis.com` styles, `fonts.gstatic.com`
   fonts).
 - **Scripts only from Yulius**: no inline script, no `eval`, no other origin. Files people attach
@@ -44,6 +45,12 @@ base-uri 'none'; form-action 'self'; frame-ancestors 'none'
 - **Inline styles are allowed**: xterm and Monaco create `<style>` elements and cannot be given a
   nonce. A style cannot run code; the risk left is CSS-based reading of the page, which needs an
   injection that the script policy already limits.
+- **No `form-action`**: creating the GitHub App posts its manifest from a blank tab the page
+  opens, which inherits this policy, to GitHub's web address, which an instance may configure
+  (and `form-action` also checks the redirects that follow). The page's own forms are handled
+  in script and post nowhere.
+- **Media from `blob:`**: a recording attached to a draft or a queued message opens from a
+  `blob:` URL in a tab that inherits the policy.
 - Routes with a stricter policy keep theirs: preview pages, the proxy's refusal page and
   attachments (`sandbox`).
 
@@ -67,7 +74,7 @@ base-uri 'none'; form-action 'self'; frame-ancestors 'none'
 - The brand lab is not shipped (`lab.js` is not embedded), so on a real instance it does not
   exist; the e2e server allows its two font hosts on a lab page only.
 - `connect-src 'self'` covers the page's WebSocket (`wss://` on the same host) in every current
-  browser (CSP Level 3). Browsers from before that rule (Safari before 15.4) refuse the
-  WebSocket and show the UI without live updates.
+  browser (CSP Level 3). A browser from before that rule refuses the WebSocket and shows the UI
+  without live updates.
 - The policy is set once in the server's header middleware: an HTML page added to a route must
   either fit it or set its own.
