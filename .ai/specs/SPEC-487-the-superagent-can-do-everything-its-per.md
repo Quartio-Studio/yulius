@@ -126,7 +126,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting, amended, withdrawn in slice 8a) | no | ADR-0227, ADR-0333 |
 | Leave a decision only the person makes, answered Yes or No on its panel (`person_ask`) | yes (slice 8a) | asks with `needs_you` (had) | A question in a report is not read; the panel keeps it until answered |
 | A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
-| Enter a secret's value | the person, masked, beside the chat (slice 10) | no | The value goes from the person to the vault |
+| Enter a secret's value | the person, masked, on the Superagent's panel (`secret_request_value`, slice 10a) | no (it asks a person: `secret_request_copy`, `needs_you`) | The value goes from the person to the vault; ADR-0336 |
 | Report a missing ability to the Yulius project | yes (slice 11) | yes (slice 11) | Both meet walls |
 
 ## Requirements
@@ -190,6 +190,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute (checked again with its terminal held): one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then, a minute if it could not be typed; not in the first 20 seconds after the Superagent started, nor within 30 seconds of the last check typed into it. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
 | CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then: not for a disabled person; a start that fails is tried again after 2, 4, … up to 60 minutes; the checks of a person or a sandbox that is gone are deleted. | the same test (`start_superagents_for_due_checks` after the Superagent ended, for a disabled person, for a removed sandbox) |
 | CHK-005 | The three tools are the Superagent's only; `superagent_checks` is pre-allowed, the other two ask in Claude Code first; the instructions send standing jobs to `superagent_check_set`, never to a timer of the Superagent's own. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
+| SEC-001 | `secret_request_value {name, description?, scope?}` is a request on the Superagent's own panel (lasting; no amend); refused before anyone is asked for a name that is not capitals, digits and underscores starting with a capital, a scope other than `sandbox` or `personal`, a description over 500 characters, unknown arguments. The card names the secret and what it is for and holds a masked multi-line field; Store takes a click once 8 characters are typed. | `cockpit::a_secret_value_typed_on_the_panel_reaches_the_vault_only`; `superagent-requests.e2e.ts` "a secret the Superagent asks for is typed masked on its panel and stored" |
+| SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one the vault would refuse, or none, leaves the request waiting. | the same test (no value, a short one, a cut key: refused, still waiting) |
+| SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: a new agent secret of that scope, or the new value of theirs of that name; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`) |
+| SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
 
 ## Plan
 
@@ -513,6 +517,12 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 10a: a secret's value is typed on the panel** (SEC-001 to SEC-004, ADR-0336), the
+  person's decision. The rest of wall 10 stays as decided before: binding a secret to hosts and
+  copying it into `.env` keep a person's allowance (`secret_request_hosts`, `secret_copy_to_env`
+  ask once each: the guard they already are), and `secret_verify` keeps refusing production
+  secrets (ADR-0144). The "invisible sandbox-scoped secret" of the evidence was not reproduced
+  here; it is left to its own report if it comes again.
 - **Slice 9b: standing jobs are checks Yulius holds** (CHK-001 to CHK-004, ADR-0335): the
   conversation survives a restart, its schedulers do not, so the schedule moves out of the
   session. A due check may start a Superagent: that is what "keep monitoring" means to the

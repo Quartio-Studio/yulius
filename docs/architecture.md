@@ -1963,7 +1963,13 @@ and `onboarding_start` are checked as the page would check the person (`checked_
 the approval, which for a release carries the project's slug as typed (checked before the request
 is taken), runs `cd_deploy`, `cd_rollback`, `promote_sandbox` or `approve_onboarding` with the
 answering person's browser `AuthContext` (`run_release`); a dev-stage deploy or rollback is the
-person's project tool, run at once. The panel reads the person's own
+person's project tool, run at once. `secret_request_value` is one too
+([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)):
+its answer carries the value the person typed in the card's masked field, checked as the Secrets
+page checks a pasted value (`secret_value_to_store`) before the request is taken, and stored with
+the answering person's session (`store_secret_value`: `create_agent_secret`, or
+`update_agent_secret` of theirs of that name); the request, its file and the audit hold the name
+only. The panel reads the person's own
 requests, announced by `superagent.requests` to that person only. An answer needs a browser
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly

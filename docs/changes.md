@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A secret's value is typed by its person on the Superagent's panel (SPEC-487 slice 10a, task
+  #469, [ADR-0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
+  The Superagent could not take a value, so people retyped keys on the Secrets page or pasted
+  them into the chat. Now `secret_request_value` puts a card with a masked field on its panel;
+  the value goes to the vault as the person's, a multi-line key with its line breaks kept, and the
+  Superagent sees its name only.
 - The Superagent's standing jobs survive its restarts (SPEC-487 slice 9b, task #469,
   [ADR-0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)). Its crons and
   watchers ended with every restart; once nothing monitored for 15 hours while the person thought
