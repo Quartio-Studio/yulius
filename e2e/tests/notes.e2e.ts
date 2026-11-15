@@ -279,7 +279,8 @@ test('a save made while a refused one is looked into is not a conflict with ones
   // The look at the server after a refusal is held from here, whichever save is refused first: the
   // blur below, or the pad's own retry of the lost save 1 s after it, which a starved run is slower
   // than (#510); unheld, that retry's look settled the lost save before the blur.
-  // The sandbox notepad's loads: a resync (#1246) would load the other notepads too.
+  // The sandbox notepad's loads: another notepad's own loads (a late one failed #1246) are not
+  // this pad's.
   const loads = await sandboxLoads(browser);
   await browser.evaluate(() => {
     const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null } }).__yuliusMock;

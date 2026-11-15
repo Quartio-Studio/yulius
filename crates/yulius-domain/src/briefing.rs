@@ -677,8 +677,8 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          summary and AGENTS.md true in the same change. No secrets in the repository: keys go \
          in the ignored `.env` (names in `.env.example`), agent secrets via \
          `secret_copy_to_env`.\n\
-         6. Finish with evidence: run every project gate. With a spec, check every Plan item, \
-         add an Evidence section (commands run and results) and set `status: done`. \
+         6. Finish with evidence: the whole gate is Yulius CI's. With a spec, check every Plan \
+         item, add an Evidence section (commands, results) and set `status: done`. \
          {changes}\n\n",
         spec = spec_rule(input),
         min = steps::COARSE_BELOW,

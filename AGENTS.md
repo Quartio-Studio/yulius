@@ -64,7 +64,7 @@ Create a typed branch and worktree together from `origin/dev` with `git worktree
 never switch an existing worktree to another branch. Never work directly on
 `dev` or `main`. Start the independent code review with the Agent tool and the
 `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
-rounds, then Opus 5.5). Passing gates + an independent review in a fresh session of the exact head →
+rounds, then Opus 5.5). While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Green Yulius CI + an independent review in a fresh session of the exact head →
 `delivery_merge` → Yulius squashes the pull request into `dev` on green Yulius CI through its
 merge queue (`yulius wait` to wait; a hand merge is refused): a task's work ends there.
 Promotion (`dev` → `main`, merge commit) is a person's, on the CD page (ADR-0110); a task that

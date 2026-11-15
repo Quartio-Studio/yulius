@@ -61,8 +61,11 @@ request as the behavior they describe; risky schema changes are expand → migra
 
 ## 3. Local gates
 
-Run every gate of the project before anything leaves your machine (`om-check-and-commit`),
-and claim nothing without fresh output (`verification-before-completion`).
+While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests
+the head while the reviewer reads. Do not run the whole gate locally before a review or between
+rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an
+outage). Commit and push with `om-check-and-commit`, and claim nothing without fresh output
+(`verification-before-completion`).
 
 ## 4. Independent review in a fresh session
 

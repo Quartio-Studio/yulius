@@ -28,6 +28,6 @@ Test spawn failure, ignored termination, descendants, output flooding, races and
 restart reconciliation. Confirm no shell interpolation, secret leakage, host
 execution disguised as containment, or deletion of unowned worktrees.
 
-Run targeted contract tests and `scripts/dev ci`. Report exactly which provider
+Run the contract tests your change touches (the whole gate is Yulius CI's). Report exactly which provider
 versions/transports were verified and which need a separately authorized live
 smoke test. Updating a mapper without verified wire evidence is not full parity.

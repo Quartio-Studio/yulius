@@ -1022,3 +1022,30 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     the test-only socket stays without it. A bound socket that is not listening is refused on
     Linux. On macOS it may be dropped (a timeout instead), but these tests run on Linux only
     (`scripts/zig_macos.py` builds, it does not run).
+
+### Fix 3: Yulius CI tests a head while its review runs
+
+- CIR-001, CIR-002: `review::deliver_for_review` runs at every review start. The plan never holds
+  `DeliveryAsk::Review` (`steps::tests::a_review_start_is_held_by_no_step`).
+  `review_head_not_ready` says why a head cannot go out. Otherwise `try_auto_open_pr` pushes
+  the head (and opens the pull request), then `ci_sync_sandbox` queues its run at once.
+  - `delivery::a_review_start_delivers_the_head_and_queues_its_run`: with work committed, a valid
+    spec and the review step open, the hook says "Yulius CI tests this head"; the head is
+    pushed, pull request #1 opened and a run queued with no poll running. Uncommitted work: the
+    agent hears "uncommitted changes" and nothing is pushed. A newer head is pushed, and the
+    older head's run is cancelled.
+  - Mutation caught: no immediate sync ("no Yulius CI run was queued").
+- CIR-003: unchanged. `delivery_merge` still needs the exact head's passed run; the existing
+  delivery and merge-train tests pass (274 of 274 in the touched groups).
+- CIR-004: one rule, in `docs/engineering/workflow.md` step 4, `yulius-verify`, AGENTS.md,
+  `om-check-and-commit`, `om-code-review` (the reviewer reads the head's run and runs the tests
+  it doubts) and `delivery-pipeline`. The short form ("the whole gate is Yulius CI's") is in the
+  Feature, Fix and Chore workflows (within their 1,444-byte budget) and the briefing (same
+  length: "(commands, results)"). `yulius-rust-slice` and `yulius-runner` no longer say
+  `scripts/dev ci`. `skills::tests::every_place_states_one_rule_for_local_checks` holds them and
+  refuses the old wordings. ADR-0342. Generated skills by `apm install --force` (its `target`
+  flips in `apm.lock.yaml` restored); repository check passed.
+- How to read it a week later: the time from a pull request's opening to its first review
+  round's report, against the time its first CI run took (`GET /api/analytics/reviews` with the
+  Pipeline tab's CI runs); a run queued within seconds of a round's start.
+- Fix 2's round-2 nit: the notes test's comment no longer ties #1246 to a resync.

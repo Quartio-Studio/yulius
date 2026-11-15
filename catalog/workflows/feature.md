@@ -16,16 +16,16 @@ order: 10
 
 ## Instructions
 
-Follow `delivery-pipeline` end to end; nobody accepts the result for you.
+Follow `delivery-pipeline`; nobody accepts the result for you; the whole gate is Yulius CI's.
 
 - One feature, one concern: split independent capabilities into chained tasks.
 - Write the spec with `om-spec-writing` (`om-brainstorm` first when the request is vague, and
   `om-ux-shape` for user-facing flows). Its Plan replaces these steps: keep the first step and the
   last two, and put between them all the work you know of as slices of similar effort (3-12 steps
-  per pull request, at most 60; a step is added later only for work found later), each named by
-  what it delivers and leaving the project working.
+  per pull request, at most 60; add one later only for work found later), each named by what it
+  delivers and leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
-  change. One step in progress at a time, marked done as soon as it is finished.
+  change. One step in progress at a time, done as soon as it is finished.
 - Review: agent `yulius-reviewer` (Yulius picks its model) runs `om-code-review` on the diff and
   the spec; it marks findings own code or pre-existing; the PR answers each. Own code is fixed
   test-first whatever the round limit, never as a follow-up issue (that is request changes); only

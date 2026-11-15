@@ -1110,6 +1110,78 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 CIR-004 (AC-12): one rule for local checks, stated the same way wherever checks
+    /// are described; the short form where a budget applies; and none of the old wordings that
+    /// asked for the whole gate before a handoff or a review.
+    #[test]
+    fn every_place_states_one_rule_for_local_checks() -> TestResult {
+        const RULE: &str = "while iterating, run the checks your change touches. the whole gate \
+            is yulius ci's job: it tests the head while the reviewer reads. do not run the whole \
+            gate locally before a review or between rounds, except to reproduce a ci failure or \
+            when ci cannot run (a playground without ci, an outage).";
+        const SHORT: &str = "the whole gate is yulius ci's";
+        const OLD: [&str; 5] = [
+            "`scripts/dev ci` before handoff",
+            "run every gate of the project before anything leaves your machine",
+            "never approve without running the full gate",
+            "6. finish with evidence: run every project gate",
+            "for rust/tooling changes run `scripts/dev ci`",
+        ];
+        let normal = |text: &str| {
+            text.replace("\\\n", " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| -> Result<String, Box<dyn std::error::Error>> {
+            Ok(normal(&fs::read_to_string(root.join(rel))?))
+        };
+        for rel in [
+            "docs/engineering/workflow.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            "AGENTS.md",
+            "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+        ] {
+            let text = read(rel)?;
+            assert!(text.contains(&normal(RULE)), "{rel} does not state the rule");
+        }
+        for rel in [
+            "catalog/workflows/feature.md",
+            "catalog/workflows/fix.md",
+            "catalog/workflows/chore.md",
+            "crates/yulius-domain/src/briefing.rs",
+        ] {
+            assert!(read(rel)?.contains(SHORT), "{rel} does not say the short form");
+        }
+        // The reviewer reads the head's run and runs the tests it doubts.
+        let review = read("catalog/skills/open-mercato/om-code-review/SKILL.md")?;
+        assert!(
+            review.contains("read the yulius ci run of the head you review"),
+            "om-code-review does not send the reviewer to the head's run"
+        );
+        for rel in [
+            "docs/engineering/workflow.md",
+            ".apm/skills/yulius-verify/SKILL.md",
+            ".apm/skills/yulius-rust-slice/SKILL.md",
+            ".apm/skills/yulius-runner/SKILL.md",
+            "AGENTS.md",
+            "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "crates/yulius-domain/src/briefing.rs",
+        ] {
+            let text = read(rel)?;
+            for old in OLD {
+                assert!(!text.contains(old), "{rel} keeps the old rule: {old}");
+            }
+        }
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {

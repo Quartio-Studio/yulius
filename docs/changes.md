@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Yulius CI tests a head while its review runs (SPEC-493 fix 3, task #472,
+  [ADR-0342](decisions/0342-yulius-ci-runs-the-whole-gate-while-the-review-reads.md)): starting
+  the reviewer pushes the committed head, opens the pull request and queues its run at once. One
+  rule for local checks everywhere: run the checks your change touches; the whole gate is Yulius
+  CI's, not a local step before a review or between rounds.
 - The flaky tests of the measurement are fixed at their root (SPEC-493 fix 2, task #472): the
   unreachable-server tests hold their port instead of letting it go, and the notes back-off
   test counts the sandbox notepad's loads (a late load of the Team notepad failed it, #1246).

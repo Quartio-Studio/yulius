@@ -23,7 +23,7 @@ Add tests that distinguish correct behavior from the reported failure. Prove the
 regression when practical in an isolated fixture/worktree. Do not mirror private
 implementation details or use live provider credentials in normal tests.
 
-Run targeted tests during iteration, then `scripts/dev ci`, inspect the final diff
-and update the spec's evidence. If a gate fails, identify cause and repair it;
+Run the tests your change touches while iterating (the whole gate is Yulius CI's, on the
+pushed head), inspect the final diff and update the spec's evidence. If a gate fails, identify cause and repair it;
 do not weaken policy to pass. Report what changed, actual test evidence and gaps.
 No skill step authorizes remote publication or adds a product requirement.

@@ -16,7 +16,7 @@ order: 20
 
 ## Instructions
 
-Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
+Follow `delivery-pipeline`; a fix is one concern; the whole gate is Yulius CI's.
 
 - Reproduce first and find the cause, not the symptom, with `om-root-cause` (read-only): the
   failing input, the code path and why the tests missed it.
@@ -27,7 +27,7 @@ Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
 - The spec can be short: symptom, root cause, regression test, fix, and what else the cause
   could break.
 - Fix with `om-fix`: commit the regression test first, show it fails, then the smallest fix
-  that makes it pass. No unrelated refactoring.
+  that makes it pass, no refactoring.
 - Review by agent `yulius-reviewer` (`om-code-review`, Yulius picks its model) marks
   findings own code or pre-existing; the PR answers each. Own code is fixed test-first whatever the round limit, never as a follow-up issue
   (that is request changes); only pre-existing bugs, flaky tests the change did not cause and nits
