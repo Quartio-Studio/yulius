@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- An armed pull request whose base moved waits about one CI run, not two (SPEC-493 fix 4, task
+  #472, [ADR-0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md)
+  amended): its merge candidate runs beside its own run, and it merges once both passed; a member
+  whose own run fails leaves the candidate, which is formed again from the others. The Pipeline
+  tab's Merge queue card counts candidates formed, merged and dissolved (by why) and the minutes
+  from arming to merge (`GET /api/analytics/merge-queue`).
 - Yulius CI tests a head while its review runs (SPEC-493 fix 3, task #472,
   [ADR-0342](decisions/0342-yulius-ci-runs-the-whole-gate-while-the-review-reads.md)): starting
   the reviewer pushes the committed head, opens the pull request and queues its run at once. One

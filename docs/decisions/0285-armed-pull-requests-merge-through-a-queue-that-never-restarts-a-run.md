@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-441](../../.ai/specs/SPEC-441-merge-queue-for-every-sandbox-no-restart.md);
 task #423. Amends SPEC-050 DLV-203 and [ADR-0067](0067-armed-pull-requests-merge-in-trains.md)
-(merge trains).
+(merge trains). Amended 2026-11-15 by
+[SPEC-493](../../.ai/specs/SPEC-493-faster-from-start-to-merge-opus-writes-f.md) fix 4 (task
+#472): the candidate runs beside its members' own runs (see "Pre-check beside the candidate").
 
 ## Context
 
@@ -19,9 +21,19 @@ hand, and re-armed merges, which reset their place and dissolved trains.
 
 ## Decision
 
-- **Pre-check, then candidate.** A pull request's own run on its own head (the pre-check) always
-  finishes: Yulius neither merges the integration branch into an armed pull request nor puts it
-  in a candidate before that run passed.
+- **Pre-check beside the candidate** (amended by SPEC-493 MQC-001, MQC-002). A pull request's own
+  run on its own head (the pre-check) always finishes: Yulius never merges the integration branch
+  into an armed pull request before that run passed. Since SPEC-493 it may join a candidate while
+  that run is still queued or running: the candidate's run goes beside it, and the member merges
+  once the candidate **and** its own run passed (a passed candidate waits for it, within the
+  candidate's two-hour test limit). A member whose own run fails, errors or is cancelled leaves:
+  the candidate is dissolved and formed again from the others, and that member's armed merge ends
+  as a failed own run ends it. A failed candidate waits for its members' own runs before it is
+  bisected, so a member that explains the red result leaves instead. Before, the own run finished
+  first and the candidate ran after it: two runs in a row (quartio-v2, 12-13 Nov: 37 of 61
+  merged after a candidate, at a median 127 min against 17 min for one merged on its own run).
+  An `exclusive` job runs one at a time per sandbox (SPEC-435), so there a candidate's run of it
+  waits for the members' own runs of it; the gain is what does not wait.
 - **Green and current merges at once.** A green pull request whose head contains the integration
   branch merges on the next pass, even while a candidate of others is under test (that candidate
   is formed again on the new base).
@@ -64,7 +76,13 @@ hand, and re-armed merges, which reset their place and dissolved trains.
 
 - A merge costs at most one run beyond the pre-check (its candidate), shared by every pull request
   waiting at that time. With three pull requests turning green one after another, the base moving
-  after each merge: 3 pre-checks and at most 2 candidates, nothing cancelled.
+  after each merge: 3 pre-checks and at most 2 candidates, nothing cancelled. Since SPEC-493 that
+  run goes beside the pre-check, not after it. A red member costs the others at most the candidate
+  run it was in; a member whose own run outlasts the candidate's two-hour test limit is held back,
+  and the others form a candidate without it.
+- The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (with `(why: <kind>)`), and
+  `GET /api/analytics/merge-queue` (the Dashboard's Pipeline tab) counts them per day with the
+  minutes from arming to merge (SPEC-493 MQC-005).
 - A pull request's run is only superseded by its own new commits.
 - A pull request that passes alone but breaks on the current base is told so after its candidate,
   not by a rerun of its own.

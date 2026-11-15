@@ -1305,19 +1305,26 @@ restart; once the run ended (the task was closed, stopped or failed) the next pa
 says so (a pull request merged meanwhile is said to be merged), and Yulius leaves the pull
 request as it is:
 
-- a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
-  merges the integration branch into it nor puts it in a candidate, so a moving base never
-  supersedes it;
+- a pull request's own run (its pre-check) always finishes: until it passed, Yulius never merges
+  the integration branch into it, so a moving base never supersedes it;
 - green and up to date: merged now;
-- green and behind: into the next merge candidate (`merge_train.rs`), the integration branch with
-  up to 8 such pull requests merged in, in arm order, tested by one run (`train/<n>+…`); on green
-  the members are brought up to date in their worktrees, the verdict recorded at each pushed head,
-  and merged in order;
+- green, or its own run still queued or running, and behind: into the next merge candidate
+  (`merge_train.rs`), the integration branch with up to 8 such pull requests merged in, in arm
+  order, tested by one run (`train/<n>+…`) beside the members' own runs (SPEC-493 MQC-001); once
+  the candidate and a member's own run passed, the members are brought up to date in their
+  worktrees, the verdict recorded at each pushed head, and merged in order; a member whose own
+  run fails, errors or is cancelled leaves, and the candidate is formed again from the others
+  (MQC-002); a failed candidate waits for its members' own runs before it is bisected;
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
   merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
   or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
   be built, a pull request that conflicts with the base alone, and projects without Yulius CI,
   with rebase merges or automatic promotion go one by one (DLV-203 after the pre-check).
+
+The queue writes `delivery.train.formed`, `.merged` and `.dissolved` (`(why: member_left |
+bisected | base_moved | errored | too_long)`); `GET /api/analytics/merge-queue` reads them per
+day with the minutes from arming to merge (`merge_queue::queue_numbers`; the Pipeline tab's Merge
+queue card).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
@@ -1327,13 +1334,15 @@ so.
 
 ```mermaid
 flowchart TD
-    A[armed head] --> P{own run passed?}
-    P -- running --> W[wait: the run finishes, never restarted]
+    A[armed head] --> P{own run?}
     P -- failed --> D[dropped: fix it]
+    P -- running, current --> W[wait: the run finishes, never restarted]
     P -- passed --> U{contains the integration branch?}
+    P -- running, behind --> C
     U -- yes --> M[merged now]
-    U -- no --> C[merge candidate: base + green pull requests, one run]
-    C -- passed --> L[each brought up to date, verdict recorded, merged in order]
+    U -- no --> C[merge candidate: base + armed pull requests, one run beside their own]
+    C -- a member's own run fails --> C
+    C -- passed, own runs passed --> L[each brought up to date, verdict recorded, merged in order]
     C -- failed, n >= 2 --> H[first half again]
     C -- failed, alone --> X[dropped: fails on the current base]
     H --> C

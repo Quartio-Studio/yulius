@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::analytics::tasks_csv;
 use yulius_app::error::AppError;
-use yulius_contracts::api::analytics::{AnalyticsSummary, ReviewAnalytics};
+use yulius_contracts::api::analytics::{AnalyticsSummary, MergeQueueAnalytics, ReviewAnalytics};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -49,6 +49,23 @@ pub async fn reviews(
 ) -> ApiResult<Json<ReviewAnalytics>> {
     Ok(Json(
         app.analytics_reviews(
+            &ctx,
+            q.sandbox.as_deref(),
+            q.from.as_deref(),
+            q.to.as_deref(),
+        )
+        .await?,
+    ))
+}
+
+/// `GET /api/analytics/merge-queue` (SPEC-493 MQC-005).
+pub async fn merge_queue(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Query(q): Query<RangeQuery>,
+) -> ApiResult<Json<MergeQueueAnalytics>> {
+    Ok(Json(
+        app.analytics_merge_queue(
             &ctx,
             q.sandbox.as_deref(),
             q.from.as_deref(),

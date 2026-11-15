@@ -280,8 +280,9 @@ person's decision is read as holding after an approval).
   job waits for the members' own runs of it (one at a time), so the gain is what does not wait.
 - **MQC-005** Candidates formed, merged and dissolved (with why: a member left, bisected, base
   moved, errored, too long) are counted per day and read at
-  `GET /api/sandboxes/{sid}/analytics/merge-queue` (the CI/CD page shows the counts), with the
-  minutes from arming to merge.
+  `GET /api/analytics/merge-queue?sandbox&from&to` (the same window and access as the reviews
+  read; the Dashboard's Pipeline tab shows the counts beside the Review card), with the minutes
+  from arming to merge.
 
 ### Fix 5: a CI job can say which files it tests
 
@@ -610,7 +611,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - Fix 3: minutes from the last approval to the merge, and local whole-gate runs per pull
     request: the Pipeline tab's `wait/merge_armed` spans (baseline: Yulius CI started at the
     arming and took 9 min here, 31 min in quartio-v2 with nothing else happening).
-  - Fix 4 and fix 5: `GET /api/sandboxes/{sid}/analytics/merge-queue` (candidates formed, merged,
+  - Fix 4 and fix 5: `GET /api/analytics/merge-queue?sandbox=<id>` (candidates formed, merged,
     dissolved; minutes from arming to merge; baseline quartio-v2: 127 min with a candidate, 17
     without) and the CI page's job list (a job's runs and skips per day).
   - Fix 6 and fix 7: the analytics read's rounds per pull request and its share of first rounds
@@ -1072,3 +1073,68 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     (race point `CiSyncPlanned`). Before the lock: 2 runs at one head; with it, 1.
   - Minor: the readiness look in the hook is bounded (1.5 s). A late look says nothing, and the
     delivery checks again. Nit: `dlv_check_spec`'s doc comment is back on it.
+
+### Fix 4: one CI cycle for an armed pull request whose base moved
+
+- MQC-001: `form_train` takes an armed pull request behind its base whose own run passed **or is
+  still queued or running**. `drive_train` merges a member only once its own run passed: a
+  passed candidate waits for it, within the two-hour test limit, not GitHub's 15 minutes.
+  - `merge_train::a_candidate_runs_beside_its_members_own_runs`: two armed pull requests behind
+    the base with their own runs queued. Their candidate's run is queued at once beside them,
+    nothing is merged into them, and both merge after 2 own runs and 1 candidate run.
+  - `merge_train::a_passed_candidate_waits_for_its_members_own_runs`: the own run is held
+    running and the candidate passes first. Three passes merge nothing ("merged before its own
+    run passed" without the wait: mutation caught). Once the own run passed, it merges.
+  - `a_moving_base_never_restarts_a_pre_check` now expects the candidate beside the pre-check;
+    the pre-check is still never restarted or cancelled.
+- MQC-002: `member_left` dissolves a candidate whose member's own run ended failed, errored or
+  cancelled ("#N's own run … ended failed: it leaves the candidate"). The next pass forms it
+  again from the others, and the member's armed merge ends in the one-by-one flow with its run
+  named. A failed candidate waits for its members' own runs before it is bisected, so a member
+  that explains the red result leaves instead of halving the candidate.
+  `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`: #1 merges, #2's armed merge
+  ends with "failed", and the dissolve reads "#2's own run". Before the wait it was bisected
+  instead.
+- MQC-003: every merge-train test stays green (32 of 32), among them the red candidate bisected,
+  three green in sequence with no run cancelled, and the restart.
+- MQC-004: an `exclusive` job takes one turn per sandbox (SPEC-435 `job_turn`), so a
+  candidate's run of it waits for the members' own runs of it. Code read; no test of its own.
+- MQC-005: each dissolve's audit line ends with `(why: <kind>)` (`dissolved_why`, unit
+  `the_why_of_each_dissolve`). `merge_queue::queue_numbers` counts per UTC day and the median
+  minutes from a merge's last arming to it (unit tests). `AuditStore::audit_of_sandbox` reads a
+  sandbox's entries and its tasks'. `GET /api/analytics/merge-queue`
+  (`analytics::the_merge_queue_read_counts_candidates_from_the_audit_log`: 2 formed, 1 merged, 1
+  dissolved because a member left, 180 min to merge, another sandbox's entry counted only for
+  the admin, a hidden sandbox 404). The Pipeline tab's Merge queue card
+  (`pipeline.e2e.ts`: the figures, and the tab without the card when the read fails).
+- ADR-0285 amended ("Pre-check beside the candidate"); architecture and its diagram, api.md,
+  changes.
+- How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=` for
+  quartio-v2 and this repository, against 12-13 Nov: the median minutes from arming to merge
+  (127 there for pull requests that needed a candidate), and candidates dissolved by why.
+- **Review round 1** (Opus 5.5, Fable out until 21:10 UTC; head `a52293766`). Request
+  changes. Answered (all own code):
+  - Major: a slow or stuck own run held every member behind it, and the candidate formed again
+    every two hours with that member in it. A passed candidate that outlasts its test limit
+    while waiting for a member's own run now holds that member back (`held_back`, until armed
+    again). The others form a candidate without it, and it goes one by one once its run passed.
+    A failed candidate waits for own runs for at most the wait limit (15 min) from the start of
+    its wait, then is bisected as before.
+    `merge_train::a_stuck_own_run_holds_its_member_back_not_the_others` and
+    `a_failed_candidate_waits_for_own_runs_within_the_wait_limit` (clock-driven, both caps).
+  - Major: the 20 s pass fired while a candidate waited for a member's own run. The train records
+    the wait (`own_wait`). `train_run_ended` is false within its bound, and `decidable_in` leaves
+    a train's members to the train. Both tests assert `!decidable_in`. The own run's end starts
+    a pass by itself, as before.
+  - Major: person-armed merges (audited under the task id) and armings from before the range
+    were missing from the minutes. The read takes the sandbox's task ids (mapped to
+    `<slug>#<n>`), and armings from 30 days before the range. The analytics test has a person's
+    arming, and an arming before the range: 3 merges, median 180 min.
+  - Minors: `dissolved_why` names "moved on" and "the own run of #… ended" as a member leaving
+    (unit test). A member whose own run is cancelled leaves
+    (`a_member_whose_own_run_is_cancelled_leaves_the_candidate`). The audit read uses the target
+    index (a `<slug>#` range, not `substr`) and keeps the newest entries within its limit.
+    `yulius wait` says when the candidate waits for a member's own run (the stuck test reads it).
+    The spec's route is corrected.
+  - Nits: the doc comments are back on their functions, and ADR-0285's three-in-sequence
+    sentence is back in its consequence.
