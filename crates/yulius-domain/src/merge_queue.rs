@@ -106,9 +106,11 @@ pub struct QueueNumbers {
     pub median_arm_to_merge_minutes: Option<f64>,
 }
 
-/// The numbers of `events` (any order).
+/// The numbers of `events` (any order) at or after `from` (none: all). Entries before `from`
+/// still pair an arming with its merge, so a merge in the range is not paired with an arming an
+/// earlier merge used (review round 2 of SPEC-493 fix 4).
 #[must_use]
-pub fn queue_numbers(events: &[QueueEvent]) -> QueueNumbers {
+pub fn queue_numbers(events: &[QueueEvent], from: Option<Timestamp>) -> QueueNumbers {
     let mut sorted: Vec<&QueueEvent> = events.iter().collect();
     sorted.sort_by_key(|event| event.at);
     let mut days: BTreeMap<String, QueueDay> = BTreeMap::new();
@@ -116,7 +118,11 @@ pub fn queue_numbers(events: &[QueueEvent]) -> QueueNumbers {
     let mut minutes = Vec::new();
     for event in sorted {
         let action = event.action.as_str();
+        let counted = from.is_none_or(|from| event.at >= from);
         if [FORMED, MERGED, DISSOLVED].contains(&action) {
+            if !counted {
+                continue;
+            }
             let day = format_rfc3339(event.at)
                 .chars()
                 .take(10)
@@ -139,6 +145,7 @@ pub fn queue_numbers(events: &[QueueEvent]) -> QueueNumbers {
             armed.insert(event.target.as_str(), event.at);
         } else if MERGE.contains(&action)
             && let Some(at) = armed.remove(event.target.as_str())
+            && counted
         {
             #[expect(clippy::cast_precision_loss, reason = "minutes of a merge fit")]
             minutes.push(event.at.millis_since(at) as f64 / 60_000.0);
@@ -198,7 +205,7 @@ mod tests {
             // A merge with no arming before it is no queue's.
             event(day1 + 30 * MIN, "app#4", "delivery.person.merge", ""),
         ];
-        let numbers = queue_numbers(&events);
+        let numbers = queue_numbers(&events, None);
         assert_eq!(numbers.days.len(), 2);
         let first = &numbers.days[0];
         assert_eq!((first.formed, first.merged), (2, 1));
@@ -207,7 +214,23 @@ mod tests {
         assert_eq!(numbers.merges, 2);
         // 36 minutes (from the last arming) and 10: the median of two is their mean.
         assert_eq!(numbers.median_arm_to_merge_minutes, Some(23.0));
-        assert_eq!(queue_numbers(&[]), QueueNumbers::default());
+        assert_eq!(queue_numbers(&[], None), QueueNumbers::default());
+        // From the second day: the first day's candidates and merges are not counted, and a
+        // merge there with no arming of its own is not paired with an arming used before.
+        let later = [
+            event(day1, "app#5", "delivery.agent.merge_armed", ""),
+            event(day1 + 10 * MIN, "app#5", "delivery.agent.merge", ""),
+            event(day1 + DAY + MIN, "app#5", "delivery.merge", ""),
+        ];
+        let mut both = events.to_vec();
+        both.extend(later);
+        let numbers = queue_numbers(&both, Some(Timestamp(day1 + DAY)));
+        assert_eq!(numbers.days.len(), 1);
+        assert_eq!(numbers.days[0].dissolved.get("errored"), Some(&1));
+        assert_eq!(
+            (numbers.merges, numbers.median_arm_to_merge_minutes),
+            (0, None)
+        );
     }
 
     #[test]
