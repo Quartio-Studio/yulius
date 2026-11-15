@@ -154,6 +154,36 @@ pub struct Delivery {
     /// Check sources of the pull request the GitHub App may not read (see [`ChecksAccess`]).
     #[serde(default)]
     pub checks_access: Option<ChecksAccess>,
+    /// The independent review's rounds of the task's open pull request, oldest first (SPEC-493
+    /// REV-005).
+    #[serde(default)]
+    pub review_rounds: Vec<ReviewRoundView>,
+}
+
+/// One round of a task's independent review (SPEC-493 REV-004).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ReviewRoundView {
+    /// Its number among the pull request's rounds.
+    pub round: u32,
+    /// The reviewer agent it runs as.
+    pub agent: String,
+    /// The model asked for.
+    pub model: String,
+    /// The model that answered, read from the reviewer's transcript.
+    #[serde(default)]
+    pub model_answered: Option<String>,
+    /// Why that model: `round`, `kept` or `no_fable`.
+    pub reason: String,
+    /// The branch head when it started.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// `approve`, `request_changes`, or `null` (no report yet, or none in it).
+    #[serde(default)]
+    pub verdict: Option<String>,
+    /// It ended with a report.
+    pub reported: bool,
+    /// A usage limit cut its reviewer off.
+    pub cut_off: bool,
 }
 
 /// A delivery action that applies at the current stage but is refused now.

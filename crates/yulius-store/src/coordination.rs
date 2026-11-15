@@ -70,6 +70,10 @@ fn keep_first_plan_size(tx: &rusqlite::Transaction<'_>, task: &str) -> rusqlite:
 
 const MSG_COLS: &str = "m.id, m.sandbox_id, m.from_task, m.from_user, m.to_task, m.kind, m.subject, m.body, m.created_at";
 
+/// The most review rounds one analytics read takes: the newest merges first (a range of years
+/// of a busy project). SPEC-493 REV-006.
+const MAX_REVIEW_ROUNDS_READ: u32 = 20_000;
+
 fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
     let task: String = row.get("task_id")?;
     Ok(ReviewRoundRecord {
@@ -395,6 +399,64 @@ impl CoordinationStore for SqliteStore {
             )
             .map_err(db)?;
             Ok(true)
+        })
+        .await
+    }
+
+    async fn merged_review_rounds(
+        &self,
+        sandboxes: &[SandboxId],
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<ReviewRoundRecord>> {
+        let ids: Vec<String> = sandboxes.iter().map(|s| s.as_str().to_owned()).collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.call(move |c| {
+            let marks = vec!["?"; ids.len()].join(", ");
+            let sql = format!(
+                "SELECT r.id, r.task_id, r.round, r.head, r.agent, r.model, r.reason, \
+                 r.subagent_id, r.model_answered, r.started_at, r.ended_at, r.verdict, r.cut_off, \
+                 r.pr_number, r.merged_at FROM review_rounds r JOIN tasks t ON t.id = r.task_id \
+                 WHERE t.sandbox_id IN ({marks}) AND r.merged_at IS NOT NULL \
+                 AND r.merged_at >= ? AND r.merged_at < ? ORDER BY r.merged_at DESC, r.started_at, r.rowid \
+                 LIMIT {MAX_REVIEW_ROUNDS_READ}"
+            );
+            let mut stmt = c.prepare(&sql).map_err(db)?;
+            let mut values: Vec<rusqlite::types::Value> =
+                ids.into_iter().map(rusqlite::types::Value::Text).collect();
+            values.push(rusqlite::types::Value::Integer(from.map_or(i64::MIN, |t| t.0)));
+            values.push(rusqlite::types::Value::Integer(to.map_or(i64::MAX, |t| t.0)));
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(values), review_round_from_row)
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn note_review_subagent(
+        &self,
+        task: &TaskId,
+        subagent: &str,
+        model: Option<&str>,
+        cut_off: bool,
+    ) -> AppResult<()> {
+        let (t, s, m) = (
+            task.as_str().to_owned(),
+            subagent.to_owned(),
+            model.map(str::to_owned),
+        );
+        self.call(move |c| {
+            c.execute(
+                "UPDATE review_rounds SET model_answered = COALESCE(?1, model_answered), \
+                 cut_off = cut_off OR ?2 WHERE task_id = ?3 AND subagent_id = ?4 \
+                 AND merged_at IS NULL",
+                params![m, cut_off, t, s],
+            )
+            .map_err(db)?;
+            Ok(())
         })
         .await
     }

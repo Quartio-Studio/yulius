@@ -236,6 +236,8 @@ impl TranscriptFacts {
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::WorkflowLaunched { .. }
+            | Observation::SubagentAnswered { .. }
+            | Observation::SubagentCutOff { .. }
             | Observation::BackgroundStarted { .. }
             | Observation::BackgroundEnded { .. }
             | Observation::BackgroundResumable { .. } => {}

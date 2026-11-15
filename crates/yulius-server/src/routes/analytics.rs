@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::analytics::tasks_csv;
 use yulius_app::error::AppError;
-use yulius_contracts::api::analytics::AnalyticsSummary;
+use yulius_contracts::api::analytics::{AnalyticsSummary, ReviewAnalytics};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -32,6 +32,23 @@ pub async fn summary(
 ) -> ApiResult<Json<AnalyticsSummary>> {
     Ok(Json(
         app.analytics_summary(
+            &ctx,
+            q.sandbox.as_deref(),
+            q.from.as_deref(),
+            q.to.as_deref(),
+        )
+        .await?,
+    ))
+}
+
+/// `GET /api/analytics/reviews` (SPEC-493 REV-006).
+pub async fn reviews(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Query(q): Query<RangeQuery>,
+) -> ApiResult<Json<ReviewAnalytics>> {
+    Ok(Json(
+        app.analytics_reviews(
             &ctx,
             q.sandbox.as_deref(),
             q.from.as_deref(),

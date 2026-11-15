@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Who wrote and who reviewed each pull request can be read afterwards (SPEC-493 fix 1c, task
+  #472): a review round records the model that really answered its reviewer and whether a usage
+  limit cut it off; a merge writes `delivery.review.models` (the authors' models and each
+  round's model, verdict and head); the delivery view and `delivery_status` list the rounds; and
+  `GET /api/analytics/reviews` and the Dashboard's Pipeline tab show the share of first reviews
+  that asked for changes, the median rounds per pull request, the share of first reviews cut off
+  and the rounds per model.
 - Yulius picks the model of each review round (SPEC-493 fix 1b, task #472,
   [ADR-0341](decisions/0341-yulius-picks-the-model-of-each-review-round.md)): every task session
   is launched with two reviewer agents (`yulius-reviewer` on Fable 5.2, `yulius-reviewer-opus`

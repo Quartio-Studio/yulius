@@ -285,3 +285,32 @@ mod tests {
         Ok(())
     }
 }
+
+/// `GET /api/analytics/reviews`: the independent review's numbers over the pull requests merged
+/// in the range (SPEC-493 REV-006).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReviewAnalytics {
+    /// The range read.
+    pub range: AnalyticsRange,
+    /// Pull requests merged in it with at least one recorded review round.
+    pub pull_requests: u32,
+    /// Of those, the ones whose first round asked for changes.
+    pub first_rounds_requesting_changes: u32,
+    /// Of those, the ones whose first round never reported (cut off by a usage limit).
+    pub first_rounds_without_report: u32,
+    /// The median of the rounds per pull request; `null` without any.
+    pub median_rounds: Option<f64>,
+    /// Rounds by the model that ran them, most first.
+    pub rounds_by_model: Vec<ModelCount>,
+    /// Rounds run on Opus 5.5 because the subscription could not run Fable 5.2.
+    pub no_fable_rounds: u32,
+}
+
+/// A model and how many review rounds it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelCount {
+    /// The model's id.
+    pub model: String,
+    /// Rounds.
+    pub rounds: u32,
+}

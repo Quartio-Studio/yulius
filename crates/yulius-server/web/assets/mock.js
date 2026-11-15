@@ -4067,6 +4067,18 @@ route('POST', `/api/admin/accounts/login/${ID}/cancel`, ({ db, p }) => {
 
 const tokenTotals = (runs, tasks, input, output, cacheRead, cacheWrite, unknown) => ({ runs, tasks, input, output, cache_read: cacheRead, cache_write: cacheWrite, unknown_usage_runs: unknown });
 
+// GET /api/analytics/reviews (SPEC-493 REV-006): the review of the pull requests merged in the
+// range; `db.reviews` replaces the mock's figures, and `db.failReviews` fails the read.
+route('GET', '/api/analytics/reviews', ({ db, query }) => {
+  if (db.failReviews) fail(500, 'internal', 'the mock failed this read');
+  if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
+  return db.reviews || {
+    range: { sandbox: query.get('sandbox'), from: query.get('from'), to: query.get('to') },
+    pull_requests: 12, first_rounds_requesting_changes: 5, first_rounds_without_report: 1, median_rounds: 2,
+    rounds_by_model: [{ model: 'claude-fable-5-2', rounds: 21 }, { model: 'claude-opus-5-5', rounds: 6 }], no_fable_rounds: 2,
+  };
+});
+
 route('GET', '/api/analytics/summary', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
   const fromDay = query.get('from');

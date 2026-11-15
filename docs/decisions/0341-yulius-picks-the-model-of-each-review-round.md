@@ -75,5 +75,7 @@ Measured with Claude Code 2.1.325 against a local stand-in for the model API:
 - A repository that defines its own `yulius-reviewer` overrides the model on purpose.
 - Sessions started before the update have no reviewer agents until their next launch; their
   reviews run as before.
-- The rounds are readable afterwards; the merge record and an analytics read come with
-  SPEC-493 fix 1c.
+- The rounds are readable afterwards. Since SPEC-493 fix 1c a round also records the model that
+  answered its reviewer (read from the subagent's transcript, not from what was asked) and a
+  cut-off; a merge writes `delivery.review.models`; `GET /api/analytics/reviews` and the
+  Pipeline tab's Review card give the numbers the person reads a week later.

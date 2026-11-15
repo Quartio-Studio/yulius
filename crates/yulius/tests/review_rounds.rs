@@ -18,6 +18,14 @@ use yulius_domain::time::Timestamp;
 /// A round as the test reads it: number, reviewer, why, subagent, verdict.
 type Seen<'a> = (u32, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
 
+/// A merge of `head` whose base is not known (only an approval of that head counts).
+fn merged_at(head: &str) -> yulius_app::review::MergedHead {
+    yulius_app::review::MergedHead {
+        head: head.to_owned(),
+        base: None,
+    }
+}
+
 /// The Agent tool's `PreToolUse` input for a subagent of `kind`.
 fn agent_start(kind: &str) -> Value {
     json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent",
@@ -363,5 +371,252 @@ async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
     h.store.delete_account(&account).await?;
     assert_eq!(a_round(&h, "rev-1", None).await?, "yulius-reviewer");
     assert_eq!(rounds(&h, &task, true).await?[0].reason, "round");
+    Ok(())
+}
+
+/// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
+/// answered (the latest), and that a usage limit cut it off, which its later report keeps.
+#[tokio::test]
+async fn a_rounds_answering_model_and_cut_off_are_noted() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev-1", None).await?;
+    let store = &h.store;
+    store
+        .note_review_subagent(&task, "rev-1", Some("claude-fable-5-2"), false)
+        .await?;
+    store
+        .note_review_subagent(&task, "rev-1", None, true)
+        .await?;
+    // A subagent that is no round's changes nothing.
+    store
+        .note_review_subagent(&task, "other", Some("claude-haiku-4-5"), true)
+        .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].model_answered.as_deref(), Some("claude-fable-5-2"));
+    assert!(open[0].cut_off);
+    hook(
+        &h.internal,
+        "SubagentStop",
+        json!({"agent_id": "rev-1", "agent_type": "yulius-reviewer",
+            "last_assistant_message": "Verdict: approve"}),
+    )
+    .await?;
+    let open = rounds(&h, &task, true).await?;
+    assert!(open[0].cut_off && open[0].verdict.as_deref() == Some("approve"));
+    Ok(())
+}
+
+/// SPEC-493 REV-006 (AC-7): the reviews read gives the numbers of the pull requests merged in
+/// the range, for the sandboxes the caller sees; another range sees none of them, and a person
+/// not signed in is refused.
+#[tokio::test]
+async fn the_reviews_read_counts_the_rounds_of_merged_pull_requests() -> TestResult {
+    use crate::support::{Creds, call, setup_superadmin_creds};
+    use axum::http::Method;
+    let h = harness()?;
+    seed(&h).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    // Round 1 asks for changes, round 2 approves.
+    a_round(&h, "rev-1", Some("x\nVerdict: request changes")).await?;
+    a_round(&h, "rev-2", Some("x\nVerdict: approve")).await?;
+    // Merged on 2026-11-15 (the day's ms).
+    let day = 1_794_700_800_000_i64;
+    h.store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &DeliveryRecord {
+                task_id: task.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(7),
+                updated_at: Timestamp(day + 3_600_000),
+            },
+        )
+        .await?;
+    let read = |range: &str| {
+        let (router, admin) = (h.router.clone(), admin.clone());
+        let uri = format!("/api/analytics/reviews{range}");
+        async move { call(&router, Method::GET, &uri, None, &admin).await }
+    };
+    let r = read("?from=2026-11-15&to=2026-11-15").await?;
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    assert_eq!(r.body["pull_requests"], 1, "{}", r.body);
+    assert_eq!(r.body["first_rounds_requesting_changes"], 1);
+    assert_eq!(r.body["first_rounds_without_report"], 0);
+    assert_eq!(r.body["median_rounds"], 2.0);
+    assert_eq!(
+        r.body["rounds_by_model"],
+        json!([{"model": "claude-fable-5-2", "rounds": 2}])
+    );
+    assert_eq!(r.body["range"]["from"], "2026-11-15");
+    let none = read("?from=2026-11-16").await?;
+    assert_eq!(none.body["pull_requests"], 0, "{}", none.body);
+    assert!(none.body["median_rounds"].is_null());
+    let bad = read("?from=2026-11-16&to=2026-11-15").await?;
+    assert_eq!(bad.status, 422, "{:?}", bad.body);
+    let anonymous = call(
+        &h.router,
+        Method::GET,
+        "/api/analytics/reviews",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(anonymous.status, 401);
+    Ok(())
+}
+
+/// SPEC-493 REV-005: the merge record names the rounds of the pull request that merged (by its
+/// merge, not its number), the models of the runs that worked on it (a run that ended before
+/// the previous merge did not; one still going did), and says when no recorded round approved
+/// the merged head; without a known head any approving round counts.
+#[tokio::test]
+async fn the_merge_record_names_this_pull_requests_rounds_and_authors() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _, TaskStore as _};
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    // An earlier run on Fable that ended before the first merge.
+    let mut earlier = h.store.attempts(&task).await?[0].clone();
+    earlier.id = yulius_domain::ids::AttemptId::parse("at-earlier")?;
+    earlier.seq = 0;
+    earlier.token_hash = "earlier-run-token-hash".into();
+    earlier.model = Some("claude-fable-5-2".into());
+    earlier.state = yulius_domain::task::AttemptState::Exited;
+    earlier.ended_at = Some(Timestamp(1_000));
+    h.store.insert_attempt(&earlier).await?;
+    let merge = |pr: u64, expected: DeliveryStage, at: i64| {
+        let (store, task) = (h.store.clone(), task.clone());
+        async move {
+            store
+                .transition_delivery(
+                    &expected,
+                    &DeliveryRecord {
+                        task_id: task,
+                        stage: DeliveryStage::MergedIntegration,
+                        pr_number: Some(pr),
+                        updated_at: Timestamp(at),
+                    },
+                )
+                .await
+        }
+    };
+    a_round(&h, "rev-1", Some("Verdict: approve")).await?;
+    assert!(merge(3, DeliveryStage::None, 5_000).await?);
+    a_round(&h, "rev-2", Some("x\nVerdict: request changes")).await?;
+    a_round(&h, "rev-3", None).await?;
+    assert!(merge(4, DeliveryStage::MergedIntegration, 9_000).await?);
+    let record = h.store.task(&task).await?.ok_or("task")?;
+    let sandbox = h
+        .store
+        .sandbox(&record.sandbox_id)
+        .await?
+        .ok_or("sandbox")?;
+    let target = format!("{}#{}", sandbox.slug, record.number);
+    let details = || {
+        let (store, target) = (h.store.clone(), target.clone());
+        async move {
+            store
+                .audit_details(&target, "delivery.review.models", 10)
+                .await
+        }
+    };
+    h.app
+        .record_review_models(
+            &task,
+            Some(4),
+            Timestamp(9_000),
+            Some(&merged_at("c0ffee0123456789")),
+        )
+        .await;
+    let detail = details().await?.remove(0);
+    assert_eq!(
+        detail,
+        "pull request #4: written by claude-opus-5-5; review rounds: 1 claude-fable-5-2 \
+         request_changes; 2 claude-fable-5-2 no report; no recorded review round approved its \
+         head",
+        "pull request #3's round is not this one's, nor the run that ended before it merged"
+    );
+    // The first pull request: its round approved, and its run on Fable wrote it too.
+    h.app
+        .record_review_models(&task, Some(3), Timestamp(5_000), None)
+        .await;
+    assert_eq!(
+        details().await?.remove(0),
+        "pull request #3: written by claude-fable-5-2, claude-opus-5-5; review rounds: 1 \
+         claude-fable-5-2 approve"
+    );
+    Ok(())
+}
+
+/// SPEC-493 REV-005: an approval counts for the merged head it approved; one of another head
+/// (here with no worktree to tell whether only clean merges follow it) does not.
+#[tokio::test]
+async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
+    use yulius_app::ports::store::{AuditStore as _, SandboxStore as _, TaskStore as _};
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    h.store
+        .insert_review_round(&ReviewRoundRecord {
+            id: "r1".into(),
+            task_id: task.clone(),
+            round: 1,
+            head: Some("aaaaaaa1111111111".into()),
+            agent: "yulius-reviewer".into(),
+            model: "claude-fable-5-2".into(),
+            reason: "round".into(),
+            subagent_id: Some("rev-1".into()),
+            model_answered: None,
+            started_at: Timestamp(1),
+            ended_at: Some(Timestamp(2)),
+            verdict: Some("approve".into()),
+            cut_off: false,
+            pr_number: None,
+            merged_at: None,
+        })
+        .await?;
+    assert!(
+        h.store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: task.clone(),
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(9),
+                    updated_at: Timestamp(3_000),
+                },
+            )
+            .await?
+    );
+    let record = h.store.task(&task).await?.ok_or("task")?;
+    let sandbox = h
+        .store
+        .sandbox(&record.sandbox_id)
+        .await?
+        .ok_or("sandbox")?;
+    let target = format!("{}#{}", sandbox.slug, record.number);
+    for (head, approved) in [("aaaaaaa1111111111", true), ("bbbbbbb2222222222", false)] {
+        h.app
+            .record_review_models(&task, Some(9), Timestamp(3_000), Some(&merged_at(head)))
+            .await;
+        let detail = h
+            .store
+            .audit_details(&target, "delivery.review.models", 1)
+            .await?
+            .remove(0);
+        assert_eq!(
+            !detail.ends_with("no recorded review round approved its head"),
+            approved,
+            "{head}: {detail}"
+        );
+    }
     Ok(())
 }

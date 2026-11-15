@@ -2087,6 +2087,101 @@ async fn stale_heads_are_refused() -> TestResult {
 /// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
 /// tools — a merge needs passed checks and an independent review of the exact head — while reads,
 /// task tokens on the REST API and read-only users never merge, promote or deploy.
+/// SPEC-493 REV-005, review round 3 of fix 1c: a merge by merge commit judges the merged head
+/// against the integration branch as it was before the merge (the merge commit's first parent),
+/// not after it. A clean merge of the integration branch after the approval keeps it; a merged
+/// side branch nobody reviewed does not, though the merge put that branch into the integration
+/// branch.
+#[tokio::test]
+async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> TestResult {
+    for side_branch in [false, true] {
+        let mut profile = DeliveryProfile::studio();
+        profile.merge = yulius_domain::delivery::MergeMethod::Merge;
+        let f = fixture(&profile).await?;
+        let wt = f
+            .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+            .await?;
+        commit_file(&wt, "landing.txt", "v1", "Landing")?;
+        commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+        let reviewed = git(&wt, &["rev-parse", "HEAD"])?;
+        if side_branch {
+            git(&wt, &["switch", "--quiet", "-c", "side", "HEAD~2"])?;
+            commit_file(&wt, "side.txt", "unreviewed", "Side work")?;
+            git(&wt, &["switch", "--quiet", "feat/1-landing"])?;
+            git(&wt, &["merge", "--quiet", "--no-edit", "side"])?;
+        } else {
+            // Another task's work reaches the integration branch; the task merges it in.
+            let other = f
+                .add_task("t9", "Upstream", "feat/9-upstream", "quartio")
+                .await?;
+            commit_file(&other, "upstream.txt", "u1", "Upstream")?;
+            git(&other, &["push", "--quiet", "origin", "HEAD:quartio"])?;
+            git(&wt, &["fetch", "--quiet", "origin"])?;
+            git(&wt, &["merge", "--quiet", "--no-edit", "origin/quartio"])?;
+        }
+        let head = git(&wt, &["rev-parse", "HEAD"])?;
+        assert_ne!(head, reviewed);
+        {
+            use yulius_app::ports::store::CoordinationStore;
+            f.h.store
+                .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                    id: "round-1".into(),
+                    task_id: TaskId::parse("t1")?,
+                    round: 1,
+                    head: Some(reviewed.clone()),
+                    agent: "yulius-reviewer".into(),
+                    model: "claude-fable-5-2".into(),
+                    reason: "round".into(),
+                    subagent_id: Some("rev-1".into()),
+                    model_answered: Some("claude-fable-5-2".into()),
+                    started_at: Timestamp(1),
+                    ended_at: Some(Timestamp(2)),
+                    verdict: Some("approve".into()),
+                    cut_off: false,
+                    pr_number: None,
+                    merged_at: None,
+                })
+                .await?;
+        }
+        let opened = f
+            .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+            .await?;
+        assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+        f.h.github.set_checks(&head, ChecksState::Success);
+        let merged = f
+            .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+            .await?;
+        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        let quartio = f.origin_sha("quartio")?;
+        assert_eq!(
+            git(&f.origin, &["rev-parse", &format!("{quartio}^2")])?,
+            head,
+            "merged by a merge commit"
+        );
+        use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+        let task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("t1")?;
+        let record =
+            f.h.store
+                .audit_details(
+                    &format!("shop#{}", task.number),
+                    "delivery.review.models",
+                    5,
+                )
+                .await?;
+        assert_eq!(record.len(), 1, "{record:?}");
+        assert!(
+            record[0].contains(&format!("1 claude-fable-5-2 approve at {}", &reviewed[..9])),
+            "{record:?}"
+        );
+        assert_eq!(
+            record[0].contains("; no recorded review round approved its head"),
+            side_branch,
+            "side branch {side_branch}: {record:?}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn agents_merge_only_through_gated_tools() -> TestResult {
     let f = fixture(&DeliveryProfile::studio()).await?;
@@ -2287,6 +2382,36 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(f.origin_sha("main")?, main_before);
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
+    // SPEC-493 REV-005: a review round is recorded for the pull request; the delivery view
+    // lists it, and the merge records who wrote and who reviewed.
+    {
+        use yulius_app::ports::store::CoordinationStore;
+        let task_id = yulius_domain::ids::TaskId::parse("t1")?;
+        f.h.store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-1".into(),
+                task_id: task_id.clone(),
+                round: 1,
+                head: Some(head.clone()),
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: Some("rev-1".into()),
+                model_answered: Some("claude-fable-5-2".into()),
+                started_at: yulius_domain::time::Timestamp(1),
+                ended_at: Some(yulius_domain::time::Timestamp(2)),
+                verdict: Some("approve".into()),
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        let rounds = &f.delivery("t1").await?["review_rounds"];
+        assert_eq!(rounds[0]["round"], 1, "{rounds}");
+        assert_eq!(rounds[0]["model_answered"], "claude-fable-5-2");
+        assert_eq!(rounds[0]["verdict"], "approve");
+        assert_eq!(rounds[0]["reported"], true);
+    }
     // On green, with the reviewed head, the agent merges with its creator's authority (and then
     // the explicit profile policy promotes).
     f.h.github.set_checks(&head, ChecksState::Success);
@@ -2298,6 +2423,34 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(merged.body["result"]["isError"], false, "{}", merged.body);
     assert_eq!(f.delivery("t1").await?["pr"]["state"], "merged");
     assert_eq!(f.origin_sha("main")?, f.origin_sha("quartio")?);
+    {
+        use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+        let task =
+            f.h.store
+                .task(&yulius_domain::ids::TaskId::parse("t1")?)
+                .await?
+                .ok_or("t1")?;
+        let record =
+            f.h.store
+                .audit_details(
+                    &format!("shop#{}", task.number),
+                    "delivery.review.models",
+                    5,
+                )
+                .await?;
+        assert_eq!(record.len(), 1, "{record:?}");
+        assert_eq!(
+            record[0],
+            format!(
+                "pull request #1: written by claude-opus-5-5; review rounds: 1 claude-fable-5-2 \
+                 approve at {}",
+                &head[..9]
+            ),
+            "approved at the merged head; the agent's run on the default model wrote it"
+        );
+        // The pull request's rounds closed with it: the view lists none for the next one.
+        assert_eq!(f.delivery("t1").await?["review_rounds"], json!([]));
+    }
     // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     assert_eq!(f.h.github.actors_of("fast_forward"), ["bob"]);

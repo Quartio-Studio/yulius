@@ -111,6 +111,22 @@ impl App {
         reviewed: &str,
         head: &str,
     ) -> bool {
+        self.review_covers_against(task, worktree, reviewed, head, None)
+            .await
+    }
+
+    /// [`Self::review_covers`], with the merges' second parents judged against `integration`
+    /// (a commit or ref) instead of the integration branch's tip: after a merge-commit merge
+    /// the merged head itself is in the integration branch, so a merge judged then is judged
+    /// against the branch as it was before that merge (SPEC-493 REV-005).
+    pub(crate) async fn review_covers_against(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: Option<&str>,
+    ) -> bool {
         let reviewed = reviewed.trim();
         if reviewed.len() < 7
             || reviewed.len() > 64
@@ -126,9 +142,14 @@ impl App {
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before comparing a review");
         }
-        let integration = format!(
-            "origin/{}",
-            crate::delivery::delivery_profile(&sandbox).integration_branch
+        let integration = integration.map_or_else(
+            || {
+                format!(
+                    "origin/{}",
+                    crate::delivery::delivery_profile(&sandbox).integration_branch
+                )
+            },
+            str::to_owned,
         );
         match self
             .deps

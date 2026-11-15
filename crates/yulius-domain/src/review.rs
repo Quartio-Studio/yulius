@@ -111,6 +111,102 @@ pub fn verdict_of(report: &str) -> Option<Verdict> {
     }
 }
 
+/// One review round as the numbers read it (SPEC-493 REV-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundFact {
+    /// The pull request it reviewed: its task and number.
+    pub pull: (String, u64),
+    /// Its number among the pull request's rounds.
+    pub round: u32,
+    /// The model that answered, else the one asked for.
+    pub model: String,
+    /// Its verdict, when its report had one.
+    pub verdict: Option<Verdict>,
+    /// It ended with a report.
+    pub reported: bool,
+    /// It ran on the Opus reviewer because no Fable could run.
+    pub no_fable: bool,
+}
+
+/// The review's numbers over the pull requests merged in a window (SPEC-493 REV-006).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ReviewNumbers {
+    /// Pull requests with at least one recorded round.
+    pub pull_requests: u32,
+    /// Pull requests whose first round's (last) verdict asked for changes.
+    pub first_rounds_requesting_changes: u32,
+    /// Pull requests whose first round never reported (every reviewer of it cut off or lost).
+    pub first_rounds_without_report: u32,
+    /// The median of the rounds per pull request (its highest round number).
+    pub median_rounds: Option<f64>,
+    /// Rounds by the model that ran them, most first: a round once per model, however many of
+    /// its reviewers ran.
+    pub rounds_by_model: Vec<(String, u32)>,
+    /// Rounds run on the Opus reviewer because no Fable could run.
+    pub no_fable_rounds: u32,
+}
+
+/// Works out [`ReviewNumbers`] from the rounds of merged pull requests.
+#[must_use]
+pub fn review_numbers(rounds: &[RoundFact]) -> ReviewNumbers {
+    use std::collections::BTreeMap;
+    let mut pulls: BTreeMap<&(String, u64), Vec<&RoundFact>> = BTreeMap::new();
+    for fact in rounds {
+        pulls.entry(&fact.pull).or_default().push(fact);
+    }
+    let mut numbers = ReviewNumbers {
+        pull_requests: u32::try_from(pulls.len()).unwrap_or(u32::MAX),
+        ..ReviewNumbers::default()
+    };
+    let mut per_pull: Vec<u32> = Vec::new();
+    for facts in pulls.values() {
+        let first: Vec<&&RoundFact> = facts.iter().filter(|f| f.round == 1).collect();
+        if !first.is_empty() && !first.iter().any(|f| f.reported) {
+            numbers.first_rounds_without_report += 1;
+        }
+        // The last report of round 1 is its verdict.
+        if first
+            .iter()
+            .rev()
+            .find(|f| f.reported)
+            .and_then(|f| f.verdict)
+            == Some(Verdict::RequestChanges)
+        {
+            numbers.first_rounds_requesting_changes += 1;
+        }
+        per_pull.push(facts.iter().map(|f| f.round).max().unwrap_or(0));
+    }
+    per_pull.sort_unstable();
+    numbers.median_rounds = match per_pull.len() {
+        0 => None,
+        n if n % 2 == 1 => Some(f64::from(per_pull[n / 2])),
+        n => Some((f64::from(per_pull[n / 2 - 1]) + f64::from(per_pull[n / 2])) / 2.0),
+    };
+    // A round counts once per model, however many of its reviewers ran (a cut-off one started
+    // again): rounds, not reviewer runs, as the rounds per pull request count them.
+    let mut seen: std::collections::BTreeSet<(&(String, u64), u32, &str)> =
+        std::collections::BTreeSet::new();
+    let mut no_fable: std::collections::BTreeSet<(&(String, u64), u32)> =
+        std::collections::BTreeSet::new();
+    let mut by_model: BTreeMap<&str, u32> = BTreeMap::new();
+    for fact in rounds {
+        if seen.insert((&fact.pull, fact.round, fact.model.as_str())) {
+            *by_model.entry(fact.model.as_str()).or_default() += 1;
+        }
+        if fact.no_fable {
+            no_fable.insert((&fact.pull, fact.round));
+        }
+    }
+    numbers.no_fable_rounds = u32::try_from(no_fable.len()).unwrap_or(u32::MAX);
+    let mut by_model: Vec<(String, u32)> = by_model
+        .into_iter()
+        .map(|(model, n)| (model.to_owned(), n))
+        .collect();
+    by_model.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    numbers.rounds_by_model = by_model;
+    numbers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +251,50 @@ mod tests {
             assert_eq!(Verdict::parse(verdict.as_str()), Some(verdict));
         }
         assert!(REVIEWER_PROMPT.contains("`Verdict: approve` or `Verdict: request changes`"));
+    }
+
+    /// SPEC-493 REV-006: the numbers of the request, from the rounds of merged pull requests.
+    #[test]
+    fn the_review_numbers_of_merged_pull_requests() {
+        let fact =
+            |task: &str, pr: u64, round: u32, model: &str, verdict: Option<Verdict>| RoundFact {
+                pull: (task.to_owned(), pr),
+                round,
+                model: model.to_owned(),
+                verdict,
+                reported: verdict.is_some(),
+                no_fable: false,
+            };
+        let (f, o) = ("claude-fable-5-2", "claude-opus-5-5");
+        let (ok, no) = (Some(Verdict::Approve), Some(Verdict::RequestChanges));
+        let rounds = [
+            // Three rounds: the first asked for changes.
+            fact("t1", 1, 1, f, no),
+            fact("t1", 1, 2, f, no),
+            fact("t1", 1, 3, o, ok),
+            // Approved at once.
+            fact("t2", 2, 1, f, ok),
+            // Round 1 cut off, then reported by its reviewer started again.
+            fact("t3", 3, 1, f, None),
+            fact("t3", 3, 1, f, ok),
+            // Round 1 never reported; round 2 on Opus for want of Fable.
+            fact("t4", 4, 1, f, None),
+            RoundFact {
+                no_fable: true,
+                ..fact("t4", 4, 2, o, ok)
+            },
+        ];
+        let numbers = review_numbers(&rounds);
+        assert_eq!(numbers.pull_requests, 4);
+        assert_eq!(numbers.first_rounds_requesting_changes, 1);
+        assert_eq!(numbers.first_rounds_without_report, 1);
+        assert_eq!(numbers.median_rounds, Some(1.5));
+        // t3's round 1 ran twice and counts once.
+        assert_eq!(
+            numbers.rounds_by_model,
+            [(f.to_owned(), 5), (o.to_owned(), 2)]
+        );
+        assert_eq!(numbers.no_fable_rounds, 1);
+        assert_eq!(review_numbers(&[]), ReviewNumbers::default());
     }
 }

@@ -200,9 +200,11 @@ person's decision is read as holding after an approval).
   (`attempts.model`) and each round's number, model, verdict and head; the rounds get the pull
   request's number and the merge time. `delivery_status` and the task's delivery view
   (`GET /api/tasks/{id}/delivery`) list the current pull request's rounds. A merge whose head no
-  recorded round approved says so in the same record ("no recorded review round approved …"); it
-  is not refused for it.
-- **REV-006** One read gives the numbers of the request: `GET /api/analytics/reviews?since=`
+  recorded round approved (that head, or one followed only by clean merges of the integration
+  branch) says so in the same record ("no recorded review round approved its head"); it is not
+  refused for it. The runs that wrote it are those still going when the task's previous pull
+  request merged and every later one.
+- **REV-006** One read gives the numbers of the request: `GET /api/analytics/reviews?from=&to=`
   (sandbox members; the Dashboard's Pipeline tab shows it) answers, for the pull requests merged
   since then, the share of first rounds that asked for changes, the median rounds per pull
   request, the share of first rounds with no report, and the rounds per model.
@@ -379,11 +381,12 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [x] Fix 1b: every task session is launched with the two reviewer agents by full model id (REV-001)
 - [x] Fix 1b: Yulius sees the reviewer start, counts the pull request's rounds and gives rounds 3 and later the Opus reviewer; each round is a record (REV-002 to REV-004, its start)
 - [x] Fix 1b: the rules name the reviewer agent the same way everywhere, held by a test (REV-008)
-- [ ] Fix 1b's independent review answered test-first
-- [ ] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
-- [ ] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
+- [x] Fix 1b's independent review answered test-first
+- [x] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
+- [x] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
 - [ ] Fix 1c's independent review answered test-first
 - [ ] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
+- [ ] Fix 1d: a merge found on GitHub is judged against its merge commit's first parent, as `delivery_merge`'s is (REV-005)
 - [ ] Fix 1d's independent review answered test-first
 - [ ] Fix 2: the unreachable-server tests ask a port nothing can take (FLK-001)
 - [ ] Fix 2: the notes reload e2e test reproduced and fixed; the two tests fixed on dev since are checked under their probes (FLK-002, FLK-003)
@@ -573,7 +576,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   reads the decision as holding after an approval; of the re-reviews after a request for changes
   the table does not say how many blocked, so there is no evidence here for more.
 - **How to read the numbers a week later** (each fix's number, on the instance):
-  - Fix 1: `GET /api/analytics/reviews?since=<date>` (the Dashboard's Pipeline tab): share of
+  - Fix 1: `GET /api/analytics/reviews?from=<day>&to=<day>` (the Dashboard's Pipeline tab): share of
     first rounds that asked for changes (baseline 47 %, Fable reviewing Fable's work), median
     rounds per pull request (baseline 3), per model. With the reviewer held at Fable for round 1,
     a higher share than 47 % means Opus's first versions are worse than Fable's were; the same
@@ -782,4 +785,96 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     rewrapped. "No shared context" stays in the reviewer agent's contract: the Feature
     workflow is at its byte budget. The reviewer agents keep every tool: a review runs tests,
     and its read-only rule is its contract, as before.
+- Round 2 (head `2628ad31f`, Opus 5.5 again: Fable still out): approve. Its two notes needed no
+  change: the store-failure test's assertions also hold on the success path (it does catch
+  failing closed), and `link_review_subagent` could miss a reviewer when two start at once on
+  different reviewer agents (the round still counts through the other). Merged as pull request
+  #1322 at `2628ad31f` on its own green Yulius CI run.
+
+### Fix 1c: what each round ran on, the merge record and the numbers
+
+- **REV-004.** Test first: `wiring::harness::tests::a_subagents_model_and_its_cut_off_are_read_from_its_transcript`
+  (a subagent's answers name its model once per change, a refusal in its file says it was cut
+  off, `<synthetic>` never counts, a workflow agent's lines say neither) did not compile before
+  the observations existed; passes. `review_rounds::a_rounds_answering_model_and_cut_off_are_noted`
+  (the model and the cut-off on the round; a later report keeps the cut-off; a subagent that is
+  no round's changes nothing).
+- **REV-005.** `delivery::agents_merge_only_through_gated_tools` now records a round before the
+  agent's merge: the delivery view lists it, and the merge writes one `delivery.review.models`
+  entry ("pull request #1: written by …; review rounds: 1 claude-fable-5-2 approve at <head>"),
+  after which the view lists none. `review_rounds::the_merge_record_names_this_pull_requests_rounds`
+  (a second pull request: its rounds only, "no report" for a cut-off one, and "no recorded
+  review round approved it"). `mcp_text::tests::delivery_status_lists_the_review_rounds`.
+- **REV-006.** `review::tests::the_review_numbers_of_merged_pull_requests` (shares, median,
+  rounds per model, no-Fable rounds, a round reported after a cut-off);
+  `review_rounds::the_reviews_read_counts_the_rounds_of_merged_pull_requests` (the API over a
+  range, another range, 422 for a reversed range, 401 signed out); `pipeline.e2e.ts` (the
+  Review card's four tiles from the mock): 15 passed.
+- Decision: the person reads the round records three ways (the task's delivery view while the
+  pull request is open, the merge record afterwards, the analytics read for the week); no
+  separate page.
+- **Review round 1** (head `d4bc49815`, Opus 5.5: Fable out until 14:00 UTC). Request changes.
+  Answered (all own code):
+  - Major: the authors skipped a run that started before the previous merge. Now a run counts
+    unless it ended before that merge, and "the previous merge" is the latest one before this
+    one (the new test caught it taking a later merge).
+    `review_rounds::the_merge_record_names_this_pull_requests_rounds_and_authors` asserts the
+    two records word for word.
+  - Major: "no recorded review round approved" ignored the merged head. The merge paths that
+    know it (the agent's or person's merge, a merge found on GitHub) pass it, and an approval
+    counts for that head or one followed only by clean merges of the integration branch
+    (`review_covers`). `review_rounds::an_approval_counts_for_the_head_it_approved`.
+  - Major: the reviews read's scoping had no test:
+    `analytics::the_reviews_read_counts_only_visible_sandboxes` (a member of one sandbox of
+    two; the other by id is 404).
+  - Minors: the delivery test asserts the exact record; rounds are matched to the merge by its
+    time, not its number (a playground has none); a reviewer's transcript reaches its round in
+    a live session (`usage_credits::a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round`,
+    a second reviewer without a cut-off), and while a restart catches up
+    (`usage_credits::a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart`
+    fails with the replay's noting disabled); rounds by model count rounds, not reviewer runs;
+    the read is capped at 20,000 rounds, newest merges first; the Pipeline shows its stages
+    without the Review card when the read fails (`pipeline.e2e.ts`, 16 passed); the spec's
+    query is `from`/`to`.
+  - Nits: the doubled doc comment; heads cut by characters; a run without a recorded model
+    counts as its task's model.
+- **Review round 2** (head `2e63bb004`, on Fable 5.2: the reviewer was cut off at its first
+  request by the Fable limit and resumed with a message after the 14:00 UTC reset, not started
+  again). Request changes. Answered (all own code):
+  - Major: the playground merge recorded without its head, so any approval counted. Every
+    merge path now passes `MergedHead` (the head and, where known, the integration branch
+    before the merge). `playground::a_playground_merge_records_whether_the_merged_head_was_approved`
+    merges through the real path: an own commit after the approval gets the caveat, a clean
+    merge of `dev` after it does not. Mutations caught: the playground passing no head; the
+    clean-merge check forced to true; forced to false.
+  - The clean-merge check ran after the merge, unsound for merge-commit merges (the merged
+    head is then in the integration branch): it is now judged against the integration branch
+    as it was before the merge (`review_covers_against` with the merge commit's first parent,
+    or the playground's base); a merge found elsewhere has no base and counts only the
+    approved head itself.
+  - The analytics read keys a pull request by its merge (a playground merges with no number);
+    the previous merge also comes from the earlier merge record (a merge with no round writes
+    one too); the restart test also asserts the cut-off; the architecture text says the new
+    rules; the API document names the read's 20,000-round bound; `same_commit` is
+    `delivery_merge`'s own; a playground's record reads "the merge".
+- **Review round 3** (delta `2e63bb004..e5a08d7ad`, Opus 5.5 by the policy for a third round).
+  Request changes. It checked every round-2 answer and caught by mutation the playground
+  passing no head or no base, the clean-merge check forced either way, and the restart replay
+  skipping the cut-off. Its runs: 168 of 168 targeted, 1,092 of 1,092 in `yulius-app` and
+  `yulius-domain`, lint and `cargo doc` clean. It found `<merge>^1` sound for squash,
+  merge-commit and rebase merges: the commit is fetched before the check, and a failed fetch
+  counts as "not approved". Answered (all own code):
+  - Minor: no test held the GitHub path's base, because a squash gives the same answer before
+    and after the merge. `delivery::a_merge_commit_merge_judges_the_head_against_the_branch_before_it`
+    merges by merge commit through the person's merge. An approval followed by a clean merge
+    of the integration branch keeps it; one followed by a merged side branch nobody reviewed
+    gets the caveat. Mutations caught: base `None` (the clean case gets the caveat), and the
+    base read after the merge, round 2's behaviour (the side branch counts as clean).
+  - Nit: the comments and the architecture text said "the merge commit's first parent" and
+    "before this merge". They now name what the base is on each path: `<merge>^1`, a rebase
+    merge's previous rewritten copy, or a playground's base after its squash.
+  - Nit, a trade-off: a merge found elsewhere has no base, so a reviewed head followed only by
+    clean merges of the integration branch gets the caveat. Not a defect in this change, since
+    the record only informs. It is fixed in fix 1d's pull request, which reads the merge
+    commit from GitHub (Plan).
 

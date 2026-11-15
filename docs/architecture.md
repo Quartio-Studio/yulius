@@ -1190,6 +1190,25 @@ subagent off sends no `SubagentStop`, so such a round stays without a report. Th
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
+The transcript watch also reads each subagent of the session's own thread
+(`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
+(`Observation::SubagentAnswered`), and a usage limit that refused it
+(`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
+(`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
+`delivery_status`) lists the open pull request's rounds. When a merge is recorded,
+`dlv_transition_at` writes the merge record `delivery.review.models` (actor `yulius`): the
+models of the runs that worked on the pull request (those still going when the previous one
+merged, known from its rounds or its own merge record, and every later one), and each round
+with its model, verdict and head. A merge path passes what it merged (`review::MergedHead`):
+an approval counts for that head, or one followed only by clean merges of the integration
+branch at a base that holds none of the pull request's commits (`<merge>^1` on GitHub: the
+branch before a squash or merge commit, the previous rewritten copy for a rebase merge; a
+playground's base after its squash);
+a merge found elsewhere has no base, so only the approved head itself counts. When no round
+approved, the record says "no recorded review round approved its head".
+`GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull
+requests merged in a range (`review::review_numbers`).
+
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
