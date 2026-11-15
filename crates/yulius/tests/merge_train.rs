@@ -1358,7 +1358,6 @@ async fn a_candidate_runs_beside_its_members_own_runs() -> TestResult {
 #[tokio::test]
 async fn a_passed_candidate_waits_for_its_members_own_runs() -> TestResult {
     use yulius_app::ci::CiRunUpdate;
-    use yulius_app::ports::store_ext::CiStore;
     let f = fixture().await?;
     let app = f.h.app.clone();
     let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
