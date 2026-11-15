@@ -27,7 +27,8 @@ The conversation itself survives a restart (it is resumed); the schedulers do no
   no draft in its prompt box, no keystroke in the last minute, no restart pending), Yulius types
   its prompt into the session as one paste labelled `Yulius check "<name>"`, then Enter, and
   counts the next interval from then: a check never piles up behind a busy session. Not in the
-  first 20 seconds after the Superagent started (its prompt box is not up yet), nor within 30
+  first 20 seconds after the Superagent started (a heuristic: its prompt box is usually up by
+  then, and a check swallowed by a slower start comes again at its next interval), nor within 30
   seconds of the last check typed into it; whether its person holds the prompt box is checked
   again with its terminal held, so no keystroke comes between. A check that could not be typed is
   tried again a minute later.
