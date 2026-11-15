@@ -40,6 +40,35 @@ fn take_report(sent: &mut Vec<i64>, now: i64) -> bool {
     true
 }
 
+/// The longest filing link answered: GitHub's new-issue form refuses much longer ones.
+const MAX_LINK_BYTES: usize = 6000;
+
+/// Whether `text` holds `name` as a whole word (any case): bounded by what is not a letter,
+/// digit, `-` or `_`; a name shorter than 3 characters is no name.
+fn names_word(text: &str, name: &str) -> bool {
+    let (text, name) = (text.to_lowercase(), name.to_lowercase());
+    if name.chars().count() < 3 {
+        return false;
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+    text.match_indices(name.as_str()).any(|(at, found)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + found.len()..].chars().next();
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
+}
+
+/// The link that opens the report as a new issue in the Yulius repository.
+fn filing_link(ability: &str, asked: &ReportArgs, from: &str) -> String {
+    let (owner, repo) = YULIUS_REPO;
+    format!(
+        "https://github.com/{owner}/{repo}/issues/new?title={}&body={}&labels={}",
+        query_value(&format!("Missing ability: {ability}")),
+        query_value(&issue_body(asked, from)),
+        query_value("type: enhancement,priority: medium,area: superagent"),
+    )
+}
+
 /// `text` as a URL query value: unreserved characters kept, the rest percent-encoded.
 fn query_value(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -128,22 +157,26 @@ impl App {
             asked.case.as_str(),
             asked.needed_for.as_deref().unwrap_or(""),
         ];
+        // Whole words only, and not for the Yulius repository's own project, whose name is the
+        // product's (review of slice 11, R2-2).
+        let (yulius_owner, yulius_repo) = YULIUS_REPO;
+        let is_yulius = sandbox.repo_owner.eq_ignore_ascii_case(yulius_owner)
+            && sandbox.repo_name.eq_ignore_ascii_case(yulius_repo);
         let names = [
-            sandbox.slug.to_lowercase(),
-            sandbox.repo_name.to_lowercase(),
-            sandbox.repo_owner.to_lowercase(),
+            ("its name", sandbox.slug.as_str()),
+            ("its repository's name", sandbox.repo_name.as_str()),
+            ("its owner's name", sandbox.repo_owner.as_str()),
         ];
-        if texts.iter().any(|text| {
-            let text = text.to_lowercase();
-            names
+        if !is_yulius
+            && let Some((kind, _)) = names
                 .iter()
-                .any(|name| name.chars().count() >= 3 && text.contains(name.as_str()))
-        }) {
-            return Err(AppError::Invalid(
-                "write the report in general terms: it names this project (its name, repository \
-                 or owner), and it is meant for the Yulius repository"
-                    .into(),
-            ));
+                .find(|(_, name)| texts.iter().any(|text| names_word(text, name)))
+        {
+            return Err(AppError::Invalid(format!(
+                "write the report in general terms: it holds this project's {} (the report is \
+                 meant for the Yulius repository)",
+                kind.trim_start_matches("its ")
+            )));
         }
         for text in texts {
             if self.redact_for_sandbox(&sandbox.id, text).await != text {
@@ -153,6 +186,13 @@ impl App {
                         .into(),
                 ));
             }
+        }
+        let file_url = filing_link(ability, &asked, from);
+        if file_url.len() > MAX_LINK_BYTES {
+            // Checked before the report is kept, below the length GitHub's form takes (R2-1).
+            return Err(AppError::Invalid(
+                "the report is too long for a link: shorten the case".into(),
+            ));
         }
         let now = self.now().0;
         {
@@ -184,13 +224,6 @@ impl App {
         {
             tracing::warn!(error = %err, "a missing ability was not audited");
         }
-        let (owner, repo) = YULIUS_REPO;
-        let file_url = format!(
-            "https://github.com/{owner}/{repo}/issues/new?title={}&body={}&labels={}",
-            query_value(&format!("Missing ability: {ability}")),
-            query_value(&issue_body(&asked, from)),
-            query_value("type: enhancement,priority: medium,area: superagent"),
-        );
         Ok(json!({
             "kept": true,
             "file_url": file_url,
@@ -252,7 +285,39 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{HOUR_MS, REPORTS_PER_HOUR, ReportArgs, issue_body, query_value, take_report};
+    use super::{
+        HOUR_MS, MAX_LINK_BYTES, REPORTS_PER_HOUR, ReportArgs, filing_link, issue_body, names_word,
+        query_value, take_report,
+    };
+
+    /// Review of slice 11, R2-2: a name is matched as a whole word only.
+    #[test]
+    fn a_project_name_is_matched_as_a_whole_word() {
+        assert!(names_word("the CI of acme/shop failed", "shop"));
+        assert!(names_word("Shop broke", "shop"));
+        assert!(!names_word("the shopping list", "shop"));
+        assert!(!names_word("an application error", "app"));
+        assert!(names_word("deploy my-app now", "my-app"));
+        assert!(!names_word("deploy my-app-2 now", "my-app"));
+        assert!(!names_word("ab", "ab"), "too short to be a name");
+    }
+
+    /// R2-1: a report too long for GitHub's form gives a link past the bound.
+    #[test]
+    fn a_long_report_makes_a_link_past_the_bound() {
+        let short = ReportArgs {
+            ability: "a".into(),
+            case: "c".repeat(500),
+            needed_for: None,
+        };
+        assert!(filing_link("a", &short, "A Superagent").len() <= MAX_LINK_BYTES);
+        let long = ReportArgs {
+            ability: "a".into(),
+            case: "c d\n".repeat(1000),
+            needed_for: None,
+        };
+        assert!(filing_link("a", &long, "A Superagent").len() > MAX_LINK_BYTES);
+    }
 
     /// SPEC-487 ABL-003 (review of slice 11, m4): five an hour, and the window moves on.
     #[test]
