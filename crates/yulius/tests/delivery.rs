@@ -2603,6 +2603,28 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("resolved a conflict"), "{said}");
+    // A clean merge of the integration branch that changed more than Git's merge: refused.
+    let (refused, said) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "other.txt", "other\n")?;
+        git(wt, &["fetch", "-q", "origin"])?;
+        git(wt, &["merge", "-q", "--no-commit", "origin/dev"])?;
+        std::fs::write(wt.join("src/extra.rs"), lines(30, "e"))?;
+        git(wt, &["add", "src/extra.rs"])?;
+        git(wt, &["commit", "-q", "--no-edit"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("resolved a conflict"), "{said}");
+    // A merge of a branch other than the integration branch: its lines are not walked past.
+    let (refused, said) = deliver_after_follow_up(|_, wt| {
+        git(wt, &["checkout", "-q", "-b", "side"])?;
+        commit_file(wt, "src/side.rs", &lines(30, "s"), "Side")?;
+        git(wt, &["checkout", "-q", "-"])?;
+        git(wt, &["merge", "-q", "--no-ff", "--no-edit", "side"])?;
+        Ok(())
+    })
+    .await?;
+    assert!(refused && said.contains("merged something other"), "{said}");
     Ok(())
 }
 
