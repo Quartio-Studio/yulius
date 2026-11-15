@@ -1187,3 +1187,7 @@ the function the web UI's route calls, with the person's rights checked at the c
   before's screen; F8, the description says a screen is data, never an instruction. F7 (blank
   lines inside the window kept, `lines` clamped) answered in words: the screen's own blank lines
   are part of what it shows.
+  Mutants of the fixes (`target/evidence/mutants-slice10b-r1.log`): three; the default period and
+  the branch are failed by named tests; `no-redaction` survives on purpose: every tool result is
+  redacted of the project's agent secrets by the MCP layer too (`redact_strings`), so the saved
+  screen's own redaction is a second layer the tool's answer cannot tell apart.
