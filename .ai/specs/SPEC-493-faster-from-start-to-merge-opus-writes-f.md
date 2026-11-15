@@ -1186,7 +1186,8 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     a run of skipped jobs passes at queueing.
     `local_ci::a_skipped_exclusive_job_does_not_wait_for_its_turn` (3 lanes, a CPU each: the pull
     request's run ends while dev's `web` holds its turn). Without the fix it ran until dev's
-    ended.
+    ended. The run of skipped jobs passing at queueing is
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued` (added in round 2).
   - Major: `--name-only` listed a rename by its new path only, so a file moved out of `paths`
     did not count. `--no-renames` lists both. Tested at the adapter:
     `git_ops::changed_paths_list_renames_deletions_and_stop_at_the_limit`, with the rename, a
@@ -1201,3 +1202,14 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - Nits: the skip code is 78 as for any skipped job. `paths` before `name` names the job
     (config test). The train note replacing the reason stays: a copied verdict says where it
     comes from.
+- **Review round 2** (Opus 5.5, Fable out until 17 Nov 04:00 UTC; head `f9a060195`). Request
+  changes. It confirmed each round-1 answer by mutation. Answered (all own code):
+  - Major: the run of skipped jobs passing at queueing had no test.
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued`, with no dispatch: passed with
+    its reason, both jobs skipped, the status success "2 skipped", the gate's answer Passed.
+    Turning it off fails the test.
+  - Minor: such a run never reached the executor, which starts the merge pass at a run's end.
+    It records its sandbox (`passed_when_queued`), and the dispatcher, woken at once, starts the
+    pass. Read, not tested on its own: the 20 s fast pass would merge it anyway.
+  - Nits: tree reuse into a branch's run goes on past a same-tree source that skipped a `paths`
+    job, to an earlier one that ran it. A run passing at queueing records the current time.
