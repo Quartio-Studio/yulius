@@ -985,15 +985,25 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   bind of the port fails, which the old pattern did not hold. The outage tests then listen on
   the very same socket. Probe (AC-9): 40 stress iterations of the five tests while another
   process made 16,021,891 loopback binds and listens: 40 of 40 passed.
-- FLK-002 (#1246): reproduced. A `resync` pushed into the 2.5 s window (as the mock's sandbox
-  changes and the event socket's reconnect on a loaded host send) failed the test: "expected 6
-  to be less than or equal to 3". Counting per notepad showed the cause: a resync loads every
-  notepad (events may have been lost), which is right. The sandbox notepad itself made 3 loads
-  in the window (the edit's, its 1 s retry, the resync's), its back-off intact. A test defect:
-  it counted every notepad's loads. The mock now counts loads per notepad (`noteLoadsBy`), and
-  the test counts the sandbox notepad's and keeps the resync in its window. With it: 5 of 5
-  runs and the whole file (36 tests) passed. The file's other exact count ("a save made while
-  a refused one is looked into") counts the sandbox notepad's loads too.
+- FLK-002 (#1246). The first diagnosis here (a resync in the window) was wrong: a resync gives
+  6 loads, never the 4 that CI reported. Review round 1's reviewer reproduced the exact failure
+  ("expected 4 to be less than or equal to 3") with no resync. Its cause: the Team notepad's
+  opening load, answered late (a loaded host), lands after the test's count starts, fails, and
+  retries 1 s later: 2 loads of another notepad. A test defect, since the test counted every
+  notepad's loads. The same look found a product defect: a resync while a reload waited for its
+  pause loaded at once, and so did the end of a retry that was in flight when the resync came.
+  Fixes:
+  - The mock counts loads per notepad (`noteLoadsBy`); both tests that count loads count the
+    sandbox notepad's.
+  - `notes.js`: a load already retried after its pause is left to that retry, by `announced`
+    and by `catchUp` (`retrying === load`). A person's own load (a tab shown again) still loads
+    at once.
+  - The test holds the Team notepad's opening load until its count starts (`hold=/api/notes`,
+    the reviewer's probe) and sends a resync 1.2 s into the window (`resyncNow`). It allows 2
+    loads (the edit's and its 1 s retry), not 3.
+  - Before the product fix: "expected 3 to be less than or equal to 2" (5 of 6 runs; the
+    resync's own load, or the in-flight retry's `catchUp`). After it: 6 of 6, and the whole
+    file passes (36 tests).
 - FLK-003, not redone:
   - #1309 (#1171): the cd test keeps its probe (the deploy answer held until the page is back).
     It passed 5 of 5. With #1309's fix reverted (the page that is shown again does not read
