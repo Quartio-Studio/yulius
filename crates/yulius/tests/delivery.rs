@@ -3472,7 +3472,7 @@ async fn a_spec_number_is_never_one_another_task_reserved() -> TestResult {
 
 /// SPEC-083 REV-001 (33 of 57 merges spent a review round on dev merges or renumbering,
 /// F 2026-10-13): the review of a head carries over Git's own merges of the integration branch
-/// into it; new work after it needs a new review.
+/// into it; new work after it past 20 product lines (SPEC-493 APR-001) needs a new review.
 #[tokio::test]
 async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestResult {
     let t = ArmedTask::new().await?;
@@ -3498,7 +3498,7 @@ async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestR
             .as_str()
             .is_some_and(|text| text.contains("review the new head"))
     };
-    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    commit_file(&t.wt, "landing.txt", &"v2\n".repeat(21), "Landing v2")?;
     let refused = t.merge_at(&t.head).await?;
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(refused_text(&refused), "new work needs a review: {refused}");

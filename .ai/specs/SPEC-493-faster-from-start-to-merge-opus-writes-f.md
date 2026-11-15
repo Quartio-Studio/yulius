@@ -1264,6 +1264,14 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   (dropping it from AGENTS.md fails it). The briefing has no byte to spare and says nothing new.
 - ADR-0345 (amends ADR-0066 point 3), api.md's `[review]`, the `yulius.toml` reference in
   `config.rs`, changes.
+- `delivery::a_review_carries_over_clean_merges_of_the_integration_branch` (SPEC-083) refused a
+  one-line commit after the review; under APR-001 that line keeps the approval, so its new work
+  is now 22 lines (21 added, 1 removed), still refused.
+- Local runs: `cargo test -p yulius --test main` 1705 passed, 1 failed:
+  `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`, the known load flake
+  #1286 (passes alone, 3 of 3). `cargo test -p yulius-git`: one `git_ops` test at a time fails
+  `ETXTBSY` on a fake git script under load (a different test in different runs; filed as #1332,
+  present on dev, not touched here). Domain 529, app 576, clippy and fmt clean.
 - How to read it a week later: `SELECT at, detail FROM audit_log WHERE action IN
   ('delivery.agent.merge', 'delivery.agent.merge_armed') AND detail LIKE '%since then%product
   line%'` lists the merges that used the bound, with their counts; the analytics read's rounds
