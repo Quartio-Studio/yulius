@@ -1248,3 +1248,5 @@ with those rights checked at the call.
   m1 (GitHub errors read as a permission) goes with it; m2, a task's owner must still work in the
   project; m4, the hour's window and the link's encoding have unit tests; n1, a lone `\r` is
   refused in the ability, and the API row speaks of error results.
+  Mutants of the fixes: five, each failed by a named test once a task's owner who lost work access
+  was tested (`target/evidence/mutants-slice11-r1.log`: `survived=0`).
