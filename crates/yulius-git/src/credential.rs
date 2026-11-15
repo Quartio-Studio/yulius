@@ -478,12 +478,27 @@ mod tests {
         })
     }
 
+    /// A listener on ::1 whose port nothing holds on 127.0.0.1 (another test's listener there
+    /// would take the first connection): tried a few times, as ports are given at random.
+    fn ipv6_only_listener() -> std::io::Result<TcpListener> {
+        for _ in 0..20 {
+            let listener = TcpListener::bind("[::1]:0")?;
+            let port = listener.local_addr()?.port();
+            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return Ok(listener);
+            }
+        }
+        Err(std::io::Error::other(
+            "no port free on both loopback addresses",
+        ))
+    }
+
     /// SPEC-483 slice 34 (review): `localhost` is 127.0.0.1 then ::1; a server on ::1 only is
     /// reached through the second address.
     #[test]
     fn localhost_reaches_a_server_on_the_second_address() -> Result<(), Box<dyn std::error::Error>>
     {
-        let listener = TcpListener::bind("[::1]:0")?;
+        let listener = ipv6_only_listener()?;
         let port = listener.local_addr()?.port();
         let endpoint = endpoint_at(format!("http://localhost:{port}"))?;
         let stream = connect(&endpoint, Instant::now() + Duration::from_secs(5))?;

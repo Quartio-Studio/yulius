@@ -280,6 +280,34 @@ mod tests {
         Ok(store)
     }
 
+    /// SPEC-483 slice 35: the pauses of a window come in start order (then id), the open and the
+    /// ended ones read by their two branches alike, and none that ended before the window.
+    #[tokio::test]
+    async fn the_pauses_of_a_window_come_in_start_order() -> TestResult {
+        let store = seeded().await?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO capacity_pauses (id, task_id, kind, started_at, ended_at, outcome) VALUES
+                       ('p_a', 't1', 'limit', 300, 400, 'released'),
+                       ('p_d', 't1', 'limit', 50, 60, 'released'),
+                       ('p_c', 't1', 'limit', 200, NULL, NULL),
+                       ('p_b2', 't1', 'limit', 100, 500, 'switched'),
+                       ('p_b1', 't1', 'limit', 100, 450, 'switched');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let ids: Vec<String> = store
+            .pauses_since(Timestamp(350))
+            .await?
+            .into_iter()
+            .map(|pause| pause.id)
+            .collect();
+        assert_eq!(ids, ["p_b1", "p_b2", "p_c", "p_a"]);
+        Ok(())
+    }
+
     async fn spans(store: &SqliteStore, kind: SubjectKind, id: &str) -> AppResult<Vec<SpanRecord>> {
         store
             .subject_spans(
