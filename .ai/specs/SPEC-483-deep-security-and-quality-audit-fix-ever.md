@@ -3094,3 +3094,21 @@ slices follow.
   36).
 - **Merged.** Pull request #1306 was squash-merged into `dev` (`f2a339e96`) after its merge
   train passed.
+
+### Slice 36 (2026-11-15)
+
+- **Tests failing before the change**: `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`
+  did not compile (no resume point); `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since`
+  fails while the handler reads from the start (the slipped newline renumbers the new line 5).
+- **Tests failing without their fix** (`target/audit/slice36/mutate.py`, `mutations.log`): a
+  point past the asked line or off a line's start used, the byte offset not counted, the
+  handler reading from the start or keeping no point: each failed its test. The two that drop
+  the dotenv calls at the point survived the first test, whose dotenv value is also caught by
+  the token patterns: a case with a value only the dotenv rule hides was added and both fail
+  (`mutations-b.log`). Not tested on its own: the clear in `reindex_session` (a step-back
+  shortens the transcript, which the tested line-start check already refuses).
+- **Timing probe** (a test not kept, release build, `probe-timing.log`): a poll at the end of a
+  30 MB transcript of 125 830 lines took 497 ms read from the start and 18 µs from the point.
+- **Gate.** `scripts/dev ci` at `3c9919d85`: exit 0; `4433 tests run: 4433 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
