@@ -264,3 +264,36 @@ async fn a_resumed_reviewer_and_other_subagents_change_no_round() -> TestResult 
     assert!(open[0].ended_at.is_some() && open[0].verdict.is_none());
     Ok(())
 }
+
+/// SPEC-493 REV-007 (its part without a move): a first round on a subscription that cannot run
+/// Fable 5.2 (its allowance used up) runs the Opus reviewer, records why, and the agent is told.
+#[tokio::test]
+async fn a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let full = json!({"weekly_fable": {"used_percent": 100.0, "window_minutes": 10080,
+        "resets_at": 4_102_444_800_000_i64}});
+    let account = add_account(&h, "acc-1", Some(full.to_string())).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_eq!(
+        answer["hookSpecificOutput"]["updatedInput"]["subagent_type"], "yulius-reviewer-opus",
+        "{answer}"
+    );
+    assert!(
+        answer["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .is_some_and(|s| s.contains("cannot run Fable 5.2")),
+        "{answer}"
+    );
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!(
+        (
+            open[0].round,
+            open[0].agent.as_str(),
+            open[0].reason.as_str()
+        ),
+        (1, "yulius-reviewer-opus", "no_fable")
+    );
+    Ok(())
+}

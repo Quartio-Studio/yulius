@@ -19,6 +19,7 @@ use yulius_domain::harness::claude_model_name;
 use yulius_domain::review::{
     LATE_REVIEWER_AGENT, REVIEWER_AGENT, reviewer_model, round_agent, verdict_of,
 };
+use yulius_domain::usage::ModelFamily;
 
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -66,10 +67,17 @@ impl App {
             .iter()
             .rev()
             .find(|r| r.round == number && r.ended_at.is_none());
-        let (agent, reason) = match unfinished {
+        let (mut agent, mut reason) = match unfinished {
             Some(round) => (round.agent.clone(), "kept"),
             None => (round_agent(number).to_owned(), "round"),
         };
+        // A subagent runs on its session's subscription: one that cannot run Fable now gets the
+        // Opus reviewer, which it can, rather than a reviewer refused at its first request
+        // (REV-007; moving the session first is its own slice).
+        if agent == REVIEWER_AGENT && !self.run_can_take_fable(ctx).await {
+            agent = LATE_REVIEWER_AGENT.to_owned();
+            reason = "no_fable";
+        }
         let model = reviewer_model(&agent).unwrap_or_default().to_owned();
         let head = match ctx.task.worktree_path.as_deref() {
             Some(worktree) => self
@@ -101,17 +109,48 @@ impl App {
                 merged_at: None,
             })
             .await?;
-        let said = format!(
+        let mut said = format!(
             "Yulius: this is review round {number} of this pull request; the reviewer runs on {} \
              ({agent}).",
             claude_model_name(&model)
         );
+        if reason == "no_fable" {
+            said.push_str(
+                " This subscription cannot run Fable 5.2 now, so the round runs on Opus 5.5: \
+                 say so in the review's summary.",
+            );
+        }
         if agent == asked {
             return Ok(HookOutput::additional_context(events::PRE_TOOL_USE, said));
         }
         let mut updated = tool_input.clone();
         updated.insert("subagent_type".into(), Value::String(agent));
         Ok(HookOutput::run_tool_with(Value::Object(updated), said))
+    }
+
+    /// Whether the subscription the task's run is on can run Fable now: below the pool's
+    /// threshold in every window that binds Fable. Unknown (no subscription, a failed read)
+    /// counts as yes: the reviewer then starts as asked.
+    async fn run_can_take_fable(&self, ctx: &AgentContext) -> bool {
+        let Some(account) = ctx.attempt.account_id.as_ref() else {
+            return true;
+        };
+        let Ok(views) = self.account_views().await else {
+            return true;
+        };
+        let fable = ModelFamily::of(Some(yulius_domain::harness::REVIEW_CLAUDE_MODEL));
+        views
+            .iter()
+            .find(|view| &view.id == account)
+            .is_none_or(|view| {
+                yulius_domain::rotation::assess(
+                    view,
+                    self.now(),
+                    yulius_domain::rotation::THRESHOLD,
+                    fable,
+                )
+                .is_some()
+            })
     }
 
     /// `SubagentStart`: links a reviewer's subagent to the round that started it. A resumed
