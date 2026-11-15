@@ -878,10 +878,17 @@ mod real {
             })
             .await;
             assert!(asked.is_ok(), "{}", screen(&app, &id));
+            // The switch records its outcome once the new run started, which may be after the
+            // run printed its prompt.
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
             let switches = app.deps.store.switches(&id).await?;
             assert_eq!(switches.len(), 1, "{switches:?}");
             assert_eq!(switches[0].reason, "review_fable");
-            assert_eq!(switches[0].outcome, "completed", "{switches:?}");
             stop(&app, &id).await?;
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
