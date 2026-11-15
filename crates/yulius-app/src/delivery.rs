@@ -1451,9 +1451,6 @@ impl App {
         user.label()
     }
 
-    /// Reads and validates the task spec; a task that needs none (DSC-013: research, a
-    /// question, docs or a chore by its workflow, or a docs-only change without one) counts as
-    /// valid without it.
     /// Why the head under review cannot go out now (SPEC-493 CIR-001): a spec that is not
     /// valid, a missing plan or uncommitted changes, as for any delivery; `None` when it can.
     pub(crate) async fn review_head_not_ready(&self, task: &TaskRecord) -> Option<String> {
@@ -1469,6 +1466,9 @@ impl App {
         not_ready(&spec, &steps, DeliveryAsk::Review, dirty)
     }
 
+    /// Reads and validates the task spec; a task that needs none (DSC-013: research, a
+    /// question, docs or a chore by its workflow, or a docs-only change without one) counts as
+    /// valid without it.
     async fn dlv_check_spec(&self, task: &TaskRecord) -> SpecCheck {
         let mut check = self.dlv_read_spec(task).await;
         // A valid spec settles it; only a missing or invalid one asks whether it is needed

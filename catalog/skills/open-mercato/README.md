@@ -32,10 +32,10 @@ manual re-adaptation, recorded here with the new commit.
 | --- | --- |
 | `om-brainstorm` | Frame a vague idea, weigh alternatives (including building nothing), challenge the conclusion, decide the next step |
 | `om-spec-writing` | Write or review a spec: skeleton first, recorded defaults for open questions, a plan of similar-effort steps |
-| `om-code-review` | Independent review in a fresh session: every gate, checklist, severity-ranked findings, mechanical verdict |
-| `om-check-and-commit` | Run every gate, fix straightforward failures, rerun until green, commit and push following `git-hygiene` |
+| `om-code-review` | Independent review in a fresh session: the head's Yulius CI run and the tests in doubt, checklist, severity-ranked findings, mechanical verdict |
+| `om-check-and-commit` | Run the checks the change touches (the whole gate is Yulius CI's), fix straightforward failures, rerun until green, commit and push following `git-hygiene` |
 | `om-root-cause` | Read-only root-cause analysis with the minimal change and the regression test |
-| `om-fix` | Fix test-first: a regression test that fails without the fix, the minimal change, the full gate |
+| `om-fix` | Fix test-first: a regression test that fails without the fix, the minimal change, the checks it touches |
 | `om-ux-shape` | Shape user-facing and AI features into a concrete, evidence-tagged direction and handoff |
 
 Removed: `om-verify-in-repo` (a QA-claim step of Open Mercato's issue autopilot; Yulius agents

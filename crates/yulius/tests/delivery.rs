@@ -2216,8 +2216,8 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
 /// SPEC-493 CIR-001, CIR-002 (AC-10): a task that starts its review with its work committed and
 /// its review step still open gets its head pushed, its pull request opened and a Yulius CI run
 /// for that head queued at once, before any poll; a review started again at a newer head pushes
-/// it and that head's run supersedes the older one. With uncommitted changes the reviewer starts,
-/// nothing is pushed, and the agent is told why.
+/// it and that head's run supersedes the older one. With uncommitted changes, or a spec that is
+/// not valid, the reviewer starts, nothing is pushed, and the agent is told why.
 #[tokio::test]
 async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
     use yulius_app::ports::store_ext::CiStore;
@@ -2304,7 +2304,10 @@ async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
 
     let first = git(&wt, &["rev-parse", "HEAD"])?;
     let said = review().await?;
-    assert!(said.contains("Yulius CI tests this head"), "{said}");
+    assert!(
+        said.contains("Yulius CI tests it while the review"),
+        "{said}"
+    );
     wait_for_run(first.clone()).await?;
     assert_eq!(
         f.origin_sha("feat/1-checkout")?,
@@ -2336,6 +2339,63 @@ async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
         older.iter().all(|run| run.state == RunState::Cancelled),
         "{older:?}"
     );
+
+    // A spec that is not valid, committed: the agent hears why, and nothing goes out.
+    commit_file(&wt, SPEC_PATH, "# not a spec\n", "Spec broken")?;
+    let said = review().await?;
+    assert!(said.contains("the spec is not valid"), "{said}");
+    assert_eq!(f.origin_sha("feat/1-checkout")?, second);
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 3: a review's start syncs CI beside the 60 s loop, so two
+/// syncs of one sandbox may overlap. Each reads the runs before it queues, so both would queue the
+/// same head. One sync of a sandbox runs at a time, and the head is queued once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "v1", "Feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    // The first sync is held once it read the runs, before it queues.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (reached, planned) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::CiSyncPlanned,
+        std::path::Path::new("s1"),
+        move || {
+            reached.send(()).ok();
+            held.recv_timeout(Duration::from_secs(20)).ok();
+        },
+    );
+    let sandbox_record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let (app, first_record) = (f.h.app.clone(), sandbox_record.clone());
+    let first = tokio::spawn(async move { app.ci_sync_sandbox(&first_record).await });
+    tokio::task::spawn_blocking(move || planned.recv_timeout(Duration::from_secs(20))).await??;
+    let (app, second_record) = (f.h.app.clone(), sandbox_record.clone());
+    let second = tokio::spawn(async move { app.ci_sync_sandbox(&second_record).await });
+    // The second goes on, or waits for the first, for a moment; then the first is let go.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release.send(())?;
+    first.await??;
+    second.await??;
+    let runs = f.h.store.ci_runs_for_sha(&sandbox, &head).await?;
+    assert_eq!(runs.len(), 1, "{runs:?}");
     Ok(())
 }
 

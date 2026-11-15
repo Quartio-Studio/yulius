@@ -255,7 +255,9 @@ person's decision is read as holding after an approval).
   never reported as that run (unchanged; tests hold it).
 - **CIR-004** One rule for local checks, stated the same way in `docs/engineering/workflow.md`
   step 4, `yulius-verify`, `AGENTS.md`, `om-check-and-commit`, `om-code-review`,
-  `delivery-pipeline`, the workflows, the briefing and the definition of done: "While iterating,
+  `delivery-pipeline`, `om-fix`, `docs/engineering/git.md` and `development.md`, the workflows and
+  the briefing (the definition of done names no local gate outside a playground, where CI may
+  not run, so it stays): "While iterating,
   run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while
   the reviewer reads. Do not run the whole gate locally before a review or between rounds, except
   to reproduce a CI failure or when CI cannot run (a playground without CI, an outage)." The
@@ -578,8 +580,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   events typed into the session (a conflict with the base is then seen during the review, which
   fix 9 wants too). A run without a pull request would need a second reference kind whose run
   must be handed over when the pull request opens (the planner cancels an active run whose
-  reference disappeared). The cost: a pull request is visible before its approval. It says
-  "in review" in its body until the merge is asked.
+  reference disappeared). The cost: a pull request is visible before its approval; its body is
+  the one Yulius writes for any pull request (the review rounds show in the delivery view and
+  `delivery_status`), so nothing is added to it.
 - **Fix 6 counts commit by commit.** A total diff would let a large change be undone by a second
   one and count as nothing; the reviewer saw neither. A merge that resolved a conflict is not
   counted in lines at all: it needs its review, as today.
@@ -1049,3 +1052,23 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   round's report, against the time its first CI run took (`GET /api/analytics/reviews` with the
   Pipeline tab's CI runs); a run queued within seconds of a round's start.
 - Fix 2's round-2 nit: the notes test's comment no longer ties #1246 to a resync.
+- **Review round 1** (Opus 5.5, Fable out until 21:10 UTC; head `76286fe21`). Request
+  changes. Answered (all own change):
+  - Major: the rule was missing from `docs/engineering/git.md` ("`scripts/dev ci` before the
+    review") and `development.md` ("the full gate after implementation stabilizes"). Both now
+    state it, and the test holds them and refuses both wordings.
+  - Major: `om-fix` still ran every gate between rounds. It states the rule now and is held by
+    the test. The catalog README and `verification-before-completion` say the checks the change
+    touches.
+  - Minor: the hook no longer says the head is pushed: "Yulius delivers this head now when it
+    can … `ci_status` shows its run". The briefing and `delivery_merge`'s answer name the
+    review's start among the moments Yulius pushes.
+  - Minor: the spec named an "in review" pull request body and the definition of done, and
+    neither was changed. The spec now says what is true (Decisions, CIR-004). AC-10's
+    invalid-spec case is in the test.
+  - Minor, pre-existing and made likelier: two CI syncs of one sandbox could queue a head
+    twice. One sync of a sandbox runs at a time now (`sync_locks`).
+    `delivery::two_ci_syncs_of_a_sandbox_queue_a_head_once` holds the first sync after its plan
+    (race point `CiSyncPlanned`). Before the lock: 2 runs at one head; with it, 1.
+  - Minor: the readiness look in the hook is bounded (1.5 s). A late look says nothing, and the
+    delivery checks again. Nit: `dlv_check_spec`'s doc comment is back on it.

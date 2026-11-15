@@ -769,8 +769,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          pre-existing; answer all. Fix own code test-first, never as an issue; after 3 rounds \
          split or `needs_you`.\n\
          - Yulius pushes your branch and opens the pull request (spec valid if needed, all \
-         committed) at your turn's end once all steps are done, or when you call \
-         `delivery_merge` for the finished part (steps ahead stay open); later commits too. CI runs on our own machines (`ci_status`). Once the review approved the exact \
+         committed) at your turn's end once all steps are done, when the review starts, or when \
+         you call `delivery_merge` for the finished part (steps ahead stay open); later commits \
+         too. CI is ours (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
          turn: never hold a green one back. Fix failures on this branch, test-first. \
          {checks}\n\
@@ -1757,7 +1758,7 @@ mod tests {
             "(3-12 per pull request, at most 60)",
             "done once nothing of it remains (a review: once approved)",
             "Add a step only for work found later",
-            "at your turn's end once all steps are done, or when you call `delivery_merge` for \
+            "at your turn's end once all steps are done, when the review starts, or when you call `delivery_merge` for \
              the finished part (steps ahead stay open)",
             "skill `git-hygiene`",
             "No `git stash`",

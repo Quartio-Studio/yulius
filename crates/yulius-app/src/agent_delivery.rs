@@ -297,8 +297,8 @@ impl App {
                 "next": format!(
                     "{pull} is already merged and this head adds nothing to it: there is nothing \
                      to deliver.{counts} Commit new work on this branch and Yulius opens a new pull \
-                     request for it (at your turn's end once every step is finished, or when you \
-                     call `delivery_merge` for a finished part)."
+                     request for it (at your turn's end once every step is finished, when its \
+                     review starts, or when you call `delivery_merge` for a finished part)."
                 ),
             }));
         }

@@ -1120,7 +1120,10 @@ mod tests {
             gate locally before a review or between rounds, except to reproduce a ci failure or \
             when ci cannot run (a playground without ci, an outage).";
         const SHORT: &str = "the whole gate is yulius ci's";
-        const OLD: [&str; 5] = [
+        const OLD: [&str; 8] = [
+            "`scripts/dev ci` before the review",
+            "use the full gate after implementation stabilizes",
+            "then run every gate of the project, in order, until green",
             "`scripts/dev ci` before handoff",
             "run every gate of the project before anything leaves your machine",
             "never approve without running the full gate",
@@ -1145,6 +1148,9 @@ mod tests {
             "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
             "catalog/skills/open-mercato/om-code-review/SKILL.md",
             "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-fix/SKILL.md",
+            "docs/engineering/git.md",
+            "docs/engineering/development.md",
         ] {
             let text = read(rel)?;
             assert!(
@@ -1178,6 +1184,9 @@ mod tests {
             "catalog/skills/open-mercato/om-check-and-commit/SKILL.md",
             "catalog/skills/open-mercato/om-code-review/SKILL.md",
             "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-fix/SKILL.md",
+            "docs/engineering/git.md",
+            "docs/engineering/development.md",
             "crates/yulius-domain/src/briefing.rs",
         ] {
             let text = read(rel)?;

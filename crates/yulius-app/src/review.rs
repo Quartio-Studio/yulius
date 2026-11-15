@@ -51,6 +51,9 @@ const QUEUED_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this 
      Yulius would move the session to one that can, but a prompt waits in Claude Code's queue, \
      which a move would drop. Answer it or end your turn, then start the review again.";
 
+/// The longest the look at whether the head under review can go out may take in the hook.
+const READY_LOOK: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// The longest the move's looks may take: the hook client gives `PreToolUse` 5 s, after which
 /// the reviewer starts as asked while a move could still be decided.
 const MOVE_DECISION: std::time::Duration = std::time::Duration::from_secs(3);
@@ -209,8 +212,12 @@ impl App {
         if sandbox.is_playground() {
             return String::new();
         }
-        if let Some(reason) = self.review_head_not_ready(task).await {
-            return format!(" No Yulius CI run starts for this head: {reason}.");
+        // Only the message waits for this look, within its bound: the delivery checks again.
+        match tokio::time::timeout(READY_LOOK, self.review_head_not_ready(task)).await {
+            Ok(Some(reason)) => {
+                return format!(" No Yulius CI run starts for this head: {reason}.");
+            }
+            Ok(None) | Err(_) => {}
         }
         let app = Arc::clone(self);
         let task_id = task.id.clone();
@@ -230,8 +237,8 @@ impl App {
                 }
             }
         });
-        " Yulius pushes this head and Yulius CI tests this head while the review runs: read \
-         its run (`ci_status`) beside the report."
+        " Yulius delivers this head now when it can, so Yulius CI tests it while the review \
+         runs: `ci_status` shows its run."
             .to_owned()
     }
 
