@@ -1332,11 +1332,14 @@ went; two of the auditors' items had gained a user since and stay.
   policy (preview pages, attachments) keep theirs.
 - **CGR-003** A sandbox's Docker engine runs in, and sees as its `/sys/fs/cgroup`, the group
   `engine/inside`, the root of its cgroup namespace; its limits (the task cap of SPEC-268
-  PID-002, its CPU weight) stay on `engine`, out of its view, and no controller passes down to
-  `inside`. A start after a restart that pruned them makes both groups again (nothing above).
-  An engine group an engine of the old layout left threaded is made plain again (its emptied
-  leftovers removed, its controllers taken back) once no process runs in it but below `inside`;
-  an old engine still running there is left alone.
+  PID-002, its CPU weight) stay on `engine`, out of its view, and `cpu` and `pids` pass down
+  to `inside` as they reached the engine before (`--pids-limit` works in containers, `--cpus`
+  fails in runc's threaded mode as before). A start after a restart that pruned them makes
+  both groups again (nothing above). An engine group an engine of the old layout left threaded
+  is made plain again (its emptied leftovers removed) once no process runs in it but below
+  `inside` and its `cgroup.procs` can be read; an old engine still running there is left alone.
+  A container is a populated group below the engine's root (`cgroup.events`), also where runc
+  made it threaded.
 
 ## Plan
 
@@ -2318,7 +2321,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - Slice 39: `yulius-sandbox` `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves`,
   `ci_and_the_engine_leave_the_agents_a_reserve_of_tasks`,
   `without_the_cpu_controller_there_is_no_split`, `without_the_split_the_leaves_get_no_task_limit`,
-  `a_pruned_leaf_is_restored_under_its_parent`, `an_idle_engine_group_from_before_is_made_plain_again`,
+  `a_pruned_leaf_is_restored_under_its_parent`,
+  `an_idle_engine_group_from_before_is_made_plain_again`,
+  `the_engine_root_gets_the_threaded_controllers`,
+  `engine_supervisor::tests::only_processes_below_the_engines_group_are_containers`,
   `engine_supervisor::tests::a_start_recreates_the_engine_leaf_a_restart_pruned`,
   `manager::tests::a_kept_engine_front_gets_its_pruned_leaf_back` (AC-159); the kernel's and
   `dockerd`'s behaviour in an Ubuntu 26.04 QEMU guest (scripts kept in the task's cache).
@@ -2458,8 +2464,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
 - [ADR-0339](../../docs/decisions/0339-the-engine-runs-below-the-group-that-holds-its-limits.md)
-  (slice 39): the engine in `engine/inside`, its limits one group up; no controller passed
-  down; old engine groups settled when idle; rejected: read-only limit files, refusing
+  (slice 39): the engine in `engine/inside`, its limits one group up; `cpu` and `pids` passed
+  down as before; old engine groups settled when idle; rejected: read-only limit files, refusing
   privileged containers, dropping the per-leaf caps.
 - [ADR-0338](../../docs/decisions/0338-the-web-ui-runs-under-a-strict-content-security-policy.md)
   (slice 38): one policy file for the server and the e2e server; inline styles allowed (xterm
@@ -3109,3 +3115,41 @@ later slices follow.
 - **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
 - **Gate.** `scripts/dev ci` at `0779ed67f`: exit 0; `4456 tests run: 4456 passed (1 slow), 17
   skipped` (`target/audit/slice39/gate.log`).
+- **Review, round 1** (a fresh session, head `089018f2a`): request changes, two own-code
+  minors.
+  - F1: the claim that no controller passed below the engine's group before was false. My own
+    guest logs showed `[cpu pids]` at the old engine's root, and runc passed them on in threaded
+    mode, so the new layout lost per-container `--pids-limit`.
+  - F2: the opt-in real-host test `isolation.rs` still asserted the engine in `engine`.
+  - Nits: F3, an idle old front's group pruned at the update leads to the front's restart (not
+    in the ADR); F4, an unreadable `cgroup.procs` counted as idle; F5, a race between settling
+    and an old engine's first container; F6, no guest run of an old engine starting beside
+    `inside`; F7, over-long lines.
+  - Pre-existing (major): P1, the idle check read `cgroup.procs` of runc's threaded container
+    groups. That read fails, so an old-layout engine counted as idle and was stopped while its
+    containers ran.
+- **Fixes.** Tests first, failing before (`the_engine_root_gets_the_threaded_controllers`,
+  `only_processes_below_the_engines_group_are_containers` with events only).
+  - F1: settling now passes `cpu` and `pids` down to `inside`, one write each, as the group
+    lists them; `memory` is never passed.
+  - P1: the idle check reads `populated` from `cgroup.events` of the groups below the root.
+  - F4: an unreadable `cgroup.procs` is busy.
+  - F2: `isolation.rs` asserts `engine/inside`.
+  - F3: the ADR names the front's restart.
+  - F7: rewrapped.
+  - F5 is answered: settling runs while the old engine is busy only up to its first container's
+    group. The kernel refuses `rmdir` of a populated group and a controller change that would
+    break a threaded subtree, and the next preparation settles again.
+- **On the guest, with the code's own steps** (`c4-round1.log`, `c4-old-flags.log`):
+  - The old layout on a fresh group: `--pids-limit 50` reaches the container, and `--cpus 0.5`
+    fails in runc ("cannot enter cgroupv2 … with domain controllers -- it is in an invalid
+    state / threaded mode").
+  - The new layout with `cpu pids` passed down: the same for both flags. A running container
+    shows `populated 1` below `inside`, and the privileged nested write leaves `pids.max` 200
+    and `cpu.weight` 100.
+  - F6: an old engine started in `engine` while `inside` exists runs containers; settling then
+    leaves it alone ("busy"). After it stops, settling makes the group plain, and the new engine
+    runs containers.
+- **Mutations** (`mutations-r1.log`): 16 of 16 caught, the five new ones included (no pass
+  down, `memory` passed, an unlisted controller passed, an unreadable `cgroup.procs` idle, the
+  idle check by `cgroup.procs`).

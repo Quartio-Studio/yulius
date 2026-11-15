@@ -1007,9 +1007,10 @@ from a sandbox, and no daemon needs to run on the host.
 - **What it is.** On the first connection to the sandbox's socket, the sandbox's Docker front
   starts `dockerd` as root of the sandbox's user namespace (not the host's): in the sandbox's
   network, with a run's view of the files plus its storage, a cgroup namespace rooted at
-  `sandboxes/<sandbox>/engine/inside` (its limits on `engine`, out of its view, ADR-0339), and a seccomp profile of its own that every container inherits,
-  `--privileged` included. Containers count against the sandbox's memory, task and CPU limits.
-  Their traffic leaves through the sandbox's egress, and they reach the egress proxy at
+  `sandboxes/<sandbox>/engine/inside` (its limits on `engine`, out of its view, ADR-0339), and
+  a seccomp profile of its own that every container inherits, `--privileged` included.
+  Containers count against the sandbox's memory, task and CPU limits. Their traffic leaves
+  through the sandbox's egress, and they reach the egress proxy at
   `host.docker.internal:<internal port>` (with `--add-host=host.docker.internal:host-gateway`). A
   port published in the sandbox's port range is relayed like a dev server's.
 - **Prerequisites.** `sudo yulius host setup` (§2) brings all of them and proves them with the
@@ -1044,10 +1045,10 @@ from a sandbox, and no daemon needs to run on the host.
   - The cgroup delegation (§3). When `yulius.service` stops, systemd removes every empty group
     in the unit, including the `engine` leaf of a sandbox whose engine stopped as idle. Holders
     and fronts keep running (`KillMode=process`). Before each engine start, the front makes the
-    leaf (and `inside` below it) again under the sandbox's group, and so does the server's upkeep tick (30 s) for an engine
-    or relay front it keeps (SPEC-201, #614). Before that fix, `docker` answered "cannot join
-    …/sandboxes/<sandbox>/engine: No such file or directory" after every update, until a new run
-    prepared the sandbox.
+    leaf (and `inside` below it) again under the sandbox's group, and so does the server's
+    upkeep tick (30 s) for an engine or relay front it keeps (SPEC-201, #614). Before that fix,
+    `docker` answered "cannot join …/sandboxes/<sandbox>/engine: No such file or directory"
+    after every update, until a new run prepared the sandbox.
   - These kernel modules loaded, since a sandbox cannot load modules: `overlay bridge veth
     nf_tables nft_compat nft_chain_nat nf_nat nf_conntrack xt_MASQUERADE xt_addrtype xt_conntrack`,
     listed in `/etc/modules-load.d/yulius-docker.conf` so that they load at every boot.
