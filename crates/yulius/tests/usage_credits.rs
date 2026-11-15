@@ -5,10 +5,10 @@
 //! to send "continue". Real processes, as in `pool_supervision.rs`.
 
 use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_with, has_status, new_task, reading, refresh, runtime, seed, stop,
-    temp, usage, wait_for,
+    HOUR, ScriptedUsage, build_with, has_status, new_fable_task, reading, refresh, runtime, seed,
+    stop, temp, usage, wait_for,
 };
-use crate::subscription_moves::{live_run, notices, ready, run_accounts, running_on_first};
+use crate::subscription_moves::{fable_running_on_first, live_run, notices, ready, run_accounts};
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
 use crate::support::{TestResult, hold_point, point_reached};
 
@@ -124,7 +124,7 @@ fn a_task_out_of_usage_credits_moves_on_by_itself() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(None))?;
-        let (id, _user) = running_on_first(&app, &probe, &data).await?;
+        let (id, _user) = fable_running_on_first(&app, &probe, &data).await?;
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
         let attempts = app.deps.store.attempts(&id).await?;
@@ -147,7 +147,8 @@ fn a_task_out_of_usage_credits_moves_on_by_itself() -> TestResult {
         assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
         assert_eq!(stored["limit_reached"], false, "{stored}");
         assert!(stored["secondary"].is_null(), "{stored}");
-        assert_eq!(status, AccountStatus::Limited);
+        // Only Fable is used up there: the default model, Opus 5.5, still runs (SPEC-493).
+        assert_eq!(status, AccountStatus::Ok);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -172,7 +173,7 @@ fn a_reset_no_window_could_have_does_not_outlive_a_provider_reading() -> TestRes
             probe.clone(),
             refused_for_credits(Some(400 * 24 * 3600)),
         )?;
-        let (id, _user) = running_on_first(&app, &probe, &data).await?;
+        let (id, _user) = fable_running_on_first(&app, &probe, &data).await?;
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
         assert_eq!(
@@ -185,7 +186,7 @@ fn a_reset_no_window_could_have_does_not_outlive_a_provider_reading() -> TestRes
             stored["weekly_fable"]["resets_at"].is_null(),
             "a reset 400 days ahead is not believed: {stored}"
         );
-        assert_eq!(status, AccountStatus::Limited);
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
         probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 100));
         reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
@@ -216,7 +217,7 @@ fn a_subscription_out_of_usage_credits_gets_no_task_until_they_reset() -> TestRe
             probe.clone(),
             refused_for_credits(Some(40 * 3600)),
         )?;
-        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        let (id, user) = fable_running_on_first(&app, &probe, &data).await?;
         let refused_at = app.now();
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
@@ -227,7 +228,7 @@ fn a_subscription_out_of_usage_credits_gets_no_task_until_they_reset() -> TestRe
         needs_nobody(&app, &id).await?;
 
         let (status, usage) = stored_usage(&app, "a-first").await?;
-        assert_eq!(status, AccountStatus::Limited);
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
         assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
         let resets = usage["weekly_fable"]["resets_at"].as_i64().ok_or("reset")?;
         let named = refused_at.plus_millis(40 * HOUR).0;
@@ -256,12 +257,12 @@ fn a_subscription_out_of_usage_credits_gets_no_task_until_they_reset() -> TestRe
         assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
         assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
         assert_eq!(usage["weekly_fable"]["resets_at"], resets, "{usage}");
-        assert_eq!(status, AccountStatus::Limited);
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
 
         // The next task goes where its model can run, though the refused subscription has the
         // most of its week left.
         let sandbox = app.deps.store.task(&id).await?.ok_or("task")?.sandbox_id;
-        let next = new_task(&app, &sandbox, &user, "Next").await?;
+        let next = new_fable_task(&app, &sandbox, &user, "Next").await?;
         ready(&app, &next).await?;
         assert_eq!(
             run_accounts(&app, &next).await,
@@ -325,8 +326,9 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         // Placed on a-first while b-second is nearly full; b-second is free again afterwards.
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
         reading(&app, "b-second").await?;
-        let opus = Some("claude-opus-5-5");
-        let id = task_of_model(&app, &sandbox, &user, "Opus", opus).await?;
+        // A task a person set to Fable: the default model is Opus 5.5 (SPEC-493).
+        let chosen = Some("claude-fable-5-2");
+        let id = task_of_model(&app, &sandbox, &user, "Fable", chosen).await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
@@ -340,32 +342,32 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         );
         needs_nobody(&app, &id).await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
-        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
-        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_opus"].is_null(), "{stored}");
         assert_eq!(status, AccountStatus::Ok, "the default model still runs");
 
         // a-first has the most room of the week, and a reading of it keeps the model's limit.
         probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 50));
         reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
-        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
         assert_eq!(stored["secondary"]["used_percent"], 10.0, "{stored}");
         assert_eq!(status, AccountStatus::Ok);
-        let fable = task_of_model(&app, &sandbox, &user, "Default", None).await?;
-        ready(&app, &fable).await?;
+        let default = task_of_model(&app, &sandbox, &user, "Default", None).await?;
+        ready(&app, &default).await?;
         assert_eq!(
-            run_accounts(&app, &fable).await,
+            run_accounts(&app, &default).await,
             [Some("a-first".to_owned())],
             "a task of the default model goes where the week has the most room"
         );
-        let other = task_of_model(&app, &sandbox, &user, "Opus again", opus).await?;
+        let other = task_of_model(&app, &sandbox, &user, "Fable again", chosen).await?;
         ready(&app, &other).await?;
         assert_eq!(
             run_accounts(&app, &other).await,
             [Some("b-second".to_owned())],
             "a task of the refused model does not"
         );
-        for task in [&other, &fable, &id] {
+        for task in [&other, &default, &id] {
             stop(&app, task).await?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -400,7 +402,7 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
         probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
         reading(&app, second).await?;
-        let id = new_task(&app, &sandbox, &user, "Read while limited").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Read while limited").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
         probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
@@ -434,7 +436,7 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
             "the reading wrote over the limit (written while it was held: {written}): {usage}"
         );
         assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
-        assert_eq!(status, AccountStatus::Limited);
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -466,7 +468,7 @@ fn a_subscription_refused_while_its_usage_is_stored_stays_refused() -> TestResul
         let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
         probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
         reading(&app, second).await?;
-        let id = new_task(&app, &sandbox, &user, "Refused while read").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Refused while read").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
         probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
@@ -542,7 +544,7 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         opus_out(&app, &["a-first"]).await?;
         app.start_capacity_loop();
-        let id = new_task(&app, &sandbox, &user, "Waits").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Waits").await?;
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
@@ -616,7 +618,7 @@ fn a_refresh_that_finds_the_model_running_resumes_the_task_that_waits_for_its_re
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         opus_out(&app, &["a-first"]).await?;
         app.start_capacity_loop();
-        let id = new_task(&app, &sandbox, &user, "Waits").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Waits").await?;
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
@@ -695,7 +697,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(None))?;
-        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        let (id, user) = fable_running_on_first(&app, &probe, &data).await?;
         let other = AccountId::parse("b-second")?;
         let foreign = MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"b-second")?;
         app.deps
@@ -840,8 +842,8 @@ async fn refused_twice(
             app.now(),
         )
         .await?;
-    // A task of a model that has no fallback: a Fable task would go on with Opus 5.5 here
-    // (SPEC-482; `model_fallback.rs` has that one, refused for both models).
+    // A task of a model that has no fallback, the default one (SPEC-493): a Fable task would go
+    // on with Opus 5.5 here (SPEC-482; `model_fallback.rs` has that one, refused for both models).
     let id = task_of_model(&app, &sandbox, &user, "No end", Some("claude-opus-5-5")).await?;
     ready(&app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
@@ -855,7 +857,11 @@ async fn refused_twice(
     let (status, stored) = stored_usage(&app, "a-first").await?;
     assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
     assert!(stored["weekly_opus"]["resets_at"].is_null(), "{stored}");
-    assert_eq!(status, AccountStatus::Ok, "the default model still runs");
+    assert_eq!(
+        status,
+        AccountStatus::Limited,
+        "the default model cannot run on it"
+    );
 
     // A provider's reading ends the limit; the pool tries the task again, once.
     probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
@@ -1242,9 +1248,9 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
 }
 
 /// The first turn of a session whose agent only echoes, with its transcript. Its task is set to
-/// `model`. One of the default model has Opus 5.5 used up on its subscription for six more days
-/// ([`opus_out`]), so it waits where it would fall back; one of a model that has no fallback
-/// (`Some`) waits with nothing known to wait for.
+/// `model`, and with `None` to Fable 5.2 with Opus 5.5 used up on its subscription for six more
+/// days ([`opus_out`]), so it waits where it would fall back; one of a model that has no
+/// fallback (`Some`) waits with nothing known to wait for.
 async fn first_turn(
     app: &Arc<App>,
     data: &Path,
@@ -1254,6 +1260,7 @@ async fn first_turn(
     if model.is_none() {
         opus_out(app, &["a-first"]).await?;
     }
+    let model = model.or(Some("claude-fable-5-2"));
     let id = task_of_model(app, &sandbox, &user, "Appended", model).await?;
     ready(app, &id).await?;
     app.send_input(&id, b"hello\r").await?;
@@ -1325,6 +1332,344 @@ async fn goal_pause_then_a_wait(
     .await?;
     assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
     Ok((app, id))
+}
+
+/// SPEC-493 MDL-002 (review round 1 of fix 1a): a person switched a default task's session to
+/// Fable inside it (`/model`), and Fable is refused for its usage credits. The record before the
+/// request names the model, so the limit is Fable's on the subscription, not the limit of the
+/// model the run was launched with: Opus 5.5 still runs there, the subscription is not limited,
+/// and the task goes on at once with its own model in the same session, on the same
+/// subscription (one is enough), past the refused turn. Nobody is asked.
+#[test]
+fn a_session_switched_to_fable_goes_on_with_its_own_model_when_fable_is_refused() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let opus = "claude-opus-5-5";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(opus)).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        assert_eq!(attempts[1].model.as_deref(), Some(opus));
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(has_status(&app, &id, TaskStatus::Running).await);
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        needs_nobody(&app, &id).await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_opus"].is_null(), "not Opus's: {stored}");
+        assert_eq!(stored["limit_reached"], false, "{stored}");
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-493 MDL-002 (review round 2 of fix 1a): a task set to Fable 5.2 runs on its fallback,
+/// Opus 5.5, because Fable is used up on its only subscription; its person switches the session
+/// to Fable (`/model`) and Fable is refused again. The session goes on with Opus 5.5 on the same
+/// subscription, and its terminal names that model, the one the relaunch runs, not the task's
+/// own.
+#[test]
+fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let fable = Some("claude-fable-5-2");
+        let id = task_of_model(&app, &sandbox, &user, "On the fallback", fable).await?;
+        ready(&app, &id).await?;
+        let opus = Some("claude-opus-5-5".to_owned());
+        assert_eq!(app.deps.store.attempts(&id).await?[0].model, opus);
+        app.send_input(&id, b"hello\r").await?;
+        let mut transcript = None;
+        wait_for("the first turn", Duration::from_secs(30), || {
+            transcript = session_transcript(&data, "msg_fake_1");
+            let written = transcript.is_some();
+            async move { written }
+        })
+        .await?;
+        let transcript = transcript.ok_or("transcript")?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model, opus, "still on the fallback");
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        needs_nobody(&app, &id).await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|notice| notice.contains("goes on with Fable")),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-493 MDL-002 (review round 4 of fix 1a): the notice past a switched model's limit names
+/// the model of the run that starts, also when the usage changed between the pool's decision and
+/// the launch. A task set to Fable 5.2 runs on its fallback; switched to Fable, it is refused;
+/// while the old run ends, Fable gets room again on the subscription: the relaunch runs Fable
+/// 5.2, and the terminal says that, not that Fable is used up.
+#[test]
+fn the_notice_past_a_switched_limit_names_the_model_the_launch_runs() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let fable = "claude-fable-5-2";
+        let id = task_of_model(&app, &sandbox, &user, "Raced", Some(fable)).await?;
+        ready(&app, &id).await?;
+        app.send_input(&id, b"hello\r").await?;
+        let mut transcript = None;
+        wait_for("the first turn", Duration::from_secs(30), || {
+            transcript = session_transcript(&data, "msg_fake_1");
+            let written = transcript.is_some();
+            async move { written }
+        })
+        .await?;
+        let transcript = transcript.ok_or("transcript")?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let (decided, go_on) = hold_point(Point::SwitchDecided, id.as_str());
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        point_reached(decided).await?;
+        // Fable has room again before the launch places its run.
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room}),
+        )
+        .await?;
+        go_on.send(())?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model.as_deref(), Some(fable));
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|notice| notice == "Fable 5.2 can run again: this session runs on it."),
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|notice| notice.contains("is used up")),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-493 MDL-002 (review round 5 of fix 1a): a default task's session is switched to Fable
+/// and refused for Fable's credits while Opus is used up too on the only subscription: nothing
+/// can take it, so it waits. When Opus has room again, the session goes on past that limit with
+/// Opus 5.5, and that launch says why it does not run Fable.
+#[test]
+fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let opus = "claude-opus-5-5";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(opus)).await?;
+        opus_out(&app, &["a-first"]).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        assert!(
+            !notices(&mut watch)
+                .iter()
+                .any(|n| n.contains("is used up on this")),
+            "nothing goes on yet"
+        );
+        // Opus has room again; Fable's allowance is still used up.
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let _ = app.resume_round().await;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            app.deps.store.attempts(&id).await?[1].model.as_deref(),
+            Some(opus)
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
+/// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
+/// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.
+#[test]
+fn a_fable_task_switched_to_opus_goes_on_with_fable_and_says_so() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let fable = "claude-fable-5-2";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(fable)).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[Line::Prompt, Line::OpusCapRefusal, Line::TurnDuration],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model.as_deref(), Some(fable));
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        needs_nobody(&app, &id).await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Opus is used up on this subscription: this session goes on with Fable 5.2."),
+            "{said:?}"
+        );
+        let (_status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// A request that says "the task does not go on by itself" ends when Yulius takes the task on
@@ -1517,7 +1862,7 @@ fn a_limit_after_the_model_answered_again_has_its_own_retry() -> TestResult {
         let app = build_with(&data, &fake, probe.clone(), refused_for_credits(None))?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         opus_out(&app, &["a-first"]).await?;
-        let id = new_task(&app, &sandbox, &user, "Answers between").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Answers between").await?;
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
@@ -1606,7 +1951,7 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
         )
         .await?;
         opus_out(&app, &["a-first", "b-second"]).await?;
-        let id = new_task(&app, &sandbox, &user, "Waits for the other").await?;
+        let id = new_fable_task(&app, &sandbox, &user, "Waits for the other").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         let started = app.now();
@@ -1637,7 +1982,8 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
         reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
         assert!(stored["weekly_fable"].is_null(), "{stored}");
-        assert_eq!(status, AccountStatus::Ok);
+        // Fable has room again by the reading; Opus 5.5, the default model, is used up there.
+        assert_eq!(status, AccountStatus::Limited);
         let _ = app.resume_round().await;
         assert_eq!(
             run_accounts(&app, &id).await.len(),
@@ -1708,6 +2054,11 @@ enum Line {
     TurnDuration,
     /// A line of the model's own work (a tool call).
     Work,
+    /// The record Claude Code 2.1.325 writes before a request, here one that asks for Fable 5.2:
+    /// the session's person switched the model inside it (`/model`).
+    RequestOfFable,
+    /// The refusal at the weekly Opus cap (`seven_day_opus`), which names its family.
+    OpusCapRefusal,
 }
 
 /// Appends `lines` to `transcript`, written now, to the millisecond as Claude Code writes them.
@@ -1770,6 +2121,18 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
                 "system",
                 json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
             ),
+            Line::OpusCapRefusal => (
+                "assistant",
+                json!({"isApiErrorMessage": true, "error": "rate_limit",
+                    "apiError": "usage_limit_reached", "apiErrorStatus": 429,
+                    "apiErrorParams": {"rate_limit_info":
+                        {"status": "rejected", "rateLimitType": "seven_day_opus"}},
+                    "message": refusal(&uuid, "You've hit your Opus limit")}),
+            ),
+            Line::RequestOfFable => (
+                "api-request",
+                json!({"model": "claude-fable-5-2", "max_tokens": 64_000}),
+            ),
             Line::Work => (
                 "assistant",
                 json!({"requestId": format!("req-{uuid}"), "message": {"id": format!("msg-{uuid}"),
@@ -1781,6 +2144,14 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
                         "cache_read_input_tokens": 0, "output_tokens": 6}}}),
             ),
         };
+        if matches!(line, Line::RequestOfFable) {
+            // Not a message of the conversation: it has no place in the chain of records.
+            let record = json!({"type": kind, "sessionId": session, "id": uuid,
+                "timestamp": at, "version": "2.1.325", "querySource": "repl_main_thread",
+                "params": extra});
+            out.push_str(&format!("{record}\n"));
+            continue;
+        }
         let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent,
             "isSidechain": false, "sessionId": session, "timestamp": at,
             "userType": "external", "version": "2.1.311"});
@@ -1837,7 +2208,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
     let first = runtime()?;
     let (id, transcript) = first.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
-        let (id, _user) = running_on_first(&app, &probe, &data).await?;
+        let (id, _user) = fable_running_on_first(&app, &probe, &data).await?;
         let other = AccountId::parse("b-second")?;
         let foreign = MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"b-second")?;
         app.deps

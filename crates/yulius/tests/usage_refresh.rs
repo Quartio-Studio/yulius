@@ -29,7 +29,10 @@ use yulius_domain::usage::{
 
 /// The cheapest model, which the probe reads the 5-hour and weekly windows with.
 const CHEAPEST: &str = "claude-haiku-4-5-20251001";
-const DEFAULT: &str = "claude-fable-5-2";
+/// The default model, which a limit of the whole subscription is asked about with.
+const DEFAULT: &str = "claude-opus-5-5";
+/// The model Fable's weekly allowance is asked about with.
+const FABLE: &str = "claude-fable-5-2";
 /// The stored sign-in: a made-up word, shaped like no provider's credential.
 const CREDENTIAL: &str = "stored-sign-in-of-the-test";
 const DAY_MS: i64 = 24 * 3_600_000;
@@ -217,7 +220,7 @@ async fn harness_at(base: String) -> Result<support::Harness, Box<dyn std::error
 #[tokio::test]
 async fn a_refresh_ends_a_models_limit_that_claude_no_longer_holds() -> TestResult {
     let (base, seen) = claude(|model| {
-        if model == DEFAULT {
+        if model == FABLE {
             ran(&[
                 ("anthropic-ratelimit-unified-status", "rejected"),
                 ("anthropic-ratelimit-unified-overage-status", "allowed"),
@@ -253,7 +256,7 @@ async fn a_refresh_ends_a_models_limit_that_claude_no_longer_holds() -> TestResu
     );
     assert_eq!(usage["secondary"]["used_percent"], 61.0);
     assert!(refreshed.body["last_error"].is_null());
-    assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE]);
     // The answer says that Claude gave a usage reading; the list's view says nothing of it.
     assert_eq!(refreshed.body["usage_read"], true, "{:?}", refreshed.body);
     let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
@@ -321,7 +324,7 @@ async fn a_window_the_reading_carried_is_not_asked_about() -> TestResult {
 #[tokio::test]
 async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestResult {
     let (base, seen) = claude(|model| {
-        if model == DEFAULT {
+        if model == FABLE {
             reply(
                 "429 Too Many Requests",
                 &[
@@ -364,15 +367,18 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
         "{:?}",
         refreshed.body
     );
-    assert_eq!(refreshed.body["status"], "limited");
+    assert_eq!(
+        refreshed.body["status"], "ok",
+        "the default model still runs"
+    );
     assert_eq!(
         refreshed.body["usage"]["secondary"]["used_percent"], 61.0,
         "the week keeps its own reading"
     );
-    assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE]);
 
     // The background round's reading keeps the window now that it has a reset, and asks
-    // nothing about it (RFR-007): no request with the default model.
+    // nothing about it (RFR-007): no request with the Fable model.
     h.clock
         .0
         .fetch_add(10 * 60_000, std::sync::atomic::Ordering::SeqCst);
@@ -383,10 +389,7 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
         stored(&h, "a-blind").await?.weekly_fable,
         Some(full_week(Some(4_000_000_000_000)))
     );
-    assert_eq!(
-        asked(&seen),
-        ["usage", CHEAPEST, DEFAULT, "usage", CHEAPEST]
-    );
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE, "usage", CHEAPEST]);
     Ok(())
 }
 
@@ -404,7 +407,7 @@ async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult
         "x".repeat(300 * 1024)
     );
     let (base, seen) = claude(move |model| {
-        if model == DEFAULT {
+        if model == FABLE {
             let status = answering
                 .lock()
                 .map_or("500 Internal Server Error", |status| *status);
@@ -475,11 +478,11 @@ async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult
                 record.last_error.as_deref(),
                 Some(format!("usage: {sentence}").as_str())
             );
-            assert_eq!(record.status, AccountStatus::Limited);
+            assert_eq!(record.status, AccountStatus::Ok, "the default model runs");
         }
     }
     assert_eq!(
-        asked(&seen).iter().filter(|m| *m == DEFAULT).count(),
+        asked(&seen).iter().filter(|m| *m == FABLE).count(),
         6,
         "one question per refresh"
     );
@@ -559,19 +562,19 @@ async fn a_limit_of_the_subscription_is_asked_about_with_the_default_model() -> 
     Ok(())
 }
 
-/// RFR-003: a limit is asked about with the model it binds. An Opus window stored without a
-/// reset is asked about with the Opus model Yulius offers, and gets the reset of Claude's
-/// refusal; the default model is not asked, and still runs on the subscription.
+/// RFR-003: a limit is asked about with the model it binds. A Sonnet window stored without a
+/// reset is asked about with the Sonnet model Yulius offers, and gets the reset of Claude's
+/// refusal; the default model (Opus 5.5) is not asked, and still runs on the subscription.
 #[tokio::test]
 async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     let (base, seen) = claude(|model| {
-        if model.contains("opus") {
+        if model.contains("sonnet") {
             reply(
                 "429 Too Many Requests",
                 &[
                     (
                         "anthropic-ratelimit-unified-representative-claim",
-                        "seven_day_opus",
+                        "seven_day_sonnet",
                     ),
                     ("anthropic-ratelimit-unified-reset", "4000000000"),
                 ],
@@ -590,21 +593,21 @@ async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     let admin = setup_superadmin_creds(&h).await?;
     account(
         &h,
-        "a-opus",
+        "a-sonnet",
         &AccountUsage {
-            weekly_opus: Some(full_week(None)),
+            weekly_sonnet: Some(full_week(None)),
             ..AccountUsage::default()
         },
     )
     .await?;
-    let refreshed = refresh(&h, &admin, "a-opus").await?;
+    let refreshed = refresh(&h, &admin, "a-sonnet").await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
     assert_eq!(
-        stored(&h, "a-opus").await?.weekly_opus,
+        stored(&h, "a-sonnet").await?.weekly_sonnet,
         Some(full_week(Some(4_000_000_000_000)))
     );
     assert_eq!(refreshed.body["status"], "ok", "the default model runs");
-    assert_eq!(asked(&seen), ["usage", CHEAPEST, "claude-opus-5-5"]);
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, "claude-sonnet-5-5"]);
     Ok(())
 }
 
@@ -617,7 +620,7 @@ async fn a_throttled_reading_still_asks_about_the_limit() -> TestResult {
     let (base, seen) = claude_whose_usage_says(
         reply("429 Too Many Requests", &[("retry-after", "120")], ""),
         |model| {
-            if model == DEFAULT {
+            if model == FABLE {
                 reply("200 OK", &[], "{}")
             } else {
                 reply("500 Internal Server Error", &[], "")
@@ -661,7 +664,7 @@ async fn a_throttled_reading_still_asks_about_the_limit() -> TestResult {
     );
     assert_eq!(record.status, AccountStatus::Ok);
     assert_eq!(record.last_error, None, "a throttle leaves no note");
-    assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE]);
     Ok(())
 }
 

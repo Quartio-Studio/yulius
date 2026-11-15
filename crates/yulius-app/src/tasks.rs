@@ -731,11 +731,11 @@ impl App {
         let effort = claude_effort(&model, task.effort.as_deref()).map(str::to_owned);
         // The model its live run was launched with, when the pool placed it with the fallback
         // (SPEC-482 FBK-009).
-        let fallback_model = store
+        let launched = store
             .live_attempt(&task.id)
             .await?
-            .and_then(|run| run.model)
-            .filter(|launched| *launched != model);
+            .and_then(|run| run.model);
+        let fallback_model = fell_back_to(&model, launched);
         let mut metrics = sum_metrics(&store.task_metrics(&task.id).await?);
         metrics.wall_ms = u64::try_from(wall_ms).unwrap_or(0);
         let switches: Vec<SwitchView> = store
@@ -1056,9 +1056,40 @@ impl App {
     }
 }
 
+/// The model a task set to `own` runs instead, when its live run was launched with its
+/// fallback (SPEC-482 FBK-009). A run launched with any other model than `own` is not on a
+/// fallback: a default task's run started on Fable before the default became Opus 5.5 keeps
+/// Fable until its next launch, and its details must not read "Opus 5.5 was used up"
+/// (SPEC-493, review of fix 1a).
+fn fell_back_to(own: &str, launched: Option<String>) -> Option<String> {
+    launched
+        .filter(|launched| yulius_domain::harness::fallback_model(own) == Some(launched.as_str()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-482 FBK-009, SPEC-493: a task's details name another model than its own only when
+    /// its run was launched with its fallback.
+    #[test]
+    fn a_fallback_is_named_only_for_a_run_launched_with_it() {
+        let (fable, opus) = ("claude-fable-5-2", "claude-opus-5-5");
+        let launched = |model: &str| Some(model.to_owned());
+        assert_eq!(super::fell_back_to(fable, launched(opus)), launched(opus));
+        assert_eq!(
+            super::fell_back_to("claude-fable-5-1", launched(opus)),
+            launched(opus)
+        );
+        // A default task's run that still runs Fable from before the default changed.
+        assert_eq!(super::fell_back_to(opus, launched(fable)), None);
+        assert_eq!(super::fell_back_to(fable, launched(fable)), None);
+        assert_eq!(
+            super::fell_back_to("claude-sonnet-5-5", launched(opus)),
+            None
+        );
+        assert_eq!(super::fell_back_to(fable, None), None);
+    }
 
     #[test]
     fn titles_from_prompts() {

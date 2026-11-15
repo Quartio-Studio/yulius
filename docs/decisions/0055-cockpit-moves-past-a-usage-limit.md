@@ -7,7 +7,9 @@ Accepted. Specified in [SPEC-074](../../.ai/specs/SPEC-074-i-just-hit-usage-limi
 [ADR-0027](0027-step-back-past-a-usage-limit.md); renames the UI name of
 [ADR-0036](0036-agent-in-the-right-panel.md). Amended by
 [ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md): the Cockpit's default model is Fable
-5.2, so a spent weekly Opus cap no longer makes the rotation skip a subscription.
+5.2, so a spent weekly Opus cap no longer makes the rotation skip a subscription. Amended by
+[ADR-0340](0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md): the default is Opus 5.5
+again, so a spent weekly Opus cap makes the rotation skip a subscription once more.
 
 ## Context
 

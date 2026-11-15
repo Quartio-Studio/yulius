@@ -2,8 +2,11 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-482](../../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md);
-task #464. Amends [ADR-0301](0301-a-models-usage-credits-are-a-limit-of-that-model.md) (its
+Accepted. Amended by [ADR-0340](0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)
+(2026-11-15): the default model is Opus 5.5, so "chosen or default" below now means a task set
+to a Fable model; a default task and a Superagent on the default have no fallback, and the
+Capacity panel's line is worked out for Fable work. Specified in
+[SPEC-482](../../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md); task #464. Amends [ADR-0301](0301-a-models-usage-credits-are-a-limit-of-that-model.md) (its
 rejected alternative "switch the task to another model", and what leaving a subscription out
 means), SPEC-001 ROT-010 and [ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md) ("a
 subscription without Fable access cannot run a default task").

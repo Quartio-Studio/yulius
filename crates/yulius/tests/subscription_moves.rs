@@ -77,10 +77,33 @@ pub(crate) async fn running_on_first(
     probe: &ScriptedUsage,
     data: &std::path::Path,
 ) -> Result<(TaskId, UserId), Box<dyn std::error::Error>> {
+    running_on_first_of(app, probe, data, false).await
+}
+
+/// [`running_on_first`] for a task a person set to Fable 5.2 (the default model is Opus 5.5,
+/// SPEC-493).
+pub(crate) async fn fable_running_on_first(
+    app: &Arc<App>,
+    probe: &ScriptedUsage,
+    data: &std::path::Path,
+) -> Result<(TaskId, UserId), Box<dyn std::error::Error>> {
+    running_on_first_of(app, probe, data, true).await
+}
+
+async fn running_on_first_of(
+    app: &Arc<App>,
+    probe: &ScriptedUsage,
+    data: &std::path::Path,
+    fable: bool,
+) -> Result<(TaskId, UserId), Box<dyn std::error::Error>> {
     let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
     probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
     refresh(app, &user, "b-second").await?;
-    let id = new_task(app, &sandbox, &user, "Moves").await?;
+    let id = if fable {
+        crate::pool_supervision::new_fable_task(app, &sandbox, &user, "Moves").await?
+    } else {
+        new_task(app, &sandbox, &user, "Moves").await?
+    };
     ready(app, &id).await?;
     assert_eq!(run_accounts(app, &id).await, [Some("a-first".to_owned())]);
     probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));

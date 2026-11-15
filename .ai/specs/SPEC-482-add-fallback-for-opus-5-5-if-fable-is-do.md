@@ -13,6 +13,15 @@ Scope authorization: the request of task #464 (by MrFishPL, 2026-11-12): "add fa
 (its rejected alternative "switch the task to another model") and SPEC-001 ROT-010; decision in
 [ADR-0312](../../docs/decisions/0312-a-fable-run-falls-back-to-opus-5-5-while-no-subscription-can-run-fable.md).
 
+Amended 2026-11-15 by [SPEC-493](SPEC-493-faster-from-start-to-merge-opus-writes-f.md) and
+[ADR-0340](../../docs/decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md): the
+default model is Opus 5.5, which has no fallback. Everything below holds for a task set to a
+Fable model; where it says "the default model" or "chosen or default", read "a Fable model".
+The Superagents run the default model, so FBK-011 is inert (its parts stay). The Capacity
+panel's `fallback_model` is worked out for Fable work, and "Available now" counts for the
+default model alone. A session switched to Fable inside it (`/model`) is not a fallback case:
+at Fable's limit it goes on with the model it was started with (ADR-0340).
+
 ## Goal
 
 When no connected subscription can run a task's Fable model (its weekly allowance of usage

@@ -524,7 +524,9 @@ fn resolve(file: &str, spec: &str) -> String {
 /// Capacity panel and "Run #N on…" work out from it what the pool does), and offer it.
 #[test]
 fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
-    use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, FALLBACK_CLAUDE_MODEL, fallback_model};
+    use yulius_domain::harness::{
+        DEFAULT_CLAUDE_MODEL, FALLBACK_CLAUDE_MODEL, REVIEW_CLAUDE_MODEL, fallback_model,
+    };
     let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
     assert!(
         models.contains(&format!(
@@ -533,11 +535,26 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
         "models.js does not fall back to {FALLBACK_CLAUDE_MODEL}"
     );
     assert!(models.contains(&format!("{{ id: '{FALLBACK_CLAUDE_MODEL}', name: '")));
-    // The page's rule is the server's: a Fable model falls back, the default one included.
+    // The page's rule is the server's: a Fable model falls back, and the default one does not
+    // (SPEC-493 MDL-002). The pages watch the review's model for the fallback line.
     assert!(models.contains("includes('fable') ? FALLBACK_MODEL : null"));
     assert_eq!(
-        fallback_model(DEFAULT_CLAUDE_MODEL),
+        fallback_model(REVIEW_CLAUDE_MODEL),
         Some(FALLBACK_CLAUDE_MODEL)
+    );
+    assert_eq!(fallback_model(DEFAULT_CLAUDE_MODEL), None);
+    assert!(
+        models.contains(&format!(
+            "export const REVIEW_MODEL = '{REVIEW_CLAUDE_MODEL}';"
+        )),
+        "models.js does not watch {REVIEW_CLAUDE_MODEL}"
+    );
+    // The first model listed is the default: `usage.js` and the composer read it so.
+    assert!(
+        models.contains(&format!(
+            "    models: [\n      {{ id: '{DEFAULT_CLAUDE_MODEL}', name: '"
+        )),
+        "models.js does not list {DEFAULT_CLAUDE_MODEL} first"
     );
     Ok(())
 }
@@ -549,7 +566,7 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
 fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
     use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
     let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
-    // The listed entry with the default's id gives the name people read ("Fable 5.2", "High").
+    // The listed entry with the default's id gives the name people read ("Opus 5.5", "High").
     let named = |id: &str| -> Result<&str, String> {
         let listed = format!("{{ id: '{id}', name: '");
         models

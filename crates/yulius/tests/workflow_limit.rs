@@ -401,7 +401,8 @@ fn a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task() -> TestR
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let agent = FakeAgentOptions {
-            workflow_limit_model: Some("claude-opus-5-5".into()),
+            // The session runs the default model, Opus 5.5 (SPEC-493); the agent runs Fable.
+            workflow_limit_model: Some("claude-fable-5-2".into()),
             ..workflow_agent(true)
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
@@ -416,15 +417,15 @@ fn a_limit_of_another_model_met_by_a_workflow_s_agent_leaves_the_task() -> TestR
             .clone()
             .ok_or("the run's subscription")?;
         app.send_input(&id, b"/workflow\r").await?;
-        // The limit is read: the subscription's Opus allowance reads used up.
+        // The limit is read: the subscription's Fable allowance reads used up.
         wait_for(
             "the model's limit, kept",
             Duration::from_secs(30),
-            || async { model_week(&app, first.as_str(), "opus").await["used_percent"] == 100.0 },
+            || async { model_week(&app, first.as_str(), "fable").await["used_percent"] == 100.0 },
         )
         .await?;
         assert!(
-            model_week(&app, first.as_str(), "fable").await.is_null(),
+            model_week(&app, first.as_str(), "opus").await.is_null(),
             "the session's own model is not at a limit"
         );
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "not moved");
@@ -469,7 +470,7 @@ fn a_limit_of_the_session_s_model_met_by_a_workflow_s_agent_moves_the_task() -> 
         let first = attempts[0].account_id.clone().ok_or("the first run's")?;
         assert_ne!(attempts[0].account_id, attempts[1].account_id);
         assert_eq!(
-            model_week(&app, first.as_str(), "fable").await["used_percent"],
+            model_week(&app, first.as_str(), "opus").await["used_percent"],
             100.0
         );
         let (launch, run) = relaunch(&attempts[1].run_dir)?;

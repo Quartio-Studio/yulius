@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn missing_models_are_named_the_default_first() {
-        let text = "\"claude-opus-5-5\",\"claude-sonnet-5-5\"";
+        let text = "\"claude-fable-5-2\",\"claude-sonnet-5-5\"";
         let (named, missing) = scan_in(&[text.as_bytes()], None);
         assert!(named, "no version was expected");
         assert_eq!(missing, [DEFAULT, "claude-fable-5-1", "claude-haiku-4-5"]);

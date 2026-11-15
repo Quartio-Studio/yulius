@@ -567,11 +567,23 @@ A limit Claude reports binds either the subscription or the models of one family
 reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
 subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
 The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
-runs on one) is the limit of the model the task is launched with, the default model when it
+runs on one) is the limit of the model the task is launched with, the default model (Opus 5.5,
+[decision 0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)) when it
 names none. So is Claude Code's refusal "You're out of usage credits"
 (`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
 or a reset. A record that carries only the text is the model's when the text names the model or
 a way to another one ("/model to switch models"), else the subscription's.
+
+A refusal names no model, and a person can switch the model inside a session (`/model`), which
+no launch argument shows. Claude Code 2.1.325 writes a record before each request
+(`api-request`, whose `params` name the model): the transcript watch keeps the model the
+session's thread last asked for (`claude::requested_model`), and a limit of "the model the
+request ran" names that model's family (`limit_observation`). When that is not the family the
+run was launched with (`supervisor::switched_model`), the limit is recorded for it alone, and
+the pool places the run past it with the session's own model, for which the subscription it
+sits on still counts: the session starts again there with the model Yulius launches it with,
+continues the cut turn and says so (decision 0340). Without that record (an older Claude Code)
+the limit is the launched model's.
 
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
 `weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
@@ -621,8 +633,9 @@ flowchart TD
     B -- no --> W[Wait until the earliest time either model can run]
 ```
 
-The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model,
-the default one included; no other model has one). The task's own setting is not changed:
+The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model;
+no other model has one, so a default task, which runs Opus 5.5, waits). The task's own setting is
+not changed:
 `choose_account` returns the account with the fallback model from the same snapshot of the pool
 (`Placed`), and the launch gives it to Claude Code. A run records the model it was launched with
 (`attempts.model`; a Superagent's `shell.json`), and that model, not the task's, is what a limit
@@ -633,8 +646,9 @@ the current account out only when the run placed would be of the model the curre
 launched with, so a run that changes its model may stay where it is and one subscription is
 enough. The session's terminal says the change in one line, at the launch that makes it; the
 move's entry names the model; `TaskDetail.fallback_model` and the capacity view's
-`fallback_model` carry it to the task's details, the Capacity panel and the Status line. The
-Superagent is placed by the same rule (`App::place_default_run`).
+`fallback_model` carry it to the task's details, the Capacity panel and the Status line (the
+capacity view's is worked out for Fable work, `REVIEW_CLAUDE_MODEL`, since the default model has
+no fallback). The Superagent is placed by the same rule (`App::place_default_run`).
 
 A run on the fallback sits on a subscription that cannot run the task's own model. A restart
 that asks for the run's subscription only to keep it (a newer Claude Code, a fresh session after

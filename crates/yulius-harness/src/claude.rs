@@ -219,6 +219,31 @@ pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
     (observed, version)
 }
 
+/// The model a request of the session's own thread asked for, when `line` is the record Claude
+/// Code writes before each request (`api-request`, Claude Code 2.1.325; its `params` name the
+/// model, as an object or as JSON text). A refusal's own record names no model
+/// (`"model":"<synthetic>"`), so this record is what says which model was refused: a person can
+/// switch the model inside a session (`/model`), which no launch argument shows (SPEC-493
+/// MDL-002). `None` for any other record, for a sub-agent's request (`agentId`) and for a
+/// Claude Code that writes no such record.
+#[must_use]
+pub fn requested_model(line: &str) -> Option<String> {
+    // Most lines are not this record: no parse for them.
+    if !line.contains("api-request") {
+        return None;
+    }
+    let record = parse_object(line)?;
+    if str_of(&record, "type") != Some("api-request") || record.contains_key("agentId") {
+        return None;
+    }
+    let model = match record.get("params")? {
+        Value::Object(params) => owned_str(params, "model"),
+        Value::String(text) => owned_str(&parse_object(text)?, "model"),
+        _ => None,
+    };
+    model.filter(|model| !model.is_empty())
+}
+
 /// When a transcript line was recorded (its top-level `timestamp`), if it says. Records Claude
 /// Code writes about the session itself (`last-prompt`, `mode`, …) carry no time.
 #[must_use]
@@ -1590,6 +1615,32 @@ mod tests {
         // A transient rate limit that was retried is not a usage limit.
         let transient = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"allowed_warning","resetsAt":1760000000},"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429) · retrying"}]}}"#;
         assert_eq!(observe_line(transient), Vec::<Observed>::new());
+    }
+
+    /// SPEC-493 MDL-002: the record before a request names its model (Claude Code 2.1.325,
+    /// synthetic values), as an object or as JSON text; the records beside it, a sub-agent's
+    /// request and other lines name none.
+    #[test]
+    fn a_request_record_names_the_model_asked_for() {
+        let object = r#"{"type":"api-request","sessionId":"s1","id":"r1","timestamp":"2026-11-15T08:23:22.088Z","version":"2.1.325","querySource":"repl_main_thread","shapeHash":"63a2","params":{"model":"claude-fable-5-2","betas":["oauth-2025-04-20"],"max_tokens":64000},"keep":0}"#;
+        assert_eq!(requested_model(object).as_deref(), Some("claude-fable-5-2"));
+        let text = r#"{"type":"api-request","sessionId":"s1","id":"r2","timestamp":"2026-11-15T08:23:23.000Z","params":"{\"model\": \"claude-opus-5-5\", \"betas\": []}"}"#;
+        assert_eq!(requested_model(text).as_deref(), Some("claude-opus-5-5"));
+        for other in [
+            // A sub-agent's request is its own model's, not the session's.
+            r#"{"type":"api-request","sessionId":"s1","agentId":"a8a9","params":{"model":"claude-fable-5-2"}}"#,
+            r#"{"type":"api-request-shape","sessionId":"s1","shape":"{\"model\": \"claude-fable-5-2\"}"}"#,
+            r#"{"type":"api-request-blob","sessionId":"s1","hash":"c7e2","message":"api-request"}"#,
+            r#"{"type":"api-request","sessionId":"s1","params":{"model":""}}"#,
+            r#"{"type":"api-request","sessionId":"s1","params":{"betas":[]}}"#,
+            r#"{"type":"api-request","sessionId":"s1","params":"not json"}"#,
+            r#"{"type":"api-request","sessionId":"s1"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"what is an api-request?"}}"#,
+            "api-request",
+            "",
+        ] {
+            assert_eq!(requested_model(other), None, "{other}");
+        }
     }
 
     /// SPEC-464, production 2026-11-11: the refusal of a model that runs on usage credits once

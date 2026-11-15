@@ -3,7 +3,9 @@
 ## Status
 
 Accepted (2026-11-10); its effort (`max`) is superseded by
-[ADR-0295](0295-the-default-effort-is-high-again.md) (`high`), the rest stands. Supersedes the
+[ADR-0295](0295-the-default-effort-is-high-again.md) (`high`) and its model by
+[ADR-0340](0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md) (Opus 5.5; Fable 5.2 is a
+choice and the independent review's model). The price table and `ModelFamily` stand. Supersedes the
 model and effort of [ADR-0024](0024-default-model-and-effort.md); specified in
 [SPEC-023](../../.ai/specs/SPEC-023-make-sure-the-default-model-is-always-op.md).
 

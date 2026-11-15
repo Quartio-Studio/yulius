@@ -57,11 +57,11 @@ test('the card shows the version, npm’s releases, the last check and the tasks
 });
 
 test('a Claude Code without the default model is said loudly with the fix, and a check installs one that knows it', async ({ app, browser, screen }) => {
-  // The incident of 2026-11-11: sandboxes run the host's 2.1.311.
+  // As in the incident of 2026-11-11 (then about Fable 5.2): sandboxes run the host's 2.1.311.
   await app.open(mock('/admin/instance', '&claude=incident'));
   await firstShown(screen.getByText('default model unknown'));
   const alert = await browser.evaluate(() => (document.querySelector('.claude-problem[role="alert"]') as HTMLElement).innerText);
-  expect(alert).toMatch(/Claude Code 2\.1\.311 does not know claude-fable-5-2, Yulius's default model/);
+  expect(alert).toMatch(/Claude Code 2\.1\.311 does not know claude-opus-5-5, Yulius's default model/);
   expect(alert).toMatch(/Yulius installs a release that knows it at its next check/);
   expect(alert).toMatch(/sudo npm install -g @anthropic-ai\/claude-code@latest/);
   await expect(screen.getByText('default model unknown')).toBeVisible();
@@ -72,7 +72,7 @@ test('a Claude Code without the default model is said loudly with the fix, and a
   await expect(screen.getByText(/Installed 2\.1\.322: new runs use it\./)).toBeVisible({ timeout: 10000 });
   await expect(screen.getByText('knows every offered model')).toBeVisible();
   expect(await browser.locator('.claude-problem').count()).toBe(0);
-  expect(await bodyText(browser)).not.toMatch(/does not know claude-fable-5-2/);
+  expect(await bodyText(browser)).not.toMatch(/does not know claude-opus-5-5/);
 });
 
 test('a refused release, another unknown model, a failed check and stopped moves are said plainly', async ({ app, browser, screen }) => {
@@ -81,7 +81,7 @@ test('a refused release, another unknown model, a failed check and stopped moves
   await firstShown(screen.getByText('default model unknown'));
   let text = await cardText(browser);
   expect(text).toMatch(/No Claude Code release knows it yet \(2\.1\.322, the newest, does not\)/);
-  expect(text).toMatch(/Refused, nothing was installed: 2\.1\.322 does not know claude-fable-5-2 \(Yulius's default model\)\./);
+  expect(text).toMatch(/Refused, nothing was installed: 2\.1\.322 does not know claude-opus-5-5 \(Yulius's default model\)\./);
   expect(text).not.toMatch(/sudo npm install/);
   expect(await axeViolations(browser)).toEqual([]);
 
@@ -111,7 +111,7 @@ test('a Claude Code whose binary could not be read for its models says so', asyn
   await app.open(mock('/admin/instance', '&claude=unread'));
   await firstShown(screen.getByText('models not read'));
   const text = await cardText(browser);
-  expect(text).toMatch(/The binary of Claude Code 2\.1\.322 could not be read for the models it knows, so whether it knows claude-fable-5-2, Yulius's default model, is not known\./);
+  expect(text).toMatch(/The binary of Claude Code 2\.1\.322 could not be read for the models it knows, so whether it knows claude-opus-5-5, Yulius's default model, is not known\./);
   expect(text).not.toMatch(/knows every offered model/);
   expect(await browser.locator('.claude-problem').count()).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);

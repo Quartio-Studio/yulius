@@ -471,7 +471,7 @@ pub fn default_model_fix(channel: Channel, newest_lacks: Option<&str>) -> String
     }
 }
 
-/// "2.1.311 does not know claude-fable-5-2 (Yulius's default model) and claude-opus-5-5".
+/// "2.1.311 does not know claude-opus-5-5 (Yulius's default model) and claude-fable-5-2".
 #[must_use]
 pub fn gap_text(version: &str, missing: &[String]) -> String {
     let named: Vec<String> = missing
@@ -646,15 +646,19 @@ mod tests {
         assert!(!lacks_default(&[]));
         assert_eq!(
             gap_text("2.1.311", &without_default),
-            "2.1.311 does not know claude-fable-5-2 (Yulius's default model)"
+            "2.1.311 does not know claude-opus-5-5 (Yulius's default model)"
+        );
+        // A build without Fable 5.2 is a reported gap, not a refusal (SPEC-493 MDL-001).
+        let without_fable = missing_models(&["claude-opus-5-5", "claude-sonnet-5-5"]);
+        assert!(!lacks_default(&without_fable));
+        assert_eq!(
+            gap_text("2.1.311", &without_fable),
+            "2.1.311 does not know claude-fable-5-2, claude-fable-5-1 and claude-haiku-4-5"
         );
         assert_eq!(
-            gap_text(
-                "2.1.311",
-                &missing_models(&["claude-opus-5-5", "claude-sonnet-5-5"])
-            ),
-            "2.1.311 does not know claude-fable-5-2 (Yulius's default model), claude-fable-5-1 \
-             and claude-haiku-4-5"
+            gap_text("2.1.311", &missing_models(&["claude-sonnet-5-5"])),
+            "2.1.311 does not know claude-opus-5-5 (Yulius's default model), claude-fable-5-2, \
+             claude-fable-5-1 and claude-haiku-4-5"
         );
         assert_eq!(
             gap_text("2.1.322", &[]),
@@ -667,7 +671,7 @@ mod tests {
     fn the_fix_names_what_happens_next_and_the_host_command() {
         let problem = default_model_problem("2.1.311");
         assert!(
-            problem.starts_with("Claude Code 2.1.311 does not know claude-fable-5-2"),
+            problem.starts_with("Claude Code 2.1.311 does not know claude-opus-5-5"),
             "{problem}"
         );
         for channel in [Channel::Latest, Channel::Stable] {
