@@ -803,7 +803,8 @@ impl Manager {
     }
 
     /// Journals what grew in the state of `sandbox`'s front since the last tick, each kind at most
-    /// once a minute (SPEC-494 DFJ-005). A state file of an earlier front is ignored.
+    /// once a minute (SPEC-494 DFJ-005), and reports a full or refusing front as the sandbox's
+    /// Docker trouble (DFJ-006). A state file of an earlier front is ignored.
     fn watch_front(&self, sandbox: &str, state: &mut SandboxState) {
         let Some(live) = state.live.as_mut() else {
             return;
@@ -815,7 +816,9 @@ impl Manager {
         let Some(seen) = crate::front_gate::read_state(&paths.docker_state(), front.pid) else {
             return;
         };
-        for grew in live.front_watch.observe(&seen, Instant::now()) {
+        let grown = live.front_watch.observe(&seen, Instant::now());
+        live.front_watch.report(&seen, sandbox, &self.config.health);
+        for grew in grown {
             tracing::warn!(
                 sandbox,
                 new = grew.new,
@@ -1648,6 +1651,12 @@ impl Manager {
                         "sandbox holder ended; the next run starts a new one"
                     );
                     state.live = None;
+                    // Its front went with it: no Docker trouble is left open (SPEC-494).
+                    self.config.health.held(
+                        yulius_domain::connection_health::Limit::Docker,
+                        Some(&sandbox),
+                        0,
+                    );
                     self.stop_holder(&sandbox, &record).await;
                     state.stale = Some(record);
                 } else {
@@ -2312,6 +2321,59 @@ mod tests {
             system_root: "/r".into(),
             engine,
         }
+    }
+
+    /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
+    /// knows and reports it full as the sandbox's Docker trouble; another front's file is not
+    /// read.
+    #[test]
+    fn the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        use yulius_domain::connection_health::Limit;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(&paths.dir)?;
+        let full = |pid| DockerFrontState {
+            pid,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+        };
+        let mut live = Live::new(live_record(true), Vec::new());
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        crate::holder::write_json(&paths.docker_state(), &full(78))?;
+        manager.watch_front("s1", &mut state);
+        assert!(
+            health.troubles().is_empty(),
+            "another front's state was read"
+        );
+        crate::holder::write_json(&paths.docker_state(), &full(77))?;
+        manager.watch_front("s1", &mut state);
+        let open = health.troubles();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(
+            (open[0].limit, open[0].sandbox.as_deref(), open[0].refused),
+            (Limit::Docker, Some("s1"), 2)
+        );
+        Ok(())
     }
 
     /// Stands in for `yulius sandbox-host docker`: serves the spec's socket, answering every

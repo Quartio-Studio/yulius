@@ -26,6 +26,7 @@ use tokio::net::unix::OwnedReadHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, oneshot};
 use yulius_contracts::sandbox::DockerFrontState;
+use yulius_domain::connection_health::{ConnectionHealth, Limit, Refusal};
 
 use crate::relay::{Places, Toucher};
 
@@ -493,6 +494,8 @@ pub struct StateWatch {
     front: Option<u32>,
     /// When each kind was last said, and its total then.
     said: [(Option<Instant>, u64); 4],
+    /// The front's refusals already reported as its sandbox's trouble.
+    reported_refused: u64,
 }
 
 /// A kind of event that grew, as the journal says it.
@@ -515,6 +518,7 @@ impl StateWatch {
             // server's restart) counts from zero: its history is said once.
             self.front = Some(state.pid);
             self.said = [(None, 0); 4];
+            self.reported_refused = 0;
         }
         let after = counts(state);
         let mut grew = Vec::new();
@@ -561,6 +565,29 @@ pub fn read_state(path: &std::path::Path, pid: u32) -> Option<DockerFrontState> 
     serde_json::from_slice::<DockerFrontState>(&bytes)
         .ok()
         .filter(|state| state.pid == pid)
+}
+
+impl StateWatch {
+    /// Reports `state` as `sandbox`'s Docker trouble (SPEC-494 DFJ-006), after
+    /// [`StateWatch::observe`] took it: a front that refused since the last report, or holds its
+    /// whole limit, begins or keeps the trouble; one that holds at most seven eighths of its
+    /// limit and refused nothing since ends it.
+    pub fn report(&mut self, state: &DockerFrontState, sandbox: &str, health: &ConnectionHealth) {
+        let new = state.refused.saturating_sub(self.reported_refused);
+        self.reported_refused = state.refused;
+        if new > 0 || state.held >= state.max {
+            let refusal = Refusal {
+                limit: Limit::Docker,
+                sandbox: Some(sandbox.to_owned()),
+                held: state.held,
+                max: state.max,
+                holders: Vec::new(),
+            };
+            health.refused_times(refusal, new, crate::relay::wall_ms());
+        } else if health.open(Limit::Docker, Some(sandbox)) {
+            health.held(Limit::Docker, Some(sandbox), state.held);
+        }
+    }
 }
 
 fn counts(state: &DockerFrontState) -> [u64; 4] {
@@ -1093,6 +1120,68 @@ mod tests {
         assert_eq!(gate.state(false).hung_up, 1);
         front.stop(Duration::from_secs(1)).await;
         Ok(())
+    }
+
+    fn state_at(pid: u32, held: usize, refused: u64) -> DockerFrontState {
+        DockerFrontState {
+            held,
+            max: 256,
+            refused,
+            ..state_of(pid, 0, 0)
+        }
+    }
+
+    /// SPEC-494 AC-5 (DFJ-006): a front at its limit opens one `docker` trouble of its sandbox,
+    /// told once; refusals within it update its count without telling; it ends once the front
+    /// holds at most seven eighths and refused nothing since.
+    #[test]
+    fn a_full_front_is_one_docker_trouble_of_its_sandbox_until_it_has_room() {
+        let health = ConnectionHealth::default();
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&told);
+        health.on_change(move |trouble, began| {
+            sink.lock().unwrap_or_else(PoisonError::into_inner).push((
+                trouble.limit,
+                trouble.sandbox.clone(),
+                began,
+            ));
+        });
+        let mut watch = StateWatch::default();
+        let mut read = |state: DockerFrontState| {
+            watch.observe(&state, Instant::now());
+            watch.report(&state, "s1", &health);
+        };
+        read(state_at(7, 200, 0));
+        assert!(health.troubles().is_empty(), "room left: no trouble");
+        read(state_at(7, 256, 0));
+        read(state_at(7, 256, 3));
+        read(state_at(7, 240, 5));
+        let open = health.troubles();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(
+            (
+                open[0].limit,
+                open[0].sandbox.as_deref(),
+                open[0].refused,
+                open[0].held
+            ),
+            (Limit::Docker, Some("s1"), 5, 240)
+        );
+        // Above seven eighths with no new refusal: still open.
+        read(state_at(7, 240, 5));
+        assert_eq!(health.troubles().len(), 1);
+        read(state_at(7, 224, 5));
+        assert!(health.troubles().is_empty(), "room again: ended");
+        assert_eq!(
+            *told.lock().unwrap_or_else(PoisonError::into_inner),
+            vec![
+                (Limit::Docker, Some("s1".to_owned()), true),
+                (Limit::Docker, Some("s1".to_owned()), false)
+            ]
+        );
+        // A refusal alone (the front below its limit) begins a new one.
+        read(state_at(7, 10, 6));
+        assert_eq!(health.troubles().len(), 1);
     }
 
     /// Review round 1 (DFJ-005): the server reads only a regular, bounded state file of the

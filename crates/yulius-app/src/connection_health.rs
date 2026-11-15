@@ -91,7 +91,7 @@ impl App {
             for holder in &trouble.holders {
                 holders.push(match trouble.limit {
                     Limit::Proxy => sandbox_holder(holder, &visible),
-                    Limit::Share | Limit::Relay => self.run_holder(holder).await?,
+                    Limit::Share | Limit::Relay | Limit::Docker => self.run_holder(holder).await?,
                 });
             }
             out.push(view(&trouble, sandbox_name, holders));

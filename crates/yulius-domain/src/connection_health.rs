@@ -17,6 +17,9 @@ pub enum Limit {
     Relay,
     /// The egress proxy's own total.
     Proxy,
+    /// A sandbox's Docker front (SPEC-494 DFJ-006), reported by the server from the front's
+    /// state file.
+    Docker,
 }
 
 impl Limit {
@@ -27,6 +30,7 @@ impl Limit {
             Self::Share => "share",
             Self::Relay => "relay",
             Self::Proxy => "proxy",
+            Self::Docker => "docker",
         }
     }
 }
@@ -152,6 +156,13 @@ impl ConnectionHealth {
     /// A connection was refused at `refusal`'s limit at `now_ms`: begins its trouble (told), or
     /// updates the open one's counts (not told).
     pub fn refused(&self, refusal: Refusal, now_ms: i64) {
+        self.refused_times(refusal, 1, now_ms);
+    }
+
+    /// [`ConnectionHealth::refused`] for `times` refusals seen at once (a reporter that reads
+    /// counts, not single refusals, SPEC-494); 0 begins or updates the trouble of a limit that
+    /// is full without having refused yet.
+    pub fn refused_times(&self, refusal: Refusal, times: u64, now_ms: i64) {
         let began = {
             let mut inner = self.lock();
             if let Some(open) = inner
@@ -161,7 +172,7 @@ impl ConnectionHealth {
             {
                 open.held = refusal.held;
                 open.max = refusal.max;
-                open.refused = open.refused.saturating_add(1);
+                open.refused = open.refused.saturating_add(times);
                 open.holders = refusal.holders;
                 return;
             }
@@ -172,7 +183,7 @@ impl ConnectionHealth {
                 since_ms: now_ms,
                 held: refusal.held,
                 max: refusal.max,
-                refused: 1,
+                refused: times,
                 holders: refusal.holders,
             };
             inner.next = inner.next.wrapping_add(1);
