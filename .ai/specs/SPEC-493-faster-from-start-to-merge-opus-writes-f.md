@@ -280,8 +280,9 @@ person's decision is read as holding after an approval).
   job waits for the members' own runs of it (one at a time), so the gain is what does not wait.
 - **MQC-005** Candidates formed, merged and dissolved (with why: a member left, bisected, base
   moved, errored, too long) are counted per day and read at
-  `GET /api/sandboxes/{sid}/analytics/merge-queue` (the CI/CD page shows the counts), with the
-  minutes from arming to merge.
+  `GET /api/analytics/merge-queue?sandbox&from&to` (the same window and access as the reviews
+  read; the Dashboard's Pipeline tab shows the counts beside the Review card), with the minutes
+  from arming to merge.
 
 ### Fix 5: a CI job can say which files it tests
 
@@ -1072,3 +1073,42 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     (race point `CiSyncPlanned`). Before the lock: 2 runs at one head; with it, 1.
   - Minor: the readiness look in the hook is bounded (1.5 s). A late look says nothing, and the
     delivery checks again. Nit: `dlv_check_spec`'s doc comment is back on it.
+
+### Fix 4: one CI cycle for an armed pull request whose base moved
+
+- MQC-001: `form_train` takes an armed pull request behind its base whose own run passed **or is
+  still queued or running**. `drive_train` merges a member only once its own run passed: a
+  passed candidate waits for it, within the two-hour test limit, not GitHub's 15 minutes.
+  - `merge_train::a_candidate_runs_beside_its_members_own_runs`: two armed pull requests behind
+    the base with their own runs queued. Their candidate's run is queued at once beside them,
+    nothing is merged into them, and both merge after 2 own runs and 1 candidate run.
+  - `merge_train::a_passed_candidate_waits_for_its_members_own_runs`: the own run is held
+    running and the candidate passes first. Three passes merge nothing ("merged before its own
+    run passed" without the wait: mutation caught). Once the own run passed, it merges.
+  - `a_moving_base_never_restarts_a_pre_check` now expects the candidate beside the pre-check;
+    the pre-check is still never restarted or cancelled.
+- MQC-002: `member_left` dissolves a candidate whose member's own run ended failed, errored or
+  cancelled ("#N's own run … ended failed: it leaves the candidate"). The next pass forms it
+  again from the others, and the member's armed merge ends in the one-by-one flow with its run
+  named. A failed candidate waits for its members' own runs before it is bisected, so a member
+  that explains the red result leaves instead of halving the candidate.
+  `merge_train::a_member_whose_own_run_fails_leaves_the_candidate`: #1 merges, #2's armed merge
+  ends with "failed", and the dissolve reads "#2's own run". Before the wait it was bisected
+  instead.
+- MQC-003: every merge-train test stays green (32 of 32), among them the red candidate bisected,
+  three green in sequence with no run cancelled, and the restart.
+- MQC-004: an `exclusive` job takes one turn per sandbox (SPEC-435 `job_turn`), so a
+  candidate's run of it waits for the members' own runs of it. Code read; no test of its own.
+- MQC-005: each dissolve's audit line ends with `(why: <kind>)` (`dissolved_why`, unit
+  `the_why_of_each_dissolve`). `merge_queue::queue_numbers` counts per UTC day and the median
+  minutes from a merge's last arming to it (unit tests). `AuditStore::audit_of_sandbox` reads a
+  sandbox's entries and its tasks'. `GET /api/analytics/merge-queue`
+  (`analytics::the_merge_queue_read_counts_candidates_from_the_audit_log`: 2 formed, 1 merged, 1
+  dissolved because a member left, 180 min to merge, another sandbox's entry counted only for
+  the admin, a hidden sandbox 404). The Pipeline tab's Merge queue card
+  (`pipeline.e2e.ts`: the figures, and the tab without the card when the read fails).
+- ADR-0285 amended ("Pre-check beside the candidate"); architecture and its diagram, api.md,
+  changes.
+- How to read it a week later: `GET /api/analytics/merge-queue?sandbox=<id>&from=&to=` for
+  quartio-v2 and this repository, against 12-13 Nov: the median minutes from arming to merge
+  (127 there for pull requests that needed a candidate), and candidates dissolved by why.
