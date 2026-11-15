@@ -128,6 +128,25 @@ fn sound(check: &Check) -> bool {
         && !check.name.chars().any(char::is_control)
 }
 
+/// Whether a Superagent takes a check now: past its first seconds and the gap after the last
+/// check (review of slice 9b, F2, F5).
+fn ready_for_check(started_ms: i64, check_typed_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(started_ms) >= CHECK_START_GRACE_MS
+        && now_ms.saturating_sub(check_typed_ms) >= CHECK_GAP_MS
+}
+
+/// Whether a Superagent whose start failed (`backoff`: when to try again, how many failed) waits.
+fn backing_off(backoff: Option<(i64, u32)>, now_ms: i64) -> bool {
+    backoff.is_some_and(|(next_try, _)| next_try > now_ms)
+}
+
+/// How long to wait after the `failed`-th start that failed: 2, 4, … minutes, at most an hour.
+fn backoff_wait(failed: u32) -> i64 {
+    60_000_i64
+        .saturating_mul(1_i64 << failed.min(6))
+        .min(START_BACKOFF_MAX_MS)
+}
+
 fn every_ms(check: &Check) -> i64 {
     i64::from(check.every_minutes) * 60_000
 }
@@ -360,9 +379,11 @@ impl App {
             return;
         }
         let now = self.now().0;
-        if now.saturating_sub(runtime.started_ms()) < CHECK_START_GRACE_MS
-            || now.saturating_sub(runtime.check_typed_ms.load(Ordering::SeqCst)) < CHECK_GAP_MS
-        {
+        if !ready_for_check(
+            runtime.started_ms(),
+            runtime.check_typed_ms.load(Ordering::SeqCst),
+            now,
+        ) {
             return;
         }
         let quiet = || {
@@ -458,7 +479,7 @@ impl App {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(&key)
                 .copied();
-            if waiting.is_some_and(|(next_try, _)| next_try > now) {
+            if backing_off(waiting, now) {
                 continue;
             }
             let (Ok(user_id), Ok(sandbox_id)) = (UserId::parse(&user), SandboxId::parse(&sandbox))
@@ -505,10 +526,10 @@ impl App {
                     .get(&key)
                     .map_or(0, |(_, failed)| *failed)
                     .saturating_add(1);
-                let wait = 60_000_i64
-                    .saturating_mul(1_i64 << failed.min(6))
-                    .min(START_BACKOFF_MAX_MS);
-                map.insert(key.clone(), (now.saturating_add(wait), failed));
+                map.insert(
+                    key.clone(),
+                    (now.saturating_add(backoff_wait(failed)), failed),
+                );
                 failed
             };
             match self.cockpit_open(&ctx, sandbox_id.as_str()).await {
@@ -543,7 +564,46 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{QUIET_AFTER_TYPING_MS, may_type_check};
+    use super::{
+        CHECK_GAP_MS, CHECK_START_GRACE_MS, Check, QUIET_AFTER_TYPING_MS, START_BACKOFF_MAX_MS,
+        backing_off, backoff_wait, may_type_check, ready_for_check, sound,
+    };
+
+    /// Review of slice 9b, F2, F5, F6, F8: no check in a Superagent's first seconds nor right
+    /// after another; a start that failed waits longer each time, at most an hour; a kept check
+    /// out of bounds is not trusted.
+    #[test]
+    fn checks_wait_their_turn_and_are_checked_when_read() {
+        assert!(!ready_for_check(
+            100_000,
+            0,
+            100_000 + CHECK_START_GRACE_MS - 1
+        ));
+        assert!(ready_for_check(100_000, 0, 100_000 + CHECK_START_GRACE_MS));
+        let late = 10 * CHECK_START_GRACE_MS;
+        assert!(!ready_for_check(0, late, late + CHECK_GAP_MS - 1));
+        assert!(ready_for_check(0, late, late + CHECK_GAP_MS));
+        assert!(!backing_off(None, 5));
+        assert!(backing_off(Some((10, 1)), 5));
+        assert!(!backing_off(Some((10, 1)), 10));
+        assert_eq!(backoff_wait(1), 120_000);
+        assert_eq!(backoff_wait(2), 240_000);
+        assert_eq!(backoff_wait(40), START_BACKOFF_MAX_MS);
+        let check = |every_minutes: u32, name: &str, prompt: &str| Check {
+            user: "u".into(),
+            sandbox: "s".into(),
+            name: name.into(),
+            every_minutes,
+            prompt: prompt.into(),
+            created_at: 0,
+            next_at: 0,
+            last_run_at: None,
+        };
+        assert!(sound(&check(5, "disk", "p")));
+        assert!(!sound(&check(0, "disk", "p")), "every tick");
+        assert!(!sound(&check(5, "a\tb", "p")));
+        assert!(!sound(&check(5, "disk", " ")));
+    }
 
     /// SPEC-487 CHK-003: a check is typed only into a prompt box nobody holds: no draft, and no
     /// keystroke in the last minute.

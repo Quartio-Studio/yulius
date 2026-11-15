@@ -4661,6 +4661,10 @@ async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -
             "name",
         ),
         (
+            json!({"name": "a\tb", "every_minutes": 30, "prompt": "p"}),
+            "control",
+        ),
+        (
             json!({"name": "x", "every_minutes": 30, "prompt": "a\u{202e}b"}),
             "cannot see",
         ),
