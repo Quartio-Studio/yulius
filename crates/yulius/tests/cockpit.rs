@@ -4993,7 +4993,7 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
             Some(
                 json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {
                 "name": "secret_request_value",
-                "arguments": {"name": "DEPLOY_KEY", "scope": "sandbox"}}}),
+                "arguments": {"name": "DEPLOY_KEY"}}}),
             ),
             &bearer,
         )
@@ -5011,6 +5011,10 @@ async fn a_secret_value_typed_on_the_panel_reaches_the_vault_only() -> TestResul
     )
     .await?;
     assert_eq!(listed.body[0]["replaces"], false, "{}", listed.body);
+    assert_eq!(
+        listed.body[0]["options"]["scope"], "sandbox",
+        "the default, named"
+    );
     let id3 = listed.body[0]["id"].as_str().ok_or("id")?.to_owned();
     let created =
         f.h.app
