@@ -2287,6 +2287,36 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(f.origin_sha("main")?, main_before);
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
 
+    // SPEC-493 REV-005: a review round is recorded for the pull request; the delivery view
+    // lists it, and the merge records who wrote and who reviewed.
+    {
+        use yulius_app::ports::store::CoordinationStore;
+        let task_id = yulius_domain::ids::TaskId::parse("t1")?;
+        f.h.store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-1".into(),
+                task_id: task_id.clone(),
+                round: 1,
+                head: Some(head.clone()),
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: Some("rev-1".into()),
+                model_answered: Some("claude-fable-5-2".into()),
+                started_at: yulius_domain::time::Timestamp(1),
+                ended_at: Some(yulius_domain::time::Timestamp(2)),
+                verdict: Some("approve".into()),
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        let rounds = &f.delivery("t1").await?["review_rounds"];
+        assert_eq!(rounds[0]["round"], 1, "{rounds}");
+        assert_eq!(rounds[0]["model_answered"], "claude-fable-5-2");
+        assert_eq!(rounds[0]["verdict"], "approve");
+        assert_eq!(rounds[0]["reported"], true);
+    }
     // On green, with the reviewed head, the agent merges with its creator's authority (and then
     // the explicit profile policy promotes).
     f.h.github.set_checks(&head, ChecksState::Success);
@@ -2298,6 +2328,34 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     assert_eq!(merged.body["result"]["isError"], false, "{}", merged.body);
     assert_eq!(f.delivery("t1").await?["pr"]["state"], "merged");
     assert_eq!(f.origin_sha("main")?, f.origin_sha("quartio")?);
+    {
+        use yulius_app::ports::store::{AuditStore as _, TaskStore as _};
+        let task =
+            f.h.store
+                .task(&yulius_domain::ids::TaskId::parse("t1")?)
+                .await?
+                .ok_or("t1")?;
+        let record =
+            f.h.store
+                .audit_details(
+                    &format!("shop#{}", task.number),
+                    "delivery.review.models",
+                    5,
+                )
+                .await?;
+        assert_eq!(record.len(), 1, "{record:?}");
+        assert!(
+            record[0].starts_with("pull request #1: written by ")
+                && record[0].contains(&format!(
+                    "review rounds: 1 claude-fable-5-2 approve at {}",
+                    &head[..9]
+                ))
+                && !record[0].contains("no recorded review round approved"),
+            "{record:?}"
+        );
+        // The pull request's rounds closed with it: the view lists none for the next one.
+        assert_eq!(f.delivery("t1").await?["review_rounds"], json!([]));
+    }
     // F 2026-10-11 (AC-GIT-3): on GitHub the creator merged and promoted, not the App.
     assert_eq!(f.h.github.actors_of("merge_pull"), ["bob"]);
     assert_eq!(f.h.github.actors_of("fast_forward"), ["bob"]);

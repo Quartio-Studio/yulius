@@ -20,6 +20,13 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
   await expect(dev).toContainText(/Change failure rate\s*21%/);
   await expect(dev).toContainText(/Time to restore\s*47 min/);
   await expect(delivery.getByRole('group', 'Production')).toContainText('no failure restored');
+  // SPEC-493 REV-006: the independent review of the pull requests merged in the range.
+  const review = screen.getByRole('region', 'Review');
+  await expect(review).toContainText('independent review of the 12 pull requests merged in this range');
+  await expect(review).toContainText(/First review asked for changes\s*42%\s*5 of 12/);
+  await expect(review).toContainText(/Rounds per pull request\s*2\s*median/);
+  await expect(review).toContainText(/First review cut off\s*8%/);
+  await expect(review).toContainText(/Rounds by model\s*Fable 5\.2 21 · Opus 5\.5 6\s*2 on Opus for want of Fable/);
 
   // The CI run's trend by default: two lines, labelled and in a legend, and a table of every day.
   const trend = screen.getByRole('region', 'Trend: CI · Run');

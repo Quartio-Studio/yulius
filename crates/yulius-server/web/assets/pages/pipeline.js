@@ -11,6 +11,7 @@ import { duration, int } from '../format.js';
 import { replaceQuietly } from '../router.js';
 import { loader } from './common.js';
 import { BRAND } from '../brand.js';
+import { modelLabel } from '../models.js';
 import { trendChart, stageTitle, loadWaterfall, subjectLabel, cpuTime, mebibytes } from '../stages.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
@@ -117,7 +118,12 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
   const reload = loader(host, 'the pipeline', async () => {
     const p = period();
     rangeLabel.textContent = `${SHORT_DATE.format(new Date(`${p.from}T00:00:00Z`))} – ${SHORT_DATE.format(new Date(`${p.to}T00:00:00Z`))}`;
-    return ctx.api.get(`${api}/stages/summary?${params()}`);
+    // The review's numbers (SPEC-493 REV-006) beside the stages; the stages show without them.
+    const [summary, reviews] = await Promise.all([
+      ctx.api.get(`${api}/stages/summary?${params()}`),
+      ctx.api.get(`/api/analytics/reviews?${new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to })}`).catch(() => null),
+    ]);
+    return { ...summary, reviews };
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
@@ -138,6 +144,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
     return [
       summary.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, 'This range has more stages than are read at once; the figures describe the newest.')) : null,
       deliveryCard(summary.delivery || []),
+      summary.reviews ? reviewCard(summary.reviews) : null,
       h('section', { class: 'card db-card', 'aria-label': `Trend: ${label}` },
         h('header', { class: 'db-card-head' },
           h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, label),
@@ -205,6 +212,21 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       envs.map((env) => h('div', { class: 'pl-env', role: 'group', 'aria-label': ENV_NAMES[env.environment] || env.environment },
         h('h3', { class: 'pl-env-title' }, ENV_NAMES[env.environment] || env.environment),
         h('div', { class: 'db-kpis pl-kpis' }, tiles(env)))));
+  }
+
+  /** The independent review of the pull requests merged in the range (SPEC-493 REV-006). */
+  function reviewCard(r) {
+    const prs = r.pull_requests || 0;
+    const share = (n) => (prs ? `${Math.round((n / prs) * 100)}%` : '—');
+    const models = (r.rounds_by_model || []).map((m) => `${modelLabel(m.model)} ${int(m.rounds)}`).join(' · ');
+    return h('section', { class: 'card db-card', 'aria-label': 'Review' },
+      h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'Review'),
+        h('span', { class: 'db-card-sub' }, `independent review of the ${int(prs)} pull ${prs === 1 ? 'request' : 'requests'} merged in this range`))),
+      h('div', { class: 'db-kpis pl-kpis' },
+        tile('First review asked for changes', share(r.first_rounds_requesting_changes || 0), `${int(r.first_rounds_requesting_changes || 0)} of ${int(prs)}`),
+        tile('Rounds per pull request', Number.isFinite(r.median_rounds) ? `${r.median_rounds}` : '—', 'median'),
+        tile('First review cut off', share(r.first_rounds_without_report || 0), 'ended with no report (a usage limit)'),
+        tile('Rounds by model', models || '—', r.no_fable_rounds ? `${int(r.no_fable_rounds)} on Opus for want of Fable` : 'the model that answered')));
   }
 
   function tile(label, value, sub) {

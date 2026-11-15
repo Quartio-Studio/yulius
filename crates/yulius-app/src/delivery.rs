@@ -1404,6 +1404,12 @@ impl App {
         if written && next.stage != *expected {
             self.publish_pulls(sandbox);
         }
+        // The merge record says who wrote and who reviewed (SPEC-493 REV-005): the store closed
+        // the pull request's rounds in the same write.
+        if written && next.stage == DeliveryStage::MergedIntegration && *expected != next.stage {
+            self.record_review_models(&next.task_id, next.pr_number)
+                .await;
+        }
         Ok(written)
     }
 
@@ -1817,6 +1823,7 @@ impl App {
             blocked,
             notes,
             checks_access,
+            review_rounds: Vec::new(),
         }
     }
 
@@ -1897,7 +1904,9 @@ impl App {
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)
             .await;
-        Ok(Self::dlv_delivery_of(&profile, &observed, notes, access))
+        let mut view = Self::dlv_delivery_of(&profile, &observed, notes, access);
+        view.review_rounds = self.review_round_views(&task.id).await;
+        Ok(view)
     }
 
     /// The `TaskDetail.delivery` value: the full view, or the stored stage with a note when
@@ -5027,6 +5036,7 @@ impl App {
             "blocked": view.blocked,
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
+            "review_rounds": view.review_rounds,
             "profile": profile_to_contract(&profile),
             "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
         }))

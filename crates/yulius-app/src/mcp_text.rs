@@ -705,6 +705,32 @@ fn delivery_status(value: &Value) -> Option<String> {
     {
         push_line(&mut out, &format!("Open steps: {open}."));
     }
+    // The review's rounds of the open pull request (SPEC-493 REV-005).
+    let rounds = value.get("review_rounds").and_then(Value::as_array);
+    if let Some(rounds) = rounds.filter(|r| !r.is_empty()) {
+        push_line(&mut out, "Review rounds of this pull request:");
+        for round in rounds {
+            let model = text(round, "model_answered")
+                .or_else(|| text(round, "model"))
+                .unwrap_or("?");
+            let state = match (text(round, "verdict"), round["reported"].as_bool()) {
+                (Some(verdict), _) => verdict.replace('_', " "),
+                (None, Some(true)) => "no verdict".to_owned(),
+                _ if round["cut_off"].as_bool() == Some(true) => {
+                    "cut off by a usage limit".to_owned()
+                }
+                _ => "no report yet".to_owned(),
+            };
+            push_line(
+                &mut out,
+                &format!(
+                    "- round {} on {}: {state}",
+                    round["round"].as_u64().unwrap_or(0),
+                    yulius_domain::harness::claude_model_name(model)
+                ),
+            );
+        }
+    }
     let blocked = value.get("blocked").and_then(Value::as_array);
     if let Some(blocked) = blocked.filter(|b| !b.is_empty()) {
         push_line(&mut out, "Refused now:");
@@ -1022,6 +1048,38 @@ mod tests {
     use super::{outline, render};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// SPEC-493 REV-005: `delivery_status` lists the review's rounds of the open pull request:
+    /// the model that answered (else the one asked for) and how each stands.
+    #[test]
+    fn delivery_status_lists_the_review_rounds() {
+        let value = json!({"stage": "pr_open", "review_rounds": [
+            {"round": 1, "model": "claude-fable-5-2", "model_answered": "claude-fable-5-2",
+             "verdict": "request_changes", "reported": true, "cut_off": false},
+            {"round": 2, "model": "claude-fable-5-2", "verdict": null, "reported": false,
+             "cut_off": true},
+            {"round": 2, "model": "claude-fable-5-2", "verdict": null, "reported": false,
+             "cut_off": false},
+            {"round": 3, "model": "claude-opus-5-5", "verdict": null, "reported": true,
+             "cut_off": false}
+        ]});
+        let text = render("delivery_status", &json!({}), &value);
+        for line in [
+            "Review rounds of this pull request:",
+            "- round 1 on Fable 5.2: request changes",
+            "- round 2 on Fable 5.2: cut off by a usage limit",
+            "- round 2 on Fable 5.2: no report yet",
+            "- round 3 on Opus 5.5: no verdict",
+        ] {
+            assert!(text.contains(line), "{line:?} in {text}");
+        }
+        let none = render(
+            "delivery_status",
+            &json!({}),
+            &json!({"stage": "pr_open", "review_rounds": []}),
+        );
+        assert!(!none.contains("Review rounds"), "{none}");
+    }
 
     const UUID: &str = "d528553f-0fa1-4966-b79f-0b7ea7799dfc";
 
@@ -1498,6 +1556,7 @@ mod tests {
             }],
             notes: vec![],
             checks_access: None,
+            review_rounds: Vec::new(),
         };
         let value = json!({
             "stage": delivery.stage,

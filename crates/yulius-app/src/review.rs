@@ -223,4 +223,171 @@ impl App {
             tracing::warn!(error = %err, task = %ctx.task.id, "review round not ended");
         }
     }
+
+    /// `GET /api/analytics/reviews`: the review's numbers over the pull requests of the
+    /// sandboxes the caller sees (or `sandbox`) merged in `[from, to]` (days, `YYYY-MM-DD`),
+    /// SPEC-493 REV-006.
+    ///
+    /// # Errors
+    /// `Invalid` dates, `NotFound` for a sandbox the caller cannot see.
+    pub async fn analytics_reviews(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        sandbox: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<yulius_contracts::api::analytics::ReviewAnalytics> {
+        use yulius_contracts::api::analytics::{ModelCount, ReviewAnalytics};
+        let (sandboxes, from_at, to_at, range) =
+            self.analytics_window(ctx, sandbox, from, to).await?;
+        let rounds = self
+            .deps
+            .store
+            .merged_review_rounds(&sandboxes, from_at, to_at)
+            .await?;
+        let facts: Vec<yulius_domain::review::RoundFact> = rounds
+            .into_iter()
+            .map(|r| yulius_domain::review::RoundFact {
+                pull: (r.task_id.to_string(), r.pr_number.unwrap_or(0)),
+                round: r.round,
+                model: r.model_answered.unwrap_or(r.model),
+                verdict: r
+                    .verdict
+                    .as_deref()
+                    .and_then(yulius_domain::review::Verdict::parse),
+                reported: r.ended_at.is_some(),
+                no_fable: r.reason == "no_fable",
+            })
+            .collect();
+        let numbers = yulius_domain::review::review_numbers(&facts);
+        Ok(ReviewAnalytics {
+            range,
+            pull_requests: numbers.pull_requests,
+            first_rounds_requesting_changes: numbers.first_rounds_requesting_changes,
+            first_rounds_without_report: numbers.first_rounds_without_report,
+            median_rounds: numbers.median_rounds,
+            rounds_by_model: numbers
+                .rounds_by_model
+                .into_iter()
+                .map(|(model, rounds)| ModelCount { model, rounds })
+                .collect(),
+            no_fable_rounds: numbers.no_fable_rounds,
+        })
+    }
+
+    /// The rounds of `task`'s open pull request, as the delivery view shows them. A failed read
+    /// shows none.
+    pub(crate) async fn review_round_views(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+    ) -> Vec<yulius_contracts::api::git::ReviewRoundView> {
+        self.deps
+            .store
+            .review_rounds(task, true)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(round_view)
+            .collect()
+    }
+
+    /// Writes the merge record of `task`'s pull request `pr`: the models its runs were launched
+    /// with since its previous pull request merged, and each review round with its model,
+    /// verdict and head (SPEC-493 REV-005). A merge no recorded round approved says so.
+    pub async fn record_review_models(&self, task: &yulius_domain::ids::TaskId, pr: Option<u64>) {
+        let store = &self.deps.store;
+        let Ok(all) = store.review_rounds(task, false).await else {
+            return;
+        };
+        let (this, before): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.pr_number == pr);
+        let since = before.iter().filter_map(|r| r.merged_at).max();
+        let mut written: Vec<String> = Vec::new();
+        for attempt in store.attempts(task).await.unwrap_or_default() {
+            if since.is_some_and(|since| attempt.started_at < since) {
+                continue;
+            }
+            let model = attempt.model.unwrap_or_else(|| "unknown".into());
+            if !written.contains(&model) {
+                written.push(model);
+            }
+        }
+        let rounds: Vec<String> = this
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} {} {}{}{}",
+                    r.round,
+                    r.model_answered.as_deref().unwrap_or(&r.model),
+                    r.verdict.as_deref().unwrap_or(if r.ended_at.is_some() {
+                        "no verdict"
+                    } else {
+                        "no report"
+                    }),
+                    r.head
+                        .as_deref()
+                        .map(|h| format!(" at {}", &h[..h.len().min(9)]))
+                        .unwrap_or_default(),
+                    if r.reason == "no_fable" {
+                        " (no Fable)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect();
+        let approved = this.iter().any(|r| r.verdict.as_deref() == Some("approve"));
+        let detail = format!(
+            "pull request #{}: written by {}; review rounds: {}{}",
+            pr.map_or_else(|| "?".to_owned(), |n| n.to_string()),
+            if written.is_empty() {
+                "unknown".to_owned()
+            } else {
+                written.join(", ")
+            },
+            if rounds.is_empty() {
+                "none recorded".to_owned()
+            } else {
+                rounds.join("; ")
+            },
+            if approved {
+                ""
+            } else {
+                "; no recorded review round approved it"
+            }
+        );
+        let target = match store.task(task).await {
+            Ok(Some(record)) => match store.sandbox(&record.sandbox_id).await {
+                Ok(Some(sandbox)) => format!("{}#{}", sandbox.slug, record.number),
+                _ => task.to_string(),
+            },
+            _ => task.to_string(),
+        };
+        if let Err(err) = store
+            .audit(
+                self.now(),
+                "yulius",
+                "delivery.review.models",
+                Some(&target),
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(error = %err, task = %task, "merge record of the review not written");
+        }
+    }
+}
+
+/// A round as the delivery view shows it.
+fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundView {
+    yulius_contracts::api::git::ReviewRoundView {
+        round: r.round,
+        agent: r.agent,
+        model: r.model,
+        model_answered: r.model_answered,
+        reason: r.reason,
+        head: r.head,
+        verdict: r.verdict,
+        reported: r.ended_at.is_some(),
+        cut_off: r.cut_off,
+    }
 }

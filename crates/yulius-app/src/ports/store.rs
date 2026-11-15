@@ -732,6 +732,14 @@ pub trait CoordinationStore: Send + Sync {
         agents: &[&str],
         subagent: &str,
     ) -> AppResult<bool>;
+    /// The review rounds of the pull requests of `sandboxes` merged in `[from, to)` (either end
+    /// open when `None`), oldest first (SPEC-493 REV-006).
+    async fn merged_review_rounds(
+        &self,
+        sandboxes: &[SandboxId],
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<ReviewRoundRecord>>;
     /// Notes on the open round run by `subagent` the model that answered it (when given) and
     /// that a usage limit cut it off (when `cut_off`).
     async fn note_review_subagent(

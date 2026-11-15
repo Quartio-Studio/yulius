@@ -603,13 +603,21 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 impl App {
     /// Reads the cohort for a request: visible sandboxes (or one, which must be visible) and
     /// an optional inclusive day range.
-    async fn analytics_cohort(
+    /// The sandboxes and the window of an analytics read: `sandbox` (one the caller may view)
+    /// or every sandbox they see, and `[from, to]` in days (`YYYY-MM-DD`, UTC), as times with the
+    /// end exclusive.
+    pub(crate) async fn analytics_window(
         &self,
         ctx: &AuthContext,
         sandbox: Option<&str>,
         from: Option<&str>,
         to: Option<&str>,
-    ) -> AppResult<(AnalyticsData, AnalyticsRange, Option<(i64, i64)>)> {
+    ) -> AppResult<(
+        Vec<SandboxId>,
+        Option<Timestamp>,
+        Option<Timestamp>,
+        AnalyticsRange,
+    )> {
         let (sandbox, from, to) = (non_empty(sandbox), non_empty(from), non_empty(to));
         let from_day = from.map(parse_day).transpose()?;
         let to_day = to.map(parse_day).transpose()?;
@@ -630,21 +638,40 @@ impl App {
                 .map(|(s, _)| s.id)
                 .collect(),
         };
+        let range = AnalyticsRange {
+            sandbox: sandbox.map(str::to_owned),
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+        };
+        Ok((
+            sandboxes,
+            from_day.map(|d| Timestamp(d.saturating_mul(DAY_MS))),
+            to_day.map(|d| Timestamp(d.saturating_add(1).saturating_mul(DAY_MS))),
+            range,
+        ))
+    }
+
+    async fn analytics_cohort(
+        &self,
+        ctx: &AuthContext,
+        sandbox: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> AppResult<(AnalyticsData, AnalyticsRange, Option<(i64, i64)>)> {
+        let from_day = non_empty(from).map(parse_day).transpose()?;
+        let to_day = non_empty(to).map(parse_day).transpose()?;
+        let (sandboxes, from_at, to_at, range) =
+            self.analytics_window(ctx, sandbox, from, to).await?;
         let query = AnalyticsQuery {
             sandboxes,
-            from: from_day.map(|d| Timestamp(d.saturating_mul(DAY_MS))),
-            to: to_day.map(|d| Timestamp(d.saturating_add(1).saturating_mul(DAY_MS))),
+            from: from_at,
+            to: to_at,
             limit: MAX_ANALYTICS_TASKS,
         };
         let data = if query.sandboxes.is_empty() {
             AnalyticsData::default()
         } else {
             self.deps.store.analytics_data(&query).await?
-        };
-        let range = AnalyticsRange {
-            sandbox: sandbox.map(str::to_owned),
-            from: from.map(str::to_owned),
-            to: to.map(str::to_owned),
         };
         let days = match (from_day, to_day) {
             (Some(a), Some(b)) => Some((a, b)),

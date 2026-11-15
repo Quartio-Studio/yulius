@@ -399,6 +399,38 @@ impl CoordinationStore for SqliteStore {
         .await
     }
 
+    async fn merged_review_rounds(
+        &self,
+        sandboxes: &[SandboxId],
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
+    ) -> AppResult<Vec<ReviewRoundRecord>> {
+        let ids: Vec<String> = sandboxes.iter().map(|s| s.as_str().to_owned()).collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.call(move |c| {
+            let marks = vec!["?"; ids.len()].join(", ");
+            let sql = format!(
+                "SELECT r.id, r.task_id, r.round, r.head, r.agent, r.model, r.reason, \
+                 r.subagent_id, r.model_answered, r.started_at, r.ended_at, r.verdict, r.cut_off, \
+                 r.pr_number, r.merged_at FROM review_rounds r JOIN tasks t ON t.id = r.task_id \
+                 WHERE t.sandbox_id IN ({marks}) AND r.merged_at IS NOT NULL \
+                 AND r.merged_at >= ? AND r.merged_at < ? ORDER BY r.merged_at, r.started_at, r.rowid"
+            );
+            let mut stmt = c.prepare(&sql).map_err(db)?;
+            let mut values: Vec<rusqlite::types::Value> =
+                ids.into_iter().map(rusqlite::types::Value::Text).collect();
+            values.push(rusqlite::types::Value::Integer(from.map_or(i64::MIN, |t| t.0)));
+            values.push(rusqlite::types::Value::Integer(to.map_or(i64::MAX, |t| t.0)));
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(values), review_round_from_row)
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn note_review_subagent(
         &self,
         task: &TaskId,

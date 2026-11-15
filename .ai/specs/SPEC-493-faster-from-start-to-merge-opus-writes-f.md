@@ -379,9 +379,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [x] Fix 1b: every task session is launched with the two reviewer agents by full model id (REV-001)
 - [x] Fix 1b: Yulius sees the reviewer start, counts the pull request's rounds and gives rounds 3 and later the Opus reviewer; each round is a record (REV-002 to REV-004, its start)
 - [x] Fix 1b: the rules name the reviewer agent the same way everywhere, held by a test (REV-008)
-- [ ] Fix 1b's independent review answered test-first
-- [ ] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
-- [ ] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
+- [x] Fix 1b's independent review answered test-first
+- [x] Fix 1c: a round's record gets the model that answered, the verdict and a cut-off from the reviewer's transcript (REV-004)
+- [x] Fix 1c: the merge record, the delivery view and one analytics read name who wrote and who reviewed (REV-005, REV-006)
 - [ ] Fix 1c's independent review answered test-first
 - [ ] Fix 1d: a first or second round moves the session to a subscription that can run Fable 5.2, or runs on Opus 5.5 and says so (REV-007)
 - [ ] Fix 1d's independent review answered test-first
@@ -782,4 +782,32 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     rewrapped. "No shared context" stays in the reviewer agent's contract: the Feature
     workflow is at its byte budget. The reviewer agents keep every tool: a review runs tests,
     and its read-only rule is its contract, as before.
+- Round 2 (head `2628ad31f`, Opus 5.5 again: Fable still out): approve. Its two notes needed no
+  change: the store-failure test's assertions also hold on the success path (it does catch
+  failing closed), and `link_review_subagent` could miss a reviewer when two start at once on
+  different reviewer agents (the round still counts through the other). Merged as pull request
+  #1322 at `2628ad31f` on its own green Yulius CI run.
+
+### Fix 1c: what each round ran on, the merge record and the numbers
+
+- **REV-004.** Test first: `wiring::harness::tests::a_subagents_model_and_its_cut_off_are_read_from_its_transcript`
+  (a subagent's answers name its model once per change, a refusal in its file says it was cut
+  off, `<synthetic>` never counts, a workflow agent's lines say neither) did not compile before
+  the observations existed; passes. `review_rounds::a_rounds_answering_model_and_cut_off_are_noted`
+  (the model and the cut-off on the round; a later report keeps the cut-off; a subagent that is
+  no round's changes nothing).
+- **REV-005.** `delivery::agents_merge_only_through_gated_tools` now records a round before the
+  agent's merge: the delivery view lists it, and the merge writes one `delivery.review.models`
+  entry ("pull request #1: written by …; review rounds: 1 claude-fable-5-2 approve at <head>"),
+  after which the view lists none. `review_rounds::the_merge_record_names_this_pull_requests_rounds`
+  (a second pull request: its rounds only, "no report" for a cut-off one, and "no recorded
+  review round approved it"). `mcp_text::tests::delivery_status_lists_the_review_rounds`.
+- **REV-006.** `review::tests::the_review_numbers_of_merged_pull_requests` (shares, median,
+  rounds per model, no-Fable rounds, a round reported after a cut-off);
+  `review_rounds::the_reviews_read_counts_the_rounds_of_merged_pull_requests` (the API over a
+  range, another range, 422 for a reversed range, 401 signed out); `pipeline.e2e.ts` (the
+  Review card's four tiles from the mock): 15 passed.
+- Decision: the person reads the round records three ways (the task's delivery view while the
+  pull request is open, the merge record afterwards, the analytics read for the week); no
+  separate page.
 

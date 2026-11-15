@@ -1190,6 +1190,18 @@ subagent off sends no `SubagentStop`, so such a round stays without a report. Th
 pull request's rounds in the same transaction that records its merge
 (`transition_delivery`), so the task's next pull request starts at round 1.
 
+The transcript watch also reads each subagent of the session's own thread
+(`<session>/subagents/agent-<id>.jsonl`): the model of its answers, once per change
+(`Observation::SubagentAnswered`), and a usage limit that refused it
+(`Observation::SubagentCutOff`); the supervisor notes both on the round that subagent runs
+(`model_answered`, `cut_off`). The delivery view (`Delivery.review_rounds`, also in
+`delivery_status`) lists the open pull request's rounds. When a merge is recorded,
+`dlv_transition` writes the merge record `delivery.review.models` (actor `yulius`): the models
+the task's runs were launched with since its previous pull request merged, and each round with
+its model, verdict and head, and "no recorded review round approved it" when none did.
+`GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull
+requests merged in a range (`review::review_numbers`).
+
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
