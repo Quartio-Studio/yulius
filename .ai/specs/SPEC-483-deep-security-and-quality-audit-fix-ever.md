@@ -3189,3 +3189,18 @@ slices follow.
   own (speed only, both accepted).
 - **Merged.** Pull request #1309 was squash-merged into `dev` (`e1b934573`) after its merge
   train passed; #1171 closed.
+
+### Slice 37 (2026-11-15)
+
+- **Measured before and after** (a temporary counter of store calls and a timer around `GET
+  /api/sandboxes/s1/tasks`, release build, tasks a third each running, queued and closed;
+  `target/audit/slice37/probe-before.log`, `probe-after.log`, the probe kept as
+  `zz_probe37.rs` there): 50 tasks 688 calls, 11 ms before, 671 calls, 9 ms after; 200 tasks
+  2 738 calls, 88 ms before, 2 671 calls, 31 ms after.
+- **The list against each summary.** The supertask test now compares every queued task's
+  `held_by` in the list with its own summary; handing the summaries an empty project or only
+  the task itself fails it (`mutations.log`, 2 cases). It passes before the change too: the
+  change keeps the answer and drops the re-reads.
+- **Gate.** `scripts/dev ci` at `2a1dea047`: exit 0; `4441 tests run: 4441 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
