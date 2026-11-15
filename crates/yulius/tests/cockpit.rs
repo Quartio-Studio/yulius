@@ -1715,7 +1715,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "tasks_bulk",
             "tasks_list",
             "tasks_reorder",
+            "variable_delete",
             "variables_list",
+            "variables_set",
             "workflows_list",
         ]
     );
@@ -5187,6 +5189,23 @@ async fn the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout
         "not #{}: {one}",
         other.number
     );
+
+    // The project's variables, set and deleted for the person (SPEC-487 VAR-001).
+    let (set, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "variables_set",
+        json!({"variables": [{"name": "REGION", "value": "eu-west-1", "description": "where it runs"}]}),
+    )
+    .await?;
+    assert!(!is_error, "{set}");
+    let (listed, _) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
+    assert!(said(&listed).contains("eu-west-1"), "{listed}");
+    let (deleted, is_error) =
+        cockpit_tool(&f, &token, "variable_delete", json!({"name": "REGION"})).await?;
+    assert!(!is_error, "{deleted}");
+    let (listed, _) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
+    assert!(!said(&listed).contains("eu-west-1"), "{listed}");
 
     let (checkout, is_error) = cockpit_tool(&f, &token, "checkout", json!({})).await?;
     assert!(

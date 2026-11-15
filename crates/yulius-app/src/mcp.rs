@@ -32,7 +32,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286), and doing
 /// for its person what they do on the project's pages (`crate::person_tools`, SPEC-487,
 /// ADR-0330). What it is not served, the ability table of SPEC-487 says why.
-pub const COCKPIT_TOOLS: [&str; 81] = [
+pub const COCKPIT_TOOLS: [&str; 83] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -108,6 +108,8 @@ pub const COCKPIT_TOOLS: [&str; 81] = [
     "task_screen",
     "task_usage",
     "checkout",
+    "variables_set",
+    "variable_delete",
     // Production and onboarding, asked on the panel (SPEC-487 REL-001, REL-005).
     "promote",
     "onboarding_start",

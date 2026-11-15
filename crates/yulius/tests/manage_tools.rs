@@ -613,6 +613,8 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "superagent_check_delete",
         "secret_request_value",
         "ability_report",
+        "variables_set",
+        "variable_delete",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
