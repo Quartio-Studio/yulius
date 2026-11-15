@@ -142,8 +142,22 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn supertask_holders(&self, task: &TaskRecord) -> AppResult<Vec<u32>> {
+        let project = self.deps.store.tasks(&task.sandbox_id, false).await?;
+        self.supertask_holders_among(task, &project).await
+    }
+
+    /// [`Self::supertask_holders`] among `project`, the project's unarchived tasks as the caller
+    /// read them: a list of the project's tasks reads them once, not once per queued task
+    /// (SPEC-483 slice 37).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn supertask_holders_among(
+        &self,
+        task: &TaskRecord,
+        project: &[TaskRecord],
+    ) -> AppResult<Vec<u32>> {
         let store = &self.deps.store;
-        let project = store.tasks(&task.sandbox_id, false).await?;
         // Most projects have no supertask: nothing to read further.
         if !task.supertask && !project.iter().any(|t| t.supertask && t.id != task.id) {
             return Ok(Vec::new());
