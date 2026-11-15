@@ -49,10 +49,15 @@ without the sandbox's user namespace) gave the same result: in its namespace,
   group first. When no process runs in `engine` itself (and its `cgroup.procs` can be read),
   nor below it except in `inside`, the emptied leftovers go and the controllers pass down
   again. An old engine that still runs there is left alone.
+- **A stop takes the engine's controllers back first.** The kernel takes a controller from no
+  group while a child still passes it on, so `unsplit_all` writes `-pids` and `-cpu` to
+  `engine` before the sandbox's group, and a preparation while the server stops does not pass
+  them down again. Where an engine ran containers, its root still passes them to runc's
+  threaded groups and the split stays, as it did in the old layout after any container.
 - **A container is a populated group.** The idle check reads `cgroup.events` (`populated`) of
   the groups below the engine's root, not their `cgroup.procs`. runc's threaded groups cannot
   be read that way, so an old-layout engine was counted idle and stopped while its containers
-  ran.
+  ran. Past 4096 groups it errs toward busy.
 
 ## Alternatives
 

@@ -1073,11 +1073,12 @@ from a sandbox, and no daemon needs to run on the host.
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
   capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container resource flags (`docker run -m`, `--cpus`, `--pids-limit`, compose `mem_limit`,
-    `cpus` or `pids_limit`) are not supported; leave them out. The engine lives in its own group,
-    so cgroup v2 passes no controller below it: memory flags are discarded, and CPU and task flags
-    may make the container fail to start. The sandbox's own limits, and the engine's 3/8 of its
-    task limit (SPEC-268), still bound every container.
+  - Per-container task limits (`--pids-limit`, compose `pids_limit`) work: `cpu` and `pids`
+    reach the engine's root and runc passes them on in threaded mode (ADR-0339). Memory and CPU
+    flags (`docker run -m`, `--cpus`, compose `mem_limit`, `cpus`) are not supported; leave them
+    out: memory cannot be threaded and is discarded, and runc refuses `--cpus` in threaded mode
+    ("cannot enter cgroupv2 … with domain controllers"). The sandbox's own limits, and the
+    engine's 3/8 of its task limit (SPEC-268), still bound every container.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the

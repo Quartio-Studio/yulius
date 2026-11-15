@@ -111,7 +111,8 @@ What each part of ADR-22 means for an engine:
 - Per-container resource flags (`-m`, `--cpus`) are not supported: memory flags are discarded,
   and CPU flags may make the container fail to start. The engine lives in its own group, and
   cgroup v2 passes no controller below a group that holds processes. The sandbox's limits still
-  bound every container.
+  bound every container. (ADR-0339: runc passes `cpu` and `pids` on in threaded mode, so
+  `--pids-limit` works and `--cpus` fails.)
 - A `--privileged` container is as strong as the engine (root of the sandbox with the engine's
   view and filter), never more. Paths outside the engine's view (another user's home in a Shell,
   run directories) do not exist for `-v`.

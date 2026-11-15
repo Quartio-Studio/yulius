@@ -3144,14 +3144,47 @@ later slices follow.
   - The old layout on a fresh group: `--pids-limit 50` reaches the container, and `--cpus 0.5`
     fails in runc ("cannot enter cgroupv2 … with domain controllers -- it is in an invalid
     state / threaded mode").
-  - The new layout with `cpu pids` passed down: the same for both flags. A running container
-    shows `populated 1` below `inside`, and the privileged nested write leaves `pids.max` 200
-    and `cpu.weight` 100.
+  - The new layout with `cpu pids` passed down: a running container shows `populated 1` below
+    `inside`, and the privileged nested write leaves `pids.max` 200 and `cpu.weight` 100. (Each
+    flag alone, and the new engine after an old one, are shown in round 2's log: this run's
+    containers all carried `--cpus`.)
   - F6: an old engine started in `engine` while `inside` exists runs containers; settling then
-    leaves it alone ("busy"). After it stops, settling makes the group plain, and the new engine
-    runs containers.
+    leaves it alone ("busy").
 - **Mutations** (`mutations-r1.log`): 16 of 16 caught, the five new ones included (no pass
   down, `memory` passed, an unlisted controller passed, an unreadable `cgroup.procs` idle, the
   idle check by `cgroup.procs`).
 - **Gate after round 1.** `scripts/dev ci` at `0e4c8b3d0`: exit 0; `4457 tests run: 4457 passed
   (1 slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `6caa9f082`): request changes, three own-code
+  minors and a nit.
+  - The round 1 fixes hold. Both questions were checked against the kernel's
+    `cgroup_migrate_vet_dst`: a group that passes only threaded controllers down still takes an
+    old engine, and removing the threaded leftovers before enabling is the right order.
+  - R2-1: the engine's group now passes `cpu` and `pids` down for every sandbox, so the stop's
+    undo of the split (`unsplit_all`, SPEC-053 CPU-205, SPEC-268 PID-003) failed everywhere.
+    Before, it failed only after an engine had run a container.
+  - R2-2: two Evidence claims cited a log that did not show them (each flag alone; containers
+    after an old engine).
+  - R2-3: `docs/operations.md`, ADR-0198 and ADR-0151 still said no controller reaches
+    containers.
+  - R2-4 (nit): the idle check no longer erred toward busy at its bound.
+- **Fixes.** Tests first, both failing before.
+  - R2-1: the stop test now asks that the engine's group give its controllers back, and that a
+    preparation while stopping passes nothing down. `unsplit_all` writes `-pids` and `-cpu` to
+    `engine` before the sandbox's group, and settling waits for a preparation that is not
+    stopping. On the guest (`c4-undo.log`), for a prepared group whose engine never ran:
+    sandbox-first is refused, engine-first succeeds, and the sandbox passes nothing down
+    afterwards. Where an engine ran containers, runc's threaded groups keep the controllers,
+    as they did in the old layout (`c4-round2.log`, the last part, after both engines).
+  - R2-4: past 4096 entries it is busy (test with 4096 empty groups).
+  - R2-2: `c4-round2.log` shows, on a fresh group, beside a running old engine, and after it
+    stopped:
+    - a plain container runs;
+    - `--pids-limit 50` alone gives the container `pids.max 50`;
+    - `--cpus 0.5` alone fails in runc's threaded mode.
+
+    The round 1 lines above now say what their log shows.
+  - R2-3: the three docs are corrected, pointing to ADR-0339.
+  - ADR-0339 gains the stop's order and the bound.
+  - Mutations (`mutations-r2.log`): 19 of 19 caught (new: no engine-first undo, settling while
+    stopping, no busy at the bound).
