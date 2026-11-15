@@ -1765,14 +1765,14 @@ impl App {
                 stage: next,
                 updated_at: self.now(),
             };
-            // Merged elsewhere: the integration branch before it is not known here, so only
-            // an approval of the merged head itself counts.
-            let merged_head = observed.pr.as_ref().filter(|pull| pull.merged).map(|pull| {
-                crate::review::MergedHead {
-                    head: pull.head_sha.clone(),
-                    base: None,
-                }
-            });
+            // Merged elsewhere: its merge commit's first parent is the integration branch
+            // before it, as for a merge of Yulius's own; without it, only an approval of the
+            // merged head itself counts.
+            let merged_head = observed
+                .pr
+                .as_ref()
+                .filter(|pull| pull.merged)
+                .map(crate::review::MergedHead::of_pull);
             if self
                 .dlv_transition_at(
                     &task.sandbox_id,
@@ -2152,10 +2152,9 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
-                    let merged_head = pull.merged.then(|| crate::review::MergedHead {
-                        head: pull.head_sha.clone(),
-                        base: None,
-                    });
+                    let merged_head = pull
+                        .merged
+                        .then(|| crate::review::MergedHead::of_pull(&pull));
                     let _ = self
                         .dlv_transition_at(
                             &sandbox.id,

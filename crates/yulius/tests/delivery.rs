@@ -2084,17 +2084,15 @@ async fn stale_heads_are_refused() -> TestResult {
     Ok(())
 }
 
-/// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
-/// tools — a merge needs passed checks and an independent review of the exact head — while reads,
-/// task tokens on the REST API and read-only users never merge, promote or deploy.
 /// SPEC-493 REV-005, review round 3 of fix 1c: a merge by merge commit judges the merged head
 /// against the integration branch as it was before the merge (the merge commit's first parent),
 /// not after it. A clean merge of the integration branch after the approval keeps it; a merged
 /// side branch nobody reviewed does not, though the merge put that branch into the integration
-/// branch.
+/// branch. The same for a merge made on GitHub and found by Yulius afterwards (fix 1d): its
+/// merge commit says the base.
 #[tokio::test]
 async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> TestResult {
-    for side_branch in [false, true] {
+    for (side_branch, on_github) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut profile = DeliveryProfile::studio();
         profile.merge = yulius_domain::delivery::MergeMethod::Merge;
         let f = fixture(&profile).await?;
@@ -2148,10 +2146,25 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
             .await?;
         assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
         f.h.github.set_checks(&head, ChecksState::Success);
-        let merged = f
-            .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        if on_github {
+            yulius_app::ports::github::GitHubPort::merge_pull(
+                f.h.github.as_ref(),
+                &Secret("token-carol".into()),
+                "Quartio-Studio",
+                "shop",
+                1,
+                "merge",
+                &head,
+            )
             .await?;
-        assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+            f.h.app.reconcile_deliveries().await;
+            assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+        } else {
+            let merged = f
+                .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+                .await?;
+            assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+        }
         let quartio = f.origin_sha("quartio")?;
         assert_eq!(
             git(&f.origin, &["rev-parse", &format!("{quartio}^2")])?,
@@ -2176,12 +2189,15 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         assert_eq!(
             record[0].contains("; no recorded review round approved its head"),
             side_branch,
-            "side branch {side_branch}: {record:?}"
+            "side branch {side_branch}, on GitHub {on_github}: {record:?}"
         );
     }
     Ok(())
 }
 
+/// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
+/// tools — a merge needs passed checks and an independent review of the exact head — while reads,
+/// task tokens on the REST API and read-only users never merge, promote or deploy.
 #[tokio::test]
 async fn agents_merge_only_through_gated_tools() -> TestResult {
     let f = fixture(&DeliveryProfile::studio()).await?;
@@ -6438,6 +6454,7 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
         mergeable: None,
         behind: false,
         from_fork: true,
+        merge_commit_sha: None,
     };
     if let Ok(mut pulls) = f.h.github.pulls.lock() {
         pulls.push(fork);

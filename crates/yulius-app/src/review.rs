@@ -552,6 +552,18 @@ pub struct MergedHead {
     pub base: Option<String>,
 }
 
+impl MergedHead {
+    /// What a merged pull request merged: its head, and the parent its merge commit landed on
+    /// when GitHub names that commit (a merge found after it was made, SPEC-493 fix 1d).
+    #[must_use]
+    pub fn of_pull(pull: &crate::ports::github::GhPull) -> Self {
+        Self {
+            head: pull.head_sha.clone(),
+            base: pull.merge_commit_sha.as_ref().map(|sha| format!("{sha}^1")),
+        }
+    }
+}
+
 /// A round as the delivery view shows it.
 fn round_view(r: ReviewRoundRecord) -> yulius_contracts::api::git::ReviewRoundView {
     yulius_contracts::api::git::ReviewRoundView {
