@@ -2983,3 +2983,8 @@ later slices follow.
 - **Mutations** (`mutations.log`, 6 of 6 caught): the server's old header; `'unsafe-eval'
   'unsafe-inline'` in the file; `serve.py` without the header; the lab's hosts on every page;
   never on a lab page; the page check without the violation listener.
+- **Gate.** `scripts/dev ci` first failed one test: `preview::yulius_is_never_shown_inside_itself`
+  pinned the old header word for word (`gate.log`); it now checks the policy has
+  `frame-ancestors 'none'` (the whole policy is pinned in `http_auth`). Then at `38023f5f7`:
+  exit 0; `4453 tests run: 4453 passed (1 slow), 17 skipped` (`gate2.log`).
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
