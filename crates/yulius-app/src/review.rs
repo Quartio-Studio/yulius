@@ -201,9 +201,13 @@ impl App {
     /// looks that take longer than [`MOVE_DECISION`] leave the round to the Opus reviewer: a
     /// move is announced only once it can start.
     async fn move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
-        tokio::time::timeout(MOVE_DECISION, self.decide_move_for_fable(ctx))
-            .await
-            .unwrap_or(FableMove::Nowhere)
+        if let Ok(decided) =
+            tokio::time::timeout(MOVE_DECISION, self.decide_move_for_fable(ctx)).await
+        {
+            return decided;
+        }
+        tracing::info!(task = %ctx.task.id, "no move for a Fable reviewer: the looks took longer than the hook may wait");
+        FableMove::Nowhere
     }
 
     async fn decide_move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
@@ -232,9 +236,20 @@ impl App {
             return FableMove::Refused(QUEUED_FOR_FABLE.to_owned());
         }
         // The new session must be able to start there before the move is announced (ROT-014).
-        if let Err(err) = self.preflight_start(task, Some(&account)).await {
-            tracing::info!(task = %task.id, error = %err, "no move for a Fable reviewer: the session could not start there");
-            return FableMove::Nowhere;
+        // The check runs in a task of its own: the decision's deadline ends the wait for it,
+        // never the check (its disk upkeep removes caches under a claim).
+        let check = {
+            let app = Arc::clone(self);
+            let (task, account) = (task.clone(), account.clone());
+            tokio::spawn(async move { app.preflight_start(&task, Some(&account)).await })
+        };
+        match check.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::info!(task = %task.id, error = %err, "no move for a Fable reviewer: the session could not start there");
+                return FableMove::Nowhere;
+            }
+            Err(_) => return FableMove::Nowhere,
         }
         let app = Arc::clone(self);
         let task_id = task.id.clone();
@@ -242,6 +257,10 @@ impl App {
         tokio::spawn(async move {
             // Only the run this was decided for moves: a later review start that outlasted an
             // earlier move must not restart the session it made.
+            crate::race::reached(
+                crate::race::Point::ReviewMoveDecided,
+                Path::new(task_id.as_str()),
+            );
             let live = app.deps.store.live_attempt(&task_id).await.ok().flatten();
             if live.is_none_or(|live| live.id != run) {
                 return;

@@ -437,6 +437,107 @@ async fn a_round_after_a_refused_move_runs_the_opus_reviewer() -> TestResult {
     Ok(())
 }
 
+/// [`out_of_fable`] whose session can start elsewhere: the sandbox has a clone.
+async fn out_of_fable_movable(
+    h: &crate::support::Harness,
+) -> Result<yulius_domain::ids::TaskId, Box<dyn std::error::Error>> {
+    let task = out_of_fable(h).await?;
+    std::fs::create_dir_all(h.app.config.data_dir.join("sandboxes/s1/repo/.git"))?;
+    Ok(task)
+}
+
+/// An isolation whose holder takes `hold` to prepare, and says when it was done.
+struct SlowIsolation {
+    hold: std::time::Duration,
+    done: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for SlowIsolation {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        tokio::time::sleep(self.hold).await;
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(None)
+    }
+
+    fn release(&self, _: &yulius_domain::ids::SandboxId) {}
+}
+
+/// SPEC-493 REV-007 (review round 2 of fix 1d): a decision whose looks take longer than the
+/// hook client waits (here the new session's start check) answers within its bound with the
+/// Opus reviewer. The check is not cut off: it runs to its end, and its late answer moves
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_move_decision_runs_the_opus_reviewer_within_its_bound() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable_movable(&h).await?;
+    let slow = std::sync::Arc::new(SlowIsolation {
+        hold: std::time::Duration::from_secs(5),
+        done: std::sync::atomic::AtomicBool::new(false),
+    });
+    assert!(h.app.set_isolation(slow.clone()));
+    let asked = std::time::Instant::now();
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let took = asked.elapsed();
+    assert!(took < std::time::Duration::from_millis(4500), "{took:?}");
+    ran_opus_without_fable(&answer);
+    for _ in 0..400 {
+        if slow.done.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        slow.done.load(std::sync::atomic::Ordering::SeqCst),
+        "the start check ran to its end"
+    );
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 2 of fix 1d): a move decided for a run that is no longer the
+/// task's live one (a later start moved the session meanwhile) moves nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_decided_for_an_ended_run_moves_nothing() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable_movable(&h).await?;
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (reached, decided) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::ReviewMoveDecided,
+        std::path::Path::new(task.as_str()),
+        move || {
+            reached.send(()).ok();
+            held.recv_timeout(std::time::Duration::from_secs(20)).ok();
+        },
+    );
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert!(denied(&answer).contains("moves this session"), "{answer}");
+    tokio::task::spawn_blocking(move || decided.recv_timeout(std::time::Duration::from_secs(20)))
+        .await??;
+    let run = h.store.live_attempt(&task).await?.ok_or("live run")?;
+    let ended = yulius_app::ports::store::AttemptUpdate {
+        ended_at: Some(Timestamp(5)),
+        exit_reason: Some("switched".into()),
+        ..yulius_app::ports::store::AttemptUpdate::default()
+    };
+    assert!(
+        h.store
+            .transition_attempt(&run.id, yulius_domain::task::AttemptState::Killed, &ended)
+            .await?
+    );
+    release.send(())?;
+    // Nothing is to happen: a switch would be recorded at once, so a short look tells.
+    for _ in 0..40 {
+        assert!(h.store.switches(&task).await?.is_empty());
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
 /// SPEC-493 REV-007 (AC-8): round 3 runs Opus anyway, so a subscription out of Fable moves
 /// nothing and is not the reason of the round.
 #[tokio::test]
