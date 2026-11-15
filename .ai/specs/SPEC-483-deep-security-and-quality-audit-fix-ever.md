@@ -3235,7 +3235,24 @@ slices follow.
   (slice 17's): the run's end was recorded by its reader (`switch_timeout`) before the switch's
   record (`lost`), an order two sibling tests force each way; this unordered test now accepts
   either (the task's rest is the same), 30 of 30 under `--stress-count 30` beside six busy
-  loops (`stress-switch.log`).
+  loops (`stress-switch.log`). (The two sibling tests force host-loss-first and own-exit-first;
+  neither forces the reader recording a terminated host before the switch, the order behind
+  this flake: review round 3.)
 - **Gate after it.** `scripts/dev ci` at `9a0517a00`: exit 0; `4442 tests run: 4442 passed (1
   slow), 17 skipped` (`gate4.log`); the whole e2e suite before the switch test's change:
   85 files, 1050 passed (`e2e-full.log`).
+- **Review, round 3** (the same session, head `60761a34f`): approve; the two recorders confirmed
+  legitimate (the first write wins, both rest the task as `stopped_switch_timeout`, nothing
+  branches on which); the e2e waits right (entries use `content-visibility: auto`, so the range
+  settles a frame later). Nits: the sibling tests' order described inexactly (corrected above),
+  a pre-existing cockroach read on the same race, the changes entry without the queue pass
+  (added).
+- **Merge train at `60761a34f`** (run `59e92e63`): `quality` failed one test,
+  `task_done::a_stop_settles_a_run_no_server_holds`, the open flaky test #1190 (from #1173),
+  which this slice does not touch: it checked the stopped host with `kill(pid, 0)`, which a
+  process that exited but is not reaped yet still answers. It now uses the file's zombie-aware
+  `process_gone`, and `an_exited_process_not_yet_reaped_is_gone` shows on a real unreaped child
+  that `kill(0)` answers while `process_gone` says gone. Separate commit, `Fixes #1190`.
+- **Gate after it** (`dev` merged in). `scripts/dev ci` at `64e23f4b7`: exit 0; `4446 tests run:
+  4446 passed (1 slow), 17 skipped` (`gate5.log`); the whole e2e suite: 85 files, 1050 passed
+  (`e2e-full2.log`).

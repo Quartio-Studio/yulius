@@ -6,12 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
-- Two flaky tests fixed (task #465): the session view's spider-web test read its scroll range
-  before the view finished laying out (fixes #1185), and a switch test expected one of two
-  recorders of a killed run's end that race under load.
+- Three flaky tests fixed (task #465): the session view's spider-web test read its scroll
+  range before the view finished laying out (fixes #1185), a switch test expected one of two
+  recorders of a killed run's end that race under load, and a stop test took an exited but
+  unreaped host for a running one (fixes #1190).
 - A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
-  task's summary read the whole task list again to find its supertask holders; listing 200
-  tasks took 88 ms and grew with the square of the list, now 31 ms.
+  task's summary, and the queue's pass for every queued task, read the whole task list again to
+  find its supertask holders; listing 200 tasks took 88 ms and grew with the square of the
+  list, now 31 ms.
 - The Superagent sees what happened to a task (SPEC-487 slice 10b, task #469): `task_screen`
   shows a task's screen, also the last one its crashed run left, with the exit code and reason;
   `task_usage` the tokens each task used, as the Dashboard counts them; `checkout` how far its
