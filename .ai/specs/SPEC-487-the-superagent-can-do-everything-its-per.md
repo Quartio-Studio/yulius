@@ -935,3 +935,27 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **Not tested:** a promotion that promotes (the CD fixture's production deploys promote by
   themselves, so nothing is left; a promotion that runs is the delivery suites'); a Start
   onboarding that starts (this harness has no Git; the onboarding suites start it).
+- **Gate:** `scripts/dev ci` passed on `1016737d8` (4414 tests, 17 skipped;
+  `target/evidence/gate-slice8b.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `1016737d8`): approve, with one medium and minor
+  findings, all in this slice's code, answered:
+  - M1 (medium), the Global Superagent was served `cd_rollback` (it is not served `cd_deploy`):
+    withheld now (`global_superagent::the_global_superagent_works_in_every_sandbox_of_its_person`
+    failed first), and REL-003 says so.
+  - m1, a production attempt refused before asking writes no audit row: kept, as every request
+    refused before asking (the decision above); the API row says so.
+  - m2, an unreadable CD overview refused even a dev deploy: it now leaves the decision to the
+    tool, whose deploy refuses production without the typed slug anyway.
+  - m3, `expect` was taken but no tool schema offered it: dropped from the request, the card and
+    the documents.
+  - m4, the slug is checked against the project's slug when the request was asked: answered in
+    words. A project renamed meanwhile makes the CD page's own check refuse the run with why, and
+    the Superagent asks again.
+  - m5, a production-stage environment of another name, a declined release, an answer from no
+    browser session: tested now (`a_custom_production_stage_environment_waits_for_the_person`,
+    and the first test); an administrator who lost the right meanwhile is the CD page's own check
+    (`a_waiting_production_deploy_honours_what_was_asked`).
+  - n1: a release's amend refusal names releases (tested), the onboarding card's hint, the mock's
+    double announcement, the ADR's "amendable", the Plan box.
+  Two more mutants (`mutants-slice8b-r1.log`: `survived=0`).
