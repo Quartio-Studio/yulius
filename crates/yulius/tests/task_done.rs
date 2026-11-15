@@ -4280,9 +4280,10 @@ fn a_stop_settles_a_run_no_server_holds() -> TestResult {
             task(&app, &id).await?.status,
             TaskStatus::Stopped(StopReason::ServerLost)
         );
-        // Proven gone before it was recorded (AGENTS.md: a timeout is no proof).
+        // Proven gone before it was recorded (AGENTS.md: a timeout is no proof). An exited
+        // process its parent has not reaped yet is gone too (#1190: under load it is seen so).
         assert!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(host_pid), None).is_err(),
+            process_gone(u32::try_from(host_pid)?),
             "the run's host still runs"
         );
         Ok::<(), BoxError>(())
@@ -7952,5 +7953,32 @@ fn queued_news_stays_due_while_another_entry_gets_its_turn_first() -> TestResult
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// #1190: a process that exited and is not reaped yet counts as gone; a running one does not.
+#[test]
+fn an_exited_process_not_yet_reaped_is_gone() -> TestResult {
+    let mut running = std::process::Command::new("sleep").arg("30").spawn()?;
+    assert!(!process_gone(running.id()), "a running process is not gone");
+    let exited = std::process::Command::new("true").spawn()?;
+    let zombie = exited.id();
+    // Not reaped (no wait yet): a zombie once it exits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !process_gone(zombie) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the exited process never read as gone"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(zombie)?), None).is_ok(),
+        "unreaped, it still answers kill(0)"
+    );
+    running.kill()?;
+    let _ = running.wait();
+    let mut exited = exited;
+    let _ = exited.wait();
     Ok(())
 }
