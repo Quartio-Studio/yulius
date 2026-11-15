@@ -1685,6 +1685,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "session_read",
             "sessions_search",
             "subscriptions",
+            "superagent_check_delete",
+            "superagent_check_set",
+            "superagent_checks",
             "task_archive",
             "task_close",
             "task_create",
@@ -4594,6 +4597,227 @@ async fn a_draft_typed_before_the_servers_restart_holds_the_superagents() -> Tes
         .await?;
     other_cockpit(&g, &id).await?;
     g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Reads the terminal until `text` shows more than `seen` times.
+async fn wait_for_more(
+    socket: &mut Socket,
+    screen: &mut String,
+    text: &str,
+    seen: usize,
+) -> TestResult {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while screen.matches(text).count() <= seen {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .map_err(|_| format!("timed out waiting for {text:?} again; screen: {screen:?}"))?
+            .ok_or("socket closed")??;
+        if let Message::Binary(bytes) = message
+            && let Some((kind, _, payload)) = decode_binary(&bytes)
+            && (kind == KIND_OUTPUT || kind == KIND_SNAPSHOT)
+        {
+            screen.push_str(&String::from_utf8_lossy(payload));
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-487 CHK-001 to CHK-005 (wall 8: "no monitoring for 15 hours while the person believed
+/// it was on"): the Superagent's scheduled checks are held by Yulius, not by its session: set,
+/// listed and deleted with its tools, kept in a file beside the database, typed into its
+/// session when one is due and it is idle, and a Superagent that is not running is started
+/// for one.
+#[tokio::test]
+async fn the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+
+    let said = |record: &Value| record.to_string();
+    let prompt = "Check the disk of the dev VM and tell me when it is over 80 %.";
+    let (set, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "superagent_check_set",
+        json!({"name": "disk", "every_minutes": 30, "prompt": prompt}),
+    )
+    .await?;
+    assert!(!is_error, "{set}");
+    for (args, why) in [
+        (json!({"name": "x", "every_minutes": 1, "prompt": "p"}), "5"),
+        (
+            json!({"name": "x", "every_minutes": 30, "prompt": ""}),
+            "prompt",
+        ),
+        (
+            json!({"name": "", "every_minutes": 30, "prompt": "p"}),
+            "name",
+        ),
+        (
+            json!({"name": "a\tb", "every_minutes": 30, "prompt": "p"}),
+            "control",
+        ),
+        (
+            json!({"name": "x", "every_minutes": 30, "prompt": "a\u{202e}b"}),
+            "cannot see",
+        ),
+        (
+            json!({"name": "x", "every_minutes": 30, "prompt": "p", "more": 1}),
+            "unknown",
+        ),
+    ] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, "superagent_check_set", args.clone()).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{args}: {refused}"
+        );
+    }
+    let (listed, is_error) = cockpit_tool(&f, &token, "superagent_checks", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["checks"][0]["name"], "disk", "{listed}");
+    assert_eq!(listed["checks"][0]["every_minutes"], 30, "{listed}");
+    assert!(listed["checks"][0]["last_run_at"].is_null(), "{listed}");
+    let saved = std::fs::read_to_string(f.data.join("superagent-checks.json"))?;
+    assert!(saved.contains(prompt), "{saved}");
+
+    // Due: typed into its idle session, labelled as Yulius's.
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    read_until(&mut socket, &mut screen, "Yulius check").await?;
+    assert!(screen.contains("disk"), "{screen}");
+    let (listed, _) = cockpit_tool(&f, &token, "superagent_checks", json!({})).await?;
+    assert!(listed["checks"][0]["last_run_at"].is_string(), "{listed}");
+
+    // Due again, now with a conversation that is idle: typed again.
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    let first = screen.matches("Yulius check").count();
+    wait_for_more(&mut socket, &mut screen, "Yulius check", first).await?;
+
+    // Kept across a restart of Yulius.
+    let next = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    next.restore_superagent_checks();
+    let caller = yulius_app::coordination::ProjectCaller {
+        sandbox: sid(),
+        user: alice.clone(),
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "cockpit:alice".into(),
+        detail: json!({"via": "cockpit"}),
+    };
+    let kept = next.tool_superagent_checks(&caller)?;
+    assert_eq!(kept["checks"][0]["name"], "disk", "{kept}");
+
+    // Not running when one is due: Yulius starts it, as opening its panel would.
+    f.h.app.end_all_shells().await;
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    assert_eq!(f.h.app.start_superagents_for_due_checks().await, 1);
+    assert_eq!(
+        f.h.app.sandbox_shells(&sid()).len(),
+        1,
+        "started for its check"
+    );
+
+    // Review of slice 9b, F6: a disabled person's Superagent is not started for a check, and a
+    // removed sandbox's checks go.
+    f.h.app.end_all_shells().await;
+    f.h.clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    f.h.store
+        .execute_for_tests("UPDATE users SET disabled_at = 1 WHERE id = 'u-alice'")
+        .await?;
+    assert_eq!(
+        f.h.app.start_superagents_for_due_checks().await,
+        0,
+        "disabled"
+    );
+    f.h.store
+        .execute_for_tests("UPDATE users SET disabled_at = NULL WHERE id = 'u-alice'")
+        .await?;
+    assert_eq!(
+        f.h.app.start_superagents_for_due_checks().await,
+        1,
+        "enabled again"
+    );
+
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    let (deleted, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "superagent_check_delete",
+        json!({"name": "disk"}),
+    )
+    .await?;
+    assert!(!is_error, "{deleted}");
+    let (listed, _) = cockpit_tool(&f, &token, "superagent_checks", json!({})).await?;
+    assert_eq!(listed["checks"], json!([]), "{listed}");
+    let (set, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "superagent_check_set",
+        json!({"name": "gone", "every_minutes": 5, "prompt": "p"}),
+    )
+    .await?;
+    assert!(!is_error, "{set}");
+    f.h.app.end_all_shells().await;
+    f.h.clock.0.fetch_add(5 * 60_000, Ordering::SeqCst);
+    f.h.store
+        .execute_for_tests("UPDATE sandboxes SET removed_at = 1 WHERE id = 's1'")
+        .await?;
+    assert_eq!(f.h.app.start_superagents_for_due_checks().await, 0);
+    assert_eq!(
+        f.h.app.tool_superagent_checks(&caller)?["checks"],
+        json!([]),
+        "a removed sandbox's checks go"
+    );
+
+    // F8: a kept check out of bounds (hand-edited) is not read back.
+    f.h.store
+        .execute_for_tests("UPDATE sandboxes SET removed_at = NULL WHERE id = 's1'")
+        .await?;
+    let check = |name: &str, every: u32| {
+        json!({"user": "u-alice", "sandbox": "s1", "name": name, "every_minutes": every,
+            "prompt": "p", "created_at": 0, "next_at": 0})
+    };
+    std::fs::write(
+        f.data.join("superagent-checks.json"),
+        serde_json::to_vec(&json!([check("sound", 5), check("every-tick", 0)]))?,
+    )?;
+    let read = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    read.restore_superagent_checks();
+    let names: Vec<String> = read.tool_superagent_checks(&caller)?["checks"]
+        .as_array()
+        .ok_or("checks")?
+        .iter()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(names, ["sound"]);
+
+    // F8: a file that cannot be read is kept as `.bad`, never written over.
+    let file = f.data.join("superagent-checks.json");
+    std::fs::write(&file, b"[not json")?;
+    let again = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    again.restore_superagent_checks();
+    assert_eq!(
+        std::fs::read(file.with_extension("json.bad"))?,
+        b"[not json"
+    );
     Ok(())
 }
 

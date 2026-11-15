@@ -62,6 +62,18 @@ impl App {
         let outage = self.start_outage_watch();
         // No Superagent request is written until the saved ones are back (SPEC-487 XRQ-002).
         self.begin_cross_restore();
+        // The Superagents' checks, read before anything can save them (SPEC-487 CHK-002).
+        self.restore_superagent_checks();
+        let checks = Arc::clone(self);
+        tokio::spawn(async move {
+            // A Superagent that is not running is started for a due check (CHK-004).
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                every.tick().await;
+                checks.start_superagents_for_due_checks().await;
+            }
+        });
         let app = Arc::clone(self);
         tokio::spawn(async move {
             // The Superagents' requests that waited, and their outcomes (SPEC-487 XRQ-002).

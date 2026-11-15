@@ -609,6 +609,8 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "cd_rollback",
         "promote",
         "onboarding_start",
+        "superagent_check_set",
+        "superagent_check_delete",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),

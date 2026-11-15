@@ -184,7 +184,7 @@ pub struct ShellRuntime {
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
     scrub: crate::vault::TerminalScrub,
-    writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
+    pub(crate) writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
     closing: AtomicBool,
@@ -199,7 +199,12 @@ pub struct ShellRuntime {
     pub(crate) typed_seq: AtomicU64,
     pub(crate) typed_ms: AtomicI64,
     pub(crate) emptied_seq: AtomicU64,
-    pub(crate) in_paste: AtomicBool,
+    pub(crate) key_state: Mutex<crate::cockpit::KeyState>,
+    /// When its person's last keystroke frame came, and when a draft's mark was last kept.
+    pub(crate) last_key_ms: AtomicI64,
+    pub(crate) draft_saved_ms: AtomicI64,
+    /// When Yulius last typed one of its checks into this Cockpit (SPEC-487 CHK-003).
+    pub(crate) check_typed_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
@@ -299,6 +304,11 @@ impl ShellRuntime {
         } else {
             Seat::Sandbox(self.sandbox.clone())
         }
+    }
+
+    /// When this shell started (ms), for a Cockpit the start of its process.
+    pub(crate) fn started_ms(&self) -> i64 {
+        self.created_at.0
     }
 
     /// The user who opened the shell.
@@ -915,7 +925,10 @@ impl App {
             typed_seq: AtomicU64::new(0),
             typed_ms: AtomicI64::new(0),
             emptied_seq: AtomicU64::new(0),
-            in_paste: AtomicBool::new(false),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
@@ -1554,7 +1567,10 @@ impl App {
             typed_seq: AtomicU64::new(u64::from(file.draft_typed_at.is_some())),
             typed_ms: AtomicI64::new(file.draft_typed_at.unwrap_or(0)),
             emptied_seq: AtomicU64::new(0),
-            in_paste: AtomicBool::new(false),
+            key_state: Mutex::new(crate::cockpit::KeyState::default()),
+            last_key_ms: AtomicI64::new(0),
+            draft_saved_ms: AtomicI64::new(0),
+            check_typed_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),

@@ -318,6 +318,8 @@ pub struct App {
     /// The Superagents' requests to start tasks in other sandboxes, waiting for their person
     /// (SPEC-335).
     pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
+    /// The Superagents' scheduled checks (SPEC-487 CHK-001).
+    pub(crate) superagent_checks: crate::superagent_checks::SuperagentChecks,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
     pub(crate) supertask_holds: crate::supertask::Holds,
     /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
@@ -391,6 +393,7 @@ impl App {
             armed_restored: std::sync::atomic::AtomicBool::new(false),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),
+            superagent_checks: crate::superagent_checks::SuperagentChecks::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
             leftovers: crate::leftovers::LeftoverState::default(),

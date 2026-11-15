@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Watching a live task reads only what was written since (SPEC-483 slice 36, task #465). Each
   1.5 s poll re-read and re-parsed the whole transcript; the server now goes on from where the
   last read ended (30 MB: 497 ms a poll before, 18 µs now).
+- The Superagent's standing jobs survive its restarts (SPEC-487 slice 9b, task #469,
+  [ADR-0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md)). Its crons and
+  watchers ended with every restart; once nothing monitored for 15 hours while the person thought
+  it did. Now "keep monitoring" is a scheduled check Yulius holds (`superagent_check_set`): due, it
+  is typed into the Superagent when it is idle, and a Superagent that is not running is started
+  for it.
 - The Superagent keeps its person's text across a restart (SPEC-487 slice 9a, task #469). A
   person's message was swallowed by a restart: the restart that gets an update's tools now waits
   while text sits unsent in the Superagent's prompt box (up to half an hour after the last
