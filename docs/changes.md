@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- The web UI runs under a strict content security policy (SPEC-483 slice 38, ADR-0338, task
+  #465). Pages sent only `frame-ancestors 'none'`; now scripts, styles, fonts, images,
+  connections and workers come from Yulius only, with no inline or evaluated script, plugins,
+  frames, `<base>` or foreign form targets. The e2e server sends the same policy file and every
+  e2e test fails on a load it refuses.
 - Three flaky tests fixed (task #465): the session view's spider-web test read its scroll
   range before the view finished laying out (fixes #1185), a switch test expected one of two
   recorders of a killed run's end that race under load, and a stop test took an exited but
