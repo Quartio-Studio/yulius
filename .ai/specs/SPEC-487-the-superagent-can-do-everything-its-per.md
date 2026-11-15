@@ -1,6 +1,6 @@
 ---
 yulius-task: 1be0c20e-fe89-4ec0-a1ff-5c054ebc7ae7
-status: in-progress
+status: done
 ---
 
 # SPEC-487: the Superagent does what its person may do
@@ -1202,3 +1202,37 @@ with those rights checked at the call.
   the branch are failed by named tests; `no-redaction` survives on purpose: every tool result is
   redacted of the project's agent secrets by the MCP layer too (`redact_strings`), so the saved
   screen's own redaction is a second layer the tool's answer cannot tell apart.
+
+### Slice 11 (2026-11-15)
+
+- **Slice 10b is merged:** pull request #1314 into `dev` at `a968a31a1`, whose own Yulius CI run
+  passed.
+- **Review of slice 10b, round 2 notes**, answered first: the API names the `starting` screen and
+  what `fetched_at` means; a checkout that cannot be read logs why; `task_usage` says how many
+  tasks the period has (`tasks_in_period`).
+- **Tests and code:** `a_missing_ability_is_reported_in_one_call` was written first (refusals,
+  kept on the instance without access, an issue as alice with read access and without the
+  project's name, a task's agent reporting, the sixth in an hour refused). The project variables
+  test (`variables_set`, `variable_delete` through the Superagent) failed first ("unknown tool").
+  The ability table is in `docs/product.md`.
+- **Mutation:** six mutants, each failed by a named test (`target/evidence/mutants-slice11.py`,
+  `mutants-slice11.log`: `survived=0`).
+- **Not tested:** an issue against the real GitHub (the fake records it; `create_issue` is the
+  production adapter `issue_create` uses).
+
+## The walls, closed
+
+| Wall | How it ends | Slices |
+| --- | --- | --- |
+| 1. Yulius itself and its host | Closed: version, health, update status and checks (`instance`); Update now, Restart, Cancel for a superadmin's Superagent (`instance_update`). Left open: the host's logs and `yulius doctor` (no page shows them; the host's own tools). | 7 |
+| 2. Changing a task that exists | Closed: restart, pause and resume, start now, rename, a prompt not started, reorder, close out, bulk stop, pause and message, a message past a draft, project variables (`variables_set`). Left open: discarding a person's draft (Yulius sees keys, not the box). | 2, 3, 11 |
+| 3. Chaining | Closed: a chained task waits for its predecessor's pull request news; the rule reads back as stored; "after all current tasks". | 1 |
+| 4. CI, merges and deploys | Closed: CI read, run again, cancel, order; a task's delivery, the merge queue and train, why a pull request is not merging, merge or arm; dev deploy and rollback. Behind a confirmation: production deploy and rollback, promotion, onboarding (the typed slug, a click). Left open: holding the CI queue (no page holds it; cancel and run again). | 2, 5, 8b |
+| 5. Subscriptions and model | Closed: which subscription a task is on, moved, model and effort. Left open: the pool's priorities or exclusions (no such setting exists). | 6 |
+| 6. Other sandboxes | Closed behind a confirmation: requests last until answered, are amended or withdrawn and read back; another sandbox's tasks are listed without asking. | 8a |
+| 7. Tasks' questions | Closed: open questions and why a task waits, answered or dismissed for the person, a held prompt decided, a session's end. Left open: answering a menu in a task's terminal (read with `task_screen`, told to the person). | 4, 10b |
+| 8. The Superagent's session lasting | Closed: standing jobs are checks Yulius holds; a draft holds an update's restart and keys typed while it restarts reach it. Left open: a changed tool list still restarts it (its instructions are read only at connection; the restart resumes the conversation). | 9a, 9b |
+| 9. Questions to the person lost | Closed behind a confirmation: `person_ask` keeps a decision on the panel until answered. | 8a |
+| 10. Secrets | Closed behind a confirmation: a value typed masked on the panel goes to the vault, never to an agent. Left as decided: hosts and `.env` copies ask once each; `secret_verify` refuses production secrets. | 10a |
+| 11. Visibility | Closed: a task's screen and a crashed run's exit, its tokens, the checkout's distance. Left open: a task's own load (not measured; the host's is). | 10b |
+| 12. Wrong "I can't" | Closed: the instructions and descriptions say to read the tool list, name the missing ability and report it (`ability_report`), and never treat a repository rule as overriding the person without saying which and asking. | 2, 11 |
