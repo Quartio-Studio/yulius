@@ -945,3 +945,6 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     "started" when the new run already printed its prompt (an 800 ms delay before the outcome
     is written fails the old assertion, as one parallel run did); it now waits for the outcome.
     `--stress-count 15` of the review tests and 6 runs of the three groups passed.
+  - Gate after the answers: `scripts/dev ci` exit 0 (4,500 tests passed). A run before it
+    failed once on `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it`, the
+    known load flake #1286 (untouched here; 10 of 10 alone).
