@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A first or second review round whose subscription cannot run Fable 5.2 moves the session to
+  one that can (SPEC-493 fix 1d, task #472): the reviewer's start is refused with why, and the
+  session goes on there with a prompt to start the review again. While background work runs it
+  is refused with that reason; with no such subscription the round runs on Opus 5.5 and the
+  reviewer says so.
 - Who wrote and who reviewed each pull request can be read afterwards (SPEC-493 fix 1c, task
   #472): a review round records the model that really answered its reviewer and whether a usage
   limit cut it off; a merge writes `delivery.review.models` (the authors' models and each

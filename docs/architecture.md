@@ -1180,10 +1180,19 @@ The agent always asks for `yulius-reviewer`. The Agent tool's `PreToolUse` (matc
 `App::review_gate` numbers the round among the rounds of the task's open pull request (a round
 counts once it ended with a report; a reviewer started again for a round without one keeps its
 number and reviewer), picks its reviewer (`review::round_agent`: rounds 1 and 2 Fable, later
-Opus; the Opus reviewer when the run's subscription cannot run Fable now), records it in
-`review_rounds` and answers: nothing to change, or `updatedInput` with the other
+Opus), records it in `review_rounds` and answers: nothing to change, or `updatedInput` with the other
 `subagent_type` and the rest of the input as asked, and in both cases a line of context naming
-the round and its model. A failure to decide lets the reviewer start as asked. `SubagentStart`
+the round and its model. When a round would run Fable and the run's subscription cannot run it
+now, the session moves first (REV-007): `rotation::move_to_also_run` picks the best other
+subscription that can run both the session's model and Fable, the Agent call is refused with
+why, and `switch_task_now` (reason `review_fable`, which interrupts the turn first as a person's
+switch does) continues the session there with a prompt asking for the review again. While
+background work runs or a prompt waits in Claude Code's queue the call is refused with that
+reason and nothing moves. The move is announced only after the new session's start was checked
+there (`preflight_start`); with no such subscription, a start that would be refused, a move
+refused moments ago or looks longer than 3 s (the hook client waits 5), the round runs the Opus
+reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
+lets the reviewer start as asked. `SubagentStart`
 links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
 with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
@@ -1203,8 +1212,9 @@ with its model, verdict and head. A merge path passes what it merged (`review::M
 an approval counts for that head, or one followed only by clean merges of the integration
 branch at a base that holds none of the pull request's commits (`<merge>^1` on GitHub: the
 branch before a squash or merge commit, the previous rewritten copy for a rebase merge; a
-playground's base after its squash);
-a merge found elsewhere has no base, so only the approved head itself counts. When no round
+playground's base after its squash). A merge made on GitHub and found afterwards takes its base
+from the merge commit GitHub names (`GhPull::merge_commit_sha`, `MergedHead::of_pull`); without
+one only the approved head itself counts. When no round
 approved, the record says "no recorded review round approved its head".
 `GET /api/analytics/reviews` (the Pipeline tab's Review card) gives the numbers over the pull
 requests merged in a range (`review::review_numbers`).

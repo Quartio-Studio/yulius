@@ -4,7 +4,7 @@
 
 Accepted (2026-11-15). Specified in
 [SPEC-493](../../.ai/specs/SPEC-493-faster-from-start-to-merge-opus-writes-f.md) (REV-001 to
-REV-004, REV-008, and REV-007 without the move); task #472. Follows
+REV-004, REV-007, REV-008; the move of REV-007 since fix 1d); task #472. Follows
 [ADR-0340](0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md) (Opus 5.5 writes).
 
 ## Context
@@ -40,10 +40,17 @@ Measured with Claude Code 2.1.325 against a local stand-in for the model API:
   3 `yulius-reviewer-opus` (`updatedInput`, the rest of the input as asked). The agent is told
   the round and its model in a line of context. A round counts once it ended with a report, so a
   reviewer started again after a cut-off keeps its round's number and reviewer.
-- **A subscription that cannot run Fable now gets the Opus reviewer** (reason `no_fable`), and
-  the agent is told to say so in the review's summary: a reviewer refused at its first request
-  helps nobody. Moving the session to a subscription that can run Fable first is SPEC-493 fix
-  1d.
+- **A session whose subscription cannot run Fable now moves first** (SPEC-493 fix 1d) to the
+  best other subscription that can run both its model and Fable: the Agent call is refused with
+  why and the session continues there, its turn interrupted first as a person's switch is, with
+  a prompt asking for the review again. Holding the hook instead would need every session
+  launched again (the hook client never holds `PreToolUse`). Background work or a queued
+  prompt, which a move would end, refuses the call with that reason and moves nothing. The move
+  is said only once the new session's start there was checked, so the agent is never told to
+  wait for a move that is then refused.
+- **With no such subscription the round gets the Opus reviewer** (reason `no_fable`): its prompt
+  and the agent are told to say so in the review's summary: a reviewer refused at its first
+  request helps nobody, and Yulius never waits for Fable.
 - **Each round is a record** (`review_rounds`, schema version 62): its number, the head, the
   reviewer and model, why (`round`, `kept` for a reviewer started again for a round with no
   report, `no_fable`), the subagent, when it started and ended, its verdict. The next round

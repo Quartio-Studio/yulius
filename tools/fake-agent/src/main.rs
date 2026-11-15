@@ -144,6 +144,8 @@
 //! `notification_type`, as when it asks the person something (`permission_prompt`), and prints
 //! `NOTIFIED`. `/tool` is the agent going on with no prompt, as after the person answered a
 //! permission prompt: it appends one tool call to the transcript and prints `TOOL`.
+//! `/agent <type>` (with `--hooks`) runs the Agent tool's `PreToolUse` hook for a subagent of
+//! that type, as a review round's start does, and prints `AGENT ` with the hook's answer.
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -1536,6 +1538,18 @@ impl Hooks {
         );
     }
 
+    /// The Agent tool's `PreToolUse` for a subagent of `kind`: what the hook answered.
+    fn agent(&self, kind: &str) -> String {
+        run_hook(
+            &self.exe,
+            "PreToolUse",
+            &json!({"session_id": self.session_id, "hook_event_name": "PreToolUse",
+                "tool_name": "Agent", "tool_use_id": "toolu_fake_agent",
+                "tool_input": {"description": "Review", "prompt": "Review the change.",
+                    "subagent_type": kind}}),
+        )
+    }
+
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
@@ -2685,6 +2699,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     t.tool_use()?;
                 }
                 say("TOOL")?;
+            }
+            _ if line.starts_with("/agent ") => {
+                let answer = hooks
+                    .as_ref()
+                    .map(|hooks| hooks.agent(line["/agent ".len()..].trim()))
+                    .unwrap_or_default();
+                say(&format!("AGENT {}", answer.trim()))?;
             }
             _ if line.starts_with("/notify ") => {
                 if let Some(hooks) = &hooks {

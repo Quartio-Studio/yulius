@@ -234,6 +234,9 @@ pub struct GhPull {
     pub behind: bool,
     /// The head is in another repository (a fork) or its repository is gone (SPEC-069).
     pub from_fork: bool,
+    /// The commit a merged pull request became on its base (a squash, a merge commit or the
+    /// last rebased commit); `None` while it is not merged.
+    pub merge_commit_sha: Option<String>,
 }
 
 /// A pull request to open.

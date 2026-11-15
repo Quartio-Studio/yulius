@@ -1219,7 +1219,11 @@ impl App {
     /// `PreToolUse`: the edit gate's answer. It never gives up (SPEC-426 EDG-005): the spec is
     /// documentation, so the way through stays open, and an agent that loops meets the Stop
     /// gate. A failure to decide lets the edit go ahead (the Stop gate still checks).
-    async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+    async fn hook_pre_tool_use(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        input: &HookInput,
+    ) -> HookOutput {
         // A subagent's start: a review round's reviewer (SPEC-493 REV-002).
         if input.tool_name.as_deref().is_some_and(agent_tool) {
             return self.review_gate(ctx, input).await;

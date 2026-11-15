@@ -5884,12 +5884,14 @@ fn keeps_subscription(reason: &str) -> bool {
 }
 
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
-/// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
+/// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447)
+/// and a move for a review round's Fable reviewer, whose refused Agent call the agent answers
+/// (SPEC-493 REV-007);
 /// automatic switches come while the agent is idle, or at a usage limit, where its turn can go
 /// no further: its own thread's when the limit cut its turn, and whatever its thread was doing
 /// when the limit refused a workflow's agents (its next request would be refused, SPEC-486).
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover" | "removed")
+    matches!(reason, "manual" | "handover" | "removed") || reason == crate::review::MOVE_FOR_FABLE
 }
 
 #[cfg(test)]
@@ -6067,6 +6069,8 @@ mod tests {
     fn a_hand_over_interrupts_like_a_persons_switch() {
         assert!(super::interrupts_first("manual"));
         assert!(super::interrupts_first("handover"));
+        // SPEC-493 REV-007: the agent goes on after its reviewer was refused for the move.
+        assert!(super::interrupts_first(crate::review::MOVE_FOR_FABLE));
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }

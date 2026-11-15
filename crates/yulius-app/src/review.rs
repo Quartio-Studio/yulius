@@ -12,6 +12,7 @@
 //! When Yulius cannot be asked, the reviewer starts as asked (REV-003).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::Value;
 use yulius_contracts::hooks::{HookInput, HookOutput, events};
@@ -30,10 +31,56 @@ use yulius_domain::time::Timestamp;
 /// Yulius's reviewer agents.
 const REVIEWERS: [&str; 2] = [REVIEWER_AGENT, LATE_REVIEWER_AGENT];
 
+/// The switch reason of a move for a Fable reviewer (REV-007): it interrupts the turn first,
+/// as a person's switch does, since the agent goes on after the refusal.
+pub(crate) const MOVE_FOR_FABLE: &str = "review_fable";
+
+/// Why the reviewer did not start: the session moves.
+const MOVING_FOR_FABLE: &str = "Yulius moves this session to a Claude subscription that can run \
+     Fable 5.2 for this review round. Do nothing else now: the session goes on there and is \
+     asked to start the review again.";
+
+/// Why the reviewer did not start: a move would end background work that runs.
+const BUSY_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this review round, and \
+     Yulius would move the session to one that can, but background work runs (shells, agents, \
+     monitors or a `yulius wait`), which a move would end. Finish or stop it, then start the \
+     review again.";
+
+/// Why the reviewer did not start: a move would drop a prompt waiting in Claude Code's queue.
+const QUEUED_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this review round, and \
+     Yulius would move the session to one that can, but a prompt waits in Claude Code's queue, \
+     which a move would drop. Answer it or end your turn, then start the review again.";
+
+/// The longest the move's looks may take: the hook client gives `PreToolUse` 5 s, after which
+/// the reviewer starts as asked while a move could still be decided.
+const MOVE_DECISION: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The first prompt of a session moved for a Fable reviewer.
+const MOVED_FOR_FABLE_PROMPT: &str = "Yulius moved this session to a Claude subscription that can \
+     run Fable 5.2 for the review round you asked for. Start the review again: the Agent tool \
+     with the `yulius-reviewer` agent and the same prompt.";
+
+/// What a reviewer that runs on Opus because Fable cannot is told; its report repeats it.
+const NO_FABLE_REVIEWER_LINE: &str = "\n\nYulius: this task's session cannot run Fable 5.2 now \
+     and cannot move to a subscription that can, so this round runs on Opus 5.5. Say so in the \
+     first line of your summary.";
+
+/// What a review round that cannot run Fable on its subscription does (REV-007).
+enum FableMove {
+    /// The Agent call is refused with this reason (the session moves, or work would be lost).
+    Refused(String),
+    /// No move: the round runs the Opus reviewer.
+    Nowhere,
+}
+
 impl App {
     /// `PreToolUse` of the Agent tool: a review round's start, or nothing for another subagent.
     /// A failure to decide lets the reviewer start as asked (REV-003).
-    pub(crate) async fn review_gate(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+    pub(crate) async fn review_gate(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        input: &HookInput,
+    ) -> HookOutput {
         match self.start_review_round(ctx, input).await {
             Ok(output) => output,
             Err(err) => {
@@ -44,7 +91,7 @@ impl App {
     }
 
     async fn start_review_round(
-        &self,
+        self: &Arc<Self>,
         ctx: &AgentContext,
         input: &HookInput,
     ) -> AppResult<HookOutput> {
@@ -77,12 +124,18 @@ impl App {
             Some(round) => (round.agent.clone(), "kept"),
             None => (round_agent(number).to_owned(), "round"),
         };
-        // A subagent runs on its session's subscription: one that cannot run Fable now gets the
-        // Opus reviewer, which it can, rather than a reviewer refused at its first request
-        // (REV-007; moving the session first is its own slice).
+        // A subagent runs on its session's subscription. One that cannot run Fable now moves
+        // the session to one that can run both, when there is one (the reviewer is asked for
+        // again there); else the round gets the Opus reviewer, which it can run, rather than a
+        // reviewer refused at its first request (REV-007).
         if agent == REVIEWER_AGENT && !self.run_can_take_fable(ctx).await {
-            agent = LATE_REVIEWER_AGENT.to_owned();
-            reason = "no_fable";
+            match self.move_for_fable(ctx).await {
+                FableMove::Refused(why) => return Ok(HookOutput::deny_tool(why)),
+                FableMove::Nowhere => {
+                    agent = LATE_REVIEWER_AGENT.to_owned();
+                    reason = "no_fable";
+                }
+            }
         }
         let model = reviewer_model(&agent).unwrap_or_default().to_owned();
         let head = match ctx.task.worktree_path.as_deref() {
@@ -122,16 +175,105 @@ impl App {
         );
         if reason == "no_fable" {
             said.push_str(
-                " This subscription cannot run Fable 5.2 now, so the round runs on Opus 5.5: \
-                 say so in the review's summary.",
+                " This session cannot run Fable 5.2 now, nor move to a subscription that can, so \
+                 the round runs on Opus 5.5: say so in the review's summary.",
             );
         }
-        if agent == asked {
+        // The reviewer's prompt says why it runs on Opus, also when it was asked for by name.
+        if agent == asked && reason != "no_fable" {
             return Ok(HookOutput::additional_context(events::PRE_TOOL_USE, said));
         }
         let mut updated = tool_input.clone();
         updated.insert("subagent_type".into(), Value::String(agent));
+        if reason == "no_fable"
+            && let Some(Value::String(prompt)) = updated.get_mut("prompt")
+        {
+            prompt.push_str(NO_FABLE_REVIEWER_LINE);
+        }
         Ok(HookOutput::run_tool_with(Value::Object(updated), said))
+    }
+
+    /// Moves the session of a review round that cannot run Fable to a subscription that can run
+    /// both its model and Fable (REV-007): refused with why, the session continues there with a
+    /// prompt asking for the review again. While background work runs that a move would end, or
+    /// a prompt waits in Claude Code's queue, nothing moves and the refusal says so. A move
+    /// refused moments ago, no such subscription, a new session that could not start there, or
+    /// looks that take longer than [`MOVE_DECISION`] leave the round to the Opus reviewer: a
+    /// move is announced only once it can start.
+    async fn move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
+        if let Ok(decided) =
+            tokio::time::timeout(MOVE_DECISION, self.decide_move_for_fable(ctx)).await
+        {
+            return decided;
+        }
+        tracing::info!(task = %ctx.task.id, "no move for a Fable reviewer: the looks took longer than the hook may wait");
+        FableMove::Nowhere
+    }
+
+    async fn decide_move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
+        let task = &ctx.task;
+        if self.switch_cooling(&task.id) {
+            return FableMove::Nowhere;
+        }
+        let Ok(input) = self
+            .rotation_input(task, ctx.attempt.account_id.clone())
+            .await
+        else {
+            return FableMove::Nowhere;
+        };
+        let fable = ModelFamily::of(Some(yulius_domain::harness::REVIEW_CLAUDE_MODEL));
+        let Some(account) = yulius_domain::rotation::move_to_also_run(&input, fable) else {
+            return FableMove::Nowhere;
+        };
+        // A move ends the session's background shells, agents and monitors and what waits in
+        // Claude Code's queue; a look that gives no answer counts as work running (SPEC-483).
+        let prompts_before = self.prompts_passed(&task.id);
+        self.await_transcript_read(&task.id).await;
+        if self.background_or_wait_now(&task.id).await != Some(false) {
+            return FableMove::Refused(BUSY_FOR_FABLE.to_owned());
+        }
+        if self.prompt_waits_for_turns_end(&task.id, prompts_before) {
+            return FableMove::Refused(QUEUED_FOR_FABLE.to_owned());
+        }
+        // The new session must be able to start there before the move is announced (ROT-014).
+        // The check runs in a task of its own: the decision's deadline ends the wait for it,
+        // never the check (its disk upkeep removes caches under a claim).
+        let check = {
+            let app = Arc::clone(self);
+            let (task, account) = (task.clone(), account.clone());
+            tokio::spawn(async move { app.preflight_start(&task, Some(&account)).await })
+        };
+        match check.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::info!(task = %task.id, error = %err, "no move for a Fable reviewer: the session could not start there");
+                return FableMove::Nowhere;
+            }
+            Err(_) => return FableMove::Nowhere,
+        }
+        let app = Arc::clone(self);
+        let task_id = task.id.clone();
+        let run = ctx.attempt.id.clone();
+        tokio::spawn(async move {
+            // Only the run this was decided for moves: a later review start that outlasted an
+            // earlier move must not restart the session it made.
+            crate::race::reached(
+                crate::race::Point::ReviewMoveDecided,
+                Path::new(task_id.as_str()),
+            );
+            let live = app.deps.store.live_attempt(&task_id).await.ok().flatten();
+            if live.is_none_or(|live| live.id != run) {
+                return;
+            }
+            let prompt = Some(MOVED_FOR_FABLE_PROMPT.to_owned());
+            if let Err(err) = app
+                .switch_task_now(&task_id, Some(account), MOVE_FOR_FABLE, prompt)
+                .await
+            {
+                tracing::warn!(error = %err, task = %task_id, "the move for a Fable reviewer failed");
+            }
+        });
+        FableMove::Refused(MOVING_FOR_FABLE.to_owned())
     }
 
     /// Whether the subscription the task's run is on can run Fable now: below the pool's
@@ -459,6 +601,18 @@ pub struct MergedHead {
     /// `<merge>^1` for a GitHub merge: the branch before a squash or merge commit, the previous
     /// (rewritten) copy for a rebase merge. A playground's base after its own squash.
     pub base: Option<String>,
+}
+
+impl MergedHead {
+    /// What a merged pull request merged: its head, and the parent its merge commit landed on
+    /// when GitHub names that commit (a merge found after it was made, SPEC-493 fix 1d).
+    #[must_use]
+    pub fn of_pull(pull: &crate::ports::github::GhPull) -> Self {
+        Self {
+            head: pull.head_sha.clone(),
+            base: pull.merge_commit_sha.as_ref().map(|sha| format!("{sha}^1")),
+        }
+    }
 }
 
 /// A round as the delivery view shows it.

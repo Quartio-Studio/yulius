@@ -9,7 +9,7 @@ use crate::support::{TestResult, harness};
 use serde_json::{Value, json};
 use yulius_app::delivery::DeliveryRecord;
 use yulius_app::model::{ReviewRoundRecord, TaskMode};
-use yulius_app::ports::store::CoordinationStore;
+use yulius_app::ports::store::{CoordinationStore, TaskStore as _};
 use yulius_app::ports::store_ext::DeliveryStore;
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::TaskId;
@@ -306,6 +306,290 @@ async fn a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer() -> Test
         ),
         (1, "yulius-reviewer-opus", "no_fable")
     );
+    // The reviewer is told too, and its report repeats it; the rest of the prompt is kept.
+    let prompt = answer["hookSpecificOutput"]["updatedInput"]["prompt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        prompt.starts_with("Review origin/dev...HEAD against the spec.")
+            && prompt.contains("runs on Opus 5.5")
+            && prompt.contains("summary"),
+        "{prompt}"
+    );
+    assert!(h.store.switches(&task).await?.is_empty(), "nowhere to move");
+    Ok(())
+}
+
+/// A running task on `acc-1`, whose Fable allowance is used up, with `acc-0` (also out of Fable)
+/// and `acc-2` (room for both) in the pool. The harness has no clone, so a move of its session
+/// cannot start; the real-process test below moves one.
+async fn out_of_fable(
+    h: &crate::support::Harness,
+) -> Result<yulius_domain::ids::TaskId, Box<dyn std::error::Error>> {
+    seed(h).await?;
+    let full = json!({"weekly_fable": {"used_percent": 100.0, "window_minutes": 10080,
+        "resets_at": 4_102_444_800_000_i64}})
+    .to_string();
+    let account = add_account(h, "acc-1", Some(full.clone())).await?;
+    add_account(h, "acc-0", Some(full)).await?;
+    add_account(h, "acc-2", None).await?;
+    running_task(h, TaskMode::Prompt, &account).await
+}
+
+/// Why the answer refused the Agent call.
+fn denied(answer: &Value) -> String {
+    assert_eq!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    answer["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The answer ran the Opus reviewer because Fable cannot run, and told the reviewer so.
+fn ran_opus_without_fable(answer: &Value) {
+    assert_eq!(
+        answer["hookSpecificOutput"]["updatedInput"]["subagent_type"], "yulius-reviewer-opus",
+        "{answer}"
+    );
+    let prompt = answer["hookSpecificOutput"]["updatedInput"]["prompt"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        prompt.starts_with("Review origin/dev...HEAD against the spec.")
+            && prompt.contains("runs on Opus 5.5"),
+        "{prompt}"
+    );
+}
+
+/// SPEC-493 REV-007 (AC-8, review round 1 of fix 1d): a move would end work the session has
+/// running, or a prompt waiting in Claude Code's queue: the Agent call is refused, each with its
+/// own reason, and nothing moves or is recorded.
+#[tokio::test]
+async fn a_round_out_of_fable_is_refused_while_a_move_would_lose_work() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable(&h).await?;
+    h.app.background_agents_observed(&task, 1).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let why = denied(&answer);
+    assert!(
+        why.contains("background work") && why.contains("Fable 5.2"),
+        "{why}"
+    );
+    h.app.background_agents_observed(&task, 0).await;
+    let (code, _, _) = hook(
+        &h.internal,
+        "UserPromptSubmit",
+        json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go on"}),
+    )
+    .await?;
+    assert_eq!(code, 200);
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let why = denied(&answer);
+    assert!(
+        why.contains("prompt waits") && why.contains("end your turn"),
+        "{why}"
+    );
+    assert!(rounds(&h, &task, false).await?.is_empty());
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 1 of fix 1d): a move whose new session could not start (here
+/// no clone) is never announced: the round runs the Opus reviewer at once, and nothing moves.
+#[tokio::test]
+async fn a_round_out_of_fable_whose_move_cannot_start_runs_the_opus_reviewer() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable(&h).await?;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    ran_opus_without_fable(&answer);
+    assert_eq!(rounds(&h, &task, true).await?[0].reason, "no_fable");
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 1 of fix 1d): a switch refused moments ago is not tried again
+/// at every review start: the round runs the Opus reviewer, even while background work runs.
+#[tokio::test]
+async fn a_round_after_a_refused_move_runs_the_opus_reviewer() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable(&h).await?;
+    let refused = h
+        .app
+        .switch_task_now(
+            &task,
+            Some(yulius_domain::ids::AccountId::parse("acc-2")?),
+            "Proactive",
+            None,
+        )
+        .await;
+    assert!(refused.is_err());
+    h.app.background_agents_observed(&task, 1).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    ran_opus_without_fable(&answer);
+    assert_eq!(
+        h.store.switches(&task).await?.len(),
+        1,
+        "the refused one only"
+    );
+    Ok(())
+}
+
+/// [`out_of_fable`] whose session can start elsewhere: the sandbox has a clone.
+async fn out_of_fable_movable(
+    h: &crate::support::Harness,
+) -> Result<yulius_domain::ids::TaskId, Box<dyn std::error::Error>> {
+    let task = out_of_fable(h).await?;
+    std::fs::create_dir_all(h.app.config.data_dir.join("sandboxes/s1/repo/.git"))?;
+    Ok(task)
+}
+
+/// An isolation whose holder takes `hold` to prepare, and says when it was done.
+struct SlowIsolation {
+    hold: std::time::Duration,
+    done: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for SlowIsolation {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        tokio::time::sleep(self.hold).await;
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(None)
+    }
+
+    fn release(&self, _: &yulius_domain::ids::SandboxId) {}
+}
+
+/// SPEC-493 REV-007 (review round 2 of fix 1d): a decision whose looks take longer than the
+/// hook client waits (here the new session's start check) answers within its bound with the
+/// Opus reviewer. The check is not cut off: it runs to its end, and its late answer moves
+/// nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_move_decision_runs_the_opus_reviewer_within_its_bound() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable_movable(&h).await?;
+    let slow = std::sync::Arc::new(SlowIsolation {
+        hold: std::time::Duration::from_secs(5),
+        done: std::sync::atomic::AtomicBool::new(false),
+    });
+    assert!(h.app.set_isolation(slow.clone()));
+    let asked = std::time::Instant::now();
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    let took = asked.elapsed();
+    assert!(took < std::time::Duration::from_millis(4500), "{took:?}");
+    ran_opus_without_fable(&answer);
+    for _ in 0..400 {
+        if slow.done.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        slow.done.load(std::sync::atomic::Ordering::SeqCst),
+        "the start check ran to its end"
+    );
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 2 of fix 1d): a move decided for a run that is no longer the
+/// task's live one (a later start moved the session meanwhile) moves nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_decided_for_an_ended_run_moves_nothing() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable_movable(&h).await?;
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (reached, decided) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::ReviewMoveDecided,
+        std::path::Path::new(task.as_str()),
+        move || {
+            reached.send(()).ok();
+            held.recv_timeout(std::time::Duration::from_secs(20)).ok();
+        },
+    );
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert!(denied(&answer).contains("moves this session"), "{answer}");
+    tokio::task::spawn_blocking(move || decided.recv_timeout(std::time::Duration::from_secs(20)))
+        .await??;
+    let run = h.store.live_attempt(&task).await?.ok_or("live run")?;
+    let ended = yulius_app::ports::store::AttemptUpdate {
+        ended_at: Some(Timestamp(5)),
+        exit_reason: Some("switched".into()),
+        ..yulius_app::ports::store::AttemptUpdate::default()
+    };
+    assert!(
+        h.store
+            .transition_attempt(&run.id, yulius_domain::task::AttemptState::Killed, &ended)
+            .await?
+    );
+    release.send(())?;
+    // Nothing is to happen: a switch would be recorded at once, so a short look tells.
+    for _ in 0..40 {
+        assert!(h.store.switches(&task).await?.is_empty());
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (AC-8): round 3 runs Opus anyway, so a subscription out of Fable moves
+/// nothing and is not the reason of the round.
+#[tokio::test]
+async fn a_third_round_out_of_fable_does_not_move() -> TestResult {
+    let h = harness()?;
+    let task = out_of_fable(&h).await?;
+    for round in 1..=2 {
+        h.store
+            .insert_review_round(&ReviewRoundRecord {
+                id: format!("round-{round}"),
+                task_id: task.clone(),
+                round,
+                head: None,
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: None,
+                model_answered: None,
+                started_at: Timestamp(1),
+                ended_at: Some(Timestamp(2)),
+                verdict: Some("request changes".into()),
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+    }
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_eq!(
+        answer["hookSpecificOutput"]["updatedInput"]["subagent_type"], "yulius-reviewer-opus",
+        "{answer}"
+    );
+    assert_ne!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+    let open = rounds(&h, &task, true).await?;
+    assert_eq!((open[2].round, open[2].reason.as_str()), (3, "round"));
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 1 of fix 1d): the Opus reviewer asked for by name in round 1,
+/// on a subscription out of Fable, is told why it runs on Opus like one Yulius switched.
+#[tokio::test]
+async fn the_opus_reviewer_asked_for_by_name_is_told_why() -> TestResult {
+    let h = harness()?;
+    out_of_fable(&h).await?;
+    let (_, _, answer) = hook(
+        &h.internal,
+        "PreToolUse",
+        agent_start("yulius-reviewer-opus"),
+    )
+    .await?;
+    ran_opus_without_fable(&answer);
     Ok(())
 }
 
@@ -619,4 +903,97 @@ async fn an_approval_counts_for_the_head_it_approved() -> TestResult {
         );
     }
     Ok(())
+}
+
+/// SPEC-493 REV-007 (AC-8) end to end: a real session on a subscription out of Fable 5.2 asks
+/// for the reviewer through the real hook client; the Agent call is refused, the turn is
+/// interrupted and the session goes on on the subscription that runs both models, its first
+/// prompt asking for the review again.
+mod real {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::first_message::{hooked, new_task, start_with};
+    use crate::pool_supervision::{
+        HOUR, ScriptedUsage, refresh, runtime, screen, seed, stop, temp, usage, wait_for,
+    };
+    use crate::subscription_moves::{live_run, ready, run_accounts};
+    use crate::support::TestResult;
+    use crate::support::agents::FakeAgentOptions;
+    use yulius_app::model::TaskMode;
+    use yulius_domain::usage::UsageWindow;
+    use yulius_ptyhost::test_support::locate_fake_agent;
+
+    #[test]
+    fn a_session_out_of_fable_moves_and_is_asked_for_the_review_again() -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            // The first has the most room for Opus, so the task starts there, but its Fable
+            // allowance is used up; the second runs both.
+            let mut first = usage(5.0, 4 * HOUR, 10.0, 100);
+            first.weekly_fable = Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(10_080),
+                resets_at: first.secondary.as_ref().and_then(|w| w.resets_at),
+            });
+            probe.set("a-first", first);
+            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            let person = app.deps.store.task(&id).await?.ok_or("task")?.created_by;
+            let ctx = yulius_app::auth::AuthContext {
+                user: app.deps.store.user(&person).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            let attach = app
+                .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+                .await?;
+            app.terminal_input(&ctx, &attach, b"/agent yulius-reviewer", false)
+                .await?;
+            app.terminal_input(&ctx, &attach, b"\r", false).await?;
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let asked = wait_for("the prompt", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("run Fable 5.2 for the review round you asked for")
+            })
+            .await;
+            assert!(asked.is_ok(), "{}", screen(&app, &id));
+            // The switch records its outcome once the new run started, which may be after the
+            // run printed its prompt.
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            assert_eq!(switches[0].reason, "review_fable");
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
 }

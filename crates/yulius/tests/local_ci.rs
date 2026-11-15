@@ -198,6 +198,7 @@ async fn fixture_tuned(
             mergeable: None,
             behind: false,
             from_fork: false,
+            merge_commit_sha: None,
         });
     }
     let repo = data.join("sandboxes/s1/repo");
@@ -656,6 +657,7 @@ fn stale_branches(f: &Fixture) -> BoxResult<()> {
             mergeable: None,
             behind: false,
             from_fork: false,
+            merge_commit_sha: None,
         });
     }
     Ok(())
@@ -725,6 +727,7 @@ fn pull(
             mergeable: None,
             behind: false,
             from_fork: false,
+            merge_commit_sha: None,
         });
     }
     Ok(())
@@ -878,6 +881,7 @@ async fn a_cleanup_never_loses_commits_that_only_a_branch_held() -> TestResult {
             mergeable: None,
             behind: false,
             from_fork: false,
+            merge_commit_sha: None,
         });
     }
     // The sandbox clone keeps a local copy of feat/closed, whose only other home is GitHub's

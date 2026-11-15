@@ -399,6 +399,7 @@ impl GitHubPort for FakeGitHub {
             mergeable: None,
             behind: false,
             from_fork: false,
+            merge_commit_sha: None,
         };
         pulls.push(created.clone());
         if let Ok(mut authors) = self.pull_authors.lock() {
@@ -540,6 +541,7 @@ impl GitHubPort for FakeGitHub {
         {
             p.state = "closed".into();
             p.merged = true;
+            p.merge_commit_sha = Some(sha.clone());
         }
         self.record(token, format!("merge_pull #{number} {method}"));
         Ok(sha)
