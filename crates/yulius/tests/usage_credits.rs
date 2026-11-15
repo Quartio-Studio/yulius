@@ -1627,6 +1627,74 @@ fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult 
     Ok(())
 }
 
+/// SPEC-493 MDL-002 (review round 6 of fix 1a): a switched limit is said only at the launch
+/// past it. Here it pauses the task (nothing can run), a person stops the task, and later
+/// continues it: that start is not the one past the limit, and says nothing of it.
+#[test]
+fn a_switched_limit_is_not_said_at_a_later_start() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let opus = "claude-opus-5-5";
+        let (id, user, transcript) = first_turn(&app, &data, Some(opus)).await?;
+        opus_out(&app, &["a-first"]).await?;
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        stop(&app, &id).await?;
+        wait_for("the run's end", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .live_attempt(&id)
+                .await
+                .is_ok_and(|run| run.is_none())
+        })
+        .await?;
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room}),
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let ctx = person(&app, &user).await?;
+        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
+            .await?;
+        live_run(&app, &id, 2).await?;
+        let said = notices(&mut watch);
+        assert!(
+            !said
+                .iter()
+                .any(|notice| notice.contains("is used up on this")),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
 /// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
 /// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.
