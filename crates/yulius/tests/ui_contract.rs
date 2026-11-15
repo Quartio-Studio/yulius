@@ -566,7 +566,7 @@ fn the_ui_names_the_fallback_model_a_launch_uses() -> TestResult {
 fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
     use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
     let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
-    // The listed entry with the default's id gives the name people read ("Fable 5.2", "High").
+    // The listed entry with the default's id gives the name people read ("Opus 5.5", "High").
     let named = |id: &str| -> Result<&str, String> {
         let listed = format!("{{ id: '{id}', name: '");
         models

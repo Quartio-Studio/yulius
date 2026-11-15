@@ -1617,10 +1617,6 @@ mod tests {
         assert_eq!(observe_line(transient), Vec::<Observed>::new());
     }
 
-    /// SPEC-464, production 2026-11-11: the refusal of a model that runs on usage credits once
-    /// they are used up ("You're out of usage credits. /model to switch models.") is a usage
-    /// limit of that model. Claude Code 2.1.311 writes it without `rate_limit_info` (task #438's
-    /// record, ids replaced); 2.1.322 adds the allowance's reset (task #443's).
     /// SPEC-493 MDL-002: the record before a request names its model (Claude Code 2.1.325,
     /// synthetic values), as an object or as JSON text; the records beside it, a sub-agent's
     /// request and other lines name none.
@@ -1647,6 +1643,10 @@ mod tests {
         }
     }
 
+    /// SPEC-464, production 2026-11-11: the refusal of a model that runs on usage credits once
+    /// they are used up ("You're out of usage credits. /model to switch models.") is a usage
+    /// limit of that model. Claude Code 2.1.311 writes it without `rate_limit_info` (task #438's
+    /// record, ids replaced); 2.1.322 adds the allowance's reset (task #443's).
     #[test]
     fn a_usage_credits_refusal_is_a_usage_limit() {
         let text = "You're out of usage credits. /model to switch models.";

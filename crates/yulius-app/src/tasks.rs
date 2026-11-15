@@ -1068,6 +1068,7 @@ fn fell_back_to(own: &str, launched: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// SPEC-482 FBK-009, SPEC-493: a task's details name another model than its own only when
     /// its run was launched with its fallback.
@@ -1089,7 +1090,6 @@ mod tests {
         );
         assert_eq!(super::fell_back_to(fable, None), None);
     }
-    use super::*;
 
     #[test]
     fn titles_from_prompts() {

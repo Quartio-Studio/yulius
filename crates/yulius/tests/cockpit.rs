@@ -3094,8 +3094,7 @@ async fn a_superagent_switched_to_fable_goes_on_with_opus_when_fable_is_refused(
     let notice = read_message(&mut socket, "notice").await?;
     assert_eq!(
         notice["text"],
-        "Fable is used up on this subscription: this session goes on with Opus 5.5, the model it \
-         was started with."
+        "Fable is used up on this subscription: this session goes on with Opus 5.5."
     );
     let exit = read_message(&mut socket, "exit").await?;
     assert_eq!(exit["status"], "switched", "{exit}");

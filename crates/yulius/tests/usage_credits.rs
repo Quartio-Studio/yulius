@@ -1387,8 +1387,85 @@ fn a_session_switched_to_fable_goes_on_with_its_own_model_when_fable_is_refused(
         let said = notices(&mut watch);
         assert!(
             said.iter().any(|notice| notice
-                == "Fable is used up on this subscription: this session goes on with Opus 5.5, \
-                    the model it was started with."),
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-493 MDL-002 (review round 2 of fix 1a): a task set to Fable 5.2 runs on its fallback,
+/// Opus 5.5, because Fable is used up on its only subscription; its person switches the session
+/// to Fable (`/model`) and Fable is refused again. The session goes on with Opus 5.5 on the same
+/// subscription, and its terminal names that model, the one the relaunch runs, not the task's
+/// own.
+#[test]
+fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let fable = Some("claude-fable-5-2");
+        let id = task_of_model(&app, &sandbox, &user, "On the fallback", fable).await?;
+        ready(&app, &id).await?;
+        let opus = Some("claude-opus-5-5".to_owned());
+        assert_eq!(app.deps.store.attempts(&id).await?[0].model, opus);
+        app.send_input(&id, b"hello\r").await?;
+        let mut transcript = None;
+        wait_for("the first turn", Duration::from_secs(30), || {
+            transcript = session_transcript(&data, "msg_fake_1");
+            let written = transcript.is_some();
+            async move { written }
+        })
+        .await?;
+        let transcript = transcript.ok_or("transcript")?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model, opus, "still on the fallback");
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        needs_nobody(&app, &id).await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5."),
+            "{said:?}"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|notice| notice.contains("goes on with Fable")),
             "{said:?}"
         );
         stop(&app, &id).await?;

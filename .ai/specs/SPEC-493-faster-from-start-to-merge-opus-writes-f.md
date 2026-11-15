@@ -166,8 +166,9 @@ person's decision is read as holding after an approval).
   has credits for it. A usage limit is the limit of the model the refused request asked for
   (Claude Code 2.1.325 records it before each request): refused for Fable's credits, such a
   session fills Fable's window on the subscription, not the window of the model it was launched
-  with, and goes on at once with that launched model, on the same subscription when it has room,
-  continuing the cut turn and saying why. With a Claude Code that writes no such record the limit
+  with, and goes on at once with the model Yulius runs it with (its own, or the fallback of a task
+  set to Fable while no subscription runs Fable), wherever the pool places it, the same
+  subscription included, continuing the cut turn and saying with which model. With a Claude Code that writes no such record the limit
   stays the launched model's.
 - **MDL-003** A Claude Code release that lacks Opus 5.5 (the default) never runs in a sandbox, as
   before; one that lacks Fable 5.2 is installed and the gap reported. Naming Fable 5.2 there as
@@ -427,8 +428,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   `claude-fable-5-2` and then a refusal for usage credits: the subscription's `weekly_fable` is
   full, `weekly_opus` untouched, its status `ok`; the session starts again on the same
   subscription with `--model claude-opus-5-5`, continuing the turn, and its terminal says "Fable
-  is used up on this subscription: this session goes on with Opus 5.5, the model it was started
-  with." (a task and a Superagent). Without the request record: as before, the launched model's.
+  is used up on this subscription: this session goes on with Opus 5.5." (a task and a
+  Superagent; also a task set to Fable that runs on its fallback). Without the request record:
+  as before, the launched model's.
 - **AC-4** (REV-001) The launch arguments of a task hold `--agents` with both definitions, their
   full model ids and `high`; a Cockpit's do not. The real CLI's request for a `yulius-reviewer`
   subagent names `claude-fable-5-2` and effort `high` under an Opus session (probe).
@@ -665,3 +667,21 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - After round 1: `cargo nextest run --workspace --all-features`: 4463 passed, 17 skipped;
   `scripts/dev lint` exit 0; `check_repository.py` passed; `cargo doc` no warnings; e2e
   `claude-code`, `model-fallback`, `subscriptions`: 61 passed.
+- **Review round 2** (fresh session, head `63bb46fdd`). It ran on Opus 5.5: the Fable reviewer
+  was refused at its first request by this subscription's Fable limit ("You've hit your Fable
+  limit · resets 2pm (UTC)"), the case fix 1d covers. Verdict: approve. Both round-1 findings
+  were checked as fixed: the e2e file passed 3 runs of 3, a scan of 547 real transcripts found
+  `api-request` records of sub-agents only in their own files, and two mutations
+  (`limit_observation(limit, None)`; no `input.running = ran`) failed the new tests. Answered:
+  - Minor (own code): the notice named the task's own model, not the model the relaunch runs
+    (a task set to Fable on its fallback, switched to Fable and refused, read "goes on with Fable
+    5.2"). Test first: `usage_credits::a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with`
+    failed with that notice; the notice now names the model the same snapshot places the run
+    with ("Fable is used up on this subscription: this session goes on with Opus 5.5.").
+  - Minor (made stale): ADR-0020 and ADR-0055 status lines point to ADR-0340.
+  - Nits: a moved doc comment in `claude.rs`, `use super::*` first in `tasks.rs` tests, the
+    `ui_contract.rs` example, MDL-002's wording on where the session goes on.
+  - Pre-existing, outside fix 1a: a workflow agent of the default type "runs the session's
+    model", still read as the launched model after `/model` (SPEC-486 code). Not changed here.
+- After round 2: `cargo nextest run -p yulius-harness -p yulius-app`: 748 passed;
+  `usage_credits::`, `cockpit::`, `model_fallback::`: 104 passed; `scripts/dev lint` exit 0.

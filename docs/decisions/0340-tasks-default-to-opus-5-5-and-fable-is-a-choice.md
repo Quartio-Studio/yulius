@@ -57,7 +57,8 @@ slices of SPEC-493 and gets its own record.
   past the limit is the session's own model again, for which the subscription it sits on still
   counts: the session starts again there (or where there is more room), continues the cut
   turn, and its terminal says "Fable is used up on this subscription: this session goes on with
-  Opus 5.5, the model it was started with." With an older Claude Code that writes no such
+  Opus 5.5." (the model the relaunch runs: the session's own, or its fallback for a task set
+  to Fable while no subscription runs Fable). With an older Claude Code that writes no such
   record the limit stays the launched model's, as before.
 - **A default task has no fallback.** `fallback_model` answers none for Opus 5.5: a default task
   whose model no subscription can run waits for the earliest reset, as an Opus task always did.

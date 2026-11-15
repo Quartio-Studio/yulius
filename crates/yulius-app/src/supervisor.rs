@@ -5627,10 +5627,15 @@ impl App {
                 // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
                 let reason = format!("{reason:?}");
                 if let (true, Some(ran)) = (limit, ran) {
+                    // The model the relaunch runs: the task's own, or its fallback when the
+                    // same snapshot places the run with that (as `choose_account` will).
                     let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+                    let next = crate::capacity::fallback_of(task.model.as_deref())
+                        .filter(|_| rotation::placing_family(&input) != input.family)
+                        .unwrap_or(own);
                     self.runtime(task_id)
                         .hub
-                        .notice(switched_back_notice(ran, own));
+                        .notice(switched_back_notice(ran, next));
                 }
                 let switched = if limit {
                     self.switch_after_limit(task_id, Some(account), &reason)
@@ -5696,8 +5701,9 @@ pub(crate) fn switched_model(limit: &ReportedLimit, family: ModelFamily) -> Opti
 }
 
 /// What a session's terminal says when the model its person switched it to (`ran`) is at its
-/// limit and Yulius continues the session with `own`, the model it launches it with.
-pub(crate) fn switched_back_notice(ran: ModelFamily, own: &str) -> String {
+/// limit and Yulius continues the session with `next`, the model the relaunch runs (the
+/// session's own, or its fallback).
+pub(crate) fn switched_back_notice(ran: ModelFamily, next: &str) -> String {
     let ran = match ran {
         ModelFamily::Fable => "Fable",
         ModelFamily::Opus => "Opus",
@@ -5705,9 +5711,8 @@ pub(crate) fn switched_back_notice(ran: ModelFamily, own: &str) -> String {
         ModelFamily::Any => "That model",
     };
     format!(
-        "{ran} is used up on this subscription: this session goes on with {}, the model it was \
-         started with.",
-        claude_model_name(own)
+        "{ran} is used up on this subscription: this session goes on with {}.",
+        claude_model_name(next)
     )
 }
 
