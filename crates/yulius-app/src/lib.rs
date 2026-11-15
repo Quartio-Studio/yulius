@@ -119,5 +119,6 @@ pub mod usage_json;
 pub mod variables;
 pub mod vault;
 pub mod vidoc_key;
+pub mod visibility_tools;
 pub mod workflows;
 pub mod write_grant;

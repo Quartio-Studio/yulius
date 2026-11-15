@@ -38,7 +38,9 @@ its line breaks without a word.
   there; never another scope's secret, never a global one. Like every agent secret it starts
   with agents allowed to propose its hosts (`auto_allow`), as `secret_create_from_file`'s do. The
   request, its file, its outcome and the audit hold the name only; the value is wiped once
-  stored, and the page clears the field once the server took it.
+  stored, as far as the server holds it in one place (the request body and the vault's own
+  copies are not: best effort, as on the Secrets page), and the page clears the field once the
+  server took it.
 - **The Superagent learns the name and whether it was created or updated**, and uses it as
   `$NAME` or its placeholder, as every agent secret.
 

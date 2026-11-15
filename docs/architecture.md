@@ -2228,6 +2228,12 @@ panel keeps the ended terminal, and the keyboard in it, until the new session ru
 frames typed meanwhile into it (`onExitedInput`, `sendKeys`; Ctrl-C left out, dropped if the
 restart fails).
 
+What the Superagent sees of the work (SPEC-487 VIS-001 to VIS-004, `visibility_tools.rs`) is
+read, not measured anew: `task_screen` takes a task's live hub screen, or renders its last run's
+`final-screen` after `terminal_snapshot` redacts it again; `task_usage` the Dashboard's
+`analytics_tasks` and `analytics_summary`; `checkout` the git port's `ahead_behind` of the sandbox
+repository's `HEAD` against `origin/<integration branch>`, without a fetch.
+
 A Superagent's standing jobs are scheduled checks held by Yulius
 ([decision 0335](decisions/0335-the-superagents-standing-jobs-are-held-by-yulius.md),
 `superagent_checks.rs`): `superagent_check_set`, `superagent_checks` and `superagent_check_delete`

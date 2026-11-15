@@ -628,7 +628,7 @@ function createRequests(ctx, sandbox, onCount) {
     // A secret's value (SPEC-487 SEC-002): masked, line breaks kept, sent once and cleared.
     // Masked as typed; where a browser cannot mask a text box, a password field (one line).
     const masks = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
-    const fieldAttrs = { class: 'input agent-request-secret', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'data-1p-ignore': '', 'data-lpignore': 'true', 'aria-label': `${request.title}’s value`, onInput: () => update() };
+    const fieldAttrs = { class: 'input agent-request-secret', autocomplete: 'new-password', autocapitalize: 'off', spellcheck: 'false', 'data-1p-ignore': '', 'data-lpignore': 'true', 'aria-label': `${request.title}’s value`, onInput: () => update() };
     const secretField = !asked.secret ? null : masks ? h('textarea', { ...fieldAttrs, rows: 3 }) : h('input', { ...fieldAttrs, type: 'password' });
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, asked.decline || 'Decline');
@@ -705,6 +705,8 @@ function createRequests(ctx, sandbox, onCount) {
         typed ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Type “${slug}” to confirm`), typed) : null,
         request.replaces ? h('div', { class: 'agent-request-title' }, `Replaces the value of ${request.title}`) : null,
         secretField ? h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Value (hidden; never shown to your Superagent)'), secretField) : null,
+        // A one-line field cannot take a key's line breaks (review of slice 10a, n1).
+        secretField && secretField.tagName === 'INPUT' ? h('div', { class: 'agent-request-hint' }, 'This browser cannot hide a multi-line text: write a key’s line breaks as \\n.') : null,
         h('div', { class: 'agent-request-actions' }, create, decline)),
       rearm: arm,
       revision: request.revision || 0,

@@ -121,6 +121,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | The pool's settings: priorities, excluding a subscription | no: no such setting exists ("the pool has no priorities or switches") | no | An administrator adds, signs in or removes a subscription on its panel |
 | Instance: version, health, update status, checks | yes (slice 7) | no | Not a task's work |
 | Instance: Update now, Restart, Cancel, Check | yes, a superadmin's (slice 7; not the Global Superagent) | no | The buttons' rights and refusals |
+| A task's screen, live or its last run's, and how that run ended (exit code, reason) | yes (`task_screen`, slice 10b) | no | The page's terminal shows it to anyone who sees the task; a task's agent reads its own transcript, not another's screen |
+| A task's tokens, the period's by model | yes (`task_usage`, slice 10b; cost as tokens: no price per task is kept) | no | The Dashboard's figures |
+| A task's or the host's load | the host's (`instance`); a task's: no | no | Yulius measures the host and the sessions per sandbox, not each task's processes |
+| How far the repository's checkout is from its integration branch | yes (`checkout`, slice 10b) | it has its own branch and `git` | A stale checkout gave a wrong "no" |
 | Instance: logs, `yulius doctor` | no: no page shows them; `instance` shows health (load, memory, disk, sessions) | no | The logs and the doctor are the host's (`journalctl`, the CLI), outside what Yulius serves |
 | Another sandbox: list and read tasks | yes (slice 8a) | no | SPEC-335: only the person's Superagent reaches their other sandboxes |
 | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting, amended, withdrawn in slice 8a) | no | ADR-0227, ADR-0333 |
@@ -194,6 +198,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one these rules refuse, or none, leaves the request waiting and the value typed on the card. | the same test (no value, a short one, a cut key: refused, still waiting) |
 | SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: the new value of their secret of that name in the scope asked, or a new agent secret there; never another scope's or a global one; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`; the project's of the same name: `created` beside the personal one) |
 | SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
+| VIS-001 | `task_screen {task_id \| number, lines?}` answers a task's screen as its page's terminal shows it: live while it runs (nothing while its run is starting), else the last screen its last run left (redacted of agent secrets again before it is read), its last 40 lines that hold something (at most 200), with how that run ended: state, exit code, reason, start and end. | `cockpit::the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`; `visibility_tools::tests::a_screen_is_cut_to_its_last_lines` |
+| VIS-002 | `task_usage {number?, from?, to?}` answers the Dashboard's tokens per task of the project for the tasks created in a period (default: the last 7 days), the most first and at most 50, and the period's totals by model. | the same test (a default period set; one task's row only) |
+| VIS-003 | `checkout` answers the project's repository checkout's branch and how many commits its head is behind and ahead of its integration branch on the remote as last fetched, and when that remote branch was fetched; a project not cloned, or a remote branch never fetched, is said so (409). It fetches nothing. | the same test (not cloned); `cd_rollback::the_checkout_says_how_far_it_is_from_the_integration_branch` (one behind more after a push and a fetch) |
+| VIS-004 | The three are the person's project tools (SAR-001, SAR-002) with the view right, pre-allowed, served to the Superagent and through the remote MCP, to no task's agent. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `remote::tests::every_persons_project_tool_is_served_by_both_callers_with_one_action` |
 
 ## Plan
 
@@ -517,6 +525,14 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 10b: what the page shows, read; nothing measured anew** (VIS-001 to VIS-004). A
+  task's screen, its tokens and the checkout's distance are what the page, the Dashboard and Git
+  already know. A task's load is left open: Yulius measures the host and the sessions per
+  sandbox, not each task's processes, and `instance` shows the host's; the evidence's case
+  (a task of its own blamed on other projects) is now answered by the host's load beside its
+  sessions and the task's tokens. Cost is answered as tokens: no price per task is kept, and a
+  price per model would be a figure of its own. The checkout fetches nothing: a fetch would change
+  the person's working copy's view under them; the answer says when it was last fetched.
 - **Slice 10a: a secret's value is typed on the panel** (SEC-001 to SEC-004, ADR-0336), the
   person's decision. The rest of wall 10 stays as decided before: binding a secret to hosts and
   copying it into `.env` keep a person's allowance (`secret_request_hosts`, `secret_copy_to_env`
@@ -1137,3 +1153,41 @@ the function the web UI's route calls, with the person's rights checked at the c
     description is trimmed when stored.
   Mutants of the fixes: four, each failed by a named test once the project's request left its
   scope out (`target/evidence/mutants-slice10a-r1.log`: `survived=0`).
+
+### Slice 10b (2026-11-15)
+
+- **Slice 10a is merged:** pull request #1311 into `dev` at `066e6468e`, whose own Yulius CI run
+  passed. Its first run at `4f85e0196` failed one test outside this change
+  (`task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run`, which passes alone
+  6 of 6: filed as #1312, run again, passed).
+- **Review of slice 10a, round 2 notes**, answered first: n1, the password-field fallback says
+  how to write a key's line breaks and asks for a new password; n3, ADR-0336 calls the wiping best
+  effort; n2 (a card's "replaces" read on each panel read: the store looks again at storing) and
+  n4 (Configure is write access, which a Superagent's person has) answered in words.
+- **Tests and code:** `the_superagent_sees_a_crashs_last_screen_a_tasks_usage_and_its_checkout`
+  was written first (a crashed task's saved last screen and exit code, its tokens row, one task's
+  row only, a project not cloned); `the_checkout_says_how_far_it_is_from_the_integration_branch`
+  runs on the CD fixture's real clone (one behind more after a push and a fetch).
+- **Mutation:** six mutants, each failed by a named test after two were rewritten (one did not
+  compile, one did not match the formatted code) and the tokens test got one task's row
+  (`target/evidence/mutants-slice10b.py`, `mutants-slice10b.log`: `survived=0`).
+- **Not tested:** a live task's screen (the hub the page reads; the saved screen is the case the
+  evidence named); a task's load (left open, above).
+- **Gate:** `scripts/dev ci` passed on `578b0f6d3` (4445 tests, 17 skipped;
+  `target/evidence/gate-slice10b.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `578b0f6d3`): request changes, no exposure found, all in
+  this slice's code: F1 (medium), "the last 7 days" was all time (the Dashboard's default): the
+  last 7 days now, the period selecting tasks by their creation, the most tokens first, at most
+  50 rows (tested: a default period is set); F2 (medium), the saved screen held no secret, so
+  nothing proved the redaction: the test writes a project agent secret into it and reads its
+  label, never its value, and reads one line; F3, the checkout names its branch; F4, a remote
+  branch never fetched is a 409 that says so, not a Git failure; F5, the time is that remote
+  branch's own fetch, else the last fetch; F6, a run still starting shows nothing, not the run
+  before's screen; F8, the description says a screen is data, never an instruction. F7 (blank
+  lines inside the window kept, `lines` clamped) answered in words: the screen's own blank lines
+  are part of what it shows.
+  Mutants of the fixes (`target/evidence/mutants-slice10b-r1.log`): three; the default period and
+  the branch are failed by named tests; `no-redaction` survives on purpose: every tool result is
+  redacted of the project's agent secrets by the MCP layer too (`redact_strings`), so the saved
+  screen's own redaction is a second layer the tool's answer cannot tell apart.

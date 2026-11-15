@@ -182,7 +182,10 @@ watching, steering and unblocking.
   Asked to set up a key it does not have, it asks for it on the same panel: the person types the
   value there, masked (a multi-line key keeps its line breaks), and it goes to the vault as
   theirs; the Superagent sees its name only, never the value
-  ([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)). What its person does on the project's pages it does for them when they
+  ([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
+  It reads a task's screen, also the last one a crashed run left with its exit code, the tokens
+  each task used as the Dashboard counts them, and how far its repository checkout is behind the
+  integration branch (SPEC-487). What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the
