@@ -1138,3 +1138,87 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     The spec's route is corrected.
   - Nits: the doc comments are back on their functions, and ADR-0285's three-in-sequence
     sentence is back in its consequence.
+
+### Fix 5: a CI job can say which files it tests
+
+- Fix 4's round-2 minors first:
+  - `merge_queue::queue_numbers` takes the range's start: a merge before it uses up its arming
+    without being counted (domain test).
+  - `analytics::the_audit_read_of_a_sandbox_keeps_the_newest_entries` holds the newest-first
+    limit (oldest-first fails it), `<slug>2#n` left out and task ids read.
+- CJP-001: `paths` on `[[ci.jobs]]` (`ci::parse_paths`: 1-50 scope-claim globs, normalized,
+  each once), rendered back by `render_yulius_toml`.
+  `config::tests::ci_jobs_name_the_files_they_test`: matrix jobs inherit them, a round trip,
+  and an empty list, `..`, an absolute path, `a/**b` and a repeat are each a configuration error
+  naming the job.
+- CJP-002, CJP-003: `ci::paths_skip` (unit `a_job_runs_only_for_a_change_to_its_paths`: skipped
+  with "no file this job tests changed (paths: …)"; a touched path, `yulius.toml` and an unknown
+  change run it; `*` stays in its folder). `GitPort::changed_paths` (`base...head`, NUL-separated;
+  `None` past 20,000 files or a non-UTF-8 path; an adapter without it says `None`).
+  `ci_queue_placed` decides at queueing: a job is created `skipped` with its reason, output and
+  skip code. The executor starts only the queued jobs. A run whose every job is skipped passes
+  at queueing and takes no lane.
+  `local_ci::a_job_with_paths_runs_only_for_a_change_to_them`, real Git and real jobs:
+  - the pull request touching `feature.txt` passes with `web` skipped, its reason in its output
+    and nothing run, and its status reads "1 skipped";
+  - the integration branch's own run runs `web`;
+  - a change to `crates/a/src/lib.rs` runs it.
+- CJP-004: the jobs in force are `ci_gate_for_head`'s, as before; `paths` only decide run or
+  skipped for each. A rerun goes through `ci_queue_placed` again, and a copied verdict keeps a
+  skipped job skipped (`copied_job_verdict`, SPEC-162). A merge candidate is decided by the
+  same rule on its commit (built on the integration branch, so its members' changes); no test
+  of a candidate of its own.
+- `ci_status` shows a skipped job's output, which now holds the reason (SPEC-162's view).
+- ADR-0343, architecture, api.md, the `yulius.toml` reference in `config.rs`, changes.
+- How to read it a week later: in quartio-v2 once it sets `paths` on `websites`, that job's
+  runs against skips per day (the Pipeline tab's job stages), and the median minutes to merge
+  of pull requests that do not touch it.
+- **Review round 1** (Opus 5.5: the Fable 5.2 reviewer was cut off at its start by Fable's
+  weekly limit, which resets 17 Nov 04:00 UTC; head `b0234dc7a`). Request changes. Answered
+  (all own code):
+  - Major: tree reuse carried a paths skip into the integration branch's own run, because a
+    squash-merged pull request gives dev the tree its run tested. `ci_reuse_tree` no longer
+    reuses into a branch's run a source that skipped a `paths` job.
+    `local_ci::the_integration_branch_runs_a_paths_job_a_merged_tree_skipped` (reproduced first:
+    `web` copied as skipped).
+  - Major: the executor sent pre-skipped jobs through `ci_job`, where they waited for an
+    `exclusive` turn and a slot and took a budget share. It now starts only the queued jobs, and
+    a run of skipped jobs passes at queueing.
+    `local_ci::a_skipped_exclusive_job_does_not_wait_for_its_turn` (3 lanes, a CPU each: the pull
+    request's run ends while dev's `web` holds its turn). Without the fix it ran until dev's
+    ended. The run of skipped jobs passing at queueing is
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued` (added in round 2).
+  - Major: `--name-only` listed a rename by its new path only, so a file moved out of `paths`
+    did not count. `--no-renames` lists both. Tested at the adapter:
+    `git_ops::changed_paths_list_renames_deletions_and_stop_at_the_limit`, with the rename, a
+    deletion, the base's own later commit left out, and `None` past the limit.
+  - Minors:
+    - A requeue (restart, disk quota) keeps a paths skip, while a job's own skip runs again
+      (`local_ci::a_requeued_run_keeps_its_paths_skip`).
+    - A skipped job gets its start and end after insertion, so its `job` span is recorded with
+      outcome `skipped` (asserted in the paths test).
+    - A path without a glob is the folder of that name too, and a changed path no glob can
+      match runs the job (unit).
+  - Nits: the skip code is 78 as for any skipped job. `paths` before `name` names the job
+    (config test). The train note replacing the reason stays: a copied verdict says where it
+    comes from.
+- **Review round 2** (Opus 5.5, Fable out until 17 Nov 04:00 UTC; head `f9a060195`). Request
+  changes. It confirmed each round-1 answer by mutation. Answered (all own code):
+  - Major: the run of skipped jobs passing at queueing had no test.
+    `local_ci::a_run_of_skipped_jobs_passes_when_it_is_queued`, with no dispatch: passed with
+    its reason, both jobs skipped, the status success "2 skipped", the gate's answer Passed.
+    Turning it off fails the test.
+  - Minor: such a run never reached the executor, which starts the merge pass at a run's end.
+    It records its sandbox (`passed_when_queued`), and the dispatcher, woken at once, starts the
+    pass (tested in round 3).
+  - Nits: tree reuse into a branch's run goes on past a same-tree source that skipped a `paths`
+    job, to an earlier one that ran it. A run passing at queueing records the current time.
+- **Review round 3** (Opus 5.5; head `375dd4dce`). Request changes: two answers of round 2 had no
+  test. Answered with tests, each caught by its mutation:
+  - `merge_train::a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once`: dev's own run ends
+    first, then the armed pull request's run passes at queueing. The dispatcher alone merges it.
+    Without the drain's merge pass it waits ("the armed merge waited for another pass").
+  - `local_ci::a_branch_reuses_a_same_tree_run_that_ran_its_paths_job`: an older passed run of
+    another commit with the same tree ran `web`; the integration branch's run reuses it, not the
+    newer pull request's run that skipped `web`. With `return` instead of `continue` it runs
+    again.

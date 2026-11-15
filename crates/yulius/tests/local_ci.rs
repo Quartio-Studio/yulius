@@ -1315,6 +1315,431 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-493 CJP-001 to CJP-004 (AC-16): a job naming the files it tests ends skipped, with the
+/// reason and without running, for a pull request touching none of them, which still passes and
+/// gates nothing; the integration branch's own run runs it; a pull request touching one of them
+/// runs it.
+#[tokio::test]
+async fn a_job_with_paths_runs_only_for_a_change_to_them() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "web"
+command = 'echo web ran'
+paths = ["crates/a/**"]
+"#
+        .to_owned()
+    })
+    .await?;
+    let job_of = |detail: &Value, name: &str| -> BoxResult<Value> {
+        Ok(detail["jobs"]
+            .as_array()
+            .ok_or("jobs")?
+            .iter()
+            .find(|j| j["name"] == name)
+            .cloned()
+            .ok_or("job")?)
+    };
+    let run_at = |sha: String| {
+        let f = &f;
+        async move {
+            let overview = f.get("/api/sandboxes/s1/ci").await?;
+            let run = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .find(|r| r["sha"] == sha.as_str())
+                .cloned()
+                .ok_or("run")?;
+            let detail = f
+                .get(&format!(
+                    "/api/sandboxes/s1/ci/runs/{}",
+                    run["id"].as_str().ok_or("id")?
+                ))
+                .await?;
+            BoxResult::Ok((run, detail))
+        }
+    };
+    // Pull request #1 changes `feature.txt` only.
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (run, detail) = run_at(head.clone()).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let web = job_of(&detail, "web")?;
+    assert_eq!(web["state"], "skipped", "{detail}");
+    let said = web["output"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("no file this job tests changed (paths: crates/a/**)")
+            && !said.contains("web ran"),
+        "{web}"
+    );
+    assert_eq!(job_of(&detail, "check")?["state"], "passed");
+    assert_eq!(
+        web["exit_code"], 78,
+        "the skip code, as for any skipped job: {web}"
+    );
+    // Its span reads as a job that was skipped, so the stages count runs against skips.
+    {
+        use yulius_app::ports::store_ext::SpanStore as _;
+        let spans =
+            f.h.store
+                .subject_spans(
+                    &yulius_domain::ids::SandboxId::parse("s1")?,
+                    yulius_domain::stages::SubjectKind::CiRun,
+                    run["id"].as_str().ok_or("id")?,
+                    50,
+                )
+                .await?;
+        assert!(
+            spans.iter().any(|s| s.kind == "job"
+                && s.name == "web"
+                && s.outcome.as_deref() == Some("skipped")),
+            "{spans:?}"
+        );
+    }
+    let (state, description, _) = f.last_status(&head).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(description.contains("1 skipped"), "{description}");
+
+    // The integration branch's own run runs every job.
+    let dev = f.push_dev("other.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (_, detail) = run_at(dev).await?;
+    assert_eq!(job_of(&detail, "web")?["state"], "passed", "{detail}");
+
+    // A change touching one of its paths runs it.
+    std::fs::create_dir_all(f.work.join("crates/a/src"))?;
+    let touched = f.push_feature("crates/a/src/lib.rs", Some("pub fn a() {}\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (_, detail) = run_at(touched).await?;
+    let web = job_of(&detail, "web")?;
+    assert_eq!(web["state"], "passed", "{detail}");
+    assert!(
+        web["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("web ran"),
+        "{web}"
+    );
+    Ok(())
+}
+
+/// The run of `reference` and its detail, once there is one.
+async fn run_of(f: &Fixture, sha: &str) -> BoxResult<(Value, Value)> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == sha)
+        .cloned()
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    Ok((run, detail))
+}
+
+fn job_named(detail: &Value, name: &str) -> BoxResult<Value> {
+    Ok(detail["jobs"]
+        .as_array()
+        .ok_or("jobs")?
+        .iter()
+        .find(|j| j["name"] == name)
+        .cloned()
+        .ok_or("job")?)
+}
+
+/// Review round 2 of SPEC-493 fix 5: a pull request whose change touches none of its jobs'
+/// `paths` gets a run that passed when it was queued: no lane, no dispatch, its status success
+/// with every job skipped, and the gate's answer Passed.
+#[tokio::test]
+async fn a_run_of_skipped_jobs_passes_when_it_is_queued() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n\n\
+         [[ci.jobs]]\nname = \"docs\"\ncommand = 'echo docs ran'\npaths = [\"docs/\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    // No dispatch: nothing ran it.
+    let (run, detail) = run_of(&f, &head).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("every job was skipped")),
+        "{run}"
+    );
+    for name in ["web", "docs"] {
+        assert_eq!(job_named(&detail, name)?["state"], "skipped", "{detail}");
+    }
+    let (state, description, _) = f.last_status(&head).ok_or("status")?;
+    assert_eq!(state, "success", "{description}");
+    assert!(description.contains("2 skipped"), "{description}");
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &head).await,
+        yulius_domain::ci::GateResult::Run(Some(yulius_domain::ci::RunState::Passed))
+    );
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 5: a run queued again (a restart, the disk quota) keeps a job
+/// skipped for its `paths` skipped, with its reason; the other jobs go back to the queue.
+#[tokio::test]
+async fn a_requeued_run_keeps_its_paths_skip() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::ids::SandboxId;
+    use yulius_domain::time::Timestamp;
+    let h = support::harness()?;
+    support::seed_github_user(&h, "u1", "alice").await?;
+    support::seed_sandbox(&h, "s1", "app", "u1").await?;
+    let run = CiRunRecord {
+        id: "run-1".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::PullRequest(1),
+        sha: "a".repeat(40),
+        source: GateSource::ProjectConfig,
+        state: RunState::Running,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(2)),
+        ended_at: None,
+    };
+    let job = |ordinal: u32, id: &str, state: RunState, reason: Option<&str>| CiJobRecord {
+        id: id.into(),
+        run_id: "run-1".into(),
+        ordinal,
+        name: id.into(),
+        key: id.into(),
+        command: "true".into(),
+        matrix: None,
+        state,
+        reason: reason.map(str::to_owned),
+        exit_code: None,
+        output: String::new(),
+        failures: None,
+        started_at: None,
+        ended_at: None,
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    h.store
+        .insert_ci_run(
+            &run,
+            &[
+                job(
+                    0,
+                    "web",
+                    RunState::Skipped,
+                    Some("no file this job tests changed (paths: a/**)"),
+                ),
+                job(1, "scan", RunState::Skipped, Some("exited 78")),
+                job(2, "check", RunState::Running, None),
+            ],
+        )
+        .await?;
+    assert!(
+        h.store
+            .requeue_ci_run("run-1", "again", Timestamp(3))
+            .await?
+    );
+    let jobs = h.store.ci_jobs("run-1", false).await?;
+    let state = |name: &str| jobs.iter().find(|j| j.name == name).map(|j| j.state);
+    assert_eq!(state("web"), Some(RunState::Skipped), "{jobs:?}");
+    assert_eq!(
+        state("scan"),
+        Some(RunState::Queued),
+        "a job's own skip runs again"
+    );
+    assert_eq!(state("check"), Some(RunState::Queued));
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 5: a squash merge of a pull request that skipped a `paths` job
+/// gives the integration branch the tree that pull request's run tested, but that run never ran
+/// the job: the integration branch's own run runs it instead of reusing the result (CJP-003).
+#[tokio::test]
+async fn the_integration_branch_runs_a_paths_job_a_merged_tree_skipped() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+         [[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let (_, detail) = run_of(&f, &head).await?;
+    assert_eq!(job_named(&detail, "web")?["state"], "skipped", "{detail}");
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let web = job_named(&detail, "web")?;
+    assert_eq!(web["state"], "passed", "{detail}");
+    assert!(
+        web["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("web ran"),
+        "{web}"
+    );
+    Ok(())
+}
+
+/// Review round 3 of SPEC-493 fix 5: tree reuse into the integration branch's run looks past a
+/// same-tree source that skipped a `paths` job, to an older one that ran it.
+#[tokio::test]
+async fn a_branch_reuses_a_same_tree_run_that_ran_its_paths_job() -> TestResult {
+    use yulius_app::ci::{CiJobRecord, CiRunRecord};
+    use yulius_app::ports::store_ext::CiStore as _;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    use yulius_domain::time::Timestamp;
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\n\n\
+         [[ci.jobs]]\nname = \"web\"\ncommand = 'echo web ran'\npaths = [\"crates/a/**\"]\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    // Another commit with the pull request's tree, whose (older) passed run ran `web`.
+    let tree = git(&f.origin, &["rev-parse", "feat/one^{tree}"])?;
+    let alt = git(
+        &f.work,
+        &["commit-tree", &tree, "-p", "origin/dev", "-m", "alt"],
+    )?;
+    git(
+        &f.work,
+        &["push", "-q", "origin", &format!("{alt}:refs/heads/alt")],
+    )?;
+    let run = CiRunRecord {
+        id: "run-alt".into(),
+        sandbox_id: SandboxId::parse("s1")?,
+        reference: CiRef::Branch("alt".into()),
+        sha: alt.clone(),
+        source: GateSource::ProjectConfig,
+        state: RunState::Passed,
+        reason: None,
+        requested_by: "yulius".into(),
+        status_for: Some(RunState::Passed),
+        status_note: Some("recorded by the test".into()),
+        status_attempts: 0,
+        queued_at: Timestamp(1),
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+    };
+    let job = |ordinal: u32, name: &str| CiJobRecord {
+        id: format!("alt-{name}"),
+        run_id: "run-alt".into(),
+        ordinal,
+        name: name.into(),
+        key: name.into(),
+        command: "true".into(),
+        matrix: None,
+        state: RunState::Passed,
+        reason: None,
+        exit_code: Some(0),
+        output: String::new(),
+        failures: None,
+        started_at: Some(Timestamp(1)),
+        ended_at: Some(Timestamp(2)),
+        need: Default::default(),
+        timeout_minutes: None,
+        exclusive: false,
+        waited_ms: None,
+    };
+    f.h.store
+        .insert_ci_run(&run, &[job(0, "check"), job(1, "web")])
+        .await?;
+    git(&f.work, &["checkout", "-q", "-b", "dev", "origin/dev"])?;
+    git(&f.work, &["merge", "-q", "--squash", "feat/one"])?;
+    git(&f.work, &["commit", "-q", "-m", "feature (#1)"])?;
+    git(&f.work, &["push", "-q", "origin", "dev"])?;
+    let merged = git(&f.work, &["rev-parse", "HEAD"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let (run, detail) = run_of(&f, &merged).await?;
+    assert!(
+        run["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains(&alt[..7])),
+        "reused from the run that ran web: {run}"
+    );
+    assert_eq!(job_named(&detail, "web")?["state"], "passed", "{detail}");
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 5: a job skipped for its `paths` waits for nothing: not for its
+/// `exclusive` turn while another run's job of that name runs, nor for a slot.
+#[tokio::test]
+async fn a_skipped_exclusive_job_does_not_wait_for_its_turn() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |_| {
+            // Each job a CPU, so the runs' budgets fit beside each other and only the turn of
+            // `web` could make the pull request's run wait.
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\ncpus = 1\n\n\
+             [[ci.jobs]]\nname = \"web\"\ncommand = 'sleep 6; echo web ran'\nexclusive = true\n\
+             cpus = 1\npaths = [\"crates/a/**\"]\n"
+                .to_owned()
+        },
+        None,
+        |config| config.ci.lanes = 3,
+    )
+    .await?;
+    // The integration branch's run takes `web`'s turn for 6 s; the pull request skips it.
+    let dev = f.push_dev("other.txt", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let head = git(&f.origin, &["rev-parse", "feat/one"])?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        f.h.app.ci_dispatch().await;
+        if let Ok((run, _)) = run_of(&f, &head).await
+            && run["state"] != "queued"
+            && run["state"] != "running"
+        {
+            assert_eq!(run["state"], "passed", "{run}");
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the pull request's run did not end".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (dev_run, _) = run_of(&f, &dev).await?;
+    assert_eq!(
+        dev_run["state"], "running",
+        "the pull request ended while dev's web still held its turn: {dev_run}"
+    );
+    f.settle().await?;
+    Ok(())
+}
+
 /// SPEC-359 VSB-006: a job is told where its sandbox's Vidoc switch is, so a scan whose key
 /// fails points there.
 #[tokio::test]

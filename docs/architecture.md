@@ -3493,6 +3493,15 @@ that failed early in a long job stays diagnosable
 
 ## CI job waits and time limits
 
+A job's `paths` (SPEC-493 CJP, [decision 0343](decisions/0343-a-ci-job-names-the-files-it-tests-and-is-never-skipped-on-doubt.md))
+are decided before any wait, when the run is queued (`ci_queue_placed`): for a pull request, a
+merge candidate or a playground task, `GitPort::changed_paths` lists the head's files against its
+merge base with `origin/<integration>`, and `ci::paths_skip` ends each job that matches none of
+them skipped with its reason (exit 78). The executor starts only the queued jobs, so a skipped
+one takes no turn, slot or budget share, and a run of skipped jobs passes at queueing. The
+branches' own runs, a change to `yulius.toml` and a change that cannot be told run every job, and
+tree reuse never carries a paths skip into a branch's run.
+
 A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
 `exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
 `tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),

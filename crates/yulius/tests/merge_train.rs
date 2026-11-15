@@ -514,6 +514,11 @@ impl Fixture {
     /// Commits `file` on the integration branch of the origin, as another merged pull request
     /// would.
     fn advance_dev(&self, file: &str) -> TestResult {
+        self.advance_dev_with(file, "other\n")
+    }
+
+    /// [`Self::advance_dev`] with `contents` in `file`.
+    fn advance_dev_with(&self, file: &str, contents: &str) -> TestResult {
         let other = tempfile::tempdir()?;
         let clone = other.path().join("c");
         git(
@@ -527,7 +532,7 @@ impl Fixture {
                 clone.to_str().ok_or("path")?,
             ],
         )?;
-        std::fs::write(clone.join(file), "other\n")?;
+        std::fs::write(clone.join(file), contents)?;
         git(&clone, &["add", "-A"])?;
         git(&clone, &["commit", "-q", "-m", file])?;
         git(
@@ -1649,6 +1654,49 @@ async fn a_failed_candidate_waits_for_own_runs_within_the_wait_limit() -> TestRe
         "{gone:?}"
     );
     end_own_run(&app, &held, RunState::Passed).await?;
+    Ok(())
+}
+
+/// Review round 3 of SPEC-493 fix 5: a run that passed when it was queued (every job skipped
+/// for its `paths`) never reaches the executor, whose run end starts the merge pass: the
+/// dispatcher starts it, so a merge armed before the run merges at once, with no other pass.
+#[tokio::test]
+async fn a_merge_armed_on_a_run_of_skipped_jobs_happens_at_once() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    f.advance_dev_with(
+        "yulius.toml",
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"true\"\npaths = [\"never/**\"]\n",
+    )?;
+    // The integration branch's own run ends first: no other run's end starts a pass below.
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.settle(&app).await?;
+    let one = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &one).await?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    let head = git(&one, &["rev-parse", "HEAD"])?;
+    let runs = f.runs(&app).await?;
+    assert!(
+        runs.iter()
+            .any(|r| r.sha == head && r.state == RunState::Passed),
+        "passed when queued: {runs:?}"
+    );
+    assert!(
+        !runs.iter().any(|r| r.state.is_active()),
+        "no other run whose end would start a pass: {runs:?}"
+    );
+    // The dispatcher alone: no merge pass is called by the test.
+    app.ci_dispatch().await;
+    let mut merged = false;
+    for _ in 0..200 {
+        if f.merged(&app, 1).await? {
+            merged = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(merged, "the armed merge waited for another pass");
     Ok(())
 }
 

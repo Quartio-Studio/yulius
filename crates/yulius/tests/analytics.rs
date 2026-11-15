@@ -1035,3 +1035,61 @@ async fn the_merge_queue_read_counts_candidates_from_the_audit_log() -> TestResu
     assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
     Ok(())
 }
+
+/// Review round 2 of SPEC-493 fix 4: the merge queue's audit read keeps the newest entries
+/// within its limit (oldest first), reads `<slug>` and `<slug>#<n>` but not `<slug>2#<n>`, and the
+/// task ids it is given.
+#[tokio::test]
+async fn the_audit_read_of_a_sandbox_keeps_the_newest_entries() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let h = harness()?;
+    for (at, target) in [
+        (1, "app"),
+        (2, "app#3"),
+        (3, "t-person"),
+        (4, "app2#1"),
+        (5, "app#4"),
+    ] {
+        h.store
+            .audit(
+                Timestamp(at),
+                "yulius",
+                "delivery.train.formed",
+                Some(target),
+                Some("x"),
+            )
+            .await?;
+    }
+    let read = |limit: u32| {
+        let store = h.store.clone();
+        async move {
+            store
+                .audit_of_sandbox(
+                    "app",
+                    &["t-person".to_owned()],
+                    &["delivery.train.formed"],
+                    None,
+                    None,
+                    limit,
+                )
+                .await
+        }
+    };
+    let all: Vec<(String, i64)> = read(10)
+        .await?
+        .into_iter()
+        .map(|(target, entry)| (target, entry.at.0))
+        .collect();
+    assert_eq!(
+        all,
+        [
+            ("app".to_owned(), 1),
+            ("app#3".to_owned(), 2),
+            ("t-person".to_owned(), 3),
+            ("app#4".to_owned(), 5)
+        ]
+    );
+    let newest: Vec<i64> = read(2).await?.into_iter().map(|(_, e)| e.at.0).collect();
+    assert_eq!(newest, [3, 5], "the newest two, oldest first");
+    Ok(())
+}

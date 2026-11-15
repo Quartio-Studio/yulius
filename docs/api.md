@@ -783,6 +783,11 @@ timeout_minutes = 120       # optional (1-360): its own time limit, counted from
 exclusive = true            # optional: one run of it (each matrix value apart) at a time in the
                             #   sandbox; a later run's job waits for its turn, outside its limit,
                             #   holding no slot (ADR-0279)
+paths = ["crates/web/**"]   # optional: 1-50 globs of the files it tests (scope-claim form); a pull
+                            #   request or merge candidate touching none of them (from its merge
+                            #   base with the integration branch) gets it skipped with "no file this
+                            #   job tests changed (paths: …)"; the branches' own runs, a change to
+                            #   yulius.toml and an unknown change run it (ADR-0343)
 # or, for one job: [commands] gate = "…"   (not both)
 # [commands] test, lint, build = "…": for agents to read; Yulius only reads whether test and
 #                            lint are set (the briefing says so when one is missing)

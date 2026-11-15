@@ -934,6 +934,38 @@ fn status_reports_hostile_file_names_verbatim() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 CJP-002, CJP-003 (review round 1 of fix 5): the files a branch changed since its
+/// merge base, for a CI job's `paths`: a rename lists the old path and the new one (a file moved out
+/// of a job's paths counts), a deleted file is listed, the base's own later commits are not, and
+/// past the limit the answer is "cannot tell".
+#[test]
+fn changed_paths_list_renames_deletions_and_stop_at_the_limit() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::create_dir_all(repo.join("crates/a"))?;
+    fs::write(repo.join("crates/a/util.rs"), "pub fn util() {}\n")?;
+    fx.git.commit_all(&repo, "chore: util", &author())?;
+    let task = fx.path("task");
+    fx.git.worktree_add(&repo, &task, "task/paths", "main")?;
+    fs::create_dir_all(task.join("crates/b"))?;
+    fs::rename(task.join("crates/a/util.rs"), task.join("crates/b/util.rs"))?;
+    fs::remove_file(task.join("README.md"))?;
+    fx.git.commit_all(&task, "refactor: move util", &author())?;
+    fs::write(repo.join("c.txt"), "c\n")?;
+    fx.git.commit_all(&repo, "chore: unrelated", &author())?;
+    let mut changed = fx
+        .git
+        .changed_paths(&repo, "main", "task/paths", 10)?
+        .ok_or("listed")?;
+    changed.sort();
+    assert_eq!(
+        changed,
+        ["README.md", "crates/a/util.rs", "crates/b/util.rs"]
+    );
+    assert_eq!(fx.git.changed_paths(&repo, "main", "task/paths", 2)?, None);
+    Ok(())
+}
+
 #[test]
 fn diff_stat_ahead_behind_and_log() -> TestResult {
     let fx = Fixture::new()?;
