@@ -180,6 +180,19 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
+        self.task_summary_among(task, None).await
+    }
+
+    /// [`Self::task_summary`] of a task listed with the rest of its project's unarchived tasks
+    /// (`project`): what it needs of the others is read from the list (SPEC-483 slice 37).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn task_summary_among(
+        &self,
+        task: &TaskRecord,
+        project: Option<&[TaskRecord]>,
+    ) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
         // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
@@ -261,7 +274,11 @@ impl App {
             supertask: task.supertask,
             start_at: self.prepared_start_at(task).await.map(rfc3339),
             held_by: if task.status == TaskStatus::Queued {
-                self.supertask_holders(task).await.unwrap_or_default()
+                match project {
+                    Some(project) => self.supertask_holders_among(task, project).await,
+                    None => self.supertask_holders(task).await,
+                }
+                .unwrap_or_default()
             } else {
                 Vec::new()
             },
@@ -618,9 +635,12 @@ impl App {
     ) -> AppResult<Vec<TaskSummary>> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require_for(ctx, &sid, Action::View).await?;
-        let mut out = Vec::new();
-        for task in self.deps.store.tasks(&sid, archived).await? {
-            out.push(self.task_summary(&task).await?);
+        let tasks = self.deps.store.tasks(&sid, archived).await?;
+        // Unarchived, the list is the project the summaries need; archived ones wait for nothing.
+        let project = (!archived).then_some(tasks.as_slice());
+        let mut out = Vec::with_capacity(tasks.len());
+        for task in &tasks {
+            out.push(self.task_summary_among(task, project).await?);
         }
         Ok(out)
     }

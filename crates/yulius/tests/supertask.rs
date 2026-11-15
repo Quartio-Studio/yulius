@@ -207,6 +207,29 @@ async fn a_supertask_waits_for_working_tasks_and_holds_its_project() -> TestResu
     assert!(r.status.is_success(), "{:?}", r.body);
     assert_eq!(r.body["status"], "queued", "{:?}", r.body);
     assert_eq!(held_by(&h, &alice, &closed).await?, json!([s.number]));
+    // The project's list says the same of each as the task's own summary (SPEC-483 slice 37: the
+    // list reads the project once and hands it to every summary).
+    let listed = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/tasks",
+        None,
+        &alice,
+    )
+    .await?;
+    let listed = listed.body.as_array().ok_or("a list")?.clone();
+    for task in [&s, &b, &closed] {
+        let row = listed
+            .iter()
+            .find(|row| row["id"] == task.id.as_str())
+            .ok_or("listed")?;
+        assert_eq!(
+            row["held_by"],
+            held_by(&h, &alice, task).await?,
+            "#{}",
+            task.number
+        );
+    }
     let chained = create(
         &h,
         &alice,
