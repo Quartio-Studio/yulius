@@ -66,11 +66,13 @@ and claim nothing without fresh output (`verification-before-completion`).
 
 ## 4. Independent review in a fresh session
 
-The author never reviews alone. Start the independent code review with the Agent tool and the `yulius-reviewer` agent: Yulius
-picks the round's model (Fable 5.2 for a pull request's first two rounds, then Opus 5.5). It has **no shared context**: give it only the diff
-range (`<integration>...HEAD`), the spec path and the `om-code-review` skill (outside Yulius: a
-subagent or a new session with no shared context). It is read-only: no edits, commits or label changes. It judges the code
-and the tests separately, runs the gates, and returns a verdict for the exact head commit.
+The author never reviews alone. Start the independent code review with the Agent tool and the
+`yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull request's first two
+rounds, then Opus 5.5). It has **no shared context**: give it only the diff range
+(`<integration>...HEAD`), the spec path and the `om-code-review` skill (outside Yulius: a subagent
+or a new session with no shared context). It is read-only: no edits, commits or label changes. It
+judges the code and the tests separately, runs the gates, and returns a verdict for the exact head
+commit.
 
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.

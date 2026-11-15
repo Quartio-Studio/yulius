@@ -26,10 +26,10 @@ Follow `delivery-pipeline` end to end; nobody accepts the result for you.
   what it delivers and leaving the project working.
 - Build each slice with `test-driven-development`: a test that fails without the change, then the
   change. One step in progress at a time, marked done as soon as it is finished.
-- Review: agent `yulius-reviewer` (Yulius picks its model) runs `om-code-review` on the diff and the spec; it
-  marks findings own code or pre-existing; the PR answers each. Own code is fixed test-first
-  whatever the round limit, never as a follow-up issue (that is request changes); only pre-existing
-  bugs, flaky tests the change did not cause and nits left at the round limit become issues, saying
-  why they are outside the change.
+- Review: agent `yulius-reviewer` (Yulius picks its model) runs `om-code-review` on the diff and
+  the spec; it marks findings own code or pre-existing; the PR answers each. Own code is fixed
+  test-first whatever the round limit, never as a follow-up issue (that is request changes); only
+  pre-existing bugs, flaky tests the change did not cause and nits left at the round limit become
+  issues, saying why they are outside the change.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
   green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); production is a person's.

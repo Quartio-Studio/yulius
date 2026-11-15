@@ -45,7 +45,9 @@ Measured with Claude Code 2.1.325 against a local stand-in for the model API:
   helps nobody. Moving the session to a subscription that can run Fable first is SPEC-493 fix
   1d.
 - **Each round is a record** (`review_rounds`, schema version 62): its number, the head, the
-  reviewer and model, why, the subagent, when it started and ended, its verdict. The store
+  reviewer and model, why (`round`, `kept` for a reviewer started again for a round with no
+  report, `no_fable`), the subagent, when it started and ended, its verdict. The next round
+  follows the last one that reported, so a round two of its reviewers reported counts once. The store
   closes a pull request's rounds in the transaction that records its merge.
 - **A failure to decide lets the reviewer start as asked** (Fable): the stronger reviewer is the
   safe default.

@@ -190,7 +190,8 @@ person's decision is read as holding after an approval).
 - **REV-003** When Yulius cannot be asked (the hook fails or times out), the reviewer starts as
   asked: Fable 5.2. The start is never refused for that.
 - **REV-004** Each round is a record (`review_rounds`): the task, the round's number, the head
-  commit at its start, the model asked for and why (`round`, `no_fable`), the subagent's id, the
+  commit at its start, the model asked for and why (`round`; `kept`, a reviewer started again for
+  a round with no report; `no_fable`), the subagent's id, the
   model that answered (read from the reviewer's own transcript, not from what was asked), when it
   started and ended, its verdict (`approve`, `request_changes`, or none when the report has no
   verdict line) and whether a usage limit cut it off. A resumed reviewer continues its record.
@@ -761,4 +762,24 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - Not exercised here: a whole task session on a subscription reviewing through Yulius (the hook
   path is proven through the internal API with fakes, the agent definitions with the real CLI
   and the stand-in API).
+- **Review round 1** (fresh session, head `834d6afc0`; on Opus 5.5: this subscription was out
+  of Fable until 14:00 UTC, the case the `no_fable` rule covers). Request changes. Answered:
+  - F1, major (own code): the next round counted ended records, so a round reported by two of
+    its reviewers (a cut-off one resumed, or two at once) skipped a number and moved round 2 onto
+    Opus (reproduced: records 1, 1, 3). Test first:
+    `review_rounds::a_round_with_two_reports_is_counted_once` failed (`yulius-reviewer-opus`);
+    the next round now follows the last one that reported; passes.
+  - F2, major (own code): fail-open on a store failure had no test:
+    `review_rounds::a_round_yulius_cannot_record_starts_as_asked` (table dropped: 200, nothing
+    changed or denied). It fails when the error branch denies.
+  - F3, major (own code): the sandbox client's forwarding had no test:
+    `hook_client::a_subagents_start_goes_to_yulius_and_its_answer_is_printed` (whole input sent,
+    the answer printed, nothing printed with no server). It fails with the forwarding removed.
+  - F4, minor (own code): `review_rounds::a_round_on_an_unknown_subscription_starts_as_asked`
+    (account removed: Fable, reason `round`); fails when an unknown account fails closed.
+  - Nits: `apm.lock.yaml` keeps `target: legacy` (a newer apm wrote `codex`; only the content
+    hashes change); `kept` is listed in REV-004 and ADR-0341; the touched paragraphs are
+    rewrapped. "No shared context" stays in the reviewer agent's contract: the Feature
+    workflow is at its byte budget. The reviewer agents keep every tool: a review runs tests,
+    and its read-only rule is its contract, as before.
 

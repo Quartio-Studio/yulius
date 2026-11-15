@@ -20,8 +20,9 @@ choices and simplicity; do not demand nonexistent implementation tests. For code
 check its requirement evidence and run scoped verification when useful. Do not
 claim an unexecuted test passed.
 
-For the independent review of a task's change: start the independent code review with the Agent tool and the `yulius-reviewer` agent: Yulius
-picks the round's model (Fable 5.2 for a pull request's first two rounds, then Opus 5.5).
+For the independent review of a task's change: start the independent code review with the Agent
+tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for a pull
+request's first two rounds, then Opus 5.5).
 
 Deliver findings ordered by severity, each with path/location, concrete trigger,
 impact and suggested correction, marked own code (code or tests the change added
