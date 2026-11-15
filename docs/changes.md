@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Two flaky tests fixed (task #465): the session view's spider-web test read its scroll range
+  before the view finished laying out (fixes #1185), and a switch test expected one of two
+  recorders of a killed run's end that race under load.
 - A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
   task's summary read the whole task list again to find its supertask holders; listing 200
   tasks took 88 ms and grew with the square of the list, now 31 ms.

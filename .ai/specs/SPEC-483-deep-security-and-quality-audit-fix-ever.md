@@ -3221,3 +3221,21 @@ slices follow.
   tests: 95 passed.
 - **Gate after it.** `scripts/dev ci` at `9a0388054`: exit 0; `4441 tests run: 4441 passed (1
   slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `e1227e517`): approve; nits: no test runs one
+  pass over two projects, fully qualified `HashMap` where it is imported.
+- **Merge train at `e1227e517`** (run `9ef69f03`): `e2e` failed in `sessions.e2e.ts` "the spider
+  web sticks to the top of the view while the session scrolls" (`expected 199 to be greater
+  than 200`), the open flaky test #1185, which this slice does not touch: the test read the
+  scroll range once, on the frame before the entries took their size. A probe that holds the
+  entries back 2 s failed it (`expected 0`); waiting on the range (`expect.poll`), it passes
+  with the probe and without (`target/audit/slice37/flake/`). The file's other one-shot read
+  after the locked box (the edge-to-edge fit) waits the same way. Separate commit,
+  `Fixes #1185`.
+- **Gate with `dev` merged in** first failed one test, `task_done::a_switch_whose_old_run_had_to_be_killed_starts_no_new_run`
+  (slice 17's): the run's end was recorded by its reader (`switch_timeout`) before the switch's
+  record (`lost`), an order two sibling tests force each way; this unordered test now accepts
+  either (the task's rest is the same), 30 of 30 under `--stress-count 30` beside six busy
+  loops (`stress-switch.log`).
+- **Gate after it.** `scripts/dev ci` at `9a0517a00`: exit 0; `4442 tests run: 4442 passed (1
+  slow), 17 skipped` (`gate4.log`); the whole e2e suite before the switch test's change:
+  85 files, 1050 passed (`e2e-full.log`).
