@@ -20,10 +20,12 @@ gates.
 3. **Implement:** build a complete slice, preserving existing behavior. Keep an
    affected boundary's types, implementation and tests together. New architecture
    deserves a short ADR with alternatives and consequences.
-4. **Verify:** demonstrate the reported behavior and failure cases. Run targeted
-   checks during iteration, then `scripts/dev ci` before handoff of Rust/tooling
-   changes. Documentation-only changes need the repository check, not redundant
-   compilation unless tooling/contracts changed.
+4. **Verify:** demonstrate the reported behavior and failure cases. While iterating,
+   run the checks your change touches. The whole gate is Yulius CI's job: it tests the
+   head while the reviewer reads. Do not run the whole gate locally before a review or
+   between rounds, except to reproduce a CI failure or when CI cannot run (a playground
+   without CI, an outage). Documentation-only changes need the repository check, not
+   redundant compilation unless tooling/contracts changed (ADR-0342).
 5. **Review:** examine the diff against each requirement, security boundary and
    existing default behavior. Classify findings with concrete failure scenarios.
    Green tests do not establish untested product acceptance. Get an independent review in a

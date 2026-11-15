@@ -55,7 +55,10 @@ one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
 Test fixtures there hold no credential in a provider's shape: put one that needs it together
 from the prefix and a synthetic body (`concat!("sk_test_", "…")`); `fixture_hygiene` fails on
 a provider prefix followed by a token body ([ADR-0258](../decisions/0258-test-fixtures-hold-no-provider-shaped-credential-literal.md)).
-Use the full gate after implementation stabilizes.
+While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests
+the head while the reviewer reads. Do not run the whole gate locally before a review or between
+rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an
+outage). `scripts/dev ci` is that gate (ADR-0342).
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;

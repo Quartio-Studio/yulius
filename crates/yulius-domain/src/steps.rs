@@ -524,6 +524,10 @@ pub enum DeliveryAsk {
     /// The agent's `delivery_merge`, which names a reviewed head: the finished part of the plan
     /// goes out, and the steps still ahead wait for a later pull request (SPEC-484 PLN-002).
     Call,
+    /// The agent starts its independent review (SPEC-493 CIR-001): the committed head goes out
+    /// whatever the plan says (its review step is still open), so Yulius CI tests it while the
+    /// reviewer reads. Merging still needs `delivery_merge` with the reviewed head.
+    Review,
 }
 
 /// Why the plan holds a delivery, if it does (SPEC-484 PLN-002). A plan without steps holds
@@ -539,6 +543,7 @@ pub fn delivery_hold(steps: &[StepState], ask: DeliveryAsk) -> Option<String> {
     let finished = steps.iter().any(|s| s.status.is_resolved());
     let working = steps.iter().find(|s| s.status == StepStatus::InProgress);
     match ask {
+        DeliveryAsk::Review => None,
         DeliveryAsk::Call => match working {
             Some(step) => Some(format!(
                 "step \"{}\" is in progress: finish it if this delivery includes it, or set it \
@@ -1171,6 +1176,19 @@ mod tests {
         ];
         let p = progress(&all_open);
         assert_eq!((p.percent(), p.active_percent()), (33, 67));
+    }
+
+    /// SPEC-493 CIR-001: a review's start delivers the head whatever the plan holds.
+    #[test]
+    fn a_review_start_is_held_by_no_step() {
+        let working = [
+            state("Slice 1", StepStatus::Done),
+            state("Review answered", StepStatus::InProgress),
+            state("Slice 2", StepStatus::Pending),
+        ];
+        assert_eq!(delivery_hold(&working, DeliveryAsk::Review), None);
+        let untouched = [state("Slice 1", StepStatus::InProgress)];
+        assert_eq!(delivery_hold(&untouched, DeliveryAsk::Review), None);
     }
 
     #[test]

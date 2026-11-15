@@ -11,9 +11,12 @@ merges it. Its steps:
 
 1. Yulius creates the task's short-lived branch **with its own worktree** from current
    `origin/dev`.
-2. Implement the change in as many useful commits as needed. Run relevant tests during
-   development and `scripts/dev ci` before the review. Merge `origin/dev` before the review
-   or for a conflict (never rebase), and run the tests again.
+2. Implement the change in as many useful commits as needed. While iterating, run the checks
+   your change touches. The whole gate is Yulius CI's job: it tests the head while the
+   reviewer reads. Do not run the whole gate locally before a review or between rounds, except
+   to reproduce a CI failure or when CI cannot run (a playground without CI, an outage). Merge
+   `origin/dev` before the review or for a conflict (never rebase), and run the tests it
+   touches again.
 3. An **independent review in a fresh session** reads the exact head (a read-only reviewer given
    the diff range and the spec, skill `om-code-review`). Start the independent code review with
    the Agent tool and the `yulius-reviewer` agent: Yulius picks the round's model (Fable 5.2 for

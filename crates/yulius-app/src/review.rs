@@ -51,6 +51,9 @@ const QUEUED_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this 
      Yulius would move the session to one that can, but a prompt waits in Claude Code's queue, \
      which a move would drop. Answer it or end your turn, then start the review again.";
 
+/// The longest the look at whether the head under review can go out may take in the hook.
+const READY_LOOK: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// The longest the move's looks may take: the hook client gives `PreToolUse` 5 s, after which
 /// the reviewer starts as asked while a move could still be decided.
 const MOVE_DECISION: std::time::Duration = std::time::Duration::from_secs(3);
@@ -173,6 +176,7 @@ impl App {
              ({agent}).",
             claude_model_name(&model)
         );
+        said.push_str(&self.deliver_for_review(&ctx.task).await);
         if reason == "no_fable" {
             said.push_str(
                 " This session cannot run Fable 5.2 now, nor move to a subscription that can, so \
@@ -191,6 +195,50 @@ impl App {
             prompt.push_str(NO_FABLE_REVIEWER_LINE);
         }
         Ok(HookOutput::run_tool_with(Value::Object(updated), said))
+    }
+
+    /// The head under review goes out now, so Yulius CI tests it while the reviewer reads
+    /// (SPEC-493 CIR-001, CIR-002): pushed (the pull request opened when there is none) and its
+    /// run queued at once, not at the next poll. What the agent is told: that, or why no run
+    /// starts (a spec that is not valid, uncommitted changes). A playground, and a task whose
+    /// delivery cannot be read, say nothing.
+    async fn deliver_for_review(self: &Arc<Self>, task: &crate::model::TaskRecord) -> String {
+        if task.worktree_path.is_none() {
+            return String::new();
+        }
+        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
+            return String::new();
+        };
+        if sandbox.is_playground() {
+            return String::new();
+        }
+        // Only the message waits for this look, within its bound: the delivery checks again.
+        if let Ok(Some(reason)) =
+            tokio::time::timeout(READY_LOOK, self.review_head_not_ready(task)).await
+        {
+            return format!(" No Yulius CI run starts for this head: {reason}.");
+        }
+        let app = Arc::clone(self);
+        let task_id = task.id.clone();
+        tokio::spawn(async move {
+            match app
+                .try_auto_open_pr(&task_id, yulius_domain::steps::DeliveryAsk::Review)
+                .await
+            {
+                Ok(crate::delivery::AutoDelivery::Blocked(_)) => {}
+                Ok(_) => {
+                    if let Err(err) = app.ci_sync_sandbox(&sandbox).await {
+                        tracing::warn!(error = %err, task = %task_id, "the run for the head under review was not queued");
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err.error, task = %task_id, "the head under review was not delivered");
+                }
+            }
+        });
+        " Yulius delivers this head now when it can, so Yulius CI tests it while the review \
+         runs: `ci_status` shows its run."
+            .to_owned()
     }
 
     /// Moves the session of a review round that cannot run Fable to a subscription that can run

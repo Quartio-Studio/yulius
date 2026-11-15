@@ -1,6 +1,6 @@
 ---
 name: om-fix
-description: Fix a defect test-first - a regression test that fails without the fix, the minimal change, and the full gate until green. Use for any bug fix, including fixes for review findings and failed checks.
+description: Fix a defect test-first - a regression test that fails without the fix, the minimal change, and the checks it touches until green (the whole gate is Yulius CI's). Use for any bug fix, including fixes for review findings and failed checks.
 ---
 
 # Fix
@@ -28,8 +28,11 @@ never invent a cause of your own when an analysis exists.
    their own change.
 4. **Green, then the gate.** Run the regression test (now passing) and the targeted tests of the
    changed areas, the lint and typecheck commands, and any generator the changed files feed.
-   Re-read the diff and remove scope creep. Then run every gate of the project, in order, until
-   green (`om-check-and-commit`). Never weaken an assertion to get green.
+   Re-read the diff and remove scope creep, then commit and push with `om-check-and-commit`.
+   While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it
+   tests the head while the reviewer reads. Do not run the whole gate locally before a review
+   or between rounds, except to reproduce a CI failure or when CI cannot run (a playground
+   without CI, an outage). Never weaken an assertion to get green.
 5. **Report** in this shape:
 
    ```

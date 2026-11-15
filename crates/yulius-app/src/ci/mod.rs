@@ -307,6 +307,9 @@ pub struct CiState {
     pub(crate) hygiene_next: Mutex<Option<i64>>,
     /// One hygiene cleanup per sandbox at a time (the round and a person's Clean up).
     pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One CI sync of a sandbox at a time (the 60 s loop, a person's sync, a review's start):
+    /// each reads the runs before it queues, so two at once would queue one head twice.
+    sync_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     wake: Arc<Notify>,
     started: AtomicBool,
     last_prune: Mutex<i64>,
@@ -852,6 +855,16 @@ impl App {
     /// # Errors
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
+        // Nothing panics while the map is held; a poisoned map is still the one map.
+        let lock = self
+            .ci
+            .sync_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.id.as_str().to_owned())
+            .or_default()
+            .clone();
+        let _one_at_a_time = lock.lock().await;
         let repo = self.sandbox_repo(&sandbox.id);
         if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
             return Ok(());
@@ -944,6 +957,10 @@ impl App {
             .collect();
         let only_targets: Vec<Target> = targets.iter().map(|(t, _)| t.clone()).collect();
         let plan = dom::plan(&only_targets, &facts);
+        crate::race::reached(
+            crate::race::Point::CiSyncPlanned,
+            Path::new(sandbox.id.as_str()),
+        );
         // A pull request's new head keeps the place in the queue of the run it supersedes: it
         // went to the back at every push before, behind every other pull request (up to 73
         // minutes of waiting, F 2026-10-12).

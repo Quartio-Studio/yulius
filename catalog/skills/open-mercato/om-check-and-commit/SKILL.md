@@ -1,6 +1,6 @@
 ---
 name: om-check-and-commit
-description: Make the current branch ready to publish - run every project gate in order, fix straightforward failures, rerun until green, then commit and push following git-hygiene. Use before every commit you publish and before asking for review or delivery.
+description: Make the current branch ready to publish - run the checks the change touches, fix straightforward failures, rerun until green, then commit and push following git-hygiene; Yulius CI runs the whole gate on the pushed head. Use before every commit you publish and before asking for review or delivery.
 ---
 
 # Check and Commit
@@ -9,16 +9,17 @@ description: Make the current branch ready to publish - run every project gate i
 
 Verify the branch end to end against the project's gates, fix what is straightforward, and
 publish only a branch in a good state. Publishing is part of the autonomous pipeline
-(`delivery-pipeline`); nobody else will run the gates for you.
+(`delivery-pipeline`). While iterating, run the checks your change touches. The whole gate is Yulius CI's job: it tests the head while the reviewer reads. Do not run the whole gate locally before a review or between rounds, except to reproduce a CI failure or when CI cannot run (a playground without CI, an outage).
 
 ## Workflow
 
 1. **Scope the change.** Read `git status --short` and `git diff --stat`. For each touched area,
    read the project's agent instructions or contributing docs. Never revert or include changes
    that are not yours.
-2. **Run the gates.** Every gate command of the project, in its documented order: the test,
-   lint, build and gate commands named in AGENTS.md / CLAUDE.md or `yulius.toml` `[commands]`.
-   Any non-zero exit is a failure.
+2. **Run the checks the change touches.** From the project's gate commands (the test, lint,
+   build and gate commands named in AGENTS.md / CLAUDE.md or `yulius.toml` `[commands]`): its
+   formatting and lint, and the tests of the code it changes. Where CI cannot run, every gate
+   command, in its documented order. Any non-zero exit is a failure.
    - Commands independent of each other (typically typecheck and unit tests) may run in
      parallel; when unsure, run them in order.
    - If a command regenerates files (codegen, formatting, lockfiles), include them and rerun the

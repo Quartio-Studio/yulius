@@ -2213,6 +2213,192 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
     Ok(())
 }
 
+/// SPEC-493 CIR-001, CIR-002 (AC-10): a task that starts its review with its work committed and
+/// its review step still open gets its head pushed, its pull request opened and a Yulius CI run
+/// for that head queued at once, before any poll; a review started again at a newer head pushes
+/// it and that head's run supersedes the older one. With uncommitted changes, or a spec that is
+/// not valid, the reviewer starts, nothing is pushed, and the agent is told why.
+#[tokio::test]
+async fn a_review_start_delivers_the_head_and_queues_its_run() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::RunState;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "v1", "Feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: TaskId::parse("t1")?,
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            model: None,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let internal = yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let agent = Creds {
+        bearer: Some("tok-agent".into()),
+        ..Creds::default()
+    };
+    let review = || async {
+        let start = json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent",
+            "tool_input": {"description": "Review", "prompt": "Review the change.",
+                "subagent_type": "yulius-reviewer"}, "tool_use_id": "toolu_1"});
+        let answer = call(
+            &internal,
+            Method::POST,
+            "/hooks/claude/PreToolUse",
+            Some(start),
+            &agent,
+        )
+        .await?;
+        assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+        let said = answer.body["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert_ne!(
+            answer.body["hookSpecificOutput"]["permissionDecision"],
+            "deny"
+        );
+        BoxResult::Ok(said)
+    };
+    let runs_at = |head: String| {
+        let store = f.h.store.clone();
+        let sandbox = sandbox.clone();
+        async move { store.ci_runs_for_sha(&sandbox, &head).await }
+    };
+    let wait_for_run = |head: String| async move {
+        for _ in 0..400 {
+            if !runs_at(head.clone()).await?.is_empty() {
+                return BoxResult::Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        Err(format!("no Yulius CI run was queued at {head}").into())
+    };
+
+    let first = git(&wt, &["rev-parse", "HEAD"])?;
+    let said = review().await?;
+    assert!(
+        said.contains("Yulius CI tests it while the review"),
+        "{said}"
+    );
+    wait_for_run(first.clone()).await?;
+    assert_eq!(
+        f.origin_sha("feat/1-checkout")?,
+        first,
+        "the head was pushed"
+    );
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"create_pull #1 dev<-feat/1-checkout".to_owned()),
+        "{:?}",
+        f.h.github.writes()
+    );
+
+    // Uncommitted work: the reviewer starts, nothing goes out, and the agent hears why.
+    std::fs::write(wt.join("feature.txt"), "v2, not committed")?;
+    let said = review().await?;
+    assert!(said.contains("uncommitted changes"), "{said}");
+    assert_eq!(f.origin_sha("feat/1-checkout")?, first);
+
+    // Committed: the newer head goes out, and its run supersedes the first one.
+    git(&wt, &["commit", "-qam", "Feature v2"])?;
+    let second = git(&wt, &["rev-parse", "HEAD"])?;
+    review().await?;
+    wait_for_run(second.clone()).await?;
+    assert_eq!(f.origin_sha("feat/1-checkout")?, second);
+    let older = runs_at(first).await?;
+    assert!(
+        older.iter().all(|run| run.state == RunState::Cancelled),
+        "{older:?}"
+    );
+
+    // A spec that is not valid, committed: the agent hears why, and nothing goes out.
+    commit_file(&wt, SPEC_PATH, "# not a spec\n", "Spec broken")?;
+    let said = review().await?;
+    assert!(said.contains("the spec is not valid"), "{said}");
+    assert_eq!(f.origin_sha("feat/1-checkout")?, second);
+    Ok(())
+}
+
+/// Review round 1 of SPEC-493 fix 3: a review's start syncs CI beside the 60 s loop, so two
+/// syncs of one sandbox may overlap. Each reads the runs before it queues, so both would queue the
+/// same head. One sync of a sandbox runs at a time, and the head is queued once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn two_ci_syncs_of_a_sandbox_queue_a_head_once() -> TestResult {
+    use yulius_app::ports::store_ext::CiStore;
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "v1", "Feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    // The first sync is held once it read the runs, before it queues.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (reached, planned) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::CiSyncPlanned,
+        std::path::Path::new("s1"),
+        move || {
+            reached.send(()).ok();
+            held.recv_timeout(Duration::from_secs(20)).ok();
+        },
+    );
+    let sandbox_record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let (app, first_record) = (f.h.app.clone(), sandbox_record.clone());
+    let first = tokio::spawn(async move { app.ci_sync_sandbox(&first_record).await });
+    tokio::task::spawn_blocking(move || planned.recv_timeout(Duration::from_secs(20))).await??;
+    let (app, second_record) = (f.h.app.clone(), sandbox_record.clone());
+    let second = tokio::spawn(async move { app.ci_sync_sandbox(&second_record).await });
+    // The second goes on, or waits for the first, for a moment; then the first is let go.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    release.send(())?;
+    first.await??;
+    second.await??;
+    let runs = f.h.store.ci_runs_for_sha(&sandbox, &head).await?;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    Ok(())
+}
+
 /// AC-GIT-2, AC-DLV-8 (#139): agents deliver their own work only through the gated delivery
 /// tools — a merge needs passed checks and an independent review of the exact head — while reads,
 /// task tokens on the REST API and read-only users never merge, promote or deploy.
