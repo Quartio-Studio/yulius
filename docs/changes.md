@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A deploy or rollback answered after its CD page was left shows when the page is back (task
+  #465, fixes #1171). The page read on return, before the server answered, and then waited for
+  its 30 s idle poll; it now reads again as soon as the answer comes.
 - Watching a live task reads only what was written since (SPEC-483 slice 36, task #465). Each
   1.5 s poll re-read and re-parsed the whole transcript; the server now goes on from where the
   last read ended (30 MB: 497 ms a poll before, 18 µs now).

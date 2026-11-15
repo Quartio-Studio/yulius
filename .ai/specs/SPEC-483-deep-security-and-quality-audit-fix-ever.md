@@ -3134,3 +3134,22 @@ slices follow.
   (`mutations-r1.log`, `mutations-r1b.log`, 10 cases, none survives).
 - **Gate after it.** `scripts/dev ci` at `6793ba26e`: exit 0; `4435 tests run: 4435 passed (1
   slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `e65afc7d2`): approve; nits: a kept farther point
+  stays when an agent shortens its transcript in place (outside the threat model), the
+  handler's use of `replaces` has no test of its own, a doubled line in a test. The merge was
+  armed.
+- **Merge train at `e65afc7d2`** (run `0dfa6dad`): `e2e` failed in `cd.e2e.ts` "a refusal after
+  its view was left is a toast; a page left with it open draws nothing", the open flaky test
+  #1171, which this slice does not touch. Its cause, found here: the CD page left while a
+  deploy is being checked reads its runs when shown again, possibly before the server
+  answered, and then waits for its 30 s idle poll, showing the earlier run meanwhile (a
+  product race, not only the test's). Made deterministic (the deploy released after the page is
+  back and shows the earlier run: it failed with the CI's very message), then fixed: an answer
+  that comes after its page went makes the CD page shown for that sandbox read again at once;
+  the rollback had the same gap (a hold for rollbacks added to the mock, a test that failed
+  first). Separate commit, `Fixes #1171`. With it, the nits: a kept point past a transcript
+  shortened in place is replaced (tested), the doubled line removed; the handler's own use of
+  `replaces` stays untested (speed only).
+- **Gate after it** (`dev` merged in). `scripts/dev ci` at `41117af64`: exit 0; `4438 tests run:
+  4438 passed (1 slow), 17 skipped` (`gate3.log`); the whole e2e suite: 85 files, 1049 passed,
+  1 skipped (`e2e-full.log`).
