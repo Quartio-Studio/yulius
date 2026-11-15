@@ -80,6 +80,9 @@ commit.
 - Every finding is checked on its merits (is it true here?), then fixed test-first: a test that
   shows the problem, then the fix. Answer each finding in the pull request.
 - Re-review after fixes, up to 3 rounds.
+- After an approval, fix the remaining nits within 20 product lines and merge without another round:
+  `delivery_merge` with the approved head counts them (tests and documents do not count). More than
+  that, or a file leaving the change, needs a new round.
 
 **Findings in the change's own code are fixed, never deferred.**
 
@@ -186,7 +189,7 @@ to the changes log.
 | Size | about 400 changed lines outside tests and generated files, or a recorded reason | you and the review |
 | Tests | a behavior change changes a test; a bug fix starts with a failing test | you and the review |
 | CI | the project gate passed on the exact head, on our own machines | `delivery_merge` |
-| Review | an independent approval exists for the exact head, with no later changes requested | `delivery_merge` (`reviewed_head`) |
+| Review | an independent approval exists for the exact head, or for one followed by at most 20 product lines, with no later changes requested | `delivery_merge` (`reviewed_head`) |
 | Fresh | the branch is up to date with the integration branch | `delivery_merge` |
 
 What we leave out on purpose: human approvals, paid GitHub rulesets and Actions minutes, module
