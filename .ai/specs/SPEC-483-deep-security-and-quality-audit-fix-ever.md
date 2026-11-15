@@ -2206,7 +2206,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
 - Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`
-  (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
+  and `spans::tests::the_pauses_of_a_window_come_in_start_order` (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
   dashboard tests.
 - Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
   `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
@@ -3017,3 +3017,18 @@ slices follow.
   timeout. The first two answered in slice 35.
 - **Merged.** Pull request #1305 was squash-merged into `dev` (`2123763fb`) after its merge
   train passed.
+
+### Slice 35 (2026-11-15)
+
+- **Test failing before the change**: `tests::the_capacity_views_read_their_window_through_an_index`
+  failed on `SCAN a` (`attempts`, every run ever recorded) and then, with the indexes, on
+  `SCAN capacity_pauses USING INDEX capacity_pauses_started` (the pauses' `OR` and `ORDER BY`).
+- **Tests failing without their fix** (`target/audit/slice35/mutate.py`, `mutations.log`): each
+  of the three indexes left out, the pauses' `OR` back: each failed the plan test. Leaving the
+  pauses unsorted survived (nothing tested their order); a test was added and the mutation
+  fails (`mutations-b.log`).
+- **Gate.** `scripts/dev ci` at `ba96b2551`: exit 0; `4426 tests run: 4426 passed (1 slow), 17
+  skipped` (`gate.log`).
+- **Not measured.** The time a dashboard load takes on a large instance (no such database here);
+  the plans say what SQLite reads.
+- **Security scan.** Vidoc is switched off for this project in Yulius: disabled, not passed.
