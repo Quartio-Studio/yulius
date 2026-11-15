@@ -606,6 +606,9 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "ci_rerun",
         "ci_cancel",
         "cd_deploy",
+        "cd_rollback",
+        "promote",
+        "onboarding_start",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),

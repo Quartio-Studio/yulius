@@ -54,6 +54,7 @@ pub(crate) const PERSON_TOOLS: &[(&str, Action)] = &[
     ("ci_prioritize", Action::Work),
     ("cd_status", Action::View),
     ("cd_deploy", Action::Work),
+    ("cd_rollback", Action::Work),
     ("variables_list", Action::View),
 ];
 
@@ -194,7 +195,13 @@ pub(crate) fn subject(name: &str, args: &Value) -> Value {
                 about.insert("run".into(), json!(run));
             }
         }
-        "cd_deploy" => {
+        "cd_deploy" | "cd_rollback" => {
+            if let Some(release) = args.get("release").and_then(Value::as_str) {
+                about.insert(
+                    "release".into(),
+                    json!(release.chars().take(80).collect::<String>()),
+                );
+            }
             if let Some(environment) = args
                 .get("environment")
                 .and_then(Value::as_str)
@@ -429,8 +436,18 @@ pub(crate) fn descriptors() -> Vec<ToolDescriptor> {
         ),
         tool(
             "cd_deploy",
-            "Deploy a dev-stage environment (dev, or another [cd.<name>] cd_status lists with stage dev): Yulius runs its deploy and verify commands from the integration branch head; follow the run with cd_status. Production and production-stage environments are deployed only by a person on the CD page.",
-            json!({"environment": {"type": "string", "description": "dev or another dev-stage environment's name"}}),
+            "Deploy an environment cd_status lists: Yulius runs its deploy and verify commands from the integration branch head; follow the run with cd_status. A dev-stage one deploys at once. A production-stage one is a person's: your Superagent call waits on its panel until the person types the project's slug (an administrator), and then deploys as them; any other caller is refused (the CD page).",
+            json!({"environment": {"type": "string", "description": "An environment's name from cd_status (dev, prod, …)"}}),
+            &["environment"],
+        ),
+        tool(
+            "cd_rollback",
+            "Roll an environment back (or forward) to a release Yulius kept from an earlier deploy, without rebuilding, as the CD page's Roll back (default: the previous release; name the part when it has several). A dev-stage one rolls back at once; a production-stage one waits, as cd_deploy's does, for the person's typed slug on your Superagent's panel. Follow the run with cd_status.",
+            json!({
+                "environment": {"type": "string", "description": "An environment's name from cd_status"},
+                "release": {"type": "string", "description": "A kept release cd_status lists (default: the previous one)"},
+                "part": {"type": "string", "description": "The part, when the environment has several"}
+            }),
             &["environment"],
         ),
         tool(
@@ -668,6 +685,32 @@ impl App {
                     confirm_ms: None,
                 };
                 record(&self.cd_deploy(ctx, sid, &env, &req).await?)
+            }
+            // The CD page's Roll back of a dev-stage environment (SPEC-487 REL-003); a
+            // production-stage one is the person's (the Superagent asks on its panel).
+            "cd_rollback" => {
+                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?).ok_or_else(
+                    || AppError::Invalid("environment is dev or another [cd.<name>]".into()),
+                )?;
+                let production = env == "prod"
+                    || self.cd_overview(ctx, sid).await.is_ok_and(|cd| {
+                        cd.environments
+                            .iter()
+                            .any(|e| e.name == env && e.stage == "prod")
+                    });
+                if production {
+                    return Err(AppError::Forbidden(
+                        "only a person rolls production back, on the project's CD page".into(),
+                    ));
+                }
+                let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_owned);
+                let req = yulius_contracts::api::cd::CdRollbackRequest {
+                    part: text("part"),
+                    release: text("release"),
+                    confirm: None,
+                    confirm_ms: None,
+                };
+                record(&self.cd_rollback(ctx, sid, &env, &req).await?)
             }
             // Project variables (SPEC-275 VAR-005): plain values, shown as they are.
             "variables_list" => record(&self.project_variables(ctx, sid).await?),

@@ -1956,7 +1956,14 @@ timeout raced. `sandbox_requests` reads the Superagent's own waiting requests an
 `sandbox_request_amend` replaces a waiting one's text in place and `sandbox_request_withdraw`
 removes one; `person_ask` records a request of the action `Ask` on the Superagent's own sandbox
 (Yes / No on the same panel, nothing runs), and `sandbox_tasks_list` reads another sandbox's
-tasks without asking. The panel reads the person's own
+tasks without asking. The Superagent's production releases are requests of its own sandbox too
+([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md),
+`release_requests.rs`): `cd_deploy` and `cd_rollback` of a production-stage environment, `promote`
+and `onboarding_start` are checked as the page would check the person (`checked_release`), and
+the approval, which for a release carries the project's slug as typed (checked before the request
+is taken), runs `cd_deploy`, `cd_rollback`, `promote_sandbox` or `approve_onboarding` with the
+answering person's browser `AuthContext` (`run_release`); a dev-stage deploy or rollback is the
+person's project tool, run at once. The panel reads the person's own
 requests, announced by `superagent.requests` to that person only. An answer needs a browser
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly

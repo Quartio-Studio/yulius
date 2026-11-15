@@ -81,6 +81,8 @@ pub const WITHHELD_TOOLS: &[&str] = &[
     "variables_set",
     "variable_delete",
     "cd_deploy",
+    // A dev rollback is a deploy too (review of slice 8b, M1).
+    "cd_rollback",
     "project_import",
     "onboarding_start",
     "onboarding_skip",

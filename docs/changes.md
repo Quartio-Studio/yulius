@@ -16,6 +16,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-14
 
+- The Superagent deploys production once its person types the project's slug (SPEC-487 slice 8b,
+  task #469, [ADR-0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)).
+  Asked to deploy production, roll it back or promote, it could only send the person to the CD
+  page. Now the request waits on its panel, the person (an administrator) types the slug there as
+  the CD page asks, and the CD page's own deploy, rollback or promotion runs as them; a project's
+  onboarding starts the same way with a click. `cd_rollback` of a dev-stage environment is one of
+  the person's tools, for their Superagent and their own agent.
 - Consent to control can be withdrawn, and a request is heard anywhere (SPEC-490 slice 2, task
   #473). Whoever handed a task over on request takes it back with one click (Take back on the
   task's page, `POST /api/tasks/{tid}/control/take-back`, schema 60), until control moves again;
