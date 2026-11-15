@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
+  task's summary read the whole task list again to find its supertask holders; listing 200
+  tasks took 88 ms and grew with the square of the list, now 31 ms.
 - A deploy or rollback answered after its CD page was left shows when the page is back (task
   #465, fixes #1171). The page read on return, before the server answered, and then waited for
   its 30 s idle poll; it now reads again as soon as the answer comes.

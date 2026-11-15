@@ -65,7 +65,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
       #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33
       (merged, #1300), QB2 slice 34 (merged, #1305);
-  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35 (merged, #1306), QB5 slice 36;
+  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35 (merged, #1306), QB5 slice 36 (merged,
+      #1309), QA8 and QC6 slice 37;
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
@@ -733,6 +734,16 @@ went; two of the auditors' items had gained a user since and stay.
 - **Slice 35's review nit.** A Test plan line past the width, which its Evidence said was
   wrapped.
 
+### Slice 37: a project's task list reads the project once
+
+- **QA8, QC6 (medium).** `list_tasks` (`GET /api/sandboxes/{id}/tasks`) builds each task's
+  summary with its own store reads, each a hop to the store's one thread. Measured with a
+  temporary counter and timer (release build): 0 tasks 4 calls; 50 tasks 688 calls, 11 ms; 200
+  tasks 2 738 calls, 88 ms: about 14 calls a task, and a cost that grew faster than the list.
+  The growth came from every queued task's summary reading the project's whole task list (every
+  task with its prompt) again to find the supertasks that hold it (`supertask_holders`): a list
+  with many queued tasks cost the square of its length.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1278,6 +1289,9 @@ went; two of the auditors' items had gained a user since and stay.
   the farther point), used only in the same file (device and inode), while still at a line's
   start and at or before the asked line, and forgotten when a transcript is rewritten in place
   (`reindex_session`).
+- **EFF-003** A project's task list reads the project's tasks once and hands them to every
+  summary: a queued task's holders are found among them, so the list costs a fixed number of
+  store reads a task, whatever its length; a single task's summary reads the project as before.
 
 ## Plan
 
@@ -1319,7 +1333,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 33: one dispatch of the shared project tools and one handshake for every MCP (merged, #1300)
 - [x] Slice 34: one reader of a sandbox's way to Yulius for every client in it (merged, #1305)
 - [x] Slice 35: the capacity and accounts views read their window through indexes (merged, #1306)
-- [ ] Slice 36: a watcher's poll reads only what was written since
+- [x] Slice 36: a watcher's poll reads only what was written since (merged, #1309)
+- [ ] Slice 37: a project's task list reads the project once
 
 ## Acceptance criteria
 
@@ -1973,6 +1988,10 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   follows); on a 30 MB transcript a poll took 497 ms from the start and 18 µs from the point
   (EFF-002).
 
+- **AC-157** A project's list gives each queued task the holders its own summary gives (a
+  supertask waiting for a working task, a task waiting for the supertask, a continued one);
+  listing 200 tasks took 31 ms with 2 671 store calls, against 88 ms and 2 738 before (EFF-003).
+
 ## Test plan
 
 - Domain (`vault/redact.rs`): tags (bits per length, only the first 8 bytes count, the cases
@@ -2233,6 +2252,9 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 37: `yulius` `supertask::a_supertask_waits_for_working_tasks_and_holds_its_project`
+  (the list against each summary, AC-157), the task list and supertask tests; a counter and
+  timing probe (not kept).
 - Slice 36: `yulius-app` `transcripts::tests::a_read_from_a_resume_point_gives_what_a_read_from_the_start_gives`,
   `the_farther_point_of_a_file_is_kept`, `a_point_after_an_overlong_line_is_at_the_next_line`,
   `yulius` `task_transcript::a_watcher_s_next_poll_reads_only_what_was_written_since` (AC-156),
@@ -2358,6 +2380,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 37 (no decision record: a refactor). Only the part that grew with the square of the
+  list is taken out: the rest is about 13 store reads a task, each a hop of some 10 µs to the
+  store's thread (31 ms for 200 tasks). Batching every reader of a summary (steps, the live
+  run, chains, times, control requests, the attention and needs-you views, the pause) into
+  per-project queries would rewrite some twenty helpers that the single task's summary and
+  the event stream also use, for a linear cost already within a page load; it is left as it
+  is (ledger QA8, QC6: fixed for the unbounded part, the linear rest measured and kept).
 - Slice 36 (no decision record: a cache). The resume point is the server's, not the
   reader's: the dotenv calls seen decide what is redacted, and a reader's cursor could be one
   that leaves a dotenv read out. A transcript is append-only; one stepped back over a usage
@@ -2866,8 +2895,8 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
-| QA8, QC6 | efficiency | Store round trips per task | medium | open (item 17 of the Context) |
-| QB5 | efficiency | The watched transcript re-read and re-parsed from byte 0 every 1.5 s | medium | slice 36 |
+| QA8, QC6 | efficiency | Store round trips per task: a list cost the square of its length (queued tasks re-read the project) | medium | slice 37 |
+| QB5 | efficiency | The watched transcript re-read and re-parsed from byte 0 every 1.5 s | medium | fixed (slice 36) |
 | QC1 | efficiency | The capacity and accounts views scan every run and pause | low | fixed (slice 35) |
 | Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
@@ -3153,3 +3182,10 @@ slices follow.
 - **Gate after it** (`dev` merged in). `scripts/dev ci` at `41117af64`: exit 0; `4438 tests run:
   4438 passed (1 slow), 17 skipped` (`gate3.log`); the whole e2e suite: 85 files, 1049 passed,
   1 skipped (`e2e-full.log`).
+- **Review, round 3** (the same session, head `81cb0bc7a`): approve; the #1171 fix checked
+  (listener lifetimes, one page per window, another sandbox's answer ignored, the asking page
+  unchanged, the loader keeping the latest read; cancel has no 30 s gap, set-up navigates
+  away); nits: the handler's use of `replaces` and the sandbox filter have no test of their
+  own (speed only, both accepted).
+- **Merged.** Pull request #1309 was squash-merged into `dev` (`e1b934573`) after its merge
+  train passed; #1171 closed.
