@@ -1192,7 +1192,13 @@ reason and nothing moves. The move is announced only after the new session's sta
 there (`preflight_start`); with no such subscription, a start that would be refused, a move
 refused moments ago or looks longer than 3 s (the hook client waits 5), the round runs the Opus
 reviewer (`no_fable`), whose prompt gets a line saying so. A failure to decide
-lets the reviewer start as asked. `SubagentStart`
+lets the reviewer start as asked. The same start delivers the head under review (SPEC-493 CIR-001,
+`review::deliver_for_review`): when the spec is valid and the work committed, the head is pushed
+(`try_auto_open_pr` with `DeliveryAsk::Review`, which no step holds, opens the pull request when
+there is none) and `ci_sync_sandbox` queues its Yulius CI run at once, so CI tests it while the
+reviewer reads. A newer head's run supersedes the older one. When the head cannot go out the
+agent is told why, and the reviewer starts anyway. Merging still needs `delivery_merge` with the
+reviewed head and that head's passed run. `SubagentStart`
 links the round to Claude Code's subagent (a resumed one changes nothing), `SubagentStop` ends it
 with the verdict of its report's last line (`review::verdict_of`). A usage limit that cuts a
 subagent off sends no `SubagentStop`, so such a round stays without a report. The store closes a
