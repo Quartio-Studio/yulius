@@ -264,7 +264,15 @@ impl App {
                 lines.push(file);
             }
         }
-        let follow = FollowUp::count(&lines, &ProductRule::default());
+        // What counts as product code: the integration branch's `[review]`, so a pull request
+        // does not loosen its own count; a table that does not parse refuses (APR-002).
+        let rule = match git.show_file(worktree, &integration, "yulius.toml").await {
+            Ok(Some(text)) => yulius_domain::spec_format::parse_yulius_toml_review(&text)
+                .map_err(|err| format!("`[review]` of yulius.toml on {integration}: {err}"))?,
+            Ok(None) => ProductRule::default(),
+            Err(_) => return Err(format!("yulius.toml on {integration} cannot be read")),
+        };
+        let follow = FollowUp::count(&lines, &rule);
         if follow.within_bound() {
             Ok(follow)
         } else {

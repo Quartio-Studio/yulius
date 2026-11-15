@@ -2625,6 +2625,33 @@ async fn an_approval_carries_across_a_small_follow_up() -> TestResult {
     })
     .await?;
     assert!(refused && said.contains("merged something other"), "{said}");
+    // The integration branch's `[review] not_product` moves a path out of the count.
+    let (refused, said) = deliver_after_follow_up(|f, wt| {
+        advance_base(
+            f,
+            "dev",
+            "yulius.toml",
+            "[review]\nnot_product = [\"src/gen/\"]\n",
+        )?;
+        commit_file(wt, "src/gen/x.rs", &lines(25, "g"), "Generated")?;
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")
+    })
+    .await?;
+    assert!(!refused, "{said}");
+    assert!(
+        said.contains("since then 2 product lines in 1 file: src/extra.rs 2"),
+        "{said}"
+    );
+    // A `[review]` table that does not parse refuses, naming it.
+    let (refused, said) = deliver_after_follow_up(|f, wt| {
+        advance_base(f, "dev", "yulius.toml", "[review]\nproducts = [\"src/\"]\n")?;
+        commit_file(wt, "src/extra.rs", &lines(2, "e"), "Nits")
+    })
+    .await?;
+    assert!(
+        refused && said.contains("`[review]` of yulius.toml"),
+        "{said}"
+    );
     Ok(())
 }
 
