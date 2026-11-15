@@ -64,8 +64,8 @@ no code path reaches; documents, texts shown to agents and people, and code that
   16. duplicated code (W4-W6, QB2, QB3, QB7, QB8, QC3, QC4): W4-W6 are slice 28 (merged,
       #1287), with the review of slice 27's last finding (R3-1); QB8 and QC4 slice 29 (merged,
       #1290); QC3 slice 31 (merged, #1296), QB3 slice 32 (merged, #1297), QB7 slice 33
-      (merged, #1300), QB2 slice 34;
-  17. efficiency (QA8, QB5, QC1, QC6);
+      (merged, #1300), QB2 slice 34 (merged, #1305);
+  17. efficiency (QA8, QB5, QC1, QC6): QC1 is slice 35;
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern;
   19. the connection that carries the server's token in a clone its agents configure (G2,
@@ -712,6 +712,16 @@ went; two of the auditors' items had gained a user since and stay.
 - **Slice 33's review nits.** Two lines past the width, a missing blank line, a test doc that
   named its scope without the reason.
 
+### Slice 35: the capacity views read their window through indexes
+
+- **QC1 (low).** The capacity view (`token_runs`, `pauses_since`, `GET /api/capacity`, which any
+  signed-in person's dashboard loads) and the accounts view (`account_tokens`, twice) read the
+  runs and pauses of a window (since a time) with conditions on `attempts.ended_at`,
+  `attempts.started_at` and `capacity_pauses.ended_at`, none of them indexed, and neither table
+  is pruned: every load scanned every run and pause ever recorded, on the store's one thread.
+- **Slice 34's review nits.** Two spec lines past the width; the new `::1` tests could, rarely,
+  meet another test's listener on 127.0.0.1 at the same port and fail.
+
 ## Requirements
 
 - **FPR-001** The fingerprint set of a sandbox and holder is the same on every request and
@@ -1245,6 +1255,10 @@ went; two of the auditors' items had gained a user since and stay.
   `YULIUS_TASK_TOKEN`; each keeps its own way of reading answers and says the one message of
   each error, and connects to the first address that takes the connection before the one
   deadline (trying the next never stretches it).
+- **EFF-001** The runs and pauses of a window are read through indexes on `attempts.ended_at`,
+  `attempts.started_at` and `capacity_pauses.ended_at` (migration 0061): no query of the
+  capacity or accounts view scans either table; the pauses come in the same order as before
+  (by start, then id).
 
 ## Plan
 
@@ -1284,7 +1298,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 31: one reader of RFC 3339 time, the calendar from the domain (merged, #1296)
 - [x] Slice 32: the CLI's sign-in has one contract, its state an enum both ends read (merged, #1297)
 - [x] Slice 33: one dispatch of the shared project tools and one handshake for every MCP (merged, #1300)
-- [ ] Slice 34: one reader of a sandbox's way to Yulius for every client in it
+- [x] Slice 34: one reader of a sandbox's way to Yulius for every client in it (merged, #1305)
+- [ ] Slice 35: the capacity and accounts views read their window through indexes
 
 ## Acceptance criteria
 
@@ -1922,9 +1937,13 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   host, user information, a bad port, a space, a query or a non-ASCII byte in the path are
   refused as malformed, so are `[127.0.0.1]`, an unbracketed `::1`, a signed port and an empty
   one, `10.0.0.1`, `0.0.0.0` and a host name as not loopback; a server on ::1 only is reached
-  through `localhost` by the Git and the hook clients; a spent deadline tries no address; an empty or
-  unprintable token and missing variables are refused; `Debug` hides the token; the Git
+  through `localhost` by the Git and the hook clients; a spent deadline tries no address; an
+  empty or unprintable token and missing variables are refused; `Debug` hides the token; the Git
   credential, `agent_call`, hook and redaction clients' tests pass through it (ONE-009).
+
+- **AC-155** `EXPLAIN QUERY PLAN` of `token_runs`, `pauses_since` and `account_tokens` names no
+  `SCAN` of `attempts` or `capacity_pauses`; the capacity, accounts and dashboard tests pass,
+  pauses in their order (EFF-001).
 
 ## Test plan
 
@@ -2186,12 +2205,15 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   and `gone` cases); the
   configurations of the test fixtures that still name `webhook_secret` (GHA-001: they
   parse); the gate's lint and e2e for the deleted web code.
+- Slice 35: `yulius-store` `tests::the_capacity_views_read_their_window_through_an_index`
+  (AC-155); the store's capacity and accounts tests and the `yulius` capacity, accounts and
+  dashboard tests.
 - Slice 34: `yulius-domain` `agent_endpoint::tests::the_endpoint_is_plain_http_to_loopback_with_a_printable_token`,
   `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` and
   `a_spent_deadline_tries_no_address`, `yulius-harness`
-  `hook_client::tests::localhost_reaches_a_server_on_the_second_address` (AC-154); the clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`,
-  `yulius-harness` `hook_client::tests`) and the `yulius` tests of `wait`, `tool`, the MCP
-  bridge and the hooks.
+  `hook_client::tests::localhost_reaches_a_server_on_the_second_address` (AC-154); the
+  clients' own tests (`yulius-git` `credential::tests`, `agent_call::tests`, `yulius-harness`
+  `hook_client::tests`) and the `yulius` tests of `wait`, `tool`, the MCP bridge and the hooks.
 - Slice 33: `yulius` `remote_mcp::every_tool_the_remote_mcp_lists_is_dispatched`, `yulius-app`
   `mcp::tests::a_task_asked_for_elsewhere_takes_model_and_effort_as_task_create_says` and
   `initialize_speaks_the_asked_version_or_the_newest`,
@@ -2303,6 +2325,12 @@ its change is reviewed and ready to merge, and the next is added when it is merg
   transfers with the token in a courier of the server's own; no adapter configuration for a
   command in a sandbox's folder; nothing started with an argument of the clone's. The
   remote's address stays the clone's for now (ADR-0323 says why).
+- Slice 35 (no decision record: indexes). Indexes rather than pruning: the runs and pauses
+  are the history the dashboard and the accounts page show, and pruning is a product decision
+  this audit does not make. The pauses' two conditions became two branches of a `UNION ALL`
+  (an `OR` made SQLite read the whole table in start order), and the few rows are sorted in
+  Rust rather than by an `ORDER BY`, which made SQLite prefer the same full read. The runs'
+  query keeps its `OR`: SQLite reads both terms through the new index.
 - Slice 34 (no decision record: a refactor). What the clients share is how they find Yulius,
   not how they read its answers: the Git client decodes chunked bodies, `agent_call` streams with
   limits, the hook client holds and retries; those stay theirs. The reader is pure and sits in
@@ -2788,13 +2816,14 @@ State: `fixed` (merged), `slice N` (planned), `accepted` (a recorded decision, n
 | W8 | web UI | A live document's rejoin refused for lack of access is tried again every second while the file is open (review of slice 23) | low | fixed (slice 24) |
 | QA9, QC2, QC5, QC7, QB4, QB6 | dead code | Store functions, task events and reasons, contract items, a one-shot workflow shim, Cargo features nothing uses | low | fixed (slice 25) |
 | W4, W5, W6 | web UI | The unsaved-changes guard five times (and not on Back or by code), the pull request chip three times, size and commit formatters | low | fixed (slice 28) |
-| QB2 | duplication | Three loopback HTTP clients: five copies of the environment preamble, two URL parsers | low | slice 34 |
+| QB2 | duplication | Three loopback HTTP clients: five copies of the environment preamble, two URL parsers | low | fixed (slice 34) |
 | QB7 | duplication | The Superagent's tools dispatched twice, the handshake twice | low | fixed (slice 33) |
 | QB3 | duplication | The device sign-in contract twice, the server's state a free string | low | fixed (slice 32) |
 | QB8 | duplication | Five bearer parsers, the welcome page's port list twice | low | fixed (slice 29) |
 | QC3 | duplication | RFC 3339 parsing four times with different inputs | low | fixed (slice 31) |
 | QC4 | duplication | The GitHub-token scrub twice | low | fixed (slice 29) |
-| QA8, QC1, QC6, QB5 | efficiency | Store round trips per task, unindexed capacity scans, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
+| QA8, QC6, QB5 | efficiency | Store round trips per task, the watched transcript re-read every 1.5 s | medium | open (item 17 of the Context) |
+| QC1 | efficiency | The capacity and accounts views scan every run and pause | low | slice 35 |
 | Q30 | queue | Cancelling any waiting task drains the queue; a bulk stop's next waiting task can start before the stop reaches it (#1278) | low | fixed (slice 30) |
 | C4 | containment | The engine leaf's limits are writable from a nested cgroup namespace | low | open (item 18 of the Context) |
 
@@ -2982,3 +3011,9 @@ slices follow.
   (`mutations-r1.log`, 5 cases).
 - **Gate after it.** `scripts/dev ci` at `2819ef95b`: exit 0; `4416 tests run: 4416 passed (1
   slow), 17 skipped` (`gate2.log`).
+- **Review, round 2** (the same session, head `7d9e26a33`): approve; nits: two spec lines past
+  the width, a rare port collision of the new `::1` tests with another test's 127.0.0.1
+  listener, and (pre-existing) the hook client's `exchange` giving each address the whole
+  timeout. The first two answered in slice 35.
+- **Merged.** Pull request #1305 was squash-merged into `dev` (`2123763fb`) after its merge
+  train passed.
