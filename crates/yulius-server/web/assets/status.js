@@ -453,11 +453,11 @@ export function otherOwner(task, me) {
  * by the server's one rule (SPEC-490, ADR-0331): anyone who may work in the project tidies a task
  * (stop, archive, restore, delete), and everything that steers it is its owner's. `pr` is the
  * task's pull request (store.pullsOf()), so a task the sidebar shows as Done can be archived or
- * deleted.
+ * deleted. A playground's `guest` tidies only their own tasks there.
  */
-export function taskActions(task, access, pr, me) {
-  const tidy = allows(access, 'write');
+export function taskActions(task, access, pr, me, guest = false) {
   const owner = otherOwner(task, me);
+  const tidy = allows(access, 'write') && !(guest && owner);
   const write = tidy && !owner;
   const live = isLive(task.status);
   // A chained or prepared task waits to start (TSK-012, SPEC-105): Start now or Cancel.

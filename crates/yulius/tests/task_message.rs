@@ -859,6 +859,83 @@ fn the_owner_closes_out_an_idle_task() -> TestResult {
     })
 }
 
+/// SPEC-490 OWN-002, OWN-005 (review round 1): a person who does not own a task closes it out
+/// too; its audit names them and the owner, and its terminal says who closed it.
+#[test]
+fn someone_else_closes_out_an_idle_task_and_is_named() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let owner = app.deps.store.user(&caller.user).await?.ok_or("user")?;
+        let other = yulius_app::model::UserRecord {
+            id: UserId::parse("u-other")?,
+            github_login: Some("other".into()),
+            github_id: Some(4242),
+            display_name: "Other".into(),
+            password_hash: None,
+            is_superadmin: false,
+            is_instance_admin: false,
+            ..owner.clone()
+        };
+        yulius_app::ports::store::UserStore::insert_user(&*app.deps.store, &other).await?;
+        // They may work in the project (a cached GitHub permission, as a sign-in leaves).
+        let sandbox = app.deps.store.task(&id).await?.ok_or("task")?.sandbox_id;
+        yulius_app::ports::store::PermissionStore::put_access(
+            &*app.deps.store,
+            &other.id,
+            &sandbox,
+            yulius_domain::permission::AccessLevel::Write,
+            app.now(),
+        )
+        .await?;
+        let ctx = AuthContext {
+            user: other,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        wait_for("the turn's end", Duration::from_secs(30), || async {
+            matches!(activity(&app, &id).await, Some(idle) if idle != Activity::Working)
+        })
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.close_task_for_person(&ctx, id.as_str()).await?;
+        wait_for("the task to close", Duration::from_secs(30), || async {
+            matches!(
+                app.deps.store.task(&id).await,
+                Ok(Some(task)) if task.status == TaskStatus::Closed
+            )
+        })
+        .await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let detail: String = db.query_row(
+            "SELECT detail FROM audit_log WHERE action = 'task.closed_by_person' AND target = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        let detail: Value = serde_json::from_str(&detail)?;
+        assert!(detail["owner"].is_string(), "{detail}");
+        let actor: String = db.query_row(
+            "SELECT actor FROM audit_log WHERE action = 'task.closed_by_person' AND target = ?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_ne!(
+            Some(&actor),
+            detail["owner"].as_str().map(str::to_owned).as_ref(),
+            "{detail}"
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|n| *n == format!("Closed by @{actor}.")),
+            "{said:?}"
+        );
+        Ok(())
+    })
+}
+
 /// SPEC-480 AC2, AC4 (DRF-003, DRF-005, DRF-006, DRF-007): a message of Yulius's own (here the
 /// MCP watch's `/mcp reconnect yulius`, a command) waits for a person's draft. Two minutes
 /// after their last key nothing is typed and nobody is told; eleven minutes after it the task

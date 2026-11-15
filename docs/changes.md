@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-15
+
+- One reader of a sandbox's way to Yulius (SPEC-483 slice 34, task #465). The Git credential
+  helper, `yulius wait` and `yulius tool`, the MCP bridge and the hook clients each read
+  `YULIUS_URL` and the task token and parsed the URL with one of two parsers that took different
+  addresses; they now read them one way.
+
 ## 2026-11-14
 
 - The Superagent deploys production once its person types the project's slug (SPEC-487 slice 8b,
@@ -13,6 +20,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the CD page asks, and the CD page's own deploy, rollback or promotion runs as them; a project's
   onboarding starts the same way with a click. `cd_rollback` of a dev-stage environment is one of
   the person's tools, for their Superagent and their own agent.
+- Consent to control can be withdrawn, and a request is heard anywhere (SPEC-490 slice 2, task
+  #473). Whoever handed a task over on request takes it back with one click (Take back on the
+  task's page, `POST /api/tasks/{tid}/control/take-back`, schema 60), until control moves again;
+  the person it is taken from is told. A request for control reaches its owner as a
+  notification and a toast that opens the task, and marks its row in the sidebar. Review fixes:
+  a playground's guest stops, archives and deletes only their own tasks; a refused Start
+  onboarding pushes no first commit, and an onboarding task that never ran goes to whoever
+  starts onboarding.
+- One dispatch of the Superagent's tools (SPEC-483 slice 33, task #465). The Yulius MCP and the
+  remote MCP each kept the same 18 project tools and the protocol handshake; a tool added to one
+  only would have been listed and answered "unknown tool". The device sign-in's polling code is
+  no longer printed in debug output.
 - The Superagent's requests to its person last until answered (SPEC-487 slice 8a, task #469,
   [ADR-0333](decisions/0333-the-superagents-requests-to-its-person-last-until-answered.md)).
   A request to create, change, message or stop a task in another sandbox ended after 4 minutes,

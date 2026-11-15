@@ -327,8 +327,9 @@ pub struct OnboardingTask {
     pub url: String,
 }
 
-/// `POST /api/device/start` response (docs/api.md, CLI device approval).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `POST /api/device/start` response (docs/api.md, CLI device approval). `Debug` redacts the
+/// polling code, which fetches the token until it expires.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceStart {
     /// Secret polling code; only the CLI knows it.
     pub device_code: String,
@@ -342,11 +343,31 @@ pub struct DeviceStart {
     pub expires_in_s: u64,
 }
 
-/// `POST /api/device/poll` body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl fmt::Debug for DeviceStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceStart")
+            .field("device_code", &"<redacted>")
+            .field("user_code", &self.user_code)
+            .field("verification_url", &self.verification_url)
+            .field("interval_s", &self.interval_s)
+            .field("expires_in_s", &self.expires_in_s)
+            .finish()
+    }
+}
+
+/// `POST /api/device/poll` body. `Debug` redacts the polling code.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevicePollRequest {
     /// The code from [`DeviceStart::device_code`].
     pub device_code: String,
+}
+
+impl fmt::Debug for DevicePollRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DevicePollRequest")
+            .field("device_code", &"<redacted>")
+            .finish()
+    }
 }
 
 /// State of a device login request.
@@ -780,9 +801,17 @@ mod tests {
         let pending: DevicePoll = serde_json::from_str(r#"{"status":"pending","token":null}"#)?;
         assert_eq!(pending.status, DeviceStatus::Pending);
         let start: DeviceStart = serde_json::from_str(
-            r#"{"device_code":"d","user_code":"ABCD-EFGH","verification_url":"https://y/device","interval_s":5,"expires_in_s":600}"#,
+            r#"{"device_code":"dc_polling_secret","user_code":"ABCD-EFGH","verification_url":"https://y/device","interval_s":5,"expires_in_s":600}"#,
         )?;
         assert_eq!(start.interval_s, 5);
+        // The polling code fetches the token until it expires: `Debug` keeps it out (slice 33).
+        let shown = format!("{start:?}");
+        assert!(!shown.contains("dc_polling_secret"), "{shown}");
+        assert!(shown.contains("ABCD-EFGH"), "{shown}");
+        let asked = DevicePollRequest {
+            device_code: "dc_polling_secret".into(),
+        };
+        assert!(!format!("{asked:?}").contains("dc_polling_secret"));
         Ok(())
     }
 }

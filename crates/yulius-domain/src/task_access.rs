@@ -26,6 +26,8 @@ pub enum TaskRefusal {
     Access,
     /// The action is the owner's and they are not the owner.
     NotOwner,
+    /// A playground's guest tidies only their own tasks there (SPEC-490, GST-003).
+    Guest,
 }
 
 impl TaskAction {
@@ -49,6 +51,14 @@ impl TaskAction {
         }
     }
 
+    /// [`TaskAction::of`] with the access to the project it needs: `action` itself, which is the
+    /// task action's own (`View`, `Work`) or stronger (`Configure` also refuses guests,
+    /// `Administer` needs an admin), so asking for more never checks less.
+    #[must_use]
+    pub fn with_access(action: Action) -> (Self, Action) {
+        (Self::of(action), action)
+    }
+
     /// Whether only the task's owner does this.
     #[must_use]
     pub fn owner_only(self) -> bool {
@@ -64,11 +74,28 @@ impl TaskAction {
 /// see or change in the project is not explained by its owner), [`TaskRefusal::NotOwner`] for
 /// control by anyone else, whatever their level.
 pub fn decide(action: TaskAction, level: AccessLevel, owns: bool) -> Result<(), TaskRefusal> {
+    decide_for(action, level, owns, false)
+}
+
+/// [`decide`] for a person who may be a playground's `guest`: a guest has write access to their
+/// playground but tidies only their own tasks there, never its maker's (SPEC-490 review round 1).
+///
+/// # Errors
+/// As [`decide`]; [`TaskRefusal::Guest`] for a guest's tidy of a task they do not own.
+pub fn decide_for(
+    action: TaskAction,
+    level: AccessLevel,
+    owns: bool,
+    guest: bool,
+) -> Result<(), TaskRefusal> {
     if !level.allows(action.sandbox_action()) {
         return Err(TaskRefusal::Access);
     }
     if action.owner_only() && !owns {
         return Err(TaskRefusal::NotOwner);
+    }
+    if action == TaskAction::Tidy && guest && !owns {
+        return Err(TaskRefusal::Guest);
     }
     Ok(())
 }
@@ -121,6 +148,52 @@ mod tests {
                     "control at {level:?}, owner {owns}"
                 );
             }
+        }
+    }
+
+    /// SPEC-490 review round 1: a playground's guest has write access to it (GST-003) but
+    /// tidies only their own tasks there; the maker's are refused, as is control of them.
+    #[test]
+    fn a_guest_tidies_only_their_own_tasks() {
+        assert_eq!(
+            decide_for(TaskAction::Tidy, AccessLevel::Write, true, true),
+            Ok(())
+        );
+        assert_eq!(
+            decide_for(TaskAction::Tidy, AccessLevel::Write, false, true),
+            Err(TaskRefusal::Guest)
+        );
+        assert_eq!(
+            decide_for(TaskAction::Control, AccessLevel::Write, false, true),
+            Err(TaskRefusal::NotOwner)
+        );
+        assert_eq!(
+            decide_for(TaskAction::View, AccessLevel::Write, false, true),
+            Ok(())
+        );
+        assert_eq!(
+            decide_for(TaskAction::Tidy, AccessLevel::Write, false, false),
+            Ok(())
+        );
+    }
+
+    /// SPEC-490 review round 1: a stronger sandbox action asked of a task is kept as the access
+    /// it needs, so `Configure` (which refuses guests) never shrinks to `Work`.
+    #[test]
+    fn a_stronger_action_keeps_its_access() {
+        assert_eq!(
+            TaskAction::with_access(Action::View),
+            (TaskAction::View, Action::View)
+        );
+        assert_eq!(
+            TaskAction::with_access(Action::Work),
+            (TaskAction::Control, Action::Work)
+        );
+        for action in [Action::Configure, Action::Administer] {
+            assert_eq!(
+                TaskAction::with_access(action),
+                (TaskAction::Control, action)
+            );
         }
     }
 

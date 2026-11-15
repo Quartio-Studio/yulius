@@ -24,13 +24,14 @@ export function openTaskMenu(ctx, anchor, task) {
   const access = sandbox ? sandbox.access : 'read';
   const pr = ctx.store.pullsOf(task.sandbox_id).get(task.id);
   const me = ctx.store.state.me?.user?.login;
-  const can = taskActions(task, access, pr, me);
+  const guest = Boolean(ctx.guest && ctx.guest());
+  const can = taskActions(task, access, pr, me, guest);
   const owner = otherOwner(task, me);
   const write = allows(access, 'write');
   // Steering is the owner's (SPEC-490): the reason says how to get it. Stop, archive and delete
   // are open to whoever may work here, so theirs is the task's state.
   const why = !write ? 'Requires write access' : owner ? `@${owner} owns this task: request control to do this` : 'Not available in this state';
-  const whyTidy = write ? 'Not available in this state' : 'Requires write access';
+  const whyTidy = !write ? 'Requires write access' : guest && owner ? `@${owner}'s task: a guest puts away only their own tasks` : 'Not available in this state';
   const request = task.control_request;
   const asked = Boolean(request && request.by.login === me);
   openMenu(anchor, [
@@ -53,8 +54,8 @@ export function openTaskMenu(ctx, anchor, task) {
     { separator: true },
     task.archived
       ? { label: 'Restore', disabled: !can.restore, title: can.restore ? null : whyTidy, onSelect: () => restoreTask(ctx, task) }
-      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (write ? 'Still running: stop the task before archiving it' : whyTidy), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!write ? whyTidy : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
+      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (write && !(guest && owner) ? 'Still running: stop the task before archiving it' : whyTidy), onSelect: () => archiveTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!write || (guest && owner) ? whyTidy : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -278,6 +279,11 @@ export function dropControlRequest(ctx, task) {
   const mine = task.control_request && task.control_request.by.login === ctx.store.state.me?.user?.login;
   return taskPost(ctx, task, 'answer the request for', () => ctx.api.del(`/api/tasks/${enc(task.id)}/control-request`),
     mine ? `Withdrew your request for control of #${task.number}` : `Declined the request for control of #${task.number}`);
+}
+
+/** Take back a task you handed over on request (SPEC-490 OWN-009): it acts on GitHub as you again. */
+export function takeBackTask(ctx, task) {
+  return taskPost(ctx, task, 'take back', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control/take-back`), `#${task.number} is yours again`);
 }
 
 /** As the owner, hand the task to the person who asked: it acts on GitHub as them from now on. */

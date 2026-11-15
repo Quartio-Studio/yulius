@@ -21,9 +21,9 @@ use crate::secret::Secret;
 /// Claude Code executable name (resolved through `PATH` by the spawner).
 pub const CLAUDE_PROGRAM: &str = "claude";
 /// Environment variable holding the per-attempt Yulius bearer token (set by the supervisor).
-pub const TASK_TOKEN_ENV: &str = "YULIUS_TASK_TOKEN";
+pub const TASK_TOKEN_ENV: &str = yulius_domain::agent_endpoint::TOKEN_ENV;
 /// Environment variable holding the internal Yulius listener URL.
-pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
+pub const YULIUS_URL_ENV: &str = yulius_domain::agent_endpoint::URL_ENV;
 /// Environment variable holding the task's worktree: `yulius remove` removes the task's own files
 /// there (SPEC-192 RMV-001).
 pub const TASK_WORKTREE_ENV: &str = "YULIUS_TASK_WORKTREE";

@@ -128,3 +128,18 @@ test('a guest sees their playground and nothing else', async ({ app, browser, sc
   await expect(menu.getByRole('menuitem')).toHaveText(['Sign out']);
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// SPEC-490 review round 1: a guest has write access to the playground but puts away only their
+// own tasks; the maker's task offers neither Archive nor Delete, saying why, and no quick archive.
+test("a guest is not offered to put away the maker's task", async ({ app, browser, screen }) => {
+  await app.open(mock('/s/lab', '&guest=1&labtask=1'));
+  const row = browser.locator('.task-row:has-text("Sketch the landing page")');
+  await expect(row).toBeVisible();
+  await row.hover();
+  await expect(browser.locator('.task-row:has-text("Sketch the landing page") .task-quick-archive')).toBeHidden();
+  await row.getByRole('button', 'Task actions').click();
+  // The reason is part of the item's name, as the menu says it.
+  await expect(screen.getByRole('menuitem', "Archive @mkarp's task: a guest puts away only their own tasks")).toBeDisabled();
+  await expect(screen.getByRole('menuitem', /^Delete permanently/)).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+});

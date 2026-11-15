@@ -4088,3 +4088,22 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     assert!(out.starts_with(&format!("{old_url}/: Yulius ")), "{out}");
     Ok(())
 }
+
+/// SPEC-483 slice 33 (QB7): every tool the remote MCP lists for a person's token is dispatched:
+/// called with only its project, each answers (often refusing the missing arguments) and none is
+/// an "unknown tool", which a tool listed but missing from the shared dispatch would be. The
+/// Global Superagent's browser tools are not called: they would open a browser.
+#[tokio::test]
+async fn every_tool_the_remote_mcp_lists_is_dispatched() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, _, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let tools = served(&w, &alice).await?;
+    assert!(tools.iter().any(|name| name == "tasks_list"), "{tools:?}");
+    for name in &tools {
+        let (_, said, _) = remote(&w, &alice, name, json!({"project": "acme/shop"})).await?;
+        assert!(!said.contains("unknown tool"), "`{name}`: {said}");
+    }
+    Ok(())
+}

@@ -1881,54 +1881,45 @@ async fn a_browser_import_without_claude_waits_for_the_connection() -> TestResul
     Ok(())
 }
 
-// SPEC-490 OWN-004: Start onboarding starts the onboarding task, which is control of it. A task
-// that exists is started by its owner alone, and anyone else is told to ask for control; a
-// sandbox without one gets it created for the person who starts onboarding, so it never acts on
-// GitHub as someone who did not start it.
-#[tokio::test(flavor = "multi_thread")]
+// SPEC-490 OWN-004 and review round 1: Start onboarding starts the onboarding task, which is
+// control of it. A task Yulius created by itself that has never run is nobody's yet: whoever
+// starts onboarding takes it (audited as a hand-over), also when another person's new task made
+// it. One that has run is its owner's: anyone else is refused before anything is prepared, so no
+// first commit reaches the repository. A sandbox without one gets it created for the starter.
+#[tokio::test]
 async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
-    let alice_browser = w.browser(&alice_user).await?;
     let (bob_user, _) = w.user("bob", false).await?;
     let bob_browser = w.browser(&bob_user).await?;
 
-    // Alice's token import leaves onboarding pending; a new task creates its resting task,
-    // Alice's as the sandbox's creator.
+    // Alice's token import leaves onboarding pending; her new task creates its resting task,
+    // Alice's as the sandbox's creator, never run.
     w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
     w.grant("alice", "shop", "admin");
     w.grant("bob", "shop", "push");
-    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
-    assert_eq!(shop.body["onboarding"], "pending", "{:?}", shop.body);
-    let sid = SandboxId::parse(text(&shop.body["id"]))?;
-    let waiting = call(
-        &w.h.router,
-        Method::POST,
-        &format!("/api/sandboxes/{sid}/tasks"),
-        Some(json!({"prompt": "add a cart"})),
-        &alice,
-    )
-    .await?;
-    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
-    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
-    let prep = record.onboarding_task_id.ok_or("onboarding task")?;
-    let before = w.h.store.task(&prep).await?.ok_or("task")?;
-    assert_eq!(before.owner, alice_user.id);
-
+    let sid = pending_with_task(&w, &alice, "Quartio-Studio/shop").await?;
+    let prep = onboarding_task_of(&w, &sid).await?;
+    assert_eq!(prep.owner, alice_user.id);
     let approve = format!("/api/sandboxes/{sid}/onboarding/approve");
-    let refused = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
-    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
-    let message = text(&refused.body["error"]["message"]);
-    assert!(
-        message.contains("@alice") && message.contains("Ask them for control"),
-        "{message}"
-    );
-    assert_eq!(w.h.store.task(&prep).await?.ok_or("task")?, before);
-    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
-    assert_eq!(record.onboarding_state, "pending");
-    let started = call(&w.h.router, Method::POST, &approve, None, &alice_browser).await?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
     assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
     assert_eq!(started.body["onboarding"], "preparing", "{}", started.body);
+    let taken = w.h.store.task(&prep.id).await?.ok_or("task")?;
+    assert_eq!(taken.owner, bob_user.id, "the starter's now");
+    assert_eq!(taken.created_by, alice_user.id, "who asked stays");
+    let audit = yulius_app::ports::store_ext::AutomationStore::automation_audit(
+        &w.h.store,
+        prep.id.as_str(),
+        20,
+    )
+    .await?;
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.action == "task.control_passed" && e.actor == "bob"),
+        "{audit:?}"
+    );
 
     // A sandbox nobody started onboarding in has no task: Bob starts it, and it is Bob's.
     w.remote(OWNER, "docs", &[("README.md", "# Docs\n")], &[])?;
@@ -1941,52 +1932,98 @@ async fn onboarding_is_started_by_its_tasks_owner_or_becomes_the_starters() -> T
     let approve = format!("/api/sandboxes/{docs_id}/onboarding/approve");
     let started = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
     assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
-    let record = w.h.store.sandbox(&docs_id).await?.ok_or("sandbox")?;
-    let task = record.onboarding_task_id.ok_or("onboarding task")?;
-    let task = w.h.store.task(&task).await?.ok_or("task")?;
+    let task = onboarding_task_of(&w, &docs_id).await?;
     assert_eq!(task.owner, bob_user.id, "the starter's");
     assert_eq!(task.created_by, bob_user.id);
 
-    // Two people start onboarding at once: Alice's start creates the task after Bob's start
-    // read that there is none. The task is Alice's, so Bob's start is refused and starts
-    // nothing.
-    w.remote(OWNER, "wiki", &[("README.md", "# Wiki\n")], &[])?;
+    // An onboarding task of Alice's that has run (a session that ended) in an empty repository:
+    // Bob's start is refused, naming her, and pushes no first commit.
+    let remote = w.empty_remote(OWNER, "wiki", "master")?;
     w.grant("alice", "wiki", "admin");
     w.grant("bob", "wiki", "push");
-    let wiki = import(&w, &alice, "Quartio-Studio/wiki").await?;
-    let wiki_id = SandboxId::parse(text(&wiki.body["id"]))?;
-    unstarted(&w, &wiki_id).await?;
-    let mut alices = before.clone();
-    alices.id = yulius_domain::ids::TaskId::parse("t-wiki-onboarding")?;
-    alices.sandbox_id = wiki_id.clone();
-    {
-        let (store, sid, task) = (w.h.store.clone(), wiki_id.clone(), alices.clone());
-        let handle = tokio::runtime::Handle::current();
-        yulius_app::race::on(
-            yulius_app::race::Point::OnboardingApproved,
-            std::path::Path::new(wiki_id.as_str()),
-            move || {
-                let created = tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        store.insert_task(&task).await?;
-                        store.set_onboarding(&sid, "pending", Some(&task.id)).await
-                    })
-                });
-                assert!(created.is_ok(), "{created:?}");
-            },
-        );
-    }
-    let approve = format!("/api/sandboxes/{wiki_id}/onboarding/approve");
+    let wiki = pending_with_task(&w, &alice, "Quartio-Studio/wiki").await?;
+    let ran = onboarding_task_of(&w, &wiki).await?;
+    ended_session(&w, &ran).await?;
+    let before = remote_heads(&remote)?;
+    let approve = format!("/api/sandboxes/{wiki}/onboarding/approve");
     let refused = call(&w.h.router, Method::POST, &approve, None, &bob_browser).await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    let message = text(&refused.body["error"]["message"]);
     assert!(
-        text(&refused.body["error"]["message"]).contains("@alice"),
-        "{:?}",
-        refused.body
+        message.contains("@alice") && message.contains("Ask them for control"),
+        "{message}"
     );
-    let record = w.h.store.sandbox(&wiki_id).await?.ok_or("sandbox")?;
+    assert_eq!(remote_heads(&remote)?, before, "nothing pushed");
+    let record = w.h.store.sandbox(&wiki).await?.ok_or("sandbox")?;
     assert_eq!(record.onboarding_state, "pending");
-    assert_eq!(w.h.store.task(&alices.id).await?.ok_or("task")?, alices);
+    assert_eq!(
+        w.h.store.task(&ran.id).await?.ok_or("task")?.owner,
+        alice_user.id
+    );
+    Ok(())
+}
+
+/// `repo` imported by `who` with a token (onboarding stays pending) and a task created there,
+/// which creates the resting onboarding task: the sandbox.
+async fn pending_with_task(
+    w: &World,
+    who: &support::Creds,
+    repo: &str,
+) -> Result<SandboxId, Error> {
+    let imported = import(w, who, repo).await?;
+    assert_eq!(
+        imported.body["onboarding"], "pending",
+        "{:?}",
+        imported.body
+    );
+    let sid = SandboxId::parse(text(&imported.body["id"]))?;
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/tasks"),
+        Some(json!({"prompt": "add a cart"})),
+        who,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    Ok(sid)
+}
+
+/// The onboarding task of `sid`.
+async fn onboarding_task_of(
+    w: &World,
+    sid: &SandboxId,
+) -> Result<yulius_app::model::TaskRecord, Error> {
+    let record = w.h.store.sandbox(sid).await?.ok_or("sandbox")?;
+    let id = record.onboarding_task_id.ok_or("onboarding task")?;
+    Ok(w.h.store.task(&id).await?.ok_or("task")?)
+}
+
+/// Records a session of `task` that ran and ended, as a start that later stopped leaves.
+async fn ended_session(w: &World, task: &yulius_app::model::TaskRecord) -> TestResult {
+    let now = w.h.app.now();
+    w.h.store
+        .insert_attempt(&yulius_app::model::AttemptRecord {
+            id: yulius_domain::ids::AttemptId::parse(&format!("a-{}", task.id))?,
+            task_id: task.id.clone(),
+            seq: 1,
+            harness: yulius_domain::harness::Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: yulius_app::model::LaunchKind::New,
+            model: None,
+            state: yulius_domain::task::AttemptState::Exited,
+            run_dir: "/nonexistent/run".into(),
+            token_hash: "0".repeat(64),
+            host_token: w.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: now,
+            ended_at: Some(now),
+            exit_code: Some(0),
+            exit_reason: None,
+        })
+        .await?;
     Ok(())
 }
 

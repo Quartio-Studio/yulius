@@ -5,7 +5,7 @@
 // user in this browser and bounded, so a reload keeps the history. With desktop notifications
 // on (Settings), entries also reach the operating system while the tab is in the background.
 
-import { h, icon, iconButton, setChildren, popoverFocus, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, popoverFocus, keepFocus, toast } from './dom.js';
 import { relShort, dateTime } from './format.js';
 import { taskInfo } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -179,6 +179,45 @@ export function createNotificationCenter(ctx) {
     const current = ctx.currentTask();
     return Boolean(current && current.id === taskId && document.visibilityState === 'visible' && document.hasFocus());
   }
+
+  // A request for control of one of the viewer's tasks (SPEC-490 OWN-008): heard wherever they
+  // are, as an entry under the bell (once per request, also across a reload, and for one that
+  // waited before the page loaded) and, when it arrives while they are here, a toast that opens
+  // the task, where they hand it over or decline. An answered request's entry is read.
+  function heardRequest(task, live) {
+    const me = ctx.store.state.me?.user?.login;
+    const request = task.control_request;
+    if (!me || !task.owner || task.owner.login !== me) return;
+    if (!request) { markRead((n) => n.key && n.key.startsWith(`control:${task.id}:`)); return; }
+    const key = `control:${task.id}:${request.by.login}:${request.at}`;
+    if (items.some((n) => n.key === key) || watching(task.id)) return;
+    const title = `@${request.by.login} asks for control of #${task.number} ${task.title || 'Task'}`;
+    const sandbox = sandboxOf(task.sandbox_id);
+    const route = taskRoute(task);
+    add({ kind: 'warn', title, detail: `It would act on GitHub as them${sandbox ? ` · ${sandbox.name}` : ''}`, route, key, once: true });
+    if (live) toast(title, { kind: 'warn', timeout: 10000, action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  }
+  watch('task', (task) => heardRequest(task, true));
+  // A sandbox's tasks as first loaded: requests that waited before the page did. Later list
+  // changes come with their own task event.
+  const loaded = new Set();
+  watch('tasks', (sandboxId) => {
+    // A failed load has no list yet: the sandbox is scanned once one arrives (review round 3).
+    const list = ctx.store.tasksOf(sandboxId);
+    if (!list || loaded.has(sandboxId)) return;
+    loaded.add(sandboxId);
+    list.forEach((task) => heardRequest(task, false));
+  });
+
+  // The person who handed a task to the viewer took it back (SPEC-490 OWN-010): the server tells
+  // the person it was taken from, wherever they are.
+  watch('control-taken-back', (event) => {
+    const task = ctx.store.findTask(event.task_id) || { id: event.task_id, sandbox_id: event.sandbox_id, number: event.number };
+    const title = `@${event.by} took back control of #${event.number} ${event.title || 'Task'}`;
+    const route = taskRoute(task);
+    add({ kind: 'info', title, detail: 'It acts on GitHub as them again', route });
+    toast(title, { kind: 'info', action: route ? { label: 'Open', run: () => ctx.navigate(route) } : undefined });
+  });
 
   watch('task', (task) => {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
