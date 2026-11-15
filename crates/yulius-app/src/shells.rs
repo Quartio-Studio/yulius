@@ -190,6 +190,11 @@ pub struct ShellRuntime {
     ended_tx: watch::Sender<bool>,
     /// Clock time (ms) when the last viewer left; meaningful only without viewers.
     idle_since_ms: AtomicI64,
+    /// A Cockpit's prompt box (SPEC-487 SES-002): when a person last typed into it, and when it
+    /// was last emptied (Enter or Ctrl-C, or its start); text typed after the last emptying is
+    /// a draft, which an update's restart does not throw away.
+    pub(crate) typed_ms: AtomicI64,
+    pub(crate) emptied_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
@@ -893,6 +898,8 @@ impl App {
             closing: AtomicBool::new(false),
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
+            typed_ms: AtomicI64::new(0),
+            emptied_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
@@ -1300,6 +1307,9 @@ impl App {
         if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
+        if attach.runtime.kind == ShellKind::Cockpit && crate::terminal::is_typing(data) {
+            crate::cockpit::note_typing(&attach.runtime, data, self.now().0);
+        }
         match attach.runtime.writer.lock().await.as_mut() {
             Some(writer) => writer.input(data).await,
             None => Err(AppError::Conflict("the shell has ended".into())),
@@ -1523,6 +1533,8 @@ impl App {
             closing: AtomicBool::new(false),
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
+            typed_ms: AtomicI64::new(0),
+            emptied_ms: AtomicI64::new(0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),

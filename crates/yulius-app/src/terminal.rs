@@ -381,7 +381,7 @@ impl App {
 /// not: focus reports (`ESC [ I` / `ESC [ O`), mouse reports (SGR `ESC [ < … M|m`, X10 `ESC [ M`
 /// and three bytes) and its answers to the program's queries (device attributes, cursor
 /// position, mode and status reports, OSC and DCS strings).
-fn is_typing(data: &[u8]) -> bool {
+pub(crate) fn is_typing(data: &[u8]) -> bool {
     const ESC: u8 = 0x1b;
     let mut i = 0;
     while i < data.len() {

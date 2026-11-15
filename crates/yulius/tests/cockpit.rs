@@ -4482,6 +4482,71 @@ async fn a_superagent_mid_turn_restarts_only_once_its_turn_ends() -> TestResult 
     Ok(())
 }
 
+/// SPEC-487 SES-002 (wall 8: "one real person message was swallowed by a restart"): a
+/// Superagent an update restarts once idle waits while its person has text in its prompt box
+/// that they have not sent; the Enter that sends it lets the restart go on.
+#[tokio::test]
+async fn an_updates_restart_waits_for_text_left_in_the_prompt_box() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let project = alice_project(&f)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    let mut text = [
+        prompt_record("u0", None, -60),
+        answer_record("a0", "u0", -59),
+        prompt_record("u1", Some("a0"), -10),
+    ]
+    .concat();
+    std::fs::write(&transcript, &text)?;
+    predate_launch_digest(&f, &id)?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    let served = serve(g.h.router.clone()).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    wait_for("the Superagent to wait for its turn", || {
+        g.h.app.cockpit_refresh_state(&id) == "waiting"
+    })
+    .await?;
+    let mut socket = attach(served.addr, &id, &g.alice).await?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "deploy it when the"}).to_string(),
+        ))
+        .await?;
+    wait_for("the draft to be seen", || g.h.app.cockpit_has_draft(&id)).await?;
+
+    // The turn ends: the Superagent is idle, but the person's text holds it.
+    text.push_str(&answer_record("a1", "u1", -5));
+    std::fs::write(&transcript, &text)?;
+    wait_for("the restart to be held by the draft", || {
+        g.h.app.cockpit_refresh_state(&id) == "held"
+    })
+    .await?;
+    let live = |app: &yulius_app::context::App| -> Vec<String> {
+        app.sandbox_shells(&sid())
+            .iter()
+            .map(|s| s.id().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        live(&g.h.app),
+        vec![id.clone()],
+        "not restarted over a draft"
+    );
+
+    // Sent: the box is empty, and the restart goes on.
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "\r"}).to_string(),
+        ))
+        .await?;
+    other_cockpit(&g, &id).await?;
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-211 SCF-001, SCF-002, SCF-004 (AC-7): the Superagent stores a key in its person's home as
 /// an agent secret without seeing it, created by the person and audited as their Superagent; the
 /// stored value is the key file with literal `\n` (`secret_verify` matches the file's hash).

@@ -64,6 +64,9 @@ pub(crate) const REFRESH_NONE: u8 = 0;
 pub(crate) const REFRESH_DUE: u8 = 1;
 /// [`REFRESH_DUE`], and its conversation is in a turn: it waits for the turn to end.
 pub(crate) const REFRESH_WAITING: u8 = 2;
+/// [`REFRESH_DUE`], and its person has text in its prompt box they did not send: it waits for
+/// them (SPEC-487 SES-002).
+pub(crate) const REFRESH_HELD: u8 = 3;
 /// How long a refresh that could not start (no capacity, access lost) waits before it is tried
 /// again.
 const REFRESH_RETRY_MS: i64 = 60_000;
@@ -126,6 +129,33 @@ fn transcript_len(path: &std::path::Path) -> u64 {
 /// Whether the conversation found idle with transcript `seen` (path and length) still is: nothing
 /// was written to it since, such as a prompt sent meanwhile (review round 1). No conversation:
 /// nothing to cut.
+/// How long after its person's last keystroke a draft in a Cockpit's prompt box holds an
+/// update's restart (SPEC-487 SES-002): one left for longer is taken as abandoned.
+pub(crate) const DRAFT_HOLDS_MS: i64 = 30 * 60 * 1000;
+
+/// Records a person's keystrokes into a Cockpit (SPEC-487 SES-002): a frame that ends with
+/// Enter outside a paste, or a Ctrl-C, empties the prompt box; anything else is typed into it.
+pub(crate) fn note_typing(runtime: &ShellRuntime, data: &[u8], now_ms: i64) {
+    if empties_box(data) {
+        runtime.emptied_ms.store(now_ms, Ordering::SeqCst);
+    } else {
+        runtime.typed_ms.store(now_ms, Ordering::SeqCst);
+    }
+}
+
+/// Whether a keystroke frame empties Claude Code's prompt box: Enter (a frame ending with it,
+/// outside a bracketed paste, whose line breaks are text) or Ctrl-C.
+fn empties_box(data: &[u8]) -> bool {
+    let pasted = data.starts_with(b"\x1b[200~");
+    data == b"\x03" || (!pasted && data.last() == Some(&b'\r'))
+}
+
+/// Whether a Cockpit's prompt box holds a draft its person typed and did not send, recently
+/// enough to wait for ([`DRAFT_HOLDS_MS`]).
+fn draft_holds(typed_ms: i64, emptied_ms: i64, now_ms: i64) -> bool {
+    typed_ms > emptied_ms && now_ms.saturating_sub(typed_ms) < DRAFT_HOLDS_MS
+}
+
 fn still_idle(seen: Option<(&std::path::Path, u64)>) -> bool {
     seen.is_none_or(|(path, len)| transcript_len(path) == len)
 }
@@ -265,13 +295,28 @@ impl App {
         self.deps.crypto.sha256_hex(view.to_string().as_bytes())
     }
 
+    /// Whether the Cockpit `shell`'s prompt box holds text its person typed and did not send
+    /// (SPEC-487 SES-002). Public for tests.
+    #[must_use]
+    pub fn cockpit_has_draft(&self, shell: &str) -> bool {
+        self.shell(shell).is_some_and(|s| {
+            draft_holds(
+                s.typed_ms.load(Ordering::SeqCst),
+                s.emptied_ms.load(Ordering::SeqCst),
+                self.now().0,
+            )
+        })
+    }
+
     /// Whether the live Cockpit `shell` is to start again to get what this Yulius serves:
-    /// `none`, `due`, or `waiting` for its turn to end (tests, diagnostics; SPEC-186 SAV-006).
+    /// `none`, `due`, `waiting` for its turn to end (tests, diagnostics; SPEC-186 SAV-006), or
+    /// `held` by a draft in its prompt box (SPEC-487 SES-002).
     #[must_use]
     pub fn cockpit_refresh_state(&self, shell: &str) -> &'static str {
         match self.shell(shell).map(|s| s.refresh.load(Ordering::SeqCst)) {
             Some(REFRESH_DUE) => "due",
             Some(REFRESH_WAITING) => "waiting",
+            Some(REFRESH_HELD) => "held",
             _ => "none",
         }
     }
@@ -860,8 +905,13 @@ impl App {
                 return Refresh::Failed;
             }
         };
-        // Checked last, right before the end: a prompt sent meanwhile is not cut.
+        // Checked last, right before the end: a prompt sent meanwhile is not cut, nor text its
+        // person is still typing into the prompt box (SPEC-487 SES-002).
         if !still_idle(seen) {
+            return Refresh::Busy;
+        }
+        if self.cockpit_has_draft(runtime.id()) {
+            runtime.refresh.store(REFRESH_HELD, Ordering::SeqCst);
             return Refresh::Busy;
         }
         runtime.notice(REFRESH_NOTICE);
@@ -1113,7 +1163,25 @@ impl Drop for CockpitStartSlot<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Observation, ReportedLimit, Timestamp, TurnState, own_limit};
+    use super::{
+        DRAFT_HOLDS_MS, Observation, ReportedLimit, Timestamp, TurnState, draft_holds, empties_box,
+        own_limit,
+    };
+
+    /// SPEC-487 SES-002: Enter and Ctrl-C empty the prompt box, a pasted line break does not;
+    /// a draft holds a restart until its person sends it, or for at most [`DRAFT_HOLDS_MS`].
+    #[test]
+    fn a_draft_is_text_typed_since_the_box_was_emptied() {
+        assert!(empties_box(b"\r") && empties_box(b"deploy it\r") && empties_box(b"\x03"));
+        assert!(!empties_box(b"deploy") && !empties_box(b"\x1b[200~a\rb\x1b[201~\r"));
+        assert!(!draft_holds(0, 0, 5));
+        assert!(draft_holds(10, 5, 20));
+        assert!(!draft_holds(10, 10, 20), "sent at once");
+        assert!(
+            !draft_holds(10, 5, 10 + DRAFT_HOLDS_MS),
+            "left for half an hour"
+        );
+    }
 
     /// SPEC-486: the Cockpit acts on its own thread's limit, not on one that refused a
     /// workflow's agents (it could not have the workflow resumed after a move).
