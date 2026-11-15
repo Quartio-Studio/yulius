@@ -87,6 +87,7 @@ pub mod race;
 pub mod record_numbers;
 pub mod recovery;
 pub mod reference_repo;
+pub mod release_requests;
 pub mod remote;
 pub mod remote_files;
 pub mod resources;

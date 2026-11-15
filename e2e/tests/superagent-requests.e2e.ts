@@ -430,3 +430,45 @@ test('an amended request is drawn again and approved as drawn', async ({ app, br
   expect(created.length).toBe(before.length + 1);
   expect(created[created.length - 1].prompt).toBe('Rewrite the README and the guide');
 });
+
+// SPEC-487 REL-001 (the person's decision of 2026-11-13): a production release the Superagent
+// asks for waits on its panel, and its button takes a click only once the project's slug is
+// typed, as the CD page's confirmation does; Decline needs none. Onboarding is a plain click.
+test('a production deploy asked by the Superagent takes the project slug typed', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'deploy', options: { environment: 'prod' } });
+  const card = screen.getByRole('group', 'Your Superagent asks to deploy prod in studio');
+  await expect(card).toBeVisible();
+  await expect(card).toHaveText(/Environment: prod/);
+  const deploy = screen.getByRole('button', 'Deploy');
+  const typed = browser.locator('.agent-request input[aria-label="Type studio to confirm"]');
+  await expect(typed).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await typed.fill('studi');
+  await expect(deploy).toBeDisabled();
+  await typed.fill('studio');
+  await expect(deploy).toBeEnabled();
+  await deploy.click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Deploy started in studio")')).toBeVisible();
+  const released = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { superagentReleases?: unknown[] } }).__yuliusMock.superagentReleases ?? []);
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }]);
+
+  // Declined without typing anything: nothing is released.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'promote' });
+  const promote = screen.getByRole('group', 'Your Superagent asks to promote production in studio');
+  await expect(promote).toBeVisible();
+  await expect(screen.getByRole('button', 'Promote')).toBeDisabled();
+  await screen.getByRole('button', 'Decline').click();
+  await expect(promote).toBeHidden();
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }]);
+
+  // Onboarding takes a click, no slug.
+  await ask(browser, 'sb_studio', { sandbox: 'studio', action: 'onboard' });
+  const onboard = screen.getByRole('group', 'Your Superagent asks to start onboarding in studio');
+  await expect(onboard).toBeVisible();
+  await screen.getByRole('button', 'Start onboarding').click();
+  await expect(onboard).toBeHidden();
+  expect(await released()).toEqual([{ action: 'deploy', confirm: 'studio' }, { action: 'onboard', confirm: null }]);
+});

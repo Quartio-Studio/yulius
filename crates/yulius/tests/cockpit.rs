@@ -1653,6 +1653,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "browser_tabs",
             "browser_type",
             "cd_deploy",
+            "cd_rollback",
             "cd_status",
             "ci_cancel",
             "ci_prioritize",
@@ -1662,7 +1663,9 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "instance",
             "instance_update",
             "merge_queue",
+            "onboarding_start",
             "person_ask",
+            "promote",
             "sandbox_request_amend",
             "sandbox_request_withdraw",
             "sandbox_requests",
@@ -5092,17 +5095,18 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
     let (refused, is_error) = cockpit_tool(&f, &token, "ci_run", json!({"run_id": "nope"})).await?;
     assert!(is_error, "{refused}");
 
-    // CD: the state is read; production is a person's; dev goes to the deploy (which needs the
-    // repository's clone here).
+    // CD: the state is read; production waits for an administrator's typed slug on the panel
+    // (SPEC-487 REL-002: a writer's is refused before anyone is asked); dev goes to the deploy
+    // (which needs the repository's clone here).
     let (cd, is_error) = cockpit_tool(&f, &token, "cd_status", json!({})).await?;
     assert!(!is_error, "{cd}");
     let (refused, is_error) =
         cockpit_tool(&f, &token, "cd_deploy", json!({"environment": "prod"})).await?;
     assert!(
-        is_error && said(&refused).contains("only a person deploys production"),
+        is_error && said(&refused).contains("only an administrator of this project deploys"),
         "{refused}"
     );
-    expected.push(("cd_deploy", false));
+    // Refused before anyone is asked, as every request is: no tool ran, nothing is audited.
     let (dev, is_error) =
         cockpit_tool(&f, &token, "cd_deploy", json!({"environment": "dev"})).await?;
     assert!(
@@ -5110,6 +5114,32 @@ async fn the_superagent_does_what_its_person_may_do_with_tasks_ci_and_cd() -> Te
         "dev goes to the deploy: {dev}"
     );
     expected.push(("cd_deploy", false));
+    // SPEC-487 REL-003: a dev rollback goes to the CD page's Roll back at once (nothing was
+    // deployed here, which is its answer); production, a promotion and onboarding are requests,
+    // refused before anyone is asked when the person may not.
+    let (dev, is_error) =
+        cockpit_tool(&f, &token, "cd_rollback", json!({"environment": "dev"})).await?;
+    assert!(
+        is_error && !said(&dev).contains("administrator"),
+        "dev goes to the rollback: {dev}"
+    );
+    expected.push(("cd_rollback", false));
+    for (tool, args, why) in [
+        (
+            "cd_rollback",
+            json!({"environment": "prod"}),
+            "only an administrator",
+        ),
+        ("promote", json!({}), "only an administrator"),
+        ("onboarding_start", json!({}), "nothing to start"),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, tool, args).await?;
+        assert!(
+            is_error && said(&refused).contains(why),
+            "{tool}: {refused}"
+        );
+    }
+    assert_eq!(waiting_requests(&f).await?, 0, "nobody was asked");
     let (variables, is_error) = cockpit_tool(&f, &token, "variables_list", json!({})).await?;
     assert!(!is_error, "{variables}");
 
