@@ -3198,8 +3198,9 @@ later slices follow.
 ### Closing (2026-11-15)
 
 All 39 slices are merged into `dev`, each on its own green Yulius CI run (#1240 to #1318); every
-finding of the ledger is fixed or answered there. Nothing was promoted to `main`. What could not
-be tested is named in each slice's Evidence. The largest gaps:
+finding of the ledger is fixed or answered there. This task promoted nothing to `main`: slices
+1 to 16 (#1240 to #1265) reached it in the owner's promotions #1262 and #1267; slices 17 to 39
+are on `dev` only. What could not be tested is named in each slice's Evidence. The largest gaps:
 - Vidoc is disabled for this project: never run, not passed.
 - A sandbox's real engine under Yulius in a QEMU guest. The guest cannot make real sandboxes:
   no GitHub App, no Claude. So C4 was proven with the kernel, bwrap and a real `dockerd` by hand.
