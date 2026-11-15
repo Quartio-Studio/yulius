@@ -317,6 +317,7 @@ impl HarnessPort for HarnessAdapter {
             subagents: SubagentTails::new(path, since),
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
+            requested: None,
         }))
     }
 
@@ -410,6 +411,9 @@ struct Watch {
     acc: UsageAccumulator,
     /// What the session's own thread and its workflows' agents last said of a usage limit.
     limits: WorkflowLimits,
+    /// The model the thread's last request asked for, when Claude Code records its requests
+    /// (SPEC-493 MDL-002): a limit of "the model the request ran" is that model's.
+    requested: Option<String>,
 }
 
 /// A usage limit met by a dynamic workflow's agent is the session's (SPEC-486 WFL-002): Claude
@@ -621,8 +625,13 @@ impl WorkflowAgents {
     }
 }
 
-/// A limit record of the session's own thread as the application hears it.
-fn limit_observation(observed: Observed) -> Option<Observation> {
+/// A limit record of the session's own thread as the application hears it. A limit of "the
+/// model the request ran" (`LimitScope::Model(None)`, a model's usage credits) names the family
+/// of `requested`, the model the thread last asked for, when that is known and has a window of
+/// its own: a person may have switched the model inside the session (`/model`), so it need not
+/// be the one the run was launched with (SPEC-493 MDL-002). Unknown, it stays unnamed, which
+/// the application reads as the launched model's.
+fn limit_observation(observed: Observed, requested: Option<&str>) -> Option<Observation> {
     match observed {
         Observed::LimitReached {
             resets_at,
@@ -634,7 +643,12 @@ fn limit_observation(observed: Observed) -> Option<Observation> {
             resets_at,
             message,
             window_minutes,
-            scope,
+            scope: match (scope, requested.map(|model| ModelFamily::of(Some(model)))) {
+                (LimitScope::Model(None), Some(family)) if family != ModelFamily::Any => {
+                    LimitScope::Model(Some(family))
+                }
+                _ => scope,
+            },
             at,
         }),
         _ => None,
@@ -666,7 +680,12 @@ impl TranscriptWatch for Watch {
                 continue;
             }
             let (observed, version) = match self.harness {
-                Harness::ClaudeCode => claude::observe_versioned(&line),
+                Harness::ClaudeCode => {
+                    if let Some(model) = claude::requested_model(&line) {
+                        self.requested = Some(model);
+                    }
+                    claude::observe_versioned(&line)
+                }
             };
             // Every record of the run's own thread names its Claude Code (SPEC-461 CCM-011).
             if let Some(version) = version {
@@ -727,7 +746,7 @@ impl TranscriptWatch for Watch {
                         out.push(Observation::WorkflowLaunched { task, run });
                     }
                     limit @ Observed::LimitReached { .. } => {
-                        out.extend(limit_observation(limit));
+                        out.extend(limit_observation(limit, self.requested.as_deref()));
                     }
                     Observed::AccessLost { message, at } => {
                         out.push(Observation::AccessLost { message, at });
@@ -793,6 +812,7 @@ mod tests {
                 subagents: SubagentTails::new(&path, None),
                 acc: UsageAccumulator::new(),
                 limits: WorkflowLimits::default(),
+                requested: None,
             };
             let seen = watch.poll().map_err(|err| err.to_string())?;
             let added =
@@ -820,7 +840,82 @@ mod tests {
             subagents: SubagentTails::new(path, None),
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
+            requested: None,
         })
+    }
+
+    /// SPEC-493 MDL-002: a limit of "the model the request ran" (a model's usage credits) is
+    /// the limit of the model the session's thread last asked for, which the record before each
+    /// request names: a person can switch the model inside a session (`/model`). Without such a
+    /// record (an older Claude Code) it stays the model the run was launched with; a limit that
+    /// names its family, or binds the subscription, is what it says.
+    #[test]
+    fn a_models_limit_is_of_the_model_the_thread_asked_for()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let prompt = r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-15T10:13:28.000Z","sessionId":"s1","promptSource":"typed","message":{"role":"user","content":"go"}}"#;
+        let request = |model: &str, agent: &str| {
+            format!(
+                r#"{{"type":"api-request","sessionId":"s1",{agent}"id":"r","timestamp":"2026-11-15T10:13:28.291Z","version":"2.1.325","querySource":"repl_main_thread","params":{{"model":"{model}","max_tokens":64000}}}}"#
+            )
+        };
+        // The refusal of Claude Code 2.1.322 for a model's usage credits; `claim` as it names
+        // the limited window.
+        let refused = |claim: &str| {
+            format!(
+                r#"{{"isSidechain":false,"type":"assistant","timestamp":"2026-11-15T10:13:28.400Z","message":{{"id":"e1","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{{"type":"text","text":"You're out of usage credits. /model to switch models."}}]}},"apiError":"model_requires_usage_credits","apiErrorParams":{{"rate_limit_info":{{"status":"rejected","resetsAt":4102444800,"rateLimitType":"{claim}"}}}},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429}}"#
+            )
+        };
+        let credits = refused("seven_day_overage_included");
+        let scope_of = |lines: &[&str]| -> Result<LimitScope, Box<dyn std::error::Error>> {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("s1.jsonl");
+            std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+            let seen = watch_of(&path)?.poll().map_err(|err| err.to_string())?;
+            seen.iter()
+                .find_map(|one| match one {
+                    Observation::LimitReached { scope, .. } => Some(*scope),
+                    _ => None,
+                })
+                .ok_or_else(|| format!("no limit in {seen:?}").into())
+        };
+        let (fable, opus) = (
+            request("claude-fable-5-2", ""),
+            request("claude-opus-5-5", ""),
+        );
+        let of = |family| LimitScope::Model(Some(family));
+        assert_eq!(
+            scope_of(&[prompt, &fable, &credits])?,
+            of(ModelFamily::Fable)
+        );
+        // The last request of the thread decides, not an earlier one, nor a sub-agent's.
+        assert_eq!(
+            scope_of(&[prompt, &opus, &fable, &credits])?,
+            of(ModelFamily::Fable)
+        );
+        assert_eq!(
+            scope_of(&[prompt, &fable, &opus, &credits])?,
+            of(ModelFamily::Opus)
+        );
+        let agents = request("claude-fable-5-2", r#""agentId":"a8a9","#);
+        assert_eq!(
+            scope_of(&[prompt, &opus, &agents, &credits])?,
+            of(ModelFamily::Opus)
+        );
+        // No such record, or a model no window of its own binds: the launched model's.
+        assert_eq!(scope_of(&[prompt, &credits])?, LimitScope::Model(None));
+        let haiku = request("claude-haiku-4-5", "");
+        assert_eq!(
+            scope_of(&[prompt, &haiku, &credits])?,
+            LimitScope::Model(None)
+        );
+        // A limit that says what it binds is not touched.
+        assert_eq!(
+            scope_of(&[prompt, &fable, &refused("seven_day_opus")])?,
+            of(ModelFamily::Opus)
+        );
+        let session = r#"{"isSidechain":false,"type":"assistant","timestamp":"2026-11-15T10:13:28.400Z","message":{"id":"e2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit"}]},"apiError":"usage_limit_reached","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":4102444800,"rateLimitType":"five_hour"}},"error":"rate_limit","isApiErrorMessage":true}"#;
+        assert_eq!(scope_of(&[prompt, &fable, session])?, LimitScope::Account);
+        Ok(())
     }
 
     /// The limits in `seen`: the thread's own, and those of a workflow's agents.

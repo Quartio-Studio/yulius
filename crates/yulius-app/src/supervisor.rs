@@ -5540,16 +5540,18 @@ impl App {
         runtime.end_turn();
         runtime.limit_cut_the_turn(at);
         let blind = limit.without_an_end(self.now());
+        // The limit of the model this run was launched with (SPEC-482 FBK-006), unless it names
+        // another one: the model the session was switched to inside it (SPEC-493 MDL-002).
+        let family = self.run_family_of(attempt).await;
+        let ran = switched_model(&limit, family);
         if let Some(account) = &attempt.account_id {
-            // The limit of the model this run was launched with (SPEC-482 FBK-006).
-            let family = self.run_family_of(attempt).await;
             self.record_limit(account, limit, family).await;
         }
         let app = self.clone();
         let tid = task_id.clone();
         let account = attempt.account_id.clone();
         tokio::spawn(async move {
-            app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+            app.rotate_past(&tid, account, Trigger::LimitReached, blind, ran)
                 .await;
         });
     }
@@ -5574,6 +5576,22 @@ impl App {
         trigger: Trigger,
         blind: bool,
     ) {
+        self.rotate_past(task_id, current, trigger, blind, None)
+            .await;
+    }
+
+    /// [`Self::rotate_at`]; `ran` is the model family the limit binds when that is not the one
+    /// the run was launched with ([`switched_model`]). The run placed past the limit is the
+    /// task's own model again, so the subscription it sits on still counts, and the session's
+    /// terminal says why it goes on with another model than its person chose inside it.
+    async fn rotate_past(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        current: Option<AccountId>,
+        trigger: Trigger,
+        blind: bool,
+        ran: Option<ModelFamily>,
+    ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -5584,9 +5602,12 @@ impl App {
         {
             return;
         }
-        let Ok(input) = self.rotation_input(&task, current.clone()).await else {
+        let Ok(mut input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
+        if ran.is_some() {
+            input.running = ran;
+        }
         // Remembered for the model this run was launched with: a task of a Fable model may be
         // refused its fallback on the same subscription too (SPEC-482 FBK-007).
         if blind
@@ -5605,6 +5626,12 @@ impl App {
             Decision::Switch { account } => {
                 // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
                 let reason = format!("{reason:?}");
+                if let (true, Some(ran)) = (limit, ran) {
+                    let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+                    self.runtime(task_id)
+                        .hub
+                        .notice(switched_back_notice(ran, own));
+                }
                 let switched = if limit {
                     self.switch_after_limit(task_id, Some(account), &reason)
                         .await
@@ -5655,6 +5682,33 @@ impl App {
             }
         }
     }
+}
+
+/// The model family `limit` names when that is not `family`, the one the run was launched with:
+/// the session's person switched the model inside it (`/model`), which no launch follows, and
+/// Claude Code's record of the refused request named it (SPEC-493 MDL-002). The limit is that
+/// model's alone.
+pub(crate) fn switched_model(limit: &ReportedLimit, family: ModelFamily) -> Option<ModelFamily> {
+    match limit.scope {
+        yulius_domain::usage::LimitScope::Model(Some(named)) if named != family => Some(named),
+        _ => None,
+    }
+}
+
+/// What a session's terminal says when the model its person switched it to (`ran`) is at its
+/// limit and Yulius continues the session with `own`, the model it launches it with.
+pub(crate) fn switched_back_notice(ran: ModelFamily, own: &str) -> String {
+    let ran = match ran {
+        ModelFamily::Fable => "Fable",
+        ModelFamily::Opus => "Opus",
+        ModelFamily::Sonnet => "Sonnet",
+        ModelFamily::Any => "That model",
+    };
+    format!(
+        "{ran} is used up on this subscription: this session goes on with {}, the model it was \
+         started with.",
+        claude_model_name(own)
+    )
 }
 
 /// Whether `observation` is a workflow agent's limit of another model family than `family`, the

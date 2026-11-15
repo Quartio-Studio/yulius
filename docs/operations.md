@@ -815,8 +815,7 @@ SPEC-461), with no root step and no sign-in again:
   builds), checked against the registry's sha512, and its binary must be an ELF for this platform
   that embeds that version and names Yulius's default model (`claude-opus-5-5` today). It is
   read, never run on the host. A release that does not know the default model is refused and
-  reported; one that lacks another model the composer offers is installed and the gap reported
-  (for `claude-fable-5-2` as "the independent review's model").
+  reported; one that lacks another model the composer offers is installed and the gap reported.
   On `stable`, `latest`'s release is taken when neither the version in use nor stable's release
   knows the default model.
 - It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`

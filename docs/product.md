@@ -305,8 +305,8 @@ watching, steering and unblocking.
   running task when its turn ends, with no one signing in again; a release that does not know
   Yulius's default model is never used, and Settings, Instance shows the version, the channel
   and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
-  Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493: Opus writes, and Fable 5.2 is the
-  model of the independent review); the composer and Settings choose another, Fable too.
+  Opus 5.5 at high effort (SPEC-023, SPEC-462, SPEC-493); the composer and Settings choose
+  another, Fable too.
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any). A task that waits for another
@@ -391,9 +391,12 @@ watching, steering and unblocking.
   while a subscription can run Opus 5.5: when Fable is used up on
   every subscription its session goes on with Opus 5.5, on the same subscription when that is
   the one with room, and says so; the task's details, the Capacity card and the Status line
-  say it too, and the task's next launch runs Fable again once a subscription can. A
-  Superagent a person switched to Fable does the same (SPEC-482). A default task runs Opus 5.5
-  and has no fallback: it waits for a reset (SPEC-493). Its Capacity card says what
+  say it too, and the task's next launch runs Fable again once a subscription can (SPEC-482).
+  A default task and the Superagents run Opus 5.5, which has no fallback: they wait for a
+  reset. A session whose person switched it to Fable inside it (`/model`) runs Fable while the
+  subscription has credits for it; refused, the limit is recorded as Fable's and the session
+  goes on with the model it was started with, on the same subscription when that has room, and
+  says so (SPEC-493). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude

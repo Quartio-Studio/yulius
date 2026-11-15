@@ -457,7 +457,7 @@ TaskDetail = TaskSummary + {
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
   "request": "the whole request, queued messages included", "started": false,
-  "model": "claude-opus-5-5", "model_default": true, "fallback_model?": "claude-opus-5-5", "effort?": "high",
+  "model": "claude-fable-5-2", "model_default": false, "fallback_model?": "claude-opus-5-5", "effort?": "high",
   "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322", "cli_moves_stopped": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
@@ -1527,7 +1527,7 @@ resolves to nothing, the run gets the server without that variable or token.
     (SPEC-427, ADR-0271), started when none runs or when its host sandbox is no longer one the
     caller can work in (concurrent calls start one), as `claude [--resume <newest conversation>]
     --settings '{"disableAllHooks":true,"outputStyle":"Concise"}' --setting-sources ""
-    --strict-mcp-config --tools "" --model claude-fable-5-2 --effort high
+    --strict-mcp-config --tools "" --model claude-opus-5-5 --effort high
     [--dangerously-skip-permissions]` in `users/<id>/superagent/work` with
     `CLAUDE_CONFIG_DIR=users/<id>/superagent/.claude` and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` naming
     a script that refuses every command, contained in a bubblewrap root of that folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools

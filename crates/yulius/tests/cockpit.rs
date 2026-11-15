@@ -3057,6 +3057,76 @@ async fn a_superagent_refused_its_model_on_the_only_subscription_stays() -> Test
     Ok(())
 }
 
+/// SPEC-493 MDL-002 (review round 1 of fix 1a): a person switched the Superagent to Fable inside
+/// it (`/model`), and the only subscription refuses Fable for its usage credits. The record
+/// before the request names the model, so the limit is Fable's, not the limit of Opus 5.5 the
+/// Superagent was started with: the subscription still runs the default model, and the
+/// Superagent starts again on it with Opus 5.5, continues the turn and says why.
+#[tokio::test]
+async fn a_superagent_switched_to_fable_goes_on_with_opus_when_fable_is_refused() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    // What Claude Code 2.1.325 writes before each request of the session's thread.
+    let asked_fable = format!(
+        "{}\n",
+        json!({"type": "api-request", "sessionId": "conv-1", "id": "r1",
+            "timestamp": "2026-10-13T12:00:05.500Z", "version": "2.1.325",
+            "querySource": "repl_main_thread",
+            "params": {"model": "claude-fable-5-2", "max_tokens": 64_000}})
+    );
+    std::fs::write(
+        &transcript,
+        [
+            prompt_record("u1", None, 5),
+            asked_fable,
+            credits_refusal("refused", "u1", 6, 1_791_400_000),
+        ]
+        .concat(),
+    )?;
+
+    let notice = read_message(&mut socket, "notice").await?;
+    assert_eq!(
+        notice["text"],
+        "Fable is used up on this subscription: this session goes on with Opus 5.5, the model it \
+         was started with."
+    );
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation on its own model, nothing typed"
+    );
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    assert_eq!(printed(&screen, "token")?, TOKEN, "the same subscription");
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(
+        !stepped.contains("refused") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert_eq!(
+        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        "{usage}"
+    );
+    assert!(usage["weekly_opus"].is_null(), "not Opus's: {usage}");
+    assert_eq!(usage["limit_reached"], false, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-146 SHE-002 (#346): a usage limit in a Superagent whose process cannot be ended (the end
 /// request is lost and `terminate` fails) starts no second one on the same conversation: the old
 /// one stays live on its subscription, the panel finds it, and its viewer is told why.

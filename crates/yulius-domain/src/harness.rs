@@ -8,8 +8,11 @@ use std::fmt;
 /// own default would be Sonnet.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
 
-/// The model of the independent code review's first two rounds (SPEC-493): Fable 5.2 by its
-/// full id. One of [`OFFERED_CLAUDE_MODELS`], so a Claude Code release is read for it.
+/// Fable 5.2 by its full id: the model the person chose for the independent code review's
+/// first two rounds (SPEC-493; the reviewer's own slice of that spec makes reviews run it).
+/// Until then it is the Fable model the capacity view and the pages watch for the fallback of
+/// tasks set to Fable. One of [`OFFERED_CLAUDE_MODELS`], so a Claude Code release is read for
+/// it.
 pub const REVIEW_CLAUDE_MODEL: &str = "claude-fable-5-2";
 
 /// The Claude models the composer offers (SPEC-461 CCM-002), the default first. The web UI's
@@ -198,9 +201,9 @@ pub fn valid_session_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// SPEC-493 MDL-001: a task that names no model runs Opus 5.5, the first model offered; the
-    /// review's model is Fable 5.2 and is offered too, so every Claude Code release is read for
-    /// both.
+    /// SPEC-493 MDL-001: a task that names no model runs Opus 5.5, the first model offered;
+    /// Fable 5.2, chosen for the review, is offered too, so every Claude Code release is read
+    /// for both.
     #[test]
     fn the_default_model_is_opus_5_5_and_the_review_model_fable_5_2() {
         assert_eq!(DEFAULT_CLAUDE_MODEL, "claude-opus-5-5");

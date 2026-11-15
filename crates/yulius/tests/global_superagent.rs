@@ -208,9 +208,10 @@ async fn a_global_superagent_starts_on_opus_where_fable_is_used_up() -> TestResu
         ),
         "{args}"
     );
-    // Its own model, not a fallback: the record names no other model than the default.
+    // Its own model, not a fallback: the record names a model only for a fallback.
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
-    assert!(!record.contains("claude-fable"), "{record}");
+    assert!(record.contains("\"account\":\"acc-1\""), "{record}");
+    assert!(!record.contains("\"model\""), "{record}");
     f.h.app.end_all_shells().await;
     Ok(())
 }

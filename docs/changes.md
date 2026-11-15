@@ -11,8 +11,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   person's decision that Opus 5.5 writes and Fable 5.2 reviews. A task set to a Fable model keeps
   it and still falls back to Opus 5.5 while no subscription can run Fable; a default task has no
   fallback. The Capacity card and the Status line say when Fable is used up everywhere
-  ("tasks set to it run on Opus 5.5"), and a Claude Code release without Fable 5.2 is reported as
-  lacking "the independent review's model".
+  ("tasks set to it run on Opus 5.5"). A usage limit is booked to the model the refused request
+  asked for, which Claude Code 2.1.325 records: a session its person switched to Fable with
+  `/model` no longer marks Opus as used up, and goes on with the model it was started with.
 - A sandbox's Docker engine runs below the group that holds its limits (SPEC-483 slice 39,
   ADR-0339, task #465). A privileged container could start a nested cgroup namespace and lift
   the engine's task cap and CPU weight, the share that keeps agents a quarter of the sandbox's

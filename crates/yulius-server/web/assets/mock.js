@@ -4638,7 +4638,7 @@ function claudeView(db) {
     return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, models_unread: null, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
   }
   const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
-  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m === 'claude-fable-5-2' ? `${m} (the independent review's model)` : m)).join(', ')}`;
+  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
   const resultText = {
     installed: `Installed ${c.version}: new runs use it.`,
     up_to_date: `Up to date: runs get ${c.version}.`,

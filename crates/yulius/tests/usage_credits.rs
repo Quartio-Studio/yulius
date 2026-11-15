@@ -353,10 +353,10 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
         assert_eq!(stored["secondary"]["used_percent"], 10.0, "{stored}");
         assert_eq!(status, AccountStatus::Ok);
-        let fable = task_of_model(&app, &sandbox, &user, "Default", None).await?;
-        ready(&app, &fable).await?;
+        let default = task_of_model(&app, &sandbox, &user, "Default", None).await?;
+        ready(&app, &default).await?;
         assert_eq!(
-            run_accounts(&app, &fable).await,
+            run_accounts(&app, &default).await,
             [Some("a-first".to_owned())],
             "a task of the default model goes where the week has the most room"
         );
@@ -367,7 +367,7 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
             [Some("b-second".to_owned())],
             "a task of the refused model does not"
         );
-        for task in [&other, &fable, &id] {
+        for task in [&other, &default, &id] {
             stop(&app, task).await?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -1334,6 +1334,70 @@ async fn goal_pause_then_a_wait(
     Ok((app, id))
 }
 
+/// SPEC-493 MDL-002 (review round 1 of fix 1a): a person switched a default task's session to
+/// Fable inside it (`/model`), and Fable is refused for its usage credits. The record before the
+/// request names the model, so the limit is Fable's on the subscription, not the limit of the
+/// model the run was launched with: Opus 5.5 still runs there, the subscription is not limited,
+/// and the task goes on at once with its own model in the same session, on the same
+/// subscription (one is enough), past the refused turn. Nobody is asked.
+#[test]
+fn a_session_switched_to_fable_goes_on_with_its_own_model_when_fable_is_refused() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let opus = "claude-opus-5-5";
+        let (id, _user, transcript) = first_turn(&app, &data, Some(opus)).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let first = Some("a-first".to_owned());
+        assert_eq!(run_accounts(&app, &id).await, [first.clone(), first]);
+        assert_eq!(attempts[1].model.as_deref(), Some(opus));
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(has_status(&app, &id, TaskStatus::Running).await);
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        needs_nobody(&app, &id).await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_opus"].is_null(), "not Opus's: {stored}");
+        assert_eq!(stored["limit_reached"], false, "{stored}");
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|notice| notice
+                == "Fable is used up on this subscription: this session goes on with Opus 5.5, \
+                    the model it was started with."),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A request that says "the task does not go on by itself" ends when Yulius takes the task on
 /// at a usage limit, by pausing it as by moving it (SPEC-464 UCL-007; review round 3): the pool
 /// resumes the task past the limit by itself, so nobody has to send it a message. Here the
@@ -1716,6 +1780,9 @@ enum Line {
     TurnDuration,
     /// A line of the model's own work (a tool call).
     Work,
+    /// The record Claude Code 2.1.325 writes before a request, here one that asks for Fable 5.2:
+    /// the session's person switched the model inside it (`/model`).
+    RequestOfFable,
 }
 
 /// Appends `lines` to `transcript`, written now, to the millisecond as Claude Code writes them.
@@ -1778,6 +1845,10 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
                 "system",
                 json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
             ),
+            Line::RequestOfFable => (
+                "api-request",
+                json!({"model": "claude-fable-5-2", "max_tokens": 64_000}),
+            ),
             Line::Work => (
                 "assistant",
                 json!({"requestId": format!("req-{uuid}"), "message": {"id": format!("msg-{uuid}"),
@@ -1789,6 +1860,14 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
                         "cache_read_input_tokens": 0, "output_tokens": 6}}}),
             ),
         };
+        if matches!(line, Line::RequestOfFable) {
+            // Not a message of the conversation: it has no place in the chain of records.
+            let record = json!({"type": kind, "sessionId": session, "id": uuid,
+                "timestamp": at, "version": "2.1.325", "querySource": "repl_main_thread",
+                "params": extra});
+            out.push_str(&format!("{record}\n"));
+            continue;
+        }
         let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent,
             "isSidechain": false, "sessionId": session, "timestamp": at,
             "userType": "external", "version": "2.1.311"});

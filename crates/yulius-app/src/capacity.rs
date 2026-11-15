@@ -333,9 +333,11 @@ impl App {
     }
 
     /// Where the pool places a run of the default model outside any task (a Superagent), with
-    /// the fallback while no subscription can run the default model (SPEC-482 FBK-011).
-    /// `current` is the subscription a usage limit just cut the run on, with the family of the
-    /// model it was launched with: the run is placed off it unless its model changes.
+    /// the default model's fallback while no subscription can run it (SPEC-482 FBK-011; Opus
+    /// 5.5 has none, so nothing falls back today, SPEC-493). `current` is the subscription a
+    /// usage limit just cut the run on, with the family of the model that limit binds (the
+    /// launched one, or the one its person switched it to): the run is placed off it unless
+    /// its model changes.
     ///
     /// # Errors
     /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
@@ -966,8 +968,9 @@ impl App {
             .map(token_run)
             .collect();
         let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
-        // For a task of the default model: its own weekly window binds too (SPEC-464), and
-        // while no subscription can run it, the task is placed with its fallback (SPEC-482).
+        // For a task of the default model: its own weekly window binds too (SPEC-464). A
+        // default model with a fallback would be placed with that while no subscription can
+        // run it (SPEC-482); Opus 5.5 has none.
         let default_task = RotationInput {
             current: None,
             task_provider: yulius_domain::harness::Provider::Anthropic,

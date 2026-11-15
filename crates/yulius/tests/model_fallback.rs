@@ -164,10 +164,10 @@ async fn needs_nobody(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
-/// AC-1: one subscription, a default task, and Claude Code refuses Fable for its usage credits
-/// without saying when they reset (2.1.311). Before SPEC-482 the task asked a person
+/// AC-1: one subscription, a task set to Fable 5.2, and Claude Code refuses Fable for its usage
+/// credits without saying when they reset (2.1.311). Before SPEC-482 the task asked a person
 /// (`task.limit_without_end`); now the same session goes on, on the same subscription, launched
-/// with Opus 5.5 past the refused turn, and says so. Its own setting stays "default".
+/// with Opus 5.5 past the refused turn, and says so. Its own setting stays Fable 5.2.
 #[test]
 fn a_task_out_of_fable_everywhere_goes_on_with_opus_on_its_subscription() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;

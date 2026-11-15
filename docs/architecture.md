@@ -574,6 +574,17 @@ names none. So is Claude Code's refusal "You're out of usage credits"
 or a reset. A record that carries only the text is the model's when the text names the model or
 a way to another one ("/model to switch models"), else the subscription's.
 
+A refusal names no model, and a person can switch the model inside a session (`/model`), which
+no launch argument shows. Claude Code 2.1.325 writes a record before each request
+(`api-request`, whose `params` name the model): the transcript watch keeps the model the
+session's thread last asked for (`claude::requested_model`), and a limit of "the model the
+request ran" names that model's family (`limit_observation`). When that is not the family the
+run was launched with (`supervisor::switched_model`), the limit is recorded for it alone, and
+the pool places the run past it with the session's own model, for which the subscription it
+sits on still counts: the session starts again there with the model Yulius launches it with,
+continues the cut turn and says so (decision 0340). Without that record (an older Claude Code)
+the limit is the launched model's.
+
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
 `weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
 that window only for tasks of that family, so other models still run on the subscription, and the

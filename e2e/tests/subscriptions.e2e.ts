@@ -1,6 +1,6 @@
 import { type Browser, type Screen, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -631,10 +631,13 @@ test('only the Subscriptions page offers Refresh: the Dashboard and the Status p
 });
 
 test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12'));
+  // Task #12 runs Sonnet from before its page is opened, so every read of it says so: the
+  // view's own and the menu's (a change announced to an open view would race the click).
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await setTaskModel(browser, 12, 'claude-sonnet-5-5');
+  await browser.evaluate(() => { location.hash = '#/s/studio/t/12'; });
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
   await expect(chip).toHaveText('Claude #2');
-  await touchTask(browser, 'sb_studio', 12, { model: 'claude-sonnet-5-5' });
   await chip.click();
   await expect(screen.getByText('Run #12 on…')).toBeVisible();
   // Its own is marked, one needing a sign-in says why; the others show their use.
@@ -650,19 +653,29 @@ test('a task shows its subscription and a person runs it on another (SPEC-447 MO
   await expect(chip).toHaveText('Claude #4');
 });
 
+/** Sets the model of studio's task `number` in the mock, with nothing announced: for a page that has not read the task yet. */
+async function setTaskModel(browser: Browser, number: number, model: string): Promise<void> {
+  await browser.evaluate(([n, m]) => {
+    type Tasks = { __yuliusMock: { tasks: Array<{ sandbox_id: string; number: number; model: string }> } };
+    const task = (window as unknown as Tasks).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === n);
+    if (!task) throw new Error(`no task #${n} in the mock`);
+    task.model = m;
+  }, [number, model] as const);
+}
+
 // Review round 2 of SPEC-464: the task's model is in its details, which the task view reads after
 // it drew the chip. A person who opens the menu before that read answered (or whose read failed)
 // still gets the subscriptions judged for the task's model: the menu reads what it needs itself.
 test('"Run #N on…" knows the task\'s model before the task view has its details (SPEC-464)', async ({ app, browser, screen }) => {
   type Holding = { __yuliusMock: { holdDetail?: Promise<void> | null; detailReads?: Record<string, number> }; __releaseDetail?: () => void };
   await app.open(mock('/s/studio', '&ambient=0'));
+  await setTaskModel(browser, 12, 'claude-sonnet-5-5');
   // The view's own read of the task waits on its way, as on a slow connection.
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
     location.hash = '#/s/studio/t/12';
   });
-  await touchTask(browser, 'sb_studio', 12, { model: 'claude-sonnet-5-5' });
   await expect.poll(() => browser.evaluate(() => {
     const db = (window as unknown as Holding).__yuliusMock;
     return Boolean(db.detailReads?.tsk_studio_12) && !db.holdDetail;

@@ -378,7 +378,7 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
     assert_eq!(asked(&seen), ["usage", CHEAPEST, FABLE]);
 
     // The background round's reading keeps the window now that it has a reset, and asks
-    // nothing about it (RFR-007): no request with the default model.
+    // nothing about it (RFR-007): no request with the Fable model.
     h.clock
         .0
         .fetch_add(10 * 60_000, std::sync::atomic::Ordering::SeqCst);

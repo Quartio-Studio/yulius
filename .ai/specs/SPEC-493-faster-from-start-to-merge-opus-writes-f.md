@@ -159,12 +159,19 @@ person's decision is read as holding after an approval).
   derived from it (the composer's first model and its "Default" label, the Capacity panel's
   "available", `task_create`'s descriptions, the Claude Code release check) follows it. Nothing
   stored changes: a running default task takes Opus 5.5 at its next launch.
-- **MDL-002** A task set to a Fable model, and a Superagent a person switched to one, still run
-  it; while no subscription can run it they fall back to Opus 5.5 as before (SPEC-482). A default
-  task has no fallback: it is an Opus task, bound by the weekly Opus window.
+- **MDL-002** A task set to a Fable model still runs it, and while no subscription can run it the
+  task falls back to Opus 5.5 as before (SPEC-482). A default task and the Superagents have no
+  fallback: they run Opus 5.5, bound by the weekly Opus window. A session its person switched to
+  Fable inside it (`/model`, a task's terminal or a Superagent) runs Fable while the subscription
+  has credits for it. A usage limit is the limit of the model the refused request asked for
+  (Claude Code 2.1.325 records it before each request): refused for Fable's credits, such a
+  session fills Fable's window on the subscription, not the window of the model it was launched
+  with, and goes on at once with that launched model, on the same subscription when it has room,
+  continuing the cut turn and saying why. With a Claude Code that writes no such record the limit
+  stays the launched model's.
 - **MDL-003** A Claude Code release that lacks Opus 5.5 (the default) never runs in a sandbox, as
-  before; one that lacks Fable 5.2 (the reviewer's model) is reported with the reason "the
-  independent review's model", and is not refused.
+  before; one that lacks Fable 5.2 is installed and the gap reported. Naming Fable 5.2 there as
+  "the independent review's model" comes with fix 1b, when reviews run it.
 - **REV-001** Every task session is launched knowing two reviewer agents, defined by Yulius at
   the launch (`--agents`), out of the agent's reach: `yulius-reviewer` (`claude-fable-5-2`, effort
   `high`) and `yulius-reviewer-opus` (`claude-opus-5-5`, effort `high`), both by full model id,
@@ -416,6 +423,12 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   not fall back.
 - **AC-3** (MDL-003) A release without `claude-opus-5-5` is refused for sandboxes; one without
   `claude-fable-5-2` is installed and reported.
+- **AC-3a** (MDL-002) A session launched with Opus 5.5 whose transcript holds a request for
+  `claude-fable-5-2` and then a refusal for usage credits: the subscription's `weekly_fable` is
+  full, `weekly_opus` untouched, its status `ok`; the session starts again on the same
+  subscription with `--model claude-opus-5-5`, continuing the turn, and its terminal says "Fable
+  is used up on this subscription: this session goes on with Opus 5.5, the model it was started
+  with." (a task and a Superagent). Without the request record: as before, the launched model's.
 - **AC-4** (REV-001) The launch arguments of a task hold `--agents` with both definitions, their
   full model ids and `high`; a Cockpit's do not. The real CLI's request for a `yulius-reviewer`
   subagent names `claude-fable-5-2` and effort `high` under an Opus session (probe).
@@ -628,3 +641,27 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - `scripts/dev security`: "Security scan disabled" for this project in Yulius: disabled, not
   passed.
 - The whole gate and the e2e suite also run on Yulius CI at the pull request's head.
+- **Review round 1** (fresh session, head `1b749ce6f`): request changes. Answered:
+  - Blocker (own code): `subscriptions.e2e.ts` announced task #12's model to an open view and
+    then clicked: the menu could read the old model (failed 2 of 4 runs). The model is now set in
+    the mock before the page reads the task (`setTaskModel`); the file passed 6 runs of 6.
+  - Major (own code; the attribution rule pre-existing): a refusal for usage credits names no
+    model and was booked to the launched model, so a session switched to Fable with `/model`
+    would mark Opus as used up and stop default work. Measured with the real CLI 2.1.325: each
+    request of the thread is preceded by an `api-request` record naming its model. Test first:
+    `wiring::harness::tests::a_models_limit_is_of_the_model_the_thread_asked_for` (failed:
+    `Model(None)` against `Model(Some(Fable))`), `usage_credits::a_session_switched_to_fable_goes_on_with_its_own_model_when_fable_is_refused`
+    (failed), `cockpit::a_superagent_switched_to_fable_goes_on_with_opus_when_fable_is_refused`
+    (failed on the notice: "No other subscription has capacity"); all pass with
+    `claude::requested_model`, `limit_observation` and `supervisor::switched_model`. MDL-002
+    and AC-3a state the rule; ADR-0340 records it.
+  - Minors: the Global Superagent's launch line in `docs/api.md`; `CapacityView` docs; a task's
+    details name a fallback only for a run launched with it (`fell_back_to`, unit test); the
+    Global Superagent test asserts the record has no `model`; the inert Superagent fallback is
+    kept and said so in ADR-0340 and SPEC-482 (deleting it would touch the launch port and every
+    Cockpit request); the "independent review's model" label waits for fix 1b (MDL-003); the
+    e2e README row; documents no longer say reviews run Fable yet; stale comments and the
+    decision index lines.
+- After round 1: `cargo nextest run --workspace --all-features`: 4463 passed, 17 skipped;
+  `scripts/dev lint` exit 0; `check_repository.py` passed; `cargo doc` no warnings; e2e
+  `claude-code`, `model-fallback`, `subscriptions`: 61 passed.
