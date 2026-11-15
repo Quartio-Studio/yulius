@@ -1309,7 +1309,7 @@ async fn a_custom_production_stage_environment_waits_for_the_person() -> TestRes
     assert!(
         amended
             .as_deref()
-            .is_some_and(|said| said.contains("not amended")),
+            .is_some_and(|said| said.contains("a release or onboarding is not amended")),
         "{amended:?}"
     );
     {
