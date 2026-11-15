@@ -40,11 +40,20 @@ const MOVING_FOR_FABLE: &str = "Yulius moves this session to a Claude subscripti
      Fable 5.2 for this review round. Do nothing else now: the session goes on there and is \
      asked to start the review again.";
 
-/// Why the reviewer did not start: a move would end work that runs.
+/// Why the reviewer did not start: a move would end background work that runs.
 const BUSY_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this review round, and \
      Yulius would move the session to one that can, but background work runs (shells, agents, \
-     monitors or a `yulius wait`) or a prompt waits, which a move would end. Finish or stop it, \
-     then start the review again.";
+     monitors or a `yulius wait`), which a move would end. Finish or stop it, then start the \
+     review again.";
+
+/// Why the reviewer did not start: a move would drop a prompt waiting in Claude Code's queue.
+const QUEUED_FOR_FABLE: &str = "This subscription cannot run Fable 5.2 for this review round, and \
+     Yulius would move the session to one that can, but a prompt waits in Claude Code's queue, \
+     which a move would drop. Answer it or end your turn, then start the review again.";
+
+/// The longest the move's looks may take: the hook client gives `PreToolUse` 5 s, after which
+/// the reviewer starts as asked while a move could still be decided.
+const MOVE_DECISION: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The first prompt of a session moved for a Fable reviewer.
 const MOVED_FOR_FABLE_PROMPT: &str = "Yulius moved this session to a Claude subscription that can \
@@ -52,8 +61,9 @@ const MOVED_FOR_FABLE_PROMPT: &str = "Yulius moved this session to a Claude subs
      with the `yulius-reviewer` agent and the same prompt.";
 
 /// What a reviewer that runs on Opus because Fable cannot is told; its report repeats it.
-const NO_FABLE_REVIEWER_LINE: &str = "\n\nYulius: no Claude subscription of this task can run \
-     Fable 5.2 now, so this round runs on Opus 5.5. Say so in the first line of your summary.";
+const NO_FABLE_REVIEWER_LINE: &str = "\n\nYulius: this task's session cannot run Fable 5.2 now \
+     and cannot move to a subscription that can, so this round runs on Opus 5.5. Say so in the \
+     first line of your summary.";
 
 /// What a review round that cannot run Fable on its subscription does (REV-007).
 enum FableMove {
@@ -165,11 +175,12 @@ impl App {
         );
         if reason == "no_fable" {
             said.push_str(
-                " This subscription cannot run Fable 5.2 now, so the round runs on Opus 5.5: \
-                 say so in the review's summary.",
+                " This session cannot run Fable 5.2 now, nor move to a subscription that can, so \
+                 the round runs on Opus 5.5: say so in the review's summary.",
             );
         }
-        if agent == asked {
+        // The reviewer's prompt says why it runs on Opus, also when it was asked for by name.
+        if agent == asked && reason != "no_fable" {
             return Ok(HookOutput::additional_context(events::PRE_TOOL_USE, said));
         }
         let mut updated = tool_input.clone();
@@ -186,8 +197,16 @@ impl App {
     /// both its model and Fable (REV-007): refused with why, the session continues there with a
     /// prompt asking for the review again. While background work runs that a move would end, or
     /// a prompt waits in Claude Code's queue, nothing moves and the refusal says so. A move
-    /// refused moments ago, or no such subscription, leaves the round to the Opus reviewer.
+    /// refused moments ago, no such subscription, a new session that could not start there, or
+    /// looks that take longer than [`MOVE_DECISION`] leave the round to the Opus reviewer: a
+    /// move is announced only once it can start.
     async fn move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
+        tokio::time::timeout(MOVE_DECISION, self.decide_move_for_fable(ctx))
+            .await
+            .unwrap_or(FableMove::Nowhere)
+    }
+
+    async fn decide_move_for_fable(self: &Arc<Self>, ctx: &AgentContext) -> FableMove {
         let task = &ctx.task;
         if self.switch_cooling(&task.id) {
             return FableMove::Nowhere;
@@ -206,14 +225,27 @@ impl App {
         // Claude Code's queue; a look that gives no answer counts as work running (SPEC-483).
         let prompts_before = self.prompts_passed(&task.id);
         self.await_transcript_read(&task.id).await;
-        if self.background_or_wait_now(&task.id).await != Some(false)
-            || self.prompt_waits_for_turns_end(&task.id, prompts_before)
-        {
+        if self.background_or_wait_now(&task.id).await != Some(false) {
             return FableMove::Refused(BUSY_FOR_FABLE.to_owned());
+        }
+        if self.prompt_waits_for_turns_end(&task.id, prompts_before) {
+            return FableMove::Refused(QUEUED_FOR_FABLE.to_owned());
+        }
+        // The new session must be able to start there before the move is announced (ROT-014).
+        if let Err(err) = self.preflight_start(task, Some(&account)).await {
+            tracing::info!(task = %task.id, error = %err, "no move for a Fable reviewer: the session could not start there");
+            return FableMove::Nowhere;
         }
         let app = Arc::clone(self);
         let task_id = task.id.clone();
+        let run = ctx.attempt.id.clone();
         tokio::spawn(async move {
+            // Only the run this was decided for moves: a later review start that outlasted an
+            // earlier move must not restart the session it made.
+            let live = app.deps.store.live_attempt(&task_id).await.ok().flatten();
+            if live.is_none_or(|live| live.id != run) {
+                return;
+            }
             let prompt = Some(MOVED_FOR_FABLE_PROMPT.to_owned());
             if let Err(err) = app
                 .switch_task_now(&task_id, Some(account), MOVE_FOR_FABLE, prompt)

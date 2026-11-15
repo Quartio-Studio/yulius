@@ -6069,6 +6069,8 @@ mod tests {
     fn a_hand_over_interrupts_like_a_persons_switch() {
         assert!(super::interrupts_first("manual"));
         assert!(super::interrupts_first("handover"));
+        // SPEC-493 REV-007: the agent goes on after its reviewer was refused for the move.
+        assert!(super::interrupts_first(crate::review::MOVE_FOR_FABLE));
         for reason in ["rotation", "limit", "context_full", "proactive"] {
             assert!(!super::interrupts_first(reason), "{reason}");
         }

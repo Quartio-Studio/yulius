@@ -2088,11 +2088,23 @@ async fn stale_heads_are_refused() -> TestResult {
 /// against the integration branch as it was before the merge (the merge commit's first parent),
 /// not after it. A clean merge of the integration branch after the approval keeps it; a merged
 /// side branch nobody reviewed does not, though the merge put that branch into the integration
-/// branch. The same for a merge made on GitHub and found by Yulius afterwards (fix 1d): its
-/// merge commit says the base.
+/// branch. The same for a merge made on GitHub and found by Yulius afterwards (fix 1d), by the
+/// reconcile loop or by the sandbox's Git page: its merge commit says the base.
 #[tokio::test]
 async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> TestResult {
-    for (side_branch, on_github) in [(false, false), (true, false), (false, true), (true, true)] {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Found {
+        /// Merged by Yulius.
+        Merged,
+        /// Merged on GitHub, found by the reconcile loop.
+        Reconciled,
+        /// Merged on GitHub, found when the sandbox's Git page is read.
+        GitPage,
+    }
+    for (side_branch, found) in [false, true].into_iter().flat_map(|side| {
+        [Found::Merged, Found::Reconciled, Found::GitPage].map(move |found| (side, found))
+    }) {
+        let on_github = found != Found::Merged;
         let mut profile = DeliveryProfile::studio();
         profile.merge = yulius_domain::delivery::MergeMethod::Merge;
         let f = fixture(&profile).await?;
@@ -2157,8 +2169,14 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
                 &head,
             )
             .await?;
-            f.h.app.reconcile_deliveries().await;
-            assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+            if found == Found::Reconciled {
+                f.h.app.reconcile_deliveries().await;
+            } else {
+                let page = f
+                    .req(Method::GET, "/api/sandboxes/s1/git", None, &f.bob)
+                    .await?;
+                assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+            }
         } else {
             let merged = f
                 .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
@@ -2189,7 +2207,7 @@ async fn a_merge_commit_merge_judges_the_head_against_the_branch_before_it() -> 
         assert_eq!(
             record[0].contains("; no recorded review round approved its head"),
             side_branch,
-            "side branch {side_branch}, on GitHub {on_github}: {record:?}"
+            "side branch {side_branch}, {found:?}: {record:?}"
         );
     }
     Ok(())
