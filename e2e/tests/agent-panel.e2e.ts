@@ -679,3 +679,51 @@ test('a Superagent restart that fails says why and keeps the session', async ({ 
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await expect(screen.getByRole('button', 'Restart Superagent')).toBeEnabled();
 });
+
+// SPEC-487 SES-001 (wall 8: "one real person message was swallowed by a restart"): what the
+// person types while the Superagent restarts is kept and reaches the new session once it runs.
+test('what is typed while the Superagent restarts reaches it once it is back', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await openSuperagent(browser, screen);
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
+    w.__yuliusMock.switchCockpits();
+  });
+  await expect(browser.locator('.agent:has-text("Restarting the Superagent")')).toBeVisible();
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('.agent-term')).not.toHaveText(/input was not sent/);
+  await browser.evaluate(() => (window as unknown as Holding).__release?.());
+  await expect(terminal).toHaveText(/resumed your last conversation/);
+  await expect(terminal).toHaveText(/Good question/);
+});
+
+// Review of slice 9a, F6: a restart that fails drops what was typed for it, so a later start does
+// not receive it.
+test('what is typed for a restart that fails is not sent to a later session', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await openSuperagent(browser, screen);
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
+    w.__yuliusMock.switchCockpits(true);
+  });
+  await expect(browser.locator('.agent:has-text("Restarting the Superagent")')).toBeVisible();
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await browser.evaluate(() => (window as unknown as Holding).__release?.());
+  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Superagent/);
+  await screen.getByRole('button', 'Try again').click();
+  await expect(terminal).toHaveText(/resumed your last conversation/);
+  await browser.keyboard.type('later');
+  await expect(terminal).toHaveText(/later/);
+  await expect(terminal).not.toHaveText(/why\?/);
+});

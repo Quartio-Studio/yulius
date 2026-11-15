@@ -9,6 +9,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Watching a live task reads only what was written since (SPEC-483 slice 36, task #465). Each
   1.5 s poll re-read and re-parsed the whole transcript; the server now goes on from where the
   last read ended (30 MB: 497 ms a poll before, 18 µs now).
+- The Superagent keeps its person's text across a restart (SPEC-487 slice 9a, task #469). A
+  person's message was swallowed by a restart: the restart that gets an update's tools now waits
+  while text sits unsent in the Superagent's prompt box (up to half an hour after the last
+  keystroke, also when the server itself restarted for the update), and what the person types
+  while it restarts in place is kept and typed into the new session.
 - The capacity and accounts views read through indexes (SPEC-483 slice 35, task #465). Their
   runs and pauses were found by scanning every run and pause ever recorded on each load of the
   dashboard; three indexes (migration 0061) let them read only their window.
