@@ -850,3 +850,79 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }
+
+/// SPEC-493 REV-006 (review round 1 of fix 1c): the reviews read counts only the sandboxes the
+/// caller sees: a member of one of two counts its pull requests alone, and asking for the other
+/// by id is not found.
+#[tokio::test]
+async fn the_reviews_read_counts_only_visible_sandboxes() -> TestResult {
+    use yulius_app::delivery::DeliveryRecord;
+    use yulius_app::model::ReviewRoundRecord;
+    use yulius_app::ports::store::CoordinationStore as _;
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    use yulius_domain::delivery::DeliveryStage;
+    let h = harness()?;
+    let (admin, alice) = base(&h).await?;
+    let merged_at = OCT1 + 10 * HOUR;
+    for (id, sandbox) in [("t-seen", "s1"), ("t-hidden", "s2")] {
+        task(
+            &h,
+            TaskSpec {
+                id,
+                sandbox,
+                title: id,
+                harness: Harness::ClaudeCode,
+                status: TaskStatus::Running,
+                created: OCT1,
+                closed: None,
+            },
+        )
+        .await?;
+        h.store
+            .insert_review_round(&ReviewRoundRecord {
+                id: format!("round-{id}"),
+                task_id: TaskId::parse(id)?,
+                round: 1,
+                head: None,
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: None,
+                model_answered: None,
+                started_at: Timestamp(OCT1),
+                ended_at: Some(Timestamp(OCT1 + HOUR)),
+                verdict: Some("approve".into()),
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        h.store
+            .transition_delivery(
+                &DeliveryStage::None,
+                &DeliveryRecord {
+                    task_id: TaskId::parse(id)?,
+                    stage: DeliveryStage::MergedIntegration,
+                    pr_number: Some(1),
+                    updated_at: Timestamp(merged_at),
+                },
+            )
+            .await?;
+    }
+    let read = |who: &Creds, query: &str| {
+        let (router, who, uri) = (
+            h.router.clone(),
+            who.clone(),
+            format!("/api/analytics/reviews?from=2026-10-01&to=2026-10-07{query}"),
+        );
+        async move { call(&router, Method::GET, &uri, None, &who).await }
+    };
+    let seen = read(&alice, "").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(seen.body["pull_requests"], 1, "{}", seen.body);
+    assert_eq!(read(&admin, "").await?.body["pull_requests"], 2);
+    let hidden = read(&alice, "&sandbox=s2").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    assert_eq!(read(&alice, "&sandbox=s1").await?.body["pull_requests"], 1);
+    Ok(())
+}

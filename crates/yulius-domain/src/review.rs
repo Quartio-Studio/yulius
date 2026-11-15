@@ -139,7 +139,8 @@ pub struct ReviewNumbers {
     pub first_rounds_without_report: u32,
     /// The median of the rounds per pull request (its highest round number).
     pub median_rounds: Option<f64>,
-    /// Rounds by the model that ran them, most first.
+    /// Rounds by the model that ran them, most first: a round once per model, however many of
+    /// its reviewers ran.
     pub rounds_by_model: Vec<(String, u32)>,
     /// Rounds run on the Opus reviewer because no Fable could run.
     pub no_fable_rounds: u32,
@@ -181,13 +182,22 @@ pub fn review_numbers(rounds: &[RoundFact]) -> ReviewNumbers {
         n if n % 2 == 1 => Some(f64::from(per_pull[n / 2])),
         n => Some((f64::from(per_pull[n / 2 - 1]) + f64::from(per_pull[n / 2])) / 2.0),
     };
+    // A round counts once per model, however many of its reviewers ran (a cut-off one started
+    // again): rounds, not reviewer runs, as the rounds per pull request count them.
+    let mut seen: std::collections::BTreeSet<(&(String, u64), u32, &str)> =
+        std::collections::BTreeSet::new();
+    let mut no_fable: std::collections::BTreeSet<(&(String, u64), u32)> =
+        std::collections::BTreeSet::new();
     let mut by_model: BTreeMap<&str, u32> = BTreeMap::new();
     for fact in rounds {
-        *by_model.entry(fact.model.as_str()).or_default() += 1;
+        if seen.insert((&fact.pull, fact.round, fact.model.as_str())) {
+            *by_model.entry(fact.model.as_str()).or_default() += 1;
+        }
         if fact.no_fable {
-            numbers.no_fable_rounds += 1;
+            no_fable.insert((&fact.pull, fact.round));
         }
     }
+    numbers.no_fable_rounds = u32::try_from(no_fable.len()).unwrap_or(u32::MAX);
     let mut by_model: Vec<(String, u32)> = by_model
         .into_iter()
         .map(|(model, n)| (model.to_owned(), n))
@@ -279,9 +289,10 @@ mod tests {
         assert_eq!(numbers.first_rounds_requesting_changes, 1);
         assert_eq!(numbers.first_rounds_without_report, 1);
         assert_eq!(numbers.median_rounds, Some(1.5));
+        // t3's round 1 ran twice and counts once.
         assert_eq!(
             numbers.rounds_by_model,
-            [(f.to_owned(), 6), (o.to_owned(), 2)]
+            [(f.to_owned(), 5), (o.to_owned(), 2)]
         );
         assert_eq!(numbers.no_fable_rounds, 1);
         assert_eq!(review_numbers(&[]), ReviewNumbers::default());

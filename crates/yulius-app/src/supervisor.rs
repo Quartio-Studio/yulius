@@ -5265,6 +5265,16 @@ impl App {
                 .iter()
                 .any(|o| matches!(o, Observation::TurnComplete { .. }));
             if catching_up {
+                // What a review round's reviewer ran on and whether a limit cut it off are facts
+                // to note however late (SPEC-493 REV-004): noting one again changes nothing.
+                for observation in &observations {
+                    if let Observation::SubagentAnswered { .. }
+                    | Observation::SubagentCutOff { .. } = observation
+                    {
+                        self.on_observation(&task_id, &attempt, observation.clone())
+                            .await;
+                    }
+                }
                 // Turns, the goal and a usage limit are applied once, as the replay's final
                 // state: a limit that a later turn overtook (Claude Code continued by itself) is
                 // history (SPEC-072 LRS-001).

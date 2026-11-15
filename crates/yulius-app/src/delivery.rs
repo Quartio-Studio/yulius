@@ -1400,6 +1400,18 @@ impl App {
         expected: &DeliveryStage,
         next: &DeliveryRecord,
     ) -> AppResult<bool> {
+        self.dlv_transition_at(sandbox, expected, next, None).await
+    }
+
+    /// [`Self::dlv_transition`] of a merge whose merged head is known: the merge record says
+    /// whether a recorded review round approved it (SPEC-493 REV-005).
+    pub(crate) async fn dlv_transition_at(
+        &self,
+        sandbox: &SandboxId,
+        expected: &DeliveryStage,
+        next: &DeliveryRecord,
+        merged_head: Option<&str>,
+    ) -> AppResult<bool> {
         let written = self.deps.store.transition_delivery(expected, next).await?;
         if written && next.stage != *expected {
             self.publish_pulls(sandbox);
@@ -1407,7 +1419,7 @@ impl App {
         // The merge record says who wrote and who reviewed (SPEC-493 REV-005): the store closed
         // the pull request's rounds in the same write.
         if written && next.stage == DeliveryStage::MergedIntegration && *expected != next.stage {
-            self.record_review_models(&next.task_id, next.pr_number)
+            self.record_review_models(&next.task_id, next.pr_number, next.updated_at, merged_head)
                 .await;
         }
         Ok(written)
@@ -1753,8 +1765,18 @@ impl App {
                 stage: next,
                 updated_at: self.now(),
             };
+            let merged_head = observed
+                .pr
+                .as_ref()
+                .filter(|pull| pull.merged)
+                .map(|pull| pull.head_sha.clone());
             if self
-                .dlv_transition(&task.sandbox_id, &observed.record.stage, &reconciled)
+                .dlv_transition_at(
+                    &task.sandbox_id,
+                    &observed.record.stage,
+                    &reconciled,
+                    merged_head.as_deref(),
+                )
                 .await?
             {
                 if reconciled.stage != observed.record.stage {
@@ -2127,8 +2149,9 @@ impl App {
                         updated_at: self.now(),
                         ..record.clone()
                     };
+                    let merged_head = pull.merged.then_some(pull.head_sha.as_str());
                     let _ = self
-                        .dlv_transition(&sandbox.id, &record.stage, &reconciled)
+                        .dlv_transition_at(&sandbox.id, &record.stage, &reconciled, merged_head)
                         .await;
                 }
             }
@@ -3810,8 +3833,13 @@ impl App {
             pr_number: Some(pull.number),
             updated_at: self.now(),
         };
-        self.dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
-            .await?;
+        self.dlv_transition_at(
+            &task.sandbox_id,
+            &observed.record.stage,
+            &next,
+            Some(&pull.head_sha),
+        )
+        .await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         self.dlv_audit(
             &actor,

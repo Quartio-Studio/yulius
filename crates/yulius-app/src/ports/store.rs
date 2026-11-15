@@ -733,7 +733,7 @@ pub trait CoordinationStore: Send + Sync {
         subagent: &str,
     ) -> AppResult<bool>;
     /// The review rounds of the pull requests of `sandboxes` merged in `[from, to)` (either end
-    /// open when `None`), oldest first (SPEC-493 REV-006).
+    /// open when `None`), the newest merges first, at most a bound's worth (SPEC-493 REV-006).
     async fn merged_review_rounds(
         &self,
         sandboxes: &[SandboxId],

@@ -2344,14 +2344,14 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
                 )
                 .await?;
         assert_eq!(record.len(), 1, "{record:?}");
-        assert!(
-            record[0].starts_with("pull request #1: written by ")
-                && record[0].contains(&format!(
-                    "review rounds: 1 claude-fable-5-2 approve at {}",
-                    &head[..9]
-                ))
-                && !record[0].contains("no recorded review round approved"),
-            "{record:?}"
+        assert_eq!(
+            record[0],
+            format!(
+                "pull request #1: written by claude-opus-5-5; review rounds: 1 claude-fable-5-2 \
+                 approve at {}",
+                &head[..9]
+            ),
+            "approved at the merged head; the agent's run on the default model wrote it"
         );
         // The pull request's rounds closed with it: the view lists none for the next one.
         assert_eq!(f.delivery("t1").await?["review_rounds"], json!([]));

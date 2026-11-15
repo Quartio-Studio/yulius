@@ -291,22 +291,46 @@ impl App {
             .collect()
     }
 
-    /// Writes the merge record of `task`'s pull request `pr`: the models its runs were launched
-    /// with since its previous pull request merged, and each review round with its model,
-    /// verdict and head (SPEC-493 REV-005). A merge no recorded round approved says so.
-    pub async fn record_review_models(&self, task: &yulius_domain::ids::TaskId, pr: Option<u64>) {
+    /// Writes the merge record of `task`'s pull request `pr`, merged at `at` (the time the
+    /// store closed its rounds) with head `merged_head` when known: the models of the runs that
+    /// worked on it (those still going when the previous pull request merged, and every later
+    /// one), and each of its review rounds with its model, verdict and head (SPEC-493 REV-005).
+    /// A merge whose head no recorded round approved (that head, or one followed only by clean
+    /// merges of the integration branch, the reviewed-head rule) says so; without a known head,
+    /// any approving round counts.
+    pub async fn record_review_models(
+        &self,
+        task: &yulius_domain::ids::TaskId,
+        pr: Option<u64>,
+        at: yulius_domain::time::Timestamp,
+        merged_head: Option<&str>,
+    ) {
         let store = &self.deps.store;
         let Ok(all) = store.review_rounds(task, false).await else {
             return;
         };
-        let (this, before): (Vec<_>, Vec<_>) = all.into_iter().partition(|r| r.pr_number == pr);
-        let since = before.iter().filter_map(|r| r.merged_at).max();
+        let Ok(Some(record)) = store.task(task).await else {
+            return;
+        };
+        let (this, before): (Vec<_>, Vec<_>) =
+            all.into_iter().partition(|r| r.merged_at == Some(at));
+        // The task's previous pull request: the latest merge before this one.
+        let since = before
+            .iter()
+            .filter_map(|r| r.merged_at)
+            .filter(|merged| *merged < at)
+            .max();
+        let own = record
+            .model
+            .clone()
+            .unwrap_or_else(|| yulius_domain::harness::DEFAULT_CLAUDE_MODEL.to_owned());
         let mut written: Vec<String> = Vec::new();
         for attempt in store.attempts(task).await.unwrap_or_default() {
-            if since.is_some_and(|since| attempt.started_at < since) {
+            // A run that ended before the previous merge wrote that pull request, not this one.
+            if since.is_some_and(|since| attempt.ended_at.is_some_and(|ended| ended < since)) {
                 continue;
             }
-            let model = attempt.model.unwrap_or_else(|| "unknown".into());
+            let model = attempt.model.unwrap_or_else(|| own.clone());
             if !written.contains(&model) {
                 written.push(model);
             }
@@ -325,7 +349,7 @@ impl App {
                     }),
                     r.head
                         .as_deref()
-                        .map(|h| format!(" at {}", &h[..h.len().min(9)]))
+                        .map(|h| format!(" at {}", h.chars().take(9).collect::<String>()))
                         .unwrap_or_default(),
                     if r.reason == "no_fable" {
                         " (no Fable)"
@@ -335,7 +359,27 @@ impl App {
                 )
             })
             .collect();
-        let approved = this.iter().any(|r| r.verdict.as_deref() == Some("approve"));
+        let mut approved = false;
+        for round in this
+            .iter()
+            .filter(|r| r.verdict.as_deref() == Some("approve"))
+        {
+            approved = match (merged_head, round.head.as_deref()) {
+                (None, _) => true,
+                (Some(merged), Some(head)) if same_commit(head, merged) => true,
+                (Some(merged), Some(head)) => match record.worktree_path.as_deref() {
+                    Some(worktree) => {
+                        self.review_covers(&record, Path::new(worktree), head, merged)
+                            .await
+                    }
+                    None => false,
+                },
+                (Some(_), None) => false,
+            };
+            if approved {
+                break;
+            }
+        }
         let detail = format!(
             "pull request #{}: written by {}; review rounds: {}{}",
             pr.map_or_else(|| "?".to_owned(), |n| n.to_string()),
@@ -352,14 +396,11 @@ impl App {
             if approved {
                 ""
             } else {
-                "; no recorded review round approved it"
+                "; no recorded review round approved its head"
             }
         );
-        let target = match store.task(task).await {
-            Ok(Some(record)) => match store.sandbox(&record.sandbox_id).await {
-                Ok(Some(sandbox)) => format!("{}#{}", sandbox.slug, record.number),
-                _ => task.to_string(),
-            },
+        let target = match store.sandbox(&record.sandbox_id).await {
+            Ok(Some(sandbox)) => format!("{}#{}", sandbox.slug, record.number),
             _ => task.to_string(),
         };
         if let Err(err) = store
@@ -375,6 +416,12 @@ impl App {
             tracing::warn!(error = %err, task = %task, "merge record of the review not written");
         }
     }
+}
+
+/// Whether `a` and `b` name the same commit: one is a prefix (at least 7 hex digits) of the other.
+fn same_commit(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    short.len() >= 7 && long.starts_with(short)
 }
 
 /// A round as the delivery view shows it.

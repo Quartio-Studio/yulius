@@ -1627,6 +1627,102 @@ fn a_switched_limit_that_waits_is_said_when_the_session_goes_on() -> TestResult 
     Ok(())
 }
 
+/// SPEC-493 REV-004 (review round 1 of fix 1c): what a review round's reviewer ran on and that a
+/// usage limit cut it off reach its round from the subagent's own transcript, while the session
+/// runs.
+#[test]
+fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore as _;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (id, _user, transcript) =
+            first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        app.deps
+            .store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-1".into(),
+                task_id: id.clone(),
+                round: 1,
+                head: None,
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: Some("a73a9170080d69b92".into()),
+                model_answered: None,
+                started_at: app.now(),
+                ended_at: None,
+                verdict: None,
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        let at = rfc3339(app.now());
+        let sub = transcript.with_extension("").join("subagents");
+        std::fs::create_dir_all(&sub)?;
+        let answer = json!({"type": "assistant", "isSidechain": true, "agentId": "a73a9170080d69b92",
+            "timestamp": at, "message": {"id": "msg_rev_1", "model": "claude-fable-5-2",
+            "role": "assistant", "content": [{"type": "text", "text": "reading"}],
+            "usage": {"input_tokens": 3, "output_tokens": 10}}});
+        let refused = json!({"type": "assistant", "isSidechain": true, "agentId": "a73a9170080d69b92",
+            "timestamp": at, "isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "usage_limit_reached", "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"}},
+            "message": {"id": "msg_rev_2", "model": "<synthetic>", "role": "assistant",
+                "content": [{"type": "text", "text": "You've hit your 5-hour limit"}]}});
+        std::fs::write(
+            sub.join("agent-a73a9170080d69b92.jsonl"),
+            format!("{answer}\n{refused}\n"),
+        )?;
+        wait_for("the round's notes", Duration::from_secs(30), || async {
+            app.deps.store.review_rounds(&id, true).await.is_ok_and(|rounds| {
+                rounds.first().is_some_and(|r| {
+                    r.model_answered.as_deref() == Some("claude-fable-5-2") && r.cut_off
+                })
+            })
+        })
+        .await?;
+        // Another reviewer answers and is not cut off: its round says so.
+        app.deps
+            .store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-2".into(),
+                subagent_id: Some("b2b2b2b2b2".into()),
+                round: 2,
+                started_at: app.now(),
+                cut_off: false,
+                model_answered: None,
+                ..app.deps.store.review_rounds(&id, true).await?[0].clone()
+            })
+            .await?;
+        let mut second = answer.clone();
+        second["agentId"] = json!("b2b2b2b2b2");
+        second["message"]["id"] = json!("msg_rev_3");
+        second["message"]["model"] = json!("claude-opus-5-5");
+        std::fs::write(sub.join("agent-b2b2b2b2b2.jsonl"), format!("{second}\n"))?;
+        wait_for("the second round's model", Duration::from_secs(30), || async {
+            app.deps.store.review_rounds(&id, true).await.is_ok_and(|rounds| {
+                rounds.get(1).is_some_and(|r| r.model_answered.as_deref() == Some("claude-opus-5-5"))
+            })
+        })
+        .await?;
+        let rounds = app.deps.store.review_rounds(&id, true).await?;
+        assert!(!rounds[1].cut_off, "{rounds:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-493 MDL-002 (review round 6 of fix 1a): a switched limit is said only at the launch
 /// past it. Here it pauses the task (nothing can run), a person stops the task, and later
 /// continues it: that start is not the one past the limit, and says nothing of it.

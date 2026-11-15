@@ -70,6 +70,10 @@ fn keep_first_plan_size(tx: &rusqlite::Transaction<'_>, task: &str) -> rusqlite:
 
 const MSG_COLS: &str = "m.id, m.sandbox_id, m.from_task, m.from_user, m.to_task, m.kind, m.subject, m.body, m.created_at";
 
+/// The most review rounds one analytics read takes: the newest merges first (a range of years
+/// of a busy project). SPEC-493 REV-006.
+const MAX_REVIEW_ROUNDS_READ: u32 = 20_000;
+
 fn review_round_from_row(row: &Row<'_>) -> rusqlite::Result<ReviewRoundRecord> {
     let task: String = row.get("task_id")?;
     Ok(ReviewRoundRecord {
@@ -416,7 +420,8 @@ impl CoordinationStore for SqliteStore {
                  r.subagent_id, r.model_answered, r.started_at, r.ended_at, r.verdict, r.cut_off, \
                  r.pr_number, r.merged_at FROM review_rounds r JOIN tasks t ON t.id = r.task_id \
                  WHERE t.sandbox_id IN ({marks}) AND r.merged_at IS NOT NULL \
-                 AND r.merged_at >= ? AND r.merged_at < ? ORDER BY r.merged_at, r.started_at, r.rowid"
+                 AND r.merged_at >= ? AND r.merged_at < ? ORDER BY r.merged_at DESC, r.started_at, r.rowid \
+                 LIMIT {MAX_REVIEW_ROUNDS_READ}"
             );
             let mut stmt = c.prepare(&sql).map_err(db)?;
             let mut values: Vec<rusqlite::types::Value> =
