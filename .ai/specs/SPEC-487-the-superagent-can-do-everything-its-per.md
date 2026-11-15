@@ -229,7 +229,7 @@ with those rights checked at the call.
 - [x] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
 - [x] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
 - [x] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
-- [ ] Slice 11's last review notes: a project name's compounds refused, the refusal names the word, the case's length as the link takes it
+- [x] Slice 11's last review notes: a project name's compounds refused, the refusal names the word, the case's length as the link takes it
 
 ## Acceptance criteria
 
@@ -1257,3 +1257,10 @@ with those rights checked at the call.
   instance, a slug `api` in "application"): whole words only, not for the Yulius project itself,
   and the refusal names the kind of name (`project_named`, `names_word`); R2-3, ABL-004 reworded.
   Three more mutants, each failed by a unit test (`mutants-slice11-r2.log`: `survived=0`).
+- **Review of slice 11, round 3 notes** (follow-up after PR #1315, head `745f00417`): R3-1, a
+  compound of the project's name (`shop-api`, `shop_db`) slipped through: only letters and digits
+  bound a name now; R3-2, the refusal names the word; R3-3, the case is capped at 1500 characters,
+  what the filing link takes even of text dense with punctuation (`MAX_CASE_CHARS`). Tests first
+  (`a_project_name_is_matched_as_a_whole_word`, `a_case_at_its_cap_fits_the_link`,
+  `cockpit::a_missing_ability_is_reported_in_one_call` failed before the fix); three mutants, each
+  killed (`mutants-slice11-r3.log`: `survived=0`). Security scan: Vidoc disabled.
