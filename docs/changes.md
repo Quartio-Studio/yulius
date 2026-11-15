@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Nothing typed to the Superagent is lost when it restarts (SPEC-487 slice 9a, task #469). A
+  person's message was swallowed by a restart: the restart that gets an update's tools now waits
+  while text sits unsent in the Superagent's prompt box (up to half an hour after the last
+  keystroke), and what the person types while it restarts is kept and typed into the new session.
 - One reader of a sandbox's way to Yulius (SPEC-483 slice 34, task #465). The Git credential
   helper, `yulius wait` and `yulius tool`, the MCP bridge and the hook clients each read
   `YULIUS_URL` and the task token and parsed the URL with one of two parsers that took different

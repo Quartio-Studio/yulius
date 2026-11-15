@@ -182,6 +182,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 | REL-004 | The approval runs the CD page's `cd_deploy`, `cd_rollback` or `promote_sandbox` with the answering person's browser session and the slug they typed; their checks and refusals at that moment are the answer of the click and of the waiting call. Audited `superagent.cross_task` with the action, never the slug. | `cd_rollback::the_superagent_releases_production_once_its_person_types_the_slug` (production deployed to v2, rolled back to v2 from v3 with `main` unmoved, a promotion's own "nothing to promote") |
 | REL-005 | `onboarding_start {notes?}`, approved by a click, runs the project page's Start onboarding (`approve_onboarding`) as that person. | `cross_sandbox::onboarding_starts_on_the_persons_click` (the start's own answer: this harness has no Git); `superagent-requests.e2e.ts` (the click) |
 | REL-006 | The three new tools (`cd_rollback`, `promote`, `onboarding_start`) ask in Claude Code first as every changing tool does; the instructions say production, `promote` and `onboarding_start` wait on the panel. | `manage_tools::the_cockpit_asks_before_every_changing_tool`; `cockpit::a_cockpit_manages_the_project_for_its_owner`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
+| SES-001 | What the person types into the Superagent's panel while it restarts in place (`switched`: an update's tools, a usage-limit move) is kept, up to 16 KiB, and typed into the new session once its first screen shows; the ended terminal keeps the keyboard until then. | `agent-panel.e2e.ts` "what is typed while the Superagent restarts reaches it once it is back" |
+| SES-002 | The restart that gets an update's tools waits while the Superagent's prompt box holds text its person typed since it was last emptied (Enter outside a paste, or Ctrl-C), for at most 30 minutes after the last keystroke; its state reads `held`. | `cockpit::an_updates_restart_waits_for_text_left_in_the_prompt_box`; `cockpit::tests::a_draft_is_text_typed_since_the_box_was_emptied` |
 
 ## Plan
 
@@ -504,6 +506,15 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 9a: an update still restarts the Superagent; nothing typed is lost to it** (SES-001,
+  SES-002). Claude Code 2.1.325 handles `notifications/tools/list_changed`, but the Superagent's
+  MCP instructions are read only when it connects, and Yulius's MCP endpoint answers JSON with no
+  stream for the server's notifications (`GET /mcp` is 405, `listChanged: false`): a stream held
+  open through each sandbox's forward for every Superagent is a change of its own, for a restart
+  that already resumes the conversation. What a restart lost was the person's text and the
+  Superagent's own schedulers; the text is kept here, the schedulers move to Yulius in slice 9b.
+- **A draft holds a restart for at most half an hour** after its last keystroke: one left for
+  longer is taken as abandoned, so an update reaches every Superagent within the hour.
 - **Slice 8b: the typed slug on the panel is the CD page's confirmation** (REL-001,
   ADR-0334). The person decided it on 2026-11-13; ADR-0110 holds (a person decides production and
   types the slug). The slug is checked by the server before the request is taken, so a slip
