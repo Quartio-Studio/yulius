@@ -83,7 +83,8 @@ pull request delivers that part.
 | 8b | Production deploy and rollback, promotion to `main` and a project's onboarding behind one confirmation in the panel with the typed project slug (the person's decision of 2026-11-13) | wall 4 (production) |
 | 9a | Nothing typed to the Superagent is lost in a restart: keys typed while it restarts reach the new session, and an update's restart waits for text left in its prompt box | wall 8 |
 | 9b | Its standing jobs have a durable home: scheduled checks held by Yulius, kept across restarts, typed into its session when it is idle | wall 8 |
-| 10 | Secrets (a value entered masked beside the chat, never seen by the agent) and visibility (cost, load, a crash's exit and last screen, a checkout that is current) | walls 10, 11 |
+| 10a | Secrets: a value the person types masked on the Superagent's panel goes to the vault; the agent sees its name only | wall 10 |
+| 10b | Visibility: a task's cost and load, a crash's exit and last screen, a checkout that is current | wall 11 |
 | 11 | A missing ability reported to the Yulius project in one call; the ability table in the product documentation, complete | wall 12 |
 
 ### The ability table (target)
@@ -125,7 +126,7 @@ the function the web UI's route calls, with the person's rights checked at the c
 | Another sandbox: create, change, message, stop | behind one confirmation in the panel (had; lasting, amended, withdrawn in slice 8a) | no | ADR-0227, ADR-0333 |
 | Leave a decision only the person makes, answered Yes or No on its panel (`person_ask`) | yes (slice 8a) | asks with `needs_you` (had) | A question in a report is not read; the panel keeps it until answered |
 | A secret's value | never | never | SPEC-002 ADR-20: no agent sees a value |
-| Enter a secret's value | the person, masked, beside the chat (slice 10) | no | The value goes from the person to the vault |
+| Enter a secret's value | the person, masked, on the Superagent's panel (`secret_request_value`, slice 10a) | no (it asks a person: `secret_request_copy`, `needs_you`) | The value goes from the person to the vault; ADR-0336 |
 | Report a missing ability to the Yulius project | yes (slice 11) | yes (slice 11) | Both meet walls |
 
 ## Requirements
@@ -189,6 +190,10 @@ the function the web UI's route calls, with the person's rights checked at the c
 | CHK-003 | A due check is typed into its Superagent's session when its conversation is idle, no restart is pending, its prompt box holds no draft and nobody typed in the last minute (checked again with its terminal held): one paste labelled `Yulius check "<name>"`, then Enter; the next interval counts from then, a minute if it could not be typed; not in the first 20 seconds after the Superagent started, nor within 30 seconds of the last check typed into it. | the same test (typed into the idle session once the clock passes its interval); `superagent_checks::tests::a_check_waits_for_a_quiet_prompt_box` |
 | CHK-004 | Every minute, the Superagent of a due check that is not running is started as opening its panel would, with its person's rights then: not for a disabled person; a start that fails is tried again after 2, 4, … up to 60 minutes; the checks of a person or a sandbox that is gone are deleted. | the same test (`start_superagents_for_due_checks` after the Superagent ended, for a disabled person, for a removed sandbox) |
 | CHK-005 | The three tools are the Superagent's only; `superagent_checks` is pre-allowed, the other two ask in Claude Code first; the instructions send standing jobs to `superagent_check_set`, never to a timer of the Superagent's own. | `cockpit::a_cockpit_manages_the_project_for_its_owner`; `manage_tools::the_cockpit_asks_before_every_changing_tool`; `launch::a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`; `mcp::tests::the_superagent_is_told_to_do_what_its_person_may_do` |
+| SEC-001 | `secret_request_value {name, description?, scope?}` is a request on the Superagent's own panel (lasting; no amend); refused before anyone is asked for a name the vault takes from no agent (not capitals, digits and underscores, reserved, the Vidoc key), a scope other than `sandbox` (the default, named on the card; Configure needed) or `personal`, a description over 500 characters, unknown arguments. The card names the secret, the project, its scope, what it is for and, when it is so, that it replaces a value; it holds a masked multi-line field (a password field where the browser cannot mask one); Store takes a click once 8 characters are typed. | `cockpit::a_secret_value_typed_on_the_panel_reaches_the_vault_only`; `superagent-requests.e2e.ts` "a secret the Superagent asks for is typed masked on its panel and stored" |
+| SEC-002 | The answer carries the value once; it is checked as the Secrets page checks a pasted value (a final line break dropped, a key's line breaks as literal `\n`, a cut or flattened key refused) before the request is taken: one these rules refuse, or none, leaves the request waiting and the value typed on the card. | the same test (no value, a short one, a cut key: refused, still waiting) |
+| SEC-003 | Approved, the value is stored with the answering person's browser session as theirs: the new value of their secret of that name in the scope asked, or a new agent secret there; never another scope's or a global one; the outcome names the secret and `created` or `updated`. | the same test (`secret_verify` matches the multi-line key with its line breaks as literal `\n`; asked again: `updated`; the project's of the same name: `created` beside the personal one) |
+| SEC-004 | No agent sees the value: not the Superagent's call or its outcome, not the requests file, not the audit; the page clears the field once sent. | the same test; the e2e test (nothing of it on the page) |
 
 ## Plan
 
@@ -206,7 +211,8 @@ the function the web UI's route calls, with the person's rights checked at the c
 - [x] Slice 8b: production deploy, promotion and onboarding behind one confirmation in the panel with the typed project slug
 - [ ] Slice 9a: nothing typed to the Superagent is lost in a restart (keys typed while it restarts reach the new session; an update's restart waits for text left in its prompt box)
 - [ ] Slice 9b: the Superagent's scheduled checks are held by Yulius (set, listed, deleted; kept across restarts; typed into its session when it is idle)
-- [ ] Slice 10: secrets entered masked beside the chat, and visibility (cost, load, a crash's exit and last screen, a current checkout)
+- [ ] Slice 10a: a secret's value entered masked on the Superagent's panel, never seen by an agent
+- [ ] Slice 10b: visibility (a task's cost and load, a crash's exit and last screen, a checkout that is current)
 - [ ] Slice 11: a missing ability reported in one call, and the ability table in the product documentation
 
 ## Acceptance criteria
@@ -511,6 +517,12 @@ the function the web UI's route calls, with the person's rights checked at the c
 - **`person_ask` asks in Claude Code too** (XRQ-007), as `sandbox_task_create` does: each tool
   that records something for the person stays out of the pre-allowed list, which holds only
   tools that read; on a contained server the bypass skips that prompt anyway.
+- **Slice 10a: a secret's value is typed on the panel** (SEC-001 to SEC-004, ADR-0336), the
+  person's decision. The rest of wall 10 stays as decided before: binding a secret to hosts and
+  copying it into `.env` keep a person's allowance (`secret_request_hosts`, `secret_copy_to_env`
+  ask once each: the guard they already are), and `secret_verify` keeps refusing production
+  secrets (ADR-0144). The "invisible sandbox-scoped secret" of the evidence was not reproduced
+  here; it is left to its own report if it comes again.
 - **Slice 9b: standing jobs are checks Yulius holds** (CHK-001 to CHK-004, ADR-0335): the
   conversation survives a restart, its schedulers do not, so the schedule moves out of the
   session. A due check may start a Superagent: that is what "keep monitoring" means to the
@@ -1077,3 +1089,51 @@ the function the web UI's route calls, with the person's rights checked at the c
   `ready_for_check`, `backing_off`, `backoff_wait` and `sound` with their unit test
   (`checks_wait_their_turn_and_are_checked_when_read`) and the integration test read back a
   hand-edited check out of bounds (`target/evidence/mutants-slice9b-r1.log`: `survived=0`).
+
+### Slice 10a (2026-11-15)
+
+- **Slice 9b is merged:** pull request #1310 into `dev` at `4aa43cdca`, whose own Yulius CI run
+  passed.
+- **Review of slice 9b, round 2 notes**, answered first: G1, the 20-second grace is called a
+  heuristic in ADR-0335; G2, a check pasted but not sent is not pasted again; G3, a retry leaves
+  a check replaced meanwhile alone, a gone Superagent's back-off goes with its checks, checks out
+  of bounds are logged when dropped; G4, G5 answered in words (a few milliseconds of a file write
+  under the terminal held; after a clock set forward, the 30-second gap spaces the checks).
+- **Tests and code:** `a_secret_value_typed_on_the_panel_reaches_the_vault_only` was written
+  first: refusals before asking, the card (its title is the secret's name), no value, a short
+  one and a cut key refused with the request kept, a multi-line key stored (`secret_verify`
+  matches it with its line breaks as literal `\n`), nothing of it in the call, its outcome, the
+  requests file or the audit, and asked again: `updated`. The panel: the e2e test failed before
+  the card (19 of 19 now). The answer's fields became one `RequestAnswer` (clippy's bound on
+  arguments).
+- **Mutation:** seven mutants (`target/evidence/mutants-slice10a.py`, `mutants-slice10a.log`):
+  five failed by a named test; `empty-value-taken` is equivalent (the vault's own check refuses
+  an empty value too); `check-repasted` (slice 9b's G2) survives: it needs a terminal whose
+  Enter fails after its paste went in, which no test fixture gives.
+- **Not tested:** a Superagent's call that waited past its 4 minutes and the value stored later
+  (the same lasting request as XRQ-001, tested there); a person without the right to manage the
+  scope (the vault's own refusal, answered to both the click and the call).
+- **Gate:** `scripts/dev ci` passed on `db1442752` (4438 tests, 17 skipped;
+  `target/evidence/gate-slice10a.log`).
+- **Security scan:** Vidoc is switched off for this project in Yulius ("disabled", not a pass).
+- **Independent review, round 1** (head `db1442752`): request changes; no leak found; all in this
+  slice's code:
+  - M1 (major), a value replaced the person's secret of that name in any scope (a personal one
+    for a project request, a global one for an administrator): only their secret of that name
+    in the scope asked is replaced (`secret_replaced`); the test creates the project's
+    `DEPLOY_KEY` beside the personal one.
+  - M2, the card did not say whose it is or that it replaces a value: it names the project and
+    the scope (the default named) and says "Replaces the value of …" (e2e).
+  - M3, reserved names and missing rights were found only once the request was taken: the name is
+    checked as the vault checks an agent's (`agent_made_name`: reserved names, the Vidoc key) and
+    the project's scope needs Configure, before asking (the Vidoc key tested; Configure is write
+    access, which a Superagent's person has); the documents say which later refusals remain.
+  - M4, the field was emptied before the server took the value: it is kept until then (e2e: a
+    value refused stays typed).
+  - m1: the Vidoc key is refused. m2: the value is held in `Zeroizing` and the input built
+    directly. m3: `RequestAnswer`'s `Debug` hides the value. m4: `auto_allow` as every agent
+    secret, said in ADR-0336. m5: a password field where the browser cannot mask a text box,
+    password-manager attributes off, the label says "never shown to your Superagent". The
+    description is trimmed when stored.
+  Mutants of the fixes: four, each failed by a named test once the project's request left its
+  scope out (`target/evidence/mutants-slice10a-r1.log`: `survived=0`).

@@ -962,8 +962,12 @@ async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult
     // Polled once (the request is taken), then dropped, as a cancelled HTTP request is.
     let _ = tokio::time::timeout(
         Duration::ZERO,
-        w.h.app
-            .superagent_request_answer(&ctx, "s1", &id, true, None, None),
+        w.h.app.superagent_request_answer(
+            &ctx,
+            "s1",
+            &id,
+            &yulius_app::cross_sandbox::RequestAnswer::approve(),
+        ),
     )
     .await;
     let outcome = tokio::time::timeout(WAIT, call_).await???;

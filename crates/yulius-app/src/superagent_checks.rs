@@ -215,9 +215,16 @@ impl App {
         match serde_json::from_slice::<Vec<Check>>(&bytes) {
             Ok(checks) => {
                 let now = self.now().0;
-                *self.superagent_checks.lock() = checks
+                let read = checks.len();
+                let kept: Vec<Check> = checks.into_iter().filter(sound).collect();
+                if kept.len() < read {
+                    tracing::warn!(
+                        dropped = read - kept.len(),
+                        "checks out of bounds were not read back"
+                    );
+                }
+                *self.superagent_checks.lock() = kept
                     .into_iter()
-                    .filter(sound)
                     .map(|mut check| {
                         // A clock set back does not push a check past one interval (F7).
                         check.next_at = check.next_at.min(now.saturating_add(every_ms(&check)));
@@ -426,11 +433,15 @@ impl App {
         };
         self.save_superagent_checks();
         runtime.check_typed_ms.store(now, Ordering::SeqCst);
+        // Whether the paste went in: once it did, a failed Enter is not pasted again (its text is
+        // in the prompt box already; review of slice 9b, G2).
+        let mut pasted = false;
         let typed = async {
             let writer = writer
                 .as_mut()
                 .ok_or_else(|| AppError::Conflict("the Superagent has ended".into()))?;
             writer.input(&check_paste(&due)).await?;
+            pasted = true;
             tokio::time::sleep(SUBMIT_DELAY).await;
             writer.input(b"\r").await
         }
@@ -440,11 +451,18 @@ impl App {
             Ok(()) => {
                 tracing::info!(shell = %runtime.id(), check = %due.name, "a Superagent's check was typed")
             }
+            Err(err) if pasted => {
+                tracing::warn!(shell = %runtime.id(), check = %due.name, error = %err, "a Superagent's check was pasted but not sent: it waits in its prompt box");
+            }
             Err(err) => {
                 tracing::warn!(shell = %runtime.id(), check = %due.name, error = %err, "a Superagent's check was not typed: tried again in a minute");
                 {
                     let mut checks = self.superagent_checks.lock();
-                    if let Some(check) = checks.iter_mut().find(|c| mine(c) && c.name == due.name) {
+                    // Not a check replaced meanwhile (review of slice 9b, G3).
+                    if let Some(check) = checks
+                        .iter_mut()
+                        .find(|c| mine(c) && c.name == due.name && c.prompt == due.prompt)
+                    {
                         check.last_run_at = before;
                         check.next_at = now.saturating_add(CHECK_RETRY_MS);
                     }
@@ -551,6 +569,16 @@ impl App {
             }
         }
         if !gone.is_empty() {
+            // Their back-off goes with them (review of slice 9b, G3).
+            self.superagent_checks
+                .backoff
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(user, sandbox), _| {
+                    !gone
+                        .iter()
+                        .any(|(u, s)| u == user && s.as_ref().is_none_or(|s| s == sandbox))
+                });
             self.superagent_checks.lock().retain(|c| {
                 !gone.iter().any(|(user, sandbox)| {
                     c.user == *user && sandbox.as_ref().is_none_or(|s| c.sandbox == *s)

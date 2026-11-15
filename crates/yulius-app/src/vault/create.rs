@@ -178,7 +178,7 @@ pub(super) fn read_secret_file(
 
 /// The NAME of an agent secret an agent has made (from a file, or a copy it asks for, SPEC-440):
 /// valid, and never the reserved Vidoc key.
-pub(super) fn agent_made_name(name: &str) -> AppResult<SecretName> {
+pub(crate) fn agent_made_name(name: &str) -> AppResult<SecretName> {
     let name = SecretName::parse(name.trim()).map_err(invalid)?;
     if name.as_str() == crate::vidoc_key::VIDOC_SECRET {
         // A project secret of this name replaces the instance's Vidoc key for every run and CI

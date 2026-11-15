@@ -26,6 +26,37 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, UserRecord};
 use crate::person_tools::record;
 
+/// What `secret_request_value` takes (SPEC-487 SEC-001).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretRequestArgs {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// The longest description of a secret asked for.
+const MAX_SECRET_DESCRIPTION: usize = 500;
+
+/// The scope a secret is asked in: `sandbox` (the default) or `personal`.
+fn asked_scope(asked: &SecretRequestArgs) -> &str {
+    asked.scope.as_deref().unwrap_or("sandbox")
+}
+
+/// The value the vault stores for what the person typed (SEC-002): as the Secrets page stores a
+/// pasted value, a key's line breaks written as literal `\n` (ADR-0156); one it refuses is
+/// refused here, naming the rule, never quoting the value.
+pub(crate) fn secret_value_to_store(typed: Option<&str>) -> AppResult<zeroize::Zeroizing<String>> {
+    let typed = typed.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        AppError::Invalid("type the secret's value to store it, or decline".into())
+    })?;
+    yulius_domain::vault::dotenv::agent_value_from_file(typed)
+        .map(zeroize::Zeroizing::new)
+        .map_err(|err| AppError::Invalid(format!("the value cannot be stored: {err}")))
+}
+
 /// What a production deploy names.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +104,77 @@ fn as_person(user: &UserRecord) -> AuthContext {
 }
 
 impl App {
+    /// Refuses before anyone is asked a secret's value that could not be stored as asked
+    /// (SEC-001; review of slice 10a, M3): a name the vault takes from an agent (capitals,
+    /// digits and underscores, not reserved, not the Vidoc key), a scope of `sandbox` (default:
+    /// the person needs Configure in the project) or `personal`, a description of at most 500
+    /// characters.
+    pub(crate) async fn checked_secret_request(
+        &self,
+        user: &UserRecord,
+        own: &SandboxRecord,
+        args: &Value,
+    ) -> AppResult<()> {
+        let asked: SecretRequestArgs = parse(args)?;
+        let name = asked.name.trim();
+        let shaped = name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if !shaped {
+            return Err(AppError::Invalid(
+                "the name is capitals, digits and underscores, starting with a capital (API_TOKEN)"
+                    .into(),
+            ));
+        }
+        crate::vault::create::agent_made_name(name)?;
+        if asked
+            .description
+            .as_ref()
+            .is_some_and(|d| d.chars().count() > MAX_SECRET_DESCRIPTION)
+        {
+            return Err(AppError::Invalid(format!(
+                "the description is at most {MAX_SECRET_DESCRIPTION} characters"
+            )));
+        }
+        match asked_scope(&asked) {
+            "personal" => Ok(()),
+            "sandbox" => self
+                .require(user, &own.id, Action::Configure)
+                .await
+                .map(|_| ())
+                .map_err(|_| {
+                    AppError::Forbidden(
+                        "your person may not add this project's secrets (Configure): ask for \
+                         a personal one (scope personal), or tell them so"
+                            .into(),
+                    )
+                }),
+            _ => Err(AppError::Invalid(
+                "scope is sandbox (the project's, the default) or personal (the person's own)"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Whether the person already has a secret of that name in the scope asked: the one a
+    /// value replaces (review of slice 10a, M1, M2). Never a global one, nor another scope's.
+    pub(crate) async fn secret_replaced(
+        &self,
+        person: &AuthContext,
+        sandbox: &str,
+        args: &Value,
+    ) -> Option<String> {
+        let asked: SecretRequestArgs = parse(args).ok()?;
+        let scope = asked_scope(&asked).to_owned();
+        self.agent_secrets(person, sandbox)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|s| s.name == asked.name.trim() && s.scope == scope)
+            .map(|s| s.id)
+    }
+
     /// Whether `environment` of the Superagent's sandbox is production-stage, so its deploy
     /// and rollback wait for the person (REL-003). An environment the project does not define
     /// is not: the function the tool calls says so.
@@ -235,5 +337,55 @@ impl App {
             }
             _ => return Err(AppError::internal("not a release")),
         })
+    }
+
+    /// Stores a secret's value its person typed on the panel (SEC-003), as the Secrets page
+    /// does with their session: a new agent secret, or the new value of theirs of that name.
+    /// Answers its name and whether it was created or updated, never the value.
+    pub(crate) async fn store_secret_value(
+        &self,
+        person: &AuthContext,
+        target: &SandboxRecord,
+        args: &Value,
+        value: Option<zeroize::Zeroizing<String>>,
+    ) -> AppResult<Value> {
+        let asked: SecretRequestArgs = parse(args)?;
+        let value = value.ok_or_else(|| AppError::internal("no value was taken"))?;
+        let name = asked.name.trim().to_owned();
+        let stored = if let Some(id) = self.secret_replaced(person, target.id.as_str(), args).await
+        {
+            let patch = yulius_contracts::api::secrets::AgentSecretPatch {
+                value: Some(value.to_string()),
+                ..yulius_contracts::api::secrets::AgentSecretPatch::default()
+            };
+            self.update_agent_secret(person, &id, &patch).await?;
+            "updated"
+        } else {
+            let input = yulius_contracts::api::secrets::AgentSecretInput {
+                scope: Some(asked_scope(&asked).to_owned()),
+                name: name.clone(),
+                description: asked
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .map(str::to_owned),
+                hosts: Vec::new(),
+                injection: None,
+                header_name: None,
+                username: None,
+                value: value.to_string(),
+                auto_allow: None,
+                env_files: None,
+            };
+            self.create_agent_secret(person, target.id.as_str(), &input)
+                .await?;
+            "created"
+        };
+        Ok(json!({
+            "outcome": "approved",
+            "secret": name,
+            "stored": stored,
+            "note": format!("The person stored {name} in the vault; you never see its value: use it as ${name} or its placeholder (secrets_list says how)."),
+        }))
     }
 }

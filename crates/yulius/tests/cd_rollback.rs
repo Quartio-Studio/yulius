@@ -1107,7 +1107,15 @@ impl Fixture {
         Ok(self
             .h
             .app
-            .superagent_request_answer(&ctx, "s1", id, true, None, confirm)
+            .superagent_request_answer(
+                &ctx,
+                "s1",
+                id,
+                &yulius_app::cross_sandbox::RequestAnswer {
+                    confirm: confirm.map(str::to_owned),
+                    ..yulius_app::cross_sandbox::RequestAnswer::approve()
+                },
+            )
             .await)
     }
 }
@@ -1215,7 +1223,15 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
         let id = card["id"].as_str().ok_or("id")?;
         let refused =
             f.h.app
-                .superagent_request_answer(&token_ctx, "s1", id, true, None, Some("app"))
+                .superagent_request_answer(
+                    &token_ctx,
+                    "s1",
+                    id,
+                    &yulius_app::cross_sandbox::RequestAnswer {
+                        confirm: Some("app".into()),
+                        ..yulius_app::cross_sandbox::RequestAnswer::approve()
+                    },
+                )
                 .await;
         assert!(
             matches!(refused, Err(AppError::Forbidden(_))),
@@ -1324,7 +1340,12 @@ async fn a_custom_production_stage_environment_waits_for_the_person() -> TestRes
         let id = card["id"].as_str().ok_or("id")?;
         let declined =
             f.h.app
-                .superagent_request_answer(&ctx, "s1", id, false, None, None)
+                .superagent_request_answer(
+                    &ctx,
+                    "s1",
+                    id,
+                    &yulius_app::cross_sandbox::RequestAnswer::default(),
+                )
                 .await?;
         assert_eq!(declined["outcome"], "declined", "{declined}");
     }

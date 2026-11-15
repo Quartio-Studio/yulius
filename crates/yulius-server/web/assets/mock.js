@@ -3705,10 +3705,18 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
   if (!request) fail(404, 'not_found', 'not found');
   if ((body.revision ?? 0) !== request.view.revision) fail(409, 'conflict', 'the Superagent changed this request since you read it: read it again');
+  // A secret's value the vault would refuse leaves the request waiting (SPEC-487 SEC-002).
+  if (body.approve && request.view.action === 'secret' && String(body.value || '').trim().length < 8) fail(422, 'invalid', 'the value cannot be stored: it is shorter than 8 characters');
   // A production release takes the slug typed, checked before the request is taken (SPEC-487 REL-001).
   if (body.approve && ['deploy', 'rollback', 'promote'].includes(request.view.action) && String(body.confirm || '').trim() !== request.view.sandbox.slug) fail(422, 'invalid', `type the project's slug \`${request.view.sandbox.slug}\` to confirm`);
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
   emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  // A secret's value typed on the panel (SPEC-487 SEC-002): stored, never answered back.
+  if (request.view.action === 'secret') {
+    if (!body.approve) return { outcome: 'declined' };
+    db.superagentSecrets = [...(db.superagentSecrets || []), { name: request.view.title, value: body.value }];
+    return { outcome: 'approved', secret: request.view.title, stored: 'created' };
+  }
   // A production release or onboarding (SPEC-487 REL-001): the slug typed, as the server checks it.
   if (['deploy', 'rollback', 'promote', 'onboard'].includes(request.view.action)) {
     if (!body.approve) return { outcome: 'declined' };
@@ -6954,7 +6962,7 @@ export function createMockTransport(params) {
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
-  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null }) => {
+  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null, replaces = false }) => {
     const target = db.sandboxes.find((s) => s.slug === sandbox);
     const task = number === null ? null : db.tasks.find((t) => t.sandbox_id === target.id && t.number === number);
     db.nextId += 1;
@@ -6964,6 +6972,7 @@ export function createMockTransport(params) {
       // As the server says it: an update with no start option (or a supertask) starts the task now.
       starts_now: action === 'update' && (startsNow ?? !Object.keys(options).length),
       title, prompt, options, asked_at: new Date().toISOString(), revision: 0,
+      ...(action === 'secret' ? { replaces } : {}),
     };
     db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
     emit(db, { type: 'superagent.requests', sandbox_id: source });

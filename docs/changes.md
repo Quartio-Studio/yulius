@@ -9,6 +9,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
   task's summary read the whole task list again to find its supertask holders; listing 200
   tasks took 88 ms and grew with the square of the list, now 31 ms.
+- A secret's value is typed by its person on the Superagent's panel (SPEC-487 slice 10a, task
+  #469, [ADR-0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)).
+  The Superagent could not take a value, so people retyped keys on the Secrets page or pasted
+  them into the chat. Now `secret_request_value` puts a card with a masked field on its panel;
+  the value goes to the vault as the person's, a multi-line key with its line breaks kept, and the
+  Superagent sees its name only.
 - A deploy or rollback answered after its CD page was left shows when the page is back (task
   #465, fixes #1171). The page read on return, before the server answered, and then waited for
   its 30 s idle poll; it now reads again as soon as the answer comes.

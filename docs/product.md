@@ -178,7 +178,11 @@ watching, steering and unblocking.
   deploy production, roll it back or promote, it asks on the same panel and the person, an
   administrator, approves by typing the project's slug as on the CD page; the deploy then runs as
   them. It starts a project's onboarding the same way, with a click
-  ([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)). What its person does on the project's pages it does for them when they
+  ([decision 0334](decisions/0334-the-superagent-asks-for-production-on-its-panel-with-the-typed-slug.md)).
+  Asked to set up a key it does not have, it asks for it on the same panel: the person types the
+  value there, masked (a multi-line key keeps its line breaks), and it goes to the vault as
+  theirs; the Superagent sees its name only, never the value
+  ([decision 0336](decisions/0336-a-secrets-value-is-typed-by-its-person-on-the-superagents-panel.md)). What its person does on the project's pages it does for them when they
   ask, with their rights and audited as theirs through the Superagent: it continues a task that
   stopped or crashed, pauses and resumes one, starts one that waits, reads a task's delivery
   (its pull request, checks, what comes next and what is refused now and why), reads the
