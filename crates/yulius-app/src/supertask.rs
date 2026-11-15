@@ -196,7 +196,21 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn held_by_supertask(&self, task: &TaskRecord) -> AppResult<bool> {
-        let holders = self.supertask_holders(task).await?;
+        let project = self.deps.store.tasks(&task.sandbox_id, false).await?;
+        self.held_by_supertask_among(task, &project).await
+    }
+
+    /// [`Self::held_by_supertask`] among `project`, the project's unarchived tasks as the caller
+    /// read them: a pass of the queue reads each project once (SPEC-483 slice 37).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn held_by_supertask_among(
+        &self,
+        task: &TaskRecord,
+        project: &[TaskRecord],
+    ) -> AppResult<bool> {
+        let holders = self.supertask_holders_among(task, project).await?;
         if self.supertask_holds.record(&task.id, &holders) && task.status == TaskStatus::Queued {
             self.publish_task(&task.id).await;
         }
