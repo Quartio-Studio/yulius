@@ -332,11 +332,23 @@ async fn stop(mut child: Child, grace: Duration) {
 /// Whether a process runs in a group below `cgroup` (a container: the engine itself lives in
 /// `cgroup`). Read from each child's `cgroup.events` (`populated`, which counts the groups
 /// below too): runc makes the containers' groups threaded, where `cgroup.procs` cannot be read.
+/// Past 4096 entries (`MAX_GROUPS`) it errs toward busy.
 #[must_use]
 pub fn containers_running(cgroup: &Path) -> bool {
-    crate::cgroup::subgroups(cgroup)
-        .iter()
-        .any(|group| crate::cgroup::populated(group))
+    let Ok(entries) = std::fs::read_dir(cgroup) else {
+        return false;
+    };
+    for (seen, entry) in entries.flatten().enumerate() {
+        if seen >= crate::cgroup::MAX_GROUPS {
+            return true;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && crate::cgroup::populated(&entry.path())
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn log_tail(path: &Path) -> String {
@@ -813,6 +825,12 @@ open(stopped, "w").write("stopped")
         std::fs::write(cg.join("docker/cgroup.events"), "populated 1\nfrozen 0\n")?;
         assert!(containers_running(cg));
         assert!(!containers_running(&cg.join("missing")));
+        // Review round 2: past the bound of groups looked at, it errs toward busy.
+        std::fs::write(cg.join("docker/cgroup.events"), "populated 0\nfrozen 0\n")?;
+        for n in 0..4096 {
+            std::fs::create_dir(cg.join(format!("empty-{n}")))?;
+        }
+        assert!(containers_running(cg));
         Ok(())
     }
 }

@@ -573,7 +573,6 @@ impl Delegation {
             return Ok(groups);
         }
         let groups = SandboxGroups::leaves(&dir);
-        settle_engine_group(&groups.engine);
         for leaf in [
             &groups.system,
             &groups.agents,
@@ -588,6 +587,8 @@ impl Delegation {
         if *stopping {
             return Ok(groups);
         }
+        // Not while the server stops: it takes the engine's controllers back (`unsplit_all`).
+        settle_engine_group(&groups.engine);
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
@@ -672,6 +673,21 @@ impl Delegation {
             });
             if !split {
                 continue;
+            }
+            // The engine's group passes `cpu` and `pids` to its root (SPEC-483 C4), and the
+            // kernel takes a controller from no group while a child still passes it on: the
+            // engine's group gives them back first. Where an engine ran containers, its root
+            // still passes them to runc's threaded groups and both stay, as before.
+            let engine = entry
+                .path()
+                .join(ENGINE_LEAF)
+                .join("cgroup.subtree_control");
+            for line in ["-pids", "-cpu"] {
+                if engine.exists()
+                    && let Err(error) = write(&engine, line)
+                {
+                    tracing::debug!(group = %entry.path().display(), %error, "the engine keeps {line}");
+                }
             }
             // Separate writes: one controller a leaf still passes down (the engine's) must not
             // keep the other.
@@ -1465,6 +1481,8 @@ mod tests {
     fn a_stopping_server_undoes_the_split_and_the_next_one_redoes_it()
     -> Result<(), Box<dyn std::error::Error>> {
         let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        std::fs::create_dir_all(dir.join("engine"))?;
+        std::fs::write(dir.join("engine/cgroup.controllers"), "cpu pids\n")?;
         delegation.sandbox_group("s1", &Limits::default())?;
         // A sandbox that was never split is left alone.
         let other = dir.with_file_name("s2");
@@ -1475,12 +1493,24 @@ mod tests {
             std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
             "-cpu"
         );
+        // SPEC-483 slice 39, review round 2: the engine's group passes `cpu` and `pids` to its
+        // root, and the kernel takes a controller from no group while a child still passes it
+        // on, so the engine's group gives them back first (seen on the guest).
+        assert_eq!(
+            std::fs::read_to_string(dir.join("engine/cgroup.subtree_control"))?,
+            "-cpu"
+        );
         assert!(!other.join("cgroup.subtree_control").exists());
-        // A run that starts while the server stops still gets its leaf, but no split again.
+        // A run that starts while the server stops still gets its leaf, but no split again, and
+        // the engine's group passes nothing down again.
         let groups = delegation.sandbox_group("s1", &Limits::default())?;
         assert_eq!(groups.ci, dir.join("ci"));
         assert_eq!(
             std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("engine/cgroup.subtree_control"))?,
             "-cpu"
         );
         // The next server splits again.
