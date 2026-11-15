@@ -1250,3 +1250,9 @@ with those rights checked at the call.
   refused in the ability, and the API row speaks of error results.
   Mutants of the fixes: five, each failed by a named test once a task's owner who lost work access
   was tested (`target/evidence/mutants-slice11-r1.log`: `survived=0`).
+- **Independent review, round 2** (head `d4615916c`): request changes, narrowly: R2-1, a long
+  report made a link longer than GitHub's new-issue form takes: refused past 6000 bytes before it
+  is kept (`checked_link`); R2-2, the name check matched substrings (any "Yulius" on the Yulius
+  instance, a slug `api` in "application"): whole words only, not for the Yulius project itself,
+  and the refusal names the kind of name (`project_named`, `names_word`); R2-3, ABL-004 reworded.
+  Three more mutants, each failed by a unit test (`mutants-slice11-r2.log`: `survived=0`).
