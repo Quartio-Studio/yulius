@@ -178,6 +178,10 @@ const setMock = (browser: Browser, key: 'failNoteSaves' | 'failNoteLoads' | 'los
 /** How many times the notepads have read their notes from the mock server. */
 const noteLoads = (browser: Browser) => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads ?? 0);
 
+/** How many times the sandbox notepad has read its notes (a resync loads the others too). */
+const sandboxLoads = (browser: Browser) =>
+  browser.evaluate(() => (window as unknown as { __yuliusMock: { noteLoadsBy?: Record<string, number> } }).__yuliusMock.noteLoadsBy?.['sandbox:sb_studio'] ?? 0);
+
 /**
  * Loads the sandbox notepad again at once, as coming back to its tab does. After the mock fails
  * loads, the pad's own next try waits a pause that doubles with each failure (1, 2, 4… s, up to
@@ -275,10 +279,11 @@ test('a save made while a refused one is looked into is not a conflict with ones
   // The look at the server after a refusal is held from here, whichever save is refused first: the
   // blur below, or the pad's own retry of the lost save 1 s after it, which a starved run is slower
   // than (#510); unheld, that retry's look settled the lost save before the blur.
-  const loads = await browser.evaluate(() => {
-    const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null; noteLoads: number } }).__yuliusMock;
+  // The sandbox notepad's loads: a resync (#1246) would load the other notepads too.
+  const loads = await sandboxLoads(browser);
+  await browser.evaluate(() => {
+    const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null } }).__yuliusMock;
     mockDb.holdNoteLoad = new Promise((resolve) => { (window as unknown as { releaseLoads: () => void }).releaseLoads = resolve; });
-    return mockDb.noteLoads;
   });
   await setMock(browser, 'loseNoteResponse', true);
   await notes.fill('stored, answer lost');
@@ -288,7 +293,7 @@ test('a save made while a refused one is looked into is not a conflict with ones
   const blur = () => browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLElement).dispatchEvent(new Event('blur')));
   await browser.evaluate(() => typeInto('stored, answer lost, and more'));
   await blur();
-  await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads)).toBe(loads + 1);
+  await expect.poll(() => sandboxLoads(browser)).toBe(loads + 1);
   // More typing saved meanwhile.
   await browser.evaluate(() => typeInto('stored, answer lost, and more!'));
   await blur();
@@ -337,18 +342,24 @@ test('a conflict kept over a reload is still a choice after another reload', asy
   }
 });
 
+// #1246, review round 1 of SPEC-493 fix 2: the test counted every notepad's loads, and the Team
+// notepad's opening load, answered late (it is held here until the count starts), failed and
+// retried inside the window: "expected 4 to be less than or equal to 3". It counts the sandbox
+// notepad's loads now.
 test("a failed reload after a teammate's edit backs off", async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&hold=/api/notes'));
   await openNotes(screen);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await setMock(browser, 'failNoteLoads', true);
-  const before = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
+  const before = await sandboxLoads(browser);
+  // The Team notepad's opening load is answered (and fails) only now.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await editAs(browser, 'sandbox:sb_studio', 'from alice');
   await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
-  const tries = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
+  const tries = await sandboxLoads(browser);
   expect(tries - before).toBeLessThanOrEqual(3);
   // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
-  await expect.poll(() => noteLoads(browser)).toBeGreaterThanOrEqual(before + 2);
+  await expect.poll(() => sandboxLoads(browser)).toBeGreaterThanOrEqual(before + 2);
   await setMock(browser, 'failNoteLoads', false);
   await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');

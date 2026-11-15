@@ -3,6 +3,8 @@
 pub mod cli;
 pub mod docker_smoke;
 pub mod doctor;
+#[cfg(test)]
+mod held_port;
 pub mod host_setup;
 pub mod instance;
 pub mod leftovers_cli;

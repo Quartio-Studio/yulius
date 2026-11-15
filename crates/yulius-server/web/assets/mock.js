@@ -3833,6 +3833,9 @@ function saveNote(db, scope, body) {
 
 function loadNote(db, scope) {
   db.noteLoads = (db.noteLoads || 0) + 1;
+  // Each notepad's own loads (`sandbox:<id>`, `team`, `me:<id>`): a resync loads all three.
+  db.noteLoadsBy = db.noteLoadsBy || {};
+  db.noteLoadsBy[scope] = (db.noteLoadsBy[scope] || 0) + 1;
   if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
   // A test can hold reads (`__yuliusMock.holdNoteLoad = promise`): they answer what is stored then.
   if (db.holdNoteLoad) return db.holdNoteLoad.then(() => noteView(db, scope));
