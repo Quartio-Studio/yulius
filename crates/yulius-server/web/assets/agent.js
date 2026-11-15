@@ -587,7 +587,7 @@ function createRequests(ctx, sandbox, onCount) {
     // A request with no text (a start or a stop) has nothing to read.
     const end = asked.text ? h('span', { class: 'agent-request-end', 'aria-hidden': 'true' }) : null;
     const prompt = asked.text ? h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': asked.text }, shownPrompt(request.prompt || ''), end) : null;
-    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it' }[asked.text] || 'prompt to create the task'}.`);
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${{ Message: 'message to send it', Question: 'question to answer it', 'Hand-over': 'hand-over to start onboarding' }[asked.text] || 'prompt to create the task'}.`);
     // A production release takes the project's slug typed (SPEC-487 REL-001), as the CD page does.
     const typed = asked.typed ? h('input', { type: 'text', class: 'input', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Type ${slug} to confirm`, onInput: () => update() }) : null;
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);

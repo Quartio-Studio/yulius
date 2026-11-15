@@ -228,7 +228,7 @@ impl CrossAction {
         match self {
             Self::Create => &OPTIONS,
             Self::Update => &UPDATE_OPTIONS,
-            Self::Deploy => &["environment", "expect"],
+            Self::Deploy => &["environment"],
             Self::Rollback => &["environment", "release", "part"],
             Self::Promote => &[],
             Self::Message | Self::Stop | Self::Ask | Self::Onboard => &[],
@@ -1461,12 +1461,17 @@ impl App {
                     )));
                 }
             }
-            CrossAction::Update
-            | CrossAction::Stop
-            | CrossAction::Deploy
+            CrossAction::Deploy
             | CrossAction::Rollback
             | CrossAction::Promote
             | CrossAction::Onboard => {
+                return Err(AppError::Invalid(
+                    "a release or onboarding is not amended, so the card the person confirms \
+                     never changes: withdraw it (sandbox_request_withdraw) and ask again"
+                        .into(),
+                ));
+            }
+            CrossAction::Update | CrossAction::Stop => {
                 return Err(AppError::Invalid(
                     "a change of a task's start or a stop is not amended: withdraw it \
                      (sandbox_request_withdraw) and ask again"

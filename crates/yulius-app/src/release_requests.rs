@@ -31,9 +31,6 @@ use crate::person_tools::record;
 #[serde(deny_unknown_fields)]
 struct DeployArgs {
     environment: String,
-    /// The commit the person is shown, refused at approval if the branch moved since.
-    #[serde(default)]
-    expect: Option<String>,
 }
 
 /// What a production rollback names.
@@ -91,9 +88,14 @@ impl App {
         let Some(env) = yulius_domain::cd::env_name(environment) else {
             return Ok(false);
         };
-        let overview = self
+        // An overview that cannot be read leaves the call to the tool, whose deploy refuses
+        // production without the typed slug anyway (review of slice 8b, m2).
+        let Ok(overview) = self
             .cd_overview(&as_person(&user), caller.sandbox.as_str())
-            .await?;
+            .await
+        else {
+            return Ok(env == "prod");
+        };
         Ok(env == "prod"
             || overview
                 .environments
@@ -183,7 +185,7 @@ impl App {
                 let asked: DeployArgs = parse(args)?;
                 let req = CdDeploy {
                     confirm: slug,
-                    expect: asked.expect,
+                    expect: None,
                     confirm_ms: None,
                 };
                 let run = self

@@ -15,8 +15,9 @@ that last) and [0330](0330-the-superagent-does-what-its-person-may-do.md).
 Asked to deploy production, roll it back or promote, the Superagent could only refuse and send
 its person to the CD page, though it had prepared everything (wall 4 of task #469). The person
 decided that production deploy and rollback, and promotion, go behind one confirmation in the
-Superagent's panel with the typed project slug, stored, amendable and lasting; and that a
-project's onboarding starts the same way.
+Superagent's panel with the typed project slug, stored and lasting (amendable, the person said;
+here by withdrawing and asking again, below); and that a project's onboarding starts the same
+way.
 
 ## Decision
 
@@ -31,7 +32,7 @@ project's onboarding starts the same way.
   define, a dev-stage one through this path, onboarding that does not wait to start, unknown
   arguments.
 - **The person's confirmation is the CD page's.** The card names the action and the environment
-  (and a release, a part or a commit when given); its button takes a click only once the
+  (and a release or a part when given); its button takes a click only once the
   project's slug is typed, and the server checks the typed slug before it takes the request (a
   slug mistyped leaves it waiting). Onboarding releases nothing, so it takes a click.
 - **Run as that person.** The approval, from a browser session, runs `cd_deploy`,
@@ -41,7 +42,7 @@ project's onboarding starts the same way.
   the waiting call. Audited `superagent.cross_task` with the action, never the slug.
 - **Only the Superagent.** No task's agent and no remote MCP token asks this way: a token's
   agent is still refused production ("only a person … on the CD page"); the Global Superagent
-  is not served these requests.
+  is served none of these, nor `cd_rollback` (as it is not served `cd_deploy`).
 
 ## Alternatives
 
@@ -51,8 +52,8 @@ project's onboarding starts the same way.
   conversation for a page that asks again. Rejected by the person.
 - **Typing the slug in the chat.** The Superagent would hold the confirmation it is meant to
   get; text the agent reads is data, never a person's consent. Rejected.
-- **Amending a release request.** A deploy names only an environment and a commit; one that
-  changes is withdrawn and asked again, so the card the person confirms never changes under it.
+- **Amending a release request.** A deploy names only an environment; one that changes is
+  withdrawn and asked again, so the card the person confirms never changes under it.
 
 ## Consequences
 

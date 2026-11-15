@@ -1133,6 +1133,8 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
 
     // Which environments wait for the person: production-stage ones (REL-003).
     assert!(f.h.app.superagent_production(&bobs, "prod").await?);
+    // A name the project does not define reads as no production (its own call refuses it).
+    assert!(!f.h.app.superagent_production(&bobs, "nope").await?);
     assert!(f.h.app.superagent_production(&bobs, "production").await?);
     assert!(!f.h.app.superagent_production(&bobs, "dev").await?);
 
@@ -1200,6 +1202,26 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
     }
     f.panel(&f.bob, 1).await?;
     assert_eq!(f.head("main")?, main, "nothing was released");
+    // Only a browser session answers (an agent holding the person's token cannot approve).
+    {
+        use yulius_app::ports::store::UserStore as _;
+        let bob = yulius_domain::ids::UserId::parse("u-bob")?;
+        let token_ctx = yulius_app::auth::AuthContext {
+            user: f.h.store.user(&bob).await?.ok_or("bob")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let id = card["id"].as_str().ok_or("id")?;
+        let refused =
+            f.h.app
+                .superagent_request_answer(&token_ctx, "s1", id, true, None, Some("app"))
+                .await;
+        assert!(
+            matches!(refused, Err(AppError::Forbidden(_))),
+            "{refused:?}"
+        );
+    }
     let approved = f.answer(&card["id"], Some(" app ")).await??;
     assert_eq!(approved["outcome"], "approved", "{approved}");
     let outcome = tokio::time::timeout(Duration::from_secs(10), deploying).await???;
@@ -1256,5 +1278,65 @@ async fn the_superagent_releases_production_once_its_person_types_the_slug() -> 
             "{action}: {rows:?}"
         );
     }
+    Ok(())
+}
+
+/// Review of slice 8b, m5: an environment of its own name whose stage is `prod` is production:
+/// the Superagent's deploy of it waits for the typed slug; declined, nothing is deployed.
+#[tokio::test]
+async fn a_custom_production_stage_environment_waits_for_the_person() -> TestResult {
+    use yulius_app::cross_sandbox::CrossAction;
+    let cd = format!(
+        "{}\n{}stage = \"prod\"\n",
+        table("dev", false, true),
+        table("live", false, true)
+    );
+    let f = fixture(&cd).await?;
+    push(&f, "dev", &scripts("1"))?;
+    let bobs = superagent("u-bob", "bob")?;
+    assert!(f.h.app.superagent_production(&bobs, "live").await?);
+    assert!(!f.h.app.superagent_production(&bobs, "dev").await?);
+    let asking = f.ask_release(&bobs, CrossAction::Deploy, json!({"environment": "live"}));
+    let card = f.panel(&f.bob, 1).await?.remove(0);
+    assert_eq!(card["options"]["environment"], "live", "{card}");
+    // The card the person confirms never changes: a release is withdrawn, not amended.
+    let amended =
+        f.h.app
+            .tool_sandbox_request_amend(&bobs, &json!({"request": card["id"], "prompt": "x"}))
+            .await
+            .err()
+            .map(|err| err.public_message());
+    assert!(
+        amended
+            .as_deref()
+            .is_some_and(|said| said.contains("not amended")),
+        "{amended:?}"
+    );
+    {
+        use yulius_app::ports::store::UserStore as _;
+        let bob = yulius_domain::ids::UserId::parse("u-bob")?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: f.h.store.user(&bob).await?.ok_or("bob")?,
+            csrf_token: Some("csrf".into()),
+            session_hash: None,
+            token: None,
+        };
+        let id = card["id"].as_str().ok_or("id")?;
+        let declined =
+            f.h.app
+                .superagent_request_answer(&ctx, "s1", id, false, None, None)
+                .await?;
+        assert_eq!(declined["outcome"], "declined", "{declined}");
+    }
+    let outcome = tokio::time::timeout(Duration::from_secs(10), asking).await???;
+    assert_eq!(outcome["outcome"], "declined", "{outcome}");
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert!(
+        overview["runs"]
+            .as_array()
+            .is_none_or(|runs| runs.iter().all(|r| r["environment"] != "live")),
+        "nothing was deployed: {}",
+        overview["runs"]
+    );
     Ok(())
 }
