@@ -1277,6 +1277,7 @@ mod tests {
         assert_eq!(read(b"deploy"), BoxKeys::Typed);
         assert_eq!(read(b"a\rb"), BoxKeys::Typed, "sent, then typed again");
         assert_eq!(read(b"line one\x1b\r"), BoxKeys::Typed, "Alt-Enter");
+        assert_eq!(read(b"\x1b\r"), BoxKeys::Typed, "Alt-Enter on its own");
         assert_eq!(
             read(b"line one\\\r"),
             BoxKeys::Typed,
