@@ -291,7 +291,10 @@ mod tests {
 
     #[test]
     fn an_unreachable_yulius_exits_3() -> Result<(), Box<dyn std::error::Error>> {
-        let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+        // A port held, not listening: refused, and nothing else can come to listen on it.
+        let held = crate::held_port::HeldPort::new()?;
+        let port = held.port();
+        assert!(TcpListener::bind(("127.0.0.1", port)).is_err());
         let (code, said) = call(port, "steps_get", None);
         assert_eq!(code, 3, "{said}");
         assert!(said.contains("the call was not made"), "{said}");
