@@ -1030,3 +1030,28 @@ the function the web UI's route calls, with the person's rights checked at the c
   failed by a named test, after Alt-Enter on its own was added; one survives on purpose: taking
   out the early draft check in `cockpit_refresh_now` leaves the same behaviour (the check before
   the end still holds the restart) and only costs the work F5 named.
+
+### Slice 9b (2026-11-15)
+
+- **Slice 9a is merged:** pull request #1308 into `dev` at `9a890224d`, whose own Yulius CI run
+  passed. Its last full gate, on `4c5038482`, failed one test outside this change:
+  `yulius-git` `credential::tests::localhost_reaches_a_server_on_the_second_address` (from
+  #1305), which passes alone (5 of 5) and is filed as #1307 (another test's listener on
+  `127.0.0.1` at the same port).
+- **Review of slice 9a, round 2 notes**, answered first, test-first: R1, a backslash and the Enter
+  after it come as two frames from a browser: the reader keeps the backslash across frames; R2,
+  a paste whose end marker never came ends after 5 seconds without keys (`PASTE_STALE_MS`); R3, a
+  long paste typed during a restart is kept whole; R4, a growing draft's mark is kept once a
+  minute; R5, the comment. The unit test failed first for R1 and R2.
+- **Tests and code:** `the_superagents_checks_are_held_by_yulius_and_typed_when_it_is_idle` was
+  written first: a check set (and refused out of bounds), listed, kept in the file, typed into
+  the idle session when the clock passes its interval, typed again into an idle conversation,
+  read back by a second `App` on the same data, a Superagent that ended started for it, and
+  deleted. The rule of a quiet prompt box has its unit test.
+- **Mutation:** twelve one-line mutants, each failed by a named test, after the test got its
+  second delivery (an idle conversation) and one mutant was rewritten to compile
+  (`target/evidence/mutants-slice9b.py`, `mutants-slice9b.log`: `survived=0`).
+- **Not tested:** a check held back while a turn runs or a draft is there (the unit test holds the
+  rule; the watch calls it only when idle); a Superagent that cannot be started for its check (no
+  capacity: logged, tried again the next minute); an unreadable checks file (kept as `.bad`, as
+  the requests file, whose test covers the same code shape).
