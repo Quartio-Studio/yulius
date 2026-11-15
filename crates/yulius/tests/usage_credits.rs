@@ -1723,6 +1723,82 @@ fn a_reviewers_transcript_notes_its_model_and_cut_off_on_its_round() -> TestResu
     Ok(())
 }
 
+/// SPEC-493 REV-004 (review round 1 of fix 1c): a reviewer's transcript written while Yulius was
+/// down still reaches its round: the restart reads it while it catches up.
+#[test]
+fn a_reviewers_transcript_written_while_yulius_was_down_is_noted_at_restart() -> TestResult {
+    use yulius_app::ports::store::CoordinationStore as _;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (id, transcript) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (id, _user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        app.deps
+            .store
+            .insert_review_round(&yulius_app::model::ReviewRoundRecord {
+                id: "round-1".into(),
+                task_id: id.clone(),
+                round: 1,
+                head: None,
+                agent: "yulius-reviewer".into(),
+                model: "claude-fable-5-2".into(),
+                reason: "round".into(),
+                subagent_id: Some("c3c3c3c3c3".into()),
+                model_answered: None,
+                started_at: app.now(),
+                ended_at: None,
+                verdict: None,
+                cut_off: false,
+                pr_number: None,
+                merged_at: None,
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>((id, transcript))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let sub = transcript.with_extension("").join("subagents");
+    std::fs::create_dir_all(&sub)?;
+    let at = rfc3339(Timestamp(i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?));
+    let answer = json!({"type": "assistant", "isSidechain": true, "agentId": "c3c3c3c3c3",
+        "timestamp": at, "message": {"id": "msg_down_1", "model": "claude-fable-5-2",
+        "role": "assistant", "content": [{"type": "text", "text": "reading"}],
+        "usage": {"input_tokens": 3, "output_tokens": 10}}});
+    std::fs::write(sub.join("agent-c3c3c3c3c3.jsonl"), format!("{answer}\n"))?;
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        app.reconcile().await?;
+        wait_for("the round's model", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .review_rounds(&id, true)
+                .await
+                .is_ok_and(|rounds| {
+                    rounds
+                        .first()
+                        .is_some_and(|r| r.model_answered.as_deref() == Some("claude-fable-5-2"))
+                })
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-493 MDL-002 (review round 6 of fix 1a): a switched limit is said only at the launch
 /// past it. Here it pauses the task (nothing can run), a person stops the task, and later
 /// continues it: that start is not the one past the limit, and says nothing of it.
