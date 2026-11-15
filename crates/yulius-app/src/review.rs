@@ -59,9 +59,14 @@ impl App {
         };
         let store = &self.deps.store;
         let rounds = store.review_rounds(&ctx.task.id, true).await?;
-        let reported = rounds.iter().filter(|r| r.ended_at.is_some()).count();
-        let number = u32::try_from(reported)
-            .unwrap_or(u32::MAX)
+        // The round after the last one that reported: a round reported by two of its
+        // reviewers (one resumed after a cut-off, or two started at once) counts once.
+        let number = rounds
+            .iter()
+            .filter(|r| r.ended_at.is_some())
+            .map(|r| r.round)
+            .max()
+            .unwrap_or(0)
             .saturating_add(1);
         let unfinished = rounds
             .iter()
