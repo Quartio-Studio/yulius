@@ -2644,3 +2644,52 @@ fn list_dir_lists_the_root_when_no_directory_is_named() -> TestResult {
     );
     Ok(())
 }
+
+/// Review round 1 of SPEC-493 fix 6: what a commit changed is read the same whatever the clone's
+/// configuration and attributes say: coloured or prefix-less diffs, `-diff` in `info/attributes`
+/// or a committed `.gitattributes` still count every line; a binary file is opaque; a path with a
+/// space or a non-ASCII name comes back exact.
+#[test]
+fn a_commits_lines_ignore_the_clones_settings() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let lines = |n: usize| -> String { (1..=n).map(|i| format!("pub fn f{i}() {{}}\n")).collect() };
+    fs::create_dir_all(repo.join("src"))?;
+    fs::write(repo.join("src/lib.rs"), lines(3))?;
+    fs::write(repo.join(".gitattributes"), "src/*.rs -diff\n")?;
+    fs::write(repo.join("logo.png"), [0u8, 159, 146, 150, 0, 1])?;
+    fs::write(repo.join("src/a b.rs"), lines(2))?;
+    fs::write(repo.join("src/\u{fc}.rs"), lines(4))?;
+    fx.git.commit_all(&repo, "Follow-up", &author())?;
+    fs::create_dir_all(repo.join(".git/info"))?;
+    fs::write(repo.join(".git/info/attributes"), "* -diff\n")?;
+    for (key, value) in [
+        ("color.diff", "always"),
+        ("color.ui", "always"),
+        ("diff.noprefix", "true"),
+        ("diff.mnemonicPrefix", "true"),
+        ("core.quotePath", "true"),
+    ] {
+        fx.raw(&repo, &["config", key, value])?;
+    }
+    let mut files = fx.git.commit_lines(&repo, "HEAD")?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let seen: Vec<(&str, usize, bool)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.added.len(), f.opaque))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (".gitattributes", 1, false),
+            ("logo.png", 1, true),
+            ("src/a b.rs", 2, false),
+            ("src/lib.rs", 3, false),
+            ("src/\u{fc}.rs", 4, false),
+        ]
+    );
+    assert_eq!(files[3].added, [1, 2, 3]);
+    // A merge is not one commit's change.
+    assert!(fx.git.commit_lines(&repo, "HEAD~1^{tree}").is_err());
+    Ok(())
+}

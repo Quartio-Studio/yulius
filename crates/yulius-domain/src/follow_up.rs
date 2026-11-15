@@ -8,13 +8,18 @@ use crate::spec_format::is_documentation_path;
 /// Most product lines a follow-up may change and keep its approval.
 pub const FOLLOW_UP_LINES: u32 = 20;
 
+/// Longest changed line counted as one line; a longer one, or one with a NUL byte, makes its
+/// file opaque (review round 1 of SPEC-493 fix 6).
+pub const MAX_COUNTED_LINE_BYTES: usize = 1_000;
+
 /// Folders whose files are tests.
 const TEST_FOLDERS: [&str; 5] = ["tests", "test", "e2e", "__tests__", "fixtures"];
 
 /// What counts as product code in a project (`[review]` in `yulius.toml`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProductRule {
-    /// Only these count (`product`); empty: every file but documents and tests.
+    /// Only these count (`product`), documents and tests never; empty: every file but documents
+    /// and tests.
     pub product: Vec<Pattern>,
     /// These never count (`not_product`).
     pub not_product: Vec<Pattern>,
@@ -27,10 +32,10 @@ impl ProductRule {
         if self.not_product.iter().any(|p| pattern_matches(p, path)) {
             return false;
         }
-        if !self.product.is_empty() {
-            return self.product.iter().any(|p| pattern_matches(p, path));
+        if is_documentation_path(path) || is_test_path(path) {
+            return false;
         }
-        !is_documentation_path(path) && !is_test_path(path)
+        self.product.is_empty() || self.product.iter().any(|p| pattern_matches(p, path))
     }
 }
 
@@ -63,35 +68,85 @@ pub struct FileLines {
     pub added: Vec<u32>,
     /// Removed lines.
     pub removed: Vec<u32>,
-    /// In a Rust file, the line of the first `#[cfg(test)]` in the new file (`None`: none).
-    pub tests_from_new: Option<u32>,
+    /// In a Rust file, the test modules of the new file ([`test_module_spans`]).
+    pub tests_new: Vec<(u32, u32)>,
     /// The same in the old file.
-    pub tests_from_old: Option<u32>,
+    pub tests_old: Vec<(u32, u32)>,
+    /// A changed line holds a NUL byte or is very long: the count does not say what changed.
+    pub opaque: bool,
 }
 
 impl FileLines {
-    /// The product lines of this change: in a Rust file, lines from its first `#[cfg(test)]` on
-    /// do not count.
+    /// The product lines of this change: in a Rust file, lines inside a test module do not
+    /// count.
     #[must_use]
     pub fn product_lines(&self) -> u32 {
-        let before = |lines: &[u32], from: Option<u32>| {
+        let outside = |lines: &[u32], spans: &[(u32, u32)]| {
             lines
                 .iter()
-                .filter(|&&line| from.is_none_or(|from| line < from))
+                .filter(|&&line| !spans.iter().any(|&(from, to)| (from..=to).contains(&line)))
                 .count()
         };
-        let n =
-            before(&self.added, self.tests_from_new) + before(&self.removed, self.tests_from_old);
+        let n = outside(&self.added, &self.tests_new) + outside(&self.removed, &self.tests_old);
         u32::try_from(n).unwrap_or(u32::MAX)
     }
 }
 
-/// The line (1-based) of the first `#[cfg(test)]` in a Rust file's `text`.
+/// The test modules of a Rust file's `text`, as 1-based inclusive line spans: a `#[cfg(test)]`
+/// whose item (on its line or after further attributes) opens `mod name {`, to the first line
+/// after it that starts with `}` at the attribute's indentation. Anything else, such as
+/// `#[cfg(test)] mod tests;` or a single test-only item, is no span, and a module whose end is
+/// not found is none either: when in doubt, a line counts (review round 1 of SPEC-493 fix 6).
 #[must_use]
-pub fn first_test_module_line(text: &str) -> Option<u32> {
-    text.lines()
-        .position(|line| line.trim_start().starts_with("#[cfg(test)]"))
-        .and_then(|index| u32::try_from(index + 1).ok())
+pub fn test_module_spans(text: &str) -> Vec<(u32, u32)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let indent_of = |line: &str| line.len() - line.trim_start().len();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < lines.len() {
+        let line = lines[at];
+        let Some(rest) = line.trim_start().strip_prefix("#[cfg(test)]") else {
+            at += 1;
+            continue;
+        };
+        let indent = indent_of(line);
+        let mut item = rest.trim();
+        let mut item_at = at;
+        while item.is_empty() || (item.starts_with("#[") && item.ends_with(']')) {
+            item_at += 1;
+            let Some(next) = lines.get(item_at) else {
+                break;
+            };
+            item = next.trim();
+        }
+        let item = ["pub(crate) ", "pub(super) ", "pub "]
+            .iter()
+            .find_map(|vis| item.strip_prefix(vis))
+            .unwrap_or(item);
+        let opens = item
+            .strip_prefix("mod ")
+            .and_then(|rest| rest.strip_suffix('{'))
+            .is_some_and(|name| {
+                let name = name.trim();
+                !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            });
+        let end = opens
+            .then(|| {
+                (item_at + 1..lines.len()).find(|&k| {
+                    indent_of(lines[k]) == indent && lines[k].trim_start().starts_with('}')
+                })
+            })
+            .flatten();
+        match end {
+            Some(end) => {
+                let span = |n: usize| u32::try_from(n + 1).unwrap_or(u32::MAX);
+                spans.push((span(at), span(end)));
+                at = end + 1;
+            }
+            None => at += 1,
+        }
+    }
+    spans
 }
 
 /// What a follow-up changed: its product lines in total and per file, most first.
@@ -210,17 +265,19 @@ mod tests {
         assert!(only.counts("crates/a/src/lib.rs"));
         assert!(!only.counts("web/app.js"));
         assert!(!only.counts("crates/gen/x.rs"));
+        // Tests and documents never count, a `product` list or not.
+        assert!(!only.counts("crates/a/tests/it.rs"));
+        assert!(!only.counts("crates/a/README.md"));
         Ok(())
     }
 
     /// SPEC-493 APR-001, APR-002: lines are counted commit by commit (a line changed twice counts
-    /// twice), a Rust file's lines from its first `#[cfg(test)]` on do not count, and the bound
-    /// is 20.
+    /// twice), a Rust file's lines in its test modules do not count, and the bound is 20.
     #[test]
     fn a_follow_up_counts_product_lines_commit_by_commit() {
         let mut rust = lines("crates/a/src/lib.rs", &[3, 4, 40, 41], &[3, 39]);
-        rust.tests_from_new = Some(30);
-        rust.tests_from_old = Some(29);
+        rust.tests_new = vec![(30, 50)];
+        rust.tests_old = vec![(29, 49)];
         assert_eq!(rust.product_lines(), 3, "lines 40, 41 and 39 are tests");
         let changes = [
             rust,
@@ -258,10 +315,16 @@ mod tests {
         );
     }
 
+    /// Review round 1 of SPEC-493 fix 6: only a `#[cfg(test)]` module, to its closing brace, is
+    /// a test span; `mod tests;`, a single item and a module never closed are not.
     #[test]
-    fn the_first_test_module_is_found() {
-        let text = "fn a() {}\n\n  #[cfg(test)]\nmod tests {}\n#[cfg(test)]\n";
-        assert_eq!(first_test_module_line(text), Some(3));
-        assert_eq!(first_test_module_line("fn a() {}\n"), None);
+    fn only_test_modules_are_test_spans() {
+        let text = "#[cfg(test)]\nmod tests;\n#[cfg(test)] fn len() {}\nfn a() {}\n\
+                    #[cfg(test)]\n#[allow(dead_code)]\nmod tests {\n    fn t() {\n    }\n}\n\
+                    fn b() {}\n    #[cfg(test)]\n    pub(crate) mod inner {\n    } // end\n\
+                    #[cfg(test)]\nmod open {\n  fn x() {}\n";
+        assert_eq!(test_module_spans(text), [(5, 10), (12, 14)]);
+        assert!(test_module_spans("fn a() {}\n").is_empty());
+        assert!(test_module_spans("#[cfg(test)] mod t { fn a() {} }\nfn b() {}\n").is_empty());
     }
 }

@@ -655,19 +655,31 @@ impl App {
             approved = match (merged, round.head.as_deref()) {
                 (None, _) => true,
                 (Some(merged), Some(head)) if same_commit(head, &merged.head) => true,
-                // Followed only by clean merges of the integration branch at the merge's base;
+                // Followed only by clean merges of the integration branch at the merge's base, or
+                // by a follow-up within the bound (SPEC-493 APR-001; review round 1 of fix 6);
                 // with that base unknown, only the approved head itself counts.
                 (Some(merged), Some(head)) => {
                     match (merged.base.as_deref(), record.worktree_path.as_deref()) {
                         (Some(base), Some(worktree)) => {
+                            let worktree = Path::new(worktree);
                             self.review_covers_against(
                                 &record,
-                                Path::new(worktree),
+                                worktree,
                                 head,
                                 &merged.head,
                                 Some(base),
                             )
                             .await
+                                || self
+                                    .follow_up_since_review(
+                                        &record,
+                                        worktree,
+                                        head,
+                                        &merged.head,
+                                        Some(base),
+                                    )
+                                    .await
+                                    .is_ok()
                         }
                         _ => false,
                     }

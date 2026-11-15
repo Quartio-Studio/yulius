@@ -138,19 +138,12 @@ impl App {
             return false;
         };
         // What the integration branch contains is read from a fresh fetch, not from a
-        // remote-tracking ref a worktree could have moved.
+        // remote-tracking ref a worktree could have moved: without one, nothing carries.
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before comparing a review");
+            return false;
         }
-        let integration = integration.map_or_else(
-            || {
-                format!(
-                    "origin/{}",
-                    crate::delivery::delivery_profile(&sandbox).integration_branch
-                )
-            },
-            str::to_owned,
-        );
+        let integration = integration.map_or_else(|| integration_ref(&sandbox), str::to_owned);
         match self
             .deps
             .git
@@ -180,10 +173,9 @@ impl App {
         worktree: &Path,
         reviewed: &str,
         head: &str,
+        integration: Option<&str>,
     ) -> Result<yulius_domain::follow_up::FollowUp, String> {
-        use yulius_domain::follow_up::{
-            FOLLOW_UP_LINES, FollowUp, ProductRule, first_test_module_line,
-        };
+        use yulius_domain::follow_up::{FOLLOW_UP_LINES, FollowUp, ProductRule, test_module_spans};
         let git = &self.deps.git;
         let sandbox = self
             .deps
@@ -193,23 +185,36 @@ impl App {
             .ok()
             .flatten()
             .ok_or("the sandbox cannot be read")?;
+        // Counted against a fresh fetch only: a remote-tracking ref the worktree moved could
+        // pass its own work off as the integration branch's (review round 1 of fix 6).
         if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
             tracing::warn!(task = %task.id, error = %err, "the clone could not be refreshed before counting a follow-up");
+            return Err(format!(
+                "the clone could not be refreshed to read the integration branch: {}",
+                err.public_message()
+            ));
         }
-        let integration = format!(
-            "origin/{}",
-            crate::delivery::delivery_profile(&sandbox).integration_branch
-        );
-        let commits = git
+        let integration = integration.map_or_else(|| integration_ref(&sandbox), str::to_owned);
+        let commits = match git
             .follow_up_commits(worktree, reviewed, head, &integration)
             .await
-            .ok()
-            .flatten()
-            .ok_or_else(|| {
-                "the reviewed commit is not on the head's way, or a merge after it resolved a \
-                 conflict or merged something other than the integration branch"
-                    .to_owned()
-            })?;
+        {
+            Ok(Some(commits)) => commits,
+            Ok(None) => {
+                return Err(
+                    "the reviewed commit is not on the head's way, or a merge after it resolved a \
+                     conflict or merged something other than the integration branch"
+                        .to_owned(),
+                );
+            }
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "the commits after a review could not be walked");
+                return Err(format!(
+                    "Git could not walk the commits after the reviewed one: {}",
+                    err.public_message()
+                ));
+            }
+        };
         // A file of the reviewed change that is no longer in the pull request's change: what was
         // approved is not what merges (a pull request split anew).
         let changed = |rev: String| {
@@ -227,6 +232,7 @@ impl App {
         ) else {
             return Err("the files of the change cannot be read".to_owned());
         };
+        let now: std::collections::HashSet<&String> = now.iter().collect();
         let left: Vec<&String> = was.iter().filter(|file| !now.contains(file)).collect();
         if !left.is_empty() {
             let named: Vec<String> = left.iter().take(5).map(|f| format!("`{f}`")).collect();
@@ -237,29 +243,35 @@ impl App {
         }
         let mut lines = Vec::new();
         for commit in &commits {
-            let files = git
-                .commit_lines(worktree, commit)
-                .await
-                .ok()
-                .flatten()
-                .ok_or_else(|| format!("what {} changed cannot be read", short(commit)))?;
+            let files = match git.commit_lines(worktree, commit).await {
+                Ok(Some(files)) => files,
+                Ok(None) => return Err(format!("what {} changed cannot be read", short(commit))),
+                Err(err) => {
+                    return Err(format!(
+                        "what {} changed cannot be read: {}",
+                        short(commit),
+                        err.public_message()
+                    ));
+                }
+            };
             for mut file in files {
                 if Path::new(&file.path)
                     .extension()
                     .is_some_and(|ext| ext == "rs")
                 {
-                    let test_line = |rev: String| {
+                    let spans = |rev: String| {
                         let path = file.path.clone();
                         async move {
                             git.show_file(worktree, &rev, &path)
                                 .await
                                 .ok()
                                 .flatten()
-                                .and_then(|text| first_test_module_line(&text))
+                                .map(|text| test_module_spans(&text))
+                                .unwrap_or_default()
                         }
                     };
-                    file.tests_from_new = test_line(commit.clone()).await;
-                    file.tests_from_old = test_line(format!("{commit}^")).await;
+                    file.tests_new = spans(commit.clone()).await;
+                    file.tests_old = spans(format!("{commit}^")).await;
                 }
                 lines.push(file);
             }
@@ -272,6 +284,15 @@ impl App {
             Ok(None) => ProductRule::default(),
             Err(_) => return Err(format!("yulius.toml on {integration} cannot be read")),
         };
+        // A line Yulius cannot count (a NUL byte, a very long line) in product code: the count
+        // would not say what changed.
+        if let Some(opaque) = lines.iter().find(|f| f.opaque && rule.counts(&f.path)) {
+            return Err(format!(
+                "`{}` changed a line no count can measure (a NUL byte or a line over {} bytes)",
+                opaque.path,
+                yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES
+            ));
+        }
         let follow = FollowUp::count(&lines, &rule);
         if follow.within_bound() {
             Ok(follow)
@@ -282,6 +303,15 @@ impl App {
             ))
         }
     }
+}
+
+/// The integration branch of `sandbox` as its full remote-tracking ref: a short `origin/<branch>`
+/// would resolve to a tag or a local branch of that name first (review round 1 of fix 6).
+fn integration_ref(sandbox: &crate::model::SandboxRecord) -> String {
+    format!(
+        "refs/remotes/origin/{}",
+        crate::delivery::delivery_profile(sandbox).integration_branch
+    )
 }
 
 fn short(sha: &str) -> &str {

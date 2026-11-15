@@ -575,6 +575,7 @@ impl GitPort for GitAdapter {
                     path: file.path,
                     added: file.added,
                     removed: file.removed,
+                    opaque: file.opaque,
                     ..yulius_domain::follow_up::FileLines::default()
                 })
                 .collect(),
@@ -1083,3 +1084,7 @@ mod tests {
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 }
+
+// The adapter and the rule measure lines alike (SPEC-493 fix 6).
+const _: () =
+    assert!(yulius_git::MAX_COUNTED_LINE_BYTES == yulius_domain::follow_up::MAX_COUNTED_LINE_BYTES);
