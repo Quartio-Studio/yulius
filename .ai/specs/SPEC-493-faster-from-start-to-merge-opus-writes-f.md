@@ -973,3 +973,34 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     `ReviewMoveDecided` while the run ends). Mutation caught.
   - Nits: a timed-out decision is logged. REV-007 and AC-8 name every exit. The Evidence no
     longer names the replaced test.
+
+### Fix 2: flaky tests (head before the review: see the review rounds)
+
+- FLK-001: `tool_cli::tests::an_unreachable_yulius_exits_3`,
+  `agent_call::tests::nothing_listening_is_unsent` and the three `mcp_bridge` outage tests
+  bound a port, let it go and hoped nothing took it. They now hold a loopback socket that is
+  bound and not listening (`held_port::HeldPort` in `yulius`, a copy in `yulius-git`'s tests;
+  nix's `socket` and `net` features, which add `memoffset` to the lock). A connection to it is
+  refused, and nothing else can listen on it while it is held: each test asserts that another
+  bind of the port fails, which the old pattern did not hold. The outage tests then listen on
+  the very same socket. Probe (AC-9): 40 stress iterations of the five tests while another
+  process made 16,021,891 loopback binds and listens: 40 of 40 passed.
+- FLK-002 (#1246): reproduced. A `resync` pushed into the 2.5 s window (as the mock's sandbox
+  changes and the event socket's reconnect on a loaded host send) failed the test: "expected 6
+  to be less than or equal to 3". Counting per notepad showed the cause: a resync loads every
+  notepad (events may have been lost), which is right. The sandbox notepad itself made 3 loads
+  in the window (the edit's, its 1 s retry, the resync's), its back-off intact. A test defect:
+  it counted every notepad's loads. The mock now counts loads per notepad (`noteLoadsBy`), and
+  the test counts the sandbox notepad's and keeps the resync in its window. With it: 5 of 5
+  runs and the whole file (36 tests) passed. The file's other exact count ("a save made while
+  a refused one is looked into") counts the sandbox notepad's loads too.
+- FLK-003, not redone:
+  - #1309 (#1171): the cd test keeps its probe (the deploy answer held until the page is back).
+    It passed 5 of 5. With #1309's fix reverted (the page that is shown again does not read
+    again), it fails ("toContainText failed").
+  - #1313 (#1190): `an_exited_process_not_yet_reaped_is_gone` is the probe on a real unreaped
+    child. With `a_stop_settles_a_run_no_server_holds`, 25 of 25 stress iterations passed beside
+    16 busy loops on the 64-core host.
+- Met and left: `pool_supervision::a_reattached_run_at_a_limit_is_restarted_past_it` (#1286,
+  open) failed once in a full gate of fix 1d; it is outside the flakes this fix was measured
+  on.
