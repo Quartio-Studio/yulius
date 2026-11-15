@@ -1475,6 +1475,88 @@ fn a_fable_task_on_its_fallback_switched_to_fable_says_the_model_it_goes_on_with
     Ok(())
 }
 
+/// SPEC-493 MDL-002 (review round 4 of fix 1a): the notice past a switched model's limit names
+/// the model of the run that starts, also when the usage changed between the pool's decision and
+/// the launch. A task set to Fable 5.2 runs on its fallback; switched to Fable, it is refused;
+/// while the old run ends, Fable gets room again on the subscription: the relaunch runs Fable
+/// 5.2, and the terminal says that, not that Fable is used up.
+#[test]
+fn the_notice_past_a_switched_limit_names_the_model_the_launch_runs() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let room = json!({"used_percent": 10.0, "window_minutes": 300, "resets_at": null});
+        let resets = app.now().plus_millis(40 * 3_600_000);
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room, "weekly_fable":
+                {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": resets.0}}),
+        )
+        .await?;
+        let fable = "claude-fable-5-2";
+        let id = task_of_model(&app, &sandbox, &user, "Raced", Some(fable)).await?;
+        ready(&app, &id).await?;
+        app.send_input(&id, b"hello\r").await?;
+        let mut transcript = None;
+        wait_for("the first turn", Duration::from_secs(30), || {
+            transcript = session_transcript(&data, "msg_fake_1");
+            let written = transcript.is_some();
+            async move { written }
+        })
+        .await?;
+        let transcript = transcript.ok_or("transcript")?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let (decided, go_on) = hold_point(Point::SwitchDecided, id.as_str());
+        append_lines(
+            &transcript,
+            "switched",
+            &[
+                Line::Prompt,
+                Line::RequestOfFable,
+                Line::CreditsRefusal,
+                Line::TurnDuration,
+            ],
+        )?;
+        point_reached(decided).await?;
+        // Fable has room again before the launch places its run.
+        store_usage(
+            &app,
+            "a-first",
+            AccountStatus::Ok,
+            &json!({"primary": room}),
+        )
+        .await?;
+        go_on.send(())?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts[1].model.as_deref(), Some(fable));
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|notice| notice == "Fable 5.2 can run again: this session runs on it."),
+            "{said:?}"
+        );
+        assert!(
+            !said.iter().any(|notice| notice.contains("is used up")),
+            "{said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-493 MDL-002 (review round 3 of fix 1a): a task set to Fable 5.2 runs Fable; its person
 /// switches the session to Opus (`/model`) and the weekly Opus cap refuses it. Fable still runs
 /// there, so the session goes on with Fable 5.2, its own model, and the terminal names it.

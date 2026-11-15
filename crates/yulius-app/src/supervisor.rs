@@ -148,8 +148,8 @@ pub struct TaskRuntime {
     /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
     pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// The model family a limit refused after the session's person switched to it (`/model`),
-    /// kept by the placement past that limit for the relaunch, whose terminal names the model it
-    /// runs instead (SPEC-493 MDL-002). Taken by the next switch past a limit.
+    /// written by every placement after a limit (none unless it moves the run) and taken by the
+    /// launch past it, whose terminal names the model it runs instead (SPEC-493 MDL-002).
     pub(crate) switched_limit: Mutex<Option<ModelFamily>>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
@@ -2053,6 +2053,23 @@ impl App {
         let before = earlier.last().and_then(|run| run.model.as_deref());
         if let Some(said) = model_change_notice(own, before, model) {
             self.runtime(&task.id).hub.notice(said);
+        }
+        // Past the limit of a model the session's person switched it to (SPEC-493 MDL-002): said
+        // with the model this run is launched with, unless that is of the refused family again
+        // (its usage changed since the decision), which the line above says.
+        let ran = match &start {
+            RunStart::AfterLimit => self
+                .runtime(&task.id)
+                .switched_limit
+                .lock()
+                .ok()
+                .and_then(|mut kept| kept.take()),
+            _ => None,
+        };
+        if let Some(ran) = ran.filter(|ran| ModelFamily::of(Some(model)) != *ran) {
+            self.runtime(&task.id)
+                .hub
+                .notice(switched_back_notice(ran, model));
         }
         let attempt = AttemptRecord {
             id: attempt_id.clone(),
@@ -4085,19 +4102,7 @@ impl App {
         };
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
-        let preflight = self.preflight_start(&task, account.as_ref()).await;
-        // The model a limit refused after the session was switched to it: said with the model
-        // this launch runs, the one the placement just chose (SPEC-493 MDL-002).
-        let ran = if matches!(start, RunStart::AfterLimit) {
-            self.runtime(task_id)
-                .switched_limit
-                .lock()
-                .ok()
-                .and_then(|mut kept| kept.take())
-        } else {
-            None
-        };
-        let fallback = match preflight {
+        let fallback = match self.preflight_start(&task, account.as_ref()).await {
             Ok(fallback) => fallback,
             Err(err) => {
                 self.refuse_switch(&task, account.as_ref(), reason, &err)
@@ -4105,12 +4110,6 @@ impl App {
                 return Err(err);
             }
         };
-        if let Some(ran) = ran {
-            let own = task.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
-            self.runtime(task_id)
-                .hub
-                .notice(switched_back_notice(ran, fallback.unwrap_or(own)));
-        }
         if !store
             .transition_task(task_id, Some(task.status), next, None, self.now())
             .await?
@@ -5644,15 +5643,16 @@ impl App {
         self.runtime(task_id)
             .proactive_switch
             .store(false, Ordering::SeqCst);
+        // Kept for the relaunch past this limit, which says it with the model it runs; every
+        // limit's decision writes it, so none is left for a later, unrelated start.
+        if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
+            *kept = ran.filter(|_| matches!(decision, Decision::Switch { .. }));
+        }
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
                 // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
                 let reason = format!("{reason:?}");
-                if let (true, Ok(mut kept)) = (limit, self.runtime(task_id).switched_limit.lock()) {
-                    // Said by the relaunch, which knows the model it runs.
-                    *kept = ran;
-                }
                 let switched = if limit {
                     self.switch_after_limit(task_id, Some(account), &reason)
                         .await
@@ -5662,6 +5662,10 @@ impl App {
                 };
                 if let Err(err) = switched {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
+                    // Nothing launched past this limit: nothing is left for a later start.
+                    if let Ok(mut kept) = self.runtime(task_id).switched_limit.lock() {
+                        *kept = None;
+                    }
                 }
             }
             Decision::Wait { until } => {
