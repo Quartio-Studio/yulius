@@ -2923,7 +2923,9 @@ fn a_switch_whose_old_run_cannot_be_ended_starts_no_new_run() -> TestResult {
 
 /// SPEC-483 SWT-002: the session a switch asked to end does not end in time and its host is
 /// terminated. The switch failed and starts no new run: the task rests as
-/// `stopped_switch_timeout` with its one run ended.
+/// `stopped_switch_timeout` with its one run ended. Who records the run's end first, its reader
+/// (`switch_timeout`) or the switch (`lost`), is the order the two tests below force; here
+/// either is right (the order varied under load).
 #[test]
 fn a_switch_whose_old_run_had_to_be_killed_starts_no_new_run() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -2933,7 +2935,7 @@ fn a_switch_whose_old_run_had_to_be_killed_starts_no_new_run() -> TestResult {
         let (app, host, id) = gated_goal_task_ending(&data, &fake, 300).await?;
         host.deafen(true);
         let outcome = switch_result(switch_on_worker(&app, &id)).await?;
-        timed_out_switch(&app, &id, &outcome, "lost").await
+        timed_out_switch_ended_by(&app, &id, &outcome, &["lost", "switch_timeout"]).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
@@ -2948,6 +2950,16 @@ async fn timed_out_switch(
     outcome: &Result<(), String>,
     exit_reason: &str,
 ) -> TestResult {
+    timed_out_switch_ended_by(app, id, outcome, &[exit_reason]).await
+}
+
+/// [`timed_out_switch`] whose run's end any of `exit_reasons` may have recorded.
+async fn timed_out_switch_ended_by(
+    app: &Arc<App>,
+    id: &TaskId,
+    outcome: &Result<(), String>,
+    exit_reasons: &[&str],
+) -> TestResult {
     let states = run_states(app, id).await;
     assert_eq!(
         outcome,
@@ -2957,10 +2969,13 @@ async fn timed_out_switch(
     let runs = app.deps.store.attempts(id).await?;
     assert_eq!(runs.len(), 1, "{states}");
     assert!(runs[0].state.is_terminal(), "{states}");
-    assert_eq!(
-        runs[0].exit_reason.as_deref(),
-        Some(exit_reason),
-        "{states}"
+    assert!(
+        runs[0]
+            .exit_reason
+            .as_deref()
+            .is_some_and(|reason| exit_reasons.contains(&reason)),
+        "{:?} not one of {exit_reasons:?}: {states}",
+        runs[0].exit_reason
     );
     assert_eq!(
         task(app, id).await?.status,
