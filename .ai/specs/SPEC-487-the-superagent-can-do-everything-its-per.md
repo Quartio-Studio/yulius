@@ -972,3 +972,22 @@ the function the web UI's route calls, with the person's rights checked at the c
   - n1: a release's amend refusal names releases (tested), the onboarding card's hint, the mock's
     double announcement, the ADR's "amendable", the Plan box.
   Two more mutants (`mutants-slice8b-r1.log`: `survived=0`).
+
+### Slice 9a (2026-11-15)
+
+- **Slice 8b is merged:** pull request #1304 into `dev` at `5de33aa65`, whose own Yulius CI run
+  passed.
+- **Tests and code:** `an_updates_restart_waits_for_text_left_in_the_prompt_box` (an adopted
+  Superagent due a refresh, a draft typed through its terminal's socket during a turn; the turn
+  ends and the restart reads `held`; the Enter lets it go on) failed first with the check taken
+  out (it timed out waiting for `held`); a first form of it that waited for `due` passed without
+  the fix and was replaced. The rule's unit test covers Enter, Ctrl-C, a pasted line break and
+  the half hour. The panel: `agent-panel.e2e.ts` "what is typed while the Superagent restarts
+  reaches it once it is back" failed before the change (the panel swapped the terminal for its
+  skeleton, so the keys went nowhere); the panel, Global Superagent, request and terminal specs
+  pass (112 of 112).
+- **Mutation:** five one-line mutants, each failed by a named test
+  (`target/evidence/mutants-slice9a.py`, `mutants-slice9a.log`: `survived=0`).
+- **Not tested:** a real Claude Code's prompt box (the fake agent echoes keys; what empties it is
+  read from the keys, Enter and Ctrl-C, not from its screen); a usage-limit move with keys typed
+  meanwhile (it is the same `switched` path the e2e test drives).
