@@ -300,3 +300,68 @@ async fn a_round_on_a_subscription_out_of_fable_runs_the_opus_reviewer() -> Test
     );
     Ok(())
 }
+
+/// SPEC-493 REV-002 (review round 1 of fix 1b): a round is counted once, however many of its
+/// reviewers report. Round 1 is cut off (its reviewer started again reports), then the cut-off
+/// one is resumed and reports too: the next review is round 2, still on the Fable reviewer.
+#[tokio::test]
+async fn a_round_with_two_reports_is_counted_once() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    a_round(&h, "rev-a", None).await?;
+    a_round(&h, "rev-b", Some("x\nVerdict: request changes")).await?;
+    // The cut-off reviewer, resumed with SendMessage, reports as well.
+    hook(
+        &h.internal,
+        "SubagentStop",
+        json!({"agent_id": "rev-a", "agent_type": "yulius-reviewer",
+            "last_assistant_message": "y\nVerdict: request changes"}),
+    )
+    .await?;
+    assert_eq!(a_round(&h, "rev-c", None).await?, "yulius-reviewer");
+    let numbers: Vec<u32> = rounds(&h, &task, true)
+        .await?
+        .iter()
+        .map(|r| r.round)
+        .collect();
+    assert_eq!(numbers, [1, 1, 2]);
+    Ok(())
+}
+
+/// SPEC-493 REV-003 (AC-5): with the store failing, the reviewer starts as asked: an answer
+/// that changes and denies nothing.
+#[tokio::test]
+async fn a_round_yulius_cannot_record_starts_as_asked() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+    h.store
+        .execute_for_tests("DROP TABLE review_rounds")
+        .await?;
+    let (code, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_eq!(code, 200, "{answer}");
+    assert!(
+        answer["hookSpecificOutput"]["updatedInput"].is_null()
+            && answer["hookSpecificOutput"]["permissionDecision"].is_null(),
+        "{answer}"
+    );
+    Ok(())
+}
+
+/// SPEC-493 REV-007 (review round 1 of fix 1b): when the run's subscription is no longer known
+/// (removed meanwhile), the reviewer starts as asked: the stronger one.
+#[tokio::test]
+async fn a_round_on_an_unknown_subscription_starts_as_asked() -> TestResult {
+    use yulius_app::ports::store::AccountStore;
+    let h = harness()?;
+    seed(&h).await?;
+    let account = add_account(&h, "acc-1", None).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    h.store.delete_account(&account).await?;
+    assert_eq!(a_round(&h, "rev-1", None).await?, "yulius-reviewer");
+    assert_eq!(rounds(&h, &task, true).await?[0].reason, "round");
+    Ok(())
+}
