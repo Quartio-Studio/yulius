@@ -333,7 +333,7 @@ async fn out_of_fable(
     let account = add_account(h, "acc-1", Some(full.clone())).await?;
     add_account(h, "acc-0", Some(full)).await?;
     add_account(h, "acc-2", None).await?;
-    Ok(running_task(h, TaskMode::Prompt, &account).await?)
+    running_task(h, TaskMode::Prompt, &account).await
 }
 
 /// Why the answer refused the Agent call.
