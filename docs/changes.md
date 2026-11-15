@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Tasks, the Cockpit and the Superagents run Opus 5.5 at high effort by default (SPEC-493 fix 1a,
+  task #472, [ADR-0340](decisions/0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md)): the
+  person's decision that Opus 5.5 writes and Fable 5.2 reviews. A task set to a Fable model keeps
+  it and still falls back to Opus 5.5 while no subscription can run Fable; a default task has no
+  fallback. The Capacity card and the Status line say when Fable is used up everywhere
+  ("tasks set to it run on Opus 5.5"), and a Claude Code release without Fable 5.2 is reported as
+  lacking "the independent review's model".
 - `ability_report` refuses a compound of the project's name too (`shop-api`, `ShopApi`), names
   the word it refused and how it was written, caps the case at 1500 characters (what its filing
   link takes of plain ASCII prose) and gives the link's size when it is too long (SPEC-487,

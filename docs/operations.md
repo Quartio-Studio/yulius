@@ -810,9 +810,10 @@ SPEC-461), with no root step and no sign-in again:
 - **Checked before it is used.** A newer version than the one runs get is downloaded as its
   platform package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl`
   builds), checked against the registry's sha512, and its binary must be an ELF for this platform
-  that embeds that version and names Yulius's default model (`claude-fable-5-2` today). It is
+  that embeds that version and names Yulius's default model (`claude-opus-5-5` today). It is
   read, never run on the host. A release that does not know the default model is refused and
-  reported; one that lacks another model the composer offers is installed and the gap reported.
+  reported; one that lacks another model the composer offers is installed and the gap reported
+  (for `claude-fable-5-2` as "the independent review's model").
   On `stable`, `latest`'s release is taken when neither the version in use nor stable's release
   knows the default model.
 - It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
@@ -1250,16 +1251,17 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
    Claude's words and its tasks move on; Remove works while tasks use it and moves them; a person
    runs a task on the subscription they choose from the task's subscription button (SPEC-447).
-   A subscription out of a model's usage credits (the default model, Fable, runs on a weekly
+   A subscription out of a model's usage credits (Fable runs on a weekly
    allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. When Fable is used up on every subscription, tasks of a Fable model and the
-   Superagents go on with Opus 5.5 instead of waiting (SPEC-482, ADR-0312): the Capacity card
-   and the Status line say "Fable 5.2 is used up on every subscription: tasks run on Opus 5.5
-   until it can run again", a task's details name the model its session runs on, and each
-   session runs Fable again at its next start once a subscription can. A task waits, or asks a
-   person, only when neither model can run. A usage reading does not end that limit. After buying credits, press **Refresh**
+   run on it. When Fable is used up on every subscription, tasks set to a Fable model go on with
+   Opus 5.5 instead of waiting (SPEC-482, ADR-0312): the Capacity card
+   and the Status line say "Fable 5.2 is used up on every subscription: tasks set to it run on
+   Opus 5.5 until it can run again", a task's details name the model its session runs on, and each
+   session runs Fable again at its next start once a subscription can. Such a task waits, or asks
+   a person, only when neither model can run. A default task runs Opus 5.5 (ADR-0340) and waits
+   when no subscription can run it. A usage reading does not end that limit. After buying credits, press **Refresh**
    on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
    when the model answers the limit ends at once and the tasks that wait for it go on
    (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed

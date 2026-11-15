@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026-11-11). Supersedes the effort of
+Accepted (2026-11-11); the default model is Opus 5.5 since
+[ADR-0340](0340-tasks-default-to-opus-5-5-and-fable-is-a-choice.md), the effort stands.
+Supersedes the effort of
 [ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md); its model, price and model-family
 decisions stand. Specified in
 [SPEC-462](../../.ai/specs/SPEC-462-default-effort-is-high-the-default-model.md) and
