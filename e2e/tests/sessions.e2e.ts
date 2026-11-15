@@ -443,8 +443,10 @@ test('the spider web sticks to the top of the view while the session scrolls', a
     const view = page.getBoundingClientRect().top + page.clientTop;
     return { scrollable: page.scrollHeight - page.clientHeight, top: Math.round(box.top - Math.max(view, well.top + wellEl.clientTop)), right: Math.round(well.right - box.right), inWell: box.bottom <= well.bottom + 1 };
   });
+  // The view lays out its entries a frame or more after the locked box shows (#1185): wait for
+  // the scroll range rather than read it once.
+  await expect.poll(async () => (await place()).scrollable).toBeGreaterThan(200);
   const before = await place();
-  expect(before.scrollable).toBeGreaterThan(200);
   // Task #94: "web is not aligned to the corner". Its top is the corner's, at the top and stuck.
   expect(before.top).toBeGreaterThanOrEqual(0);
   expect(before.top).toBeLessThanOrEqual(1);
@@ -751,15 +753,16 @@ test('a session fills the content area edge to edge, beside the Superagent and o
     };
   });
   const edgeToEdge = { left: 0, right: 0, bottom: 0, radius: '0px 0px 0px 0px', sides: '0px 0px', sideways: false, band: true };
+  // Entries size themselves a frame or more after they show (#1185): wait for the fit.
+  await expect.poll(fit).toMatchObject({ ...edgeToEdge, head: 32 });
   const wide = await fit();
-  expect(wide).toMatchObject({ ...edgeToEdge, head: 32 });
   expect(wide.width).toBeGreaterThan(1200);
 
   // Beside the Superagent the content area is narrower; the well still fills it.
   await openSuperagent(browser, screen);
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  await expect.poll(fit).toMatchObject(edgeToEdge);
   const beside = await fit();
-  expect(beside).toMatchObject(edgeToEdge);
   expect(beside.width).toBeLessThan(wide.width);
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();

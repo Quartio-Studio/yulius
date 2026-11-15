@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-15
 
+- Three flaky tests fixed (task #465): the session view's spider-web test read its scroll
+  range before the view finished laying out (fixes #1185), a switch test expected one of two
+  recorders of a killed run's end that race under load, and a stop test took an exited but
+  unreaped host for a running one (fixes #1190).
+- A project's task list reads the project once (SPEC-483 slice 37, task #465). Every queued
+  task's summary, and the queue's pass for every queued task, read the whole task list again to
+  find its supertask holders; listing 200 tasks took 88 ms and grew with the square of the
+  list, now 31 ms.
 - A missing ability is reported in one call (SPEC-487 slice 11, task #469,
   [ADR-0337](decisions/0337-a-missing-ability-is-reported-to-the-yulius-repository-in-one-call.md)).
   The Superagent offered to report walls and never could; `ability_report` (also a task's agent's)

@@ -3590,8 +3590,25 @@ impl App {
         self.supertask_holds
             .keep(&queued.iter().map(|t| t.id.clone()).collect());
         let mut free = Vec::new();
+        // Each project is read once for the pass, not once per queued task (SPEC-483 slice 37).
+        let mut projects: std::collections::HashMap<SandboxId, Vec<TaskRecord>> =
+            std::collections::HashMap::new();
         for task in queued {
-            if !self.held_by_supertask(&task).await.unwrap_or(true) {
+            let project = match projects.entry(task.sandbox_id.clone()) {
+                std::collections::hash_map::Entry::Occupied(read) => read.into_mut(),
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    match self.deps.store.tasks(&task.sandbox_id, false).await {
+                        Ok(read) => slot.insert(read),
+                        // Unreadable: the task stays queued for this pass, as a failed read did.
+                        Err(_) => continue,
+                    }
+                }
+            };
+            if !self
+                .held_by_supertask_among(&task, project)
+                .await
+                .unwrap_or(true)
+            {
                 free.push(task);
             }
         }
