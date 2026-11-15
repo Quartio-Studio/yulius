@@ -43,8 +43,9 @@ pub const STATE_EVERY: Duration = Duration::from_secs(5);
 const WARN_EVERY: Duration = Duration::from_secs(60);
 /// The refusal at the limit, for the calls that meet it (DFJ-001, DFJ-007).
 pub const AT_LIMIT: &str = "the sandbox's Docker front holds all of its connections and none \
-     has been idle long enough to give way. Yulius sees this and restarts the sandbox's Docker \
-     when it stays so; nobody needs to be asked. Retry in a minute";
+     has been idle long enough to give way: retry in a minute. The front's log and the server's \
+     journal say it; if it stays so, restarting the front frees it (docs/operations.md, \"A \
+     full front\")";
 
 /// What ended a connection, besides both sides closing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,7 @@ pub struct Gate {
     refusing: Arc<Semaphore>,
     counts: [AtomicU64; 4],
     warned: Mutex<[Option<Instant>; 4]>,
+    state_warned: Mutex<Option<Instant>>,
     at_limit_since_ms: Mutex<Option<i64>>,
     hangup_check: Duration,
     close_grace: Duration,
@@ -122,6 +124,7 @@ impl Gate {
             refusing: Arc::new(Semaphore::new(REFUSING_AT_ONCE)),
             counts: Default::default(),
             warned: Mutex::new([None; 4]),
+            state_warned: Mutex::new(None),
             at_limit_since_ms: Mutex::new(None),
             hangup_check,
             close_grace,
@@ -217,8 +220,9 @@ impl Gate {
         let state = self.state(false);
         let _ = writeln!(
             out,
-            "WARN docker front: {}; held={}/{} gave_way={} refused={} hung_up={} \
+            "{} WARN docker front: {}; held={}/{} gave_way={} refused={} hung_up={} \
              closed_after_grace={}",
+            utc(crate::relay::wall_ms()),
             kind.says(),
             state.held,
             state.max,
@@ -226,6 +230,31 @@ impl Gate {
             state.refused,
             state.hung_up,
             state.closed_after_grace
+        );
+        let _ = out.flush();
+    }
+
+    /// Says that the state file could not be written, at most once a minute: the server reads
+    /// nothing of the front without it (review round 2).
+    fn unwritten(
+        &self,
+        path: &std::path::Path,
+        error: &dyn std::fmt::Display,
+        out: &mut dyn io::Write,
+    ) {
+        let mut last = self
+            .state_warned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|at| at.elapsed() < WARN_EVERY) {
+            return;
+        }
+        *last = Some(Instant::now());
+        let _ = writeln!(
+            out,
+            "{} WARN docker front: cannot write its state {}: {error}",
+            utc(crate::relay::wall_ms()),
+            path.display()
         );
         let _ = out.flush();
     }
@@ -301,12 +330,36 @@ impl Gate {
                 let done =
                     tokio::task::spawn_blocking(move || crate::holder::write_json(&file, &value))
                         .await;
-                if matches!(done, Ok(Ok(()))) {
-                    written = Some(state);
+                match done {
+                    Ok(Ok(())) => written = Some(state),
+                    Ok(Err(error)) => self.unwritten(&path, &error, &mut io::stderr().lock()),
+                    Err(error) => self.unwritten(&path, &error, &mut io::stderr().lock()),
                 }
             }
         }
     }
+}
+
+/// `ms` since the epoch as UTC, `2026-11-15T22:04:05Z` (the front's log lines; no clock crate).
+fn utc(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's civil-from-days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// A half of a split connection whose bytes mark the connection active.
@@ -756,7 +809,7 @@ mod tests {
         let engine = Engine::start(dir.path())?;
         // The engine's end comes 5 ms after the client's; the check's own wait is wide enough
         // for a loaded machine.
-        let gate = Gate::with(64, IDLE_FLOOR, Duration::from_millis(250), CLOSE_GRACE);
+        let gate = Gate::with(64, IDLE_FLOOR, Duration::from_secs(20), CLOSE_GRACE);
         let front = front(dir.path(), &engine, Arc::clone(&gate))?;
         let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
         for _ in 0..20 {
@@ -1058,7 +1111,10 @@ mod tests {
         nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600))?;
         assert_eq!(read_state(&fifo, 7), None, "a FIFO");
         let large = dir.path().join("large.json");
-        std::fs::write(&large, vec![b' '; 20 * 1024])?;
+        let mut padded = serde_json::to_vec(&state_of(7, 1, 0))?;
+        padded.resize(20 * 1024, b' ');
+        assert!(serde_json::from_slice::<DockerFrontState>(&padded).is_ok());
+        std::fs::write(&large, padded)?;
         assert_eq!(read_state(&large, 7), None, "too large");
         assert_eq!(read_state(&dir.path().join("none.json"), 7), None);
         Ok(())
@@ -1074,14 +1130,57 @@ mod tests {
             .writing_every(Duration::from_millis(20));
         let writer = tokio::spawn(Arc::clone(&gate).keep_state(path.clone(), || async { false }));
         until("written", || path.exists()).await?;
-        let first = std::fs::metadata(&path)?.ino();
+        let stamp = |path: &std::path::Path| -> io::Result<(u64, i64, i64)> {
+            let meta = std::fs::metadata(path)?;
+            Ok((meta.ino(), meta.mtime(), meta.mtime_nsec()))
+        };
+        let first = stamp(&path)?;
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(
-            std::fs::metadata(&path)?.ino(),
-            first,
-            "rewritten unchanged"
-        );
+        // A replaced file may take back an earlier inode (ext4): its time tells it too.
+        assert_eq!(stamp(&path)?, first, "rewritten unchanged");
         writer.abort();
+        Ok(())
+    }
+
+    /// Review round 2: a state file that cannot be written is said, once a minute.
+    #[test]
+    fn a_state_that_cannot_be_written_is_said_once_a_minute() {
+        let gate = Gate::with(4, IDLE_FLOOR, HANGUP_CHECK, CLOSE_GRACE);
+        let mut out = Vec::new();
+        let path = std::path::Path::new("/nowhere/docker-front-state.json");
+        gate.unwritten(path, &"No such file or directory", &mut out);
+        gate.unwritten(path, &"No such file or directory", &mut out);
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(
+            text.contains("cannot write its state /nowhere/docker-front-state.json"),
+            "{text}"
+        );
+    }
+
+    /// Review round 2: the front's log lines say when, in UTC.
+    #[test]
+    fn log_lines_carry_their_time_in_utc() {
+        assert_eq!(utc(0), "1970-01-01T00:00:00Z");
+        // The incident's repair, 2026-11-15 22:08:00 UTC.
+        assert_eq!(utc(1_763_244_480_000), "2025-11-15T22:08:00Z");
+        assert_eq!(utc(1_794_780_480_999), "2026-11-15T22:08:00Z");
+        assert_eq!(utc(951_782_400_000), "2000-02-29T00:00:00Z");
+    }
+
+    /// Review round 2 (RUST-010): a state written by an older front, without the fields added
+    /// later, is still read; fields are only ever added, with defaults.
+    #[test]
+    fn a_state_without_later_fields_is_still_read() -> TestResult {
+        let old = r#"{"pid":7,"held":3,"max":256,"gave_way":0,"refused":0,"hung_up":1,"closed_after_grace":0}"#;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("docker-front-state.json");
+        std::fs::write(&path, old)?;
+        let state = read_state(&path, 7).ok_or("an older front's state was not read")?;
+        assert_eq!(
+            (state.held, state.at_limit_since_ms, state.engine_running),
+            (3, None, false)
+        );
         Ok(())
     }
 

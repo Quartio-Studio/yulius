@@ -25,8 +25,9 @@ whether the client half-closed or hung up entirely.
 - **One admission table for every mode** (engine, relay, refuse), the relays' `Places` with
   `MAX_CONNECTIONS` (256) and `IDLE_FLOOR` (300 s): at the limit the connection idle longest past
   the floor is closed for the new one. When nothing is idle that long the new connection is
-  answered a Docker-API 503 that says the front is at its limit and Yulius repairs it, so no
-  agent asks a person; at most 16 such answers are written at once.
+  answered a Docker-API 503 that says the front is at its limit and how it is freed (once
+  SPEC-494's repair lands, that Yulius repairs it, so no agent asks a person); at most 16 such
+  answers are written at once.
 - **A hung-up client ends its connection.** Once the client's side read EOF, the front asks the
   socket each second whether its peer closed (`POLLHUP`); then it closes the engine's side at
   once, unless the engine ends its side within that second (an ordinary call whose client

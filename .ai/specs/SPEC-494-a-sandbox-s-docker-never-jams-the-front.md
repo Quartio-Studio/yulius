@@ -85,8 +85,8 @@ ever reaches it).
   of `MAX_CONNECTIONS` (256) places. At the limit it closes the connection idle longest (no byte
   either way) for the new one, if that one was idle at least `IDLE_FLOOR` (300 s), SPEC-355's
   rule. When every place was active within the floor the new connection gets a Docker-API answer
-  (HTTP 503, JSON `message`) saying the sandbox's Docker front is at its limit, that Yulius knows
-  and repairs it, and that nobody needs to be asked; at most `REFUSING_AT_ONCE` (16) such answers
+  (HTTP 503, JSON `message`) saying the sandbox's Docker front is at its limit and how it is
+  freed; once slice 3 repairs it, that Yulius repairs it and nobody needs to be asked; at most `REFUSING_AT_ONCE` (16) such answers
   are written at once, beyond that the connection is closed.
 - **DFJ-002** Once a client has stopped sending (its side read EOF), the front looks every
   `HANGUP_CHECK` (1 s) whether the client hung up entirely (the socket's peer is closed, `POLLHUP`).
@@ -160,6 +160,7 @@ ever reaches it).
 - [x] A connection whose client hung up or whose engine ended ends in bounded time
 - [x] The front logs its events and writes its state; the server journals them
 - [ ] Slice 1 reviewed independently, findings fixed test-first
+- [x] Slice 1's round-2 review notes fixed test-first
 - [ ] A jammed front is a sandbox trouble on the panel
 - [ ] The sandbox's tasks are told once per trouble
 - [ ] Slice 2 reviewed independently, findings fixed test-first
@@ -256,3 +257,16 @@ ever reaches it).
   giving way with its client count dropping, a half-close followed by a close.
 - `cargo test -p yulius-sandbox --lib -- front_gate:: engine_supervisor:: docker_front::`: 32
   passed (the gate's tests 8 times in a row: 14 passed each); the real-engine probe passed.
+
+### Slice 1, review round 2 (approve; minor notes fixed in slice 2's pull request)
+
+PR #1330 merged into dev at 201749a4d on green CI (merge train run 1f932ccc passed). Its notes,
+own code, fixed test-first here: the ordinary-close test waits up to 20 s for the engine's end
+(it ends at the engine's close, so it stays fast and still fails without the round-1 fix); the
+size case writes a valid state padded past 16 KiB; the unchanged-state test compares inode and
+modification time; a state that cannot be written is said once a minute; the at-limit answer
+says only what holds before slice 3 (retry; restarting the front frees it); `DockerFrontState`
+states its compatibility rule and an older front's state is read; `running_now` counts a held
+lock as running; the front's log lines start with their UTC time. The reviewer's other cause,
+a container start in the sandbox failing a parallel e2e job's page loads, is commented on
+#1331.

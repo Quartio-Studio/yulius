@@ -10,7 +10,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   [ADR-0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)):
   at its 256-connection limit it closes the longest-idle connection for a new call, or answers a
   Docker error saying Yulius repairs it, instead of dropping calls without a word; a connection
-  whose client hung up ends at once (the leak that jammed quartio-v2: an exec the engine never
+  whose client hung up ends within about two seconds (the leak that jammed quartio-v2: an exec the engine never
   ends), and one whose engine side ended closes after 30 s. Events go to `docker-front.log` and
   the journal once a minute per kind; the front's state to `docker-front-state.json`.
 - A CI job can name the files it tests (SPEC-493 fix 5, task #472,
