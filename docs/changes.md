@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   connections and workers come from Yulius only, with no inline or evaluated script, plugins,
   frames or `<base>`. The e2e server sends the same policy file and every e2e test fails on a
   load the page itself is refused.
+- `ability_report` refuses a compound of the project's name too (`shop-api`, `ShopApi`), names
+  the word it refused and how it was written, caps the case at 1500 characters (what its filing
+  link takes of plain ASCII prose) and gives the link's size when it is too long (SPEC-487,
+  review of slice 11).
 - Three flaky tests fixed (task #465): the session view's spider-web test read its scroll
   range before the view finished laying out (fixes #1185), a switch test expected one of two
   recorders of a killed run's end that race under load, and a stop test took an exited but
