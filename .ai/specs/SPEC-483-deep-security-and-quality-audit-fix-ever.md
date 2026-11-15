@@ -1,11 +1,11 @@
 ---
 yulius-task: 1fb06e11-08e1-4c37-90d0-3219e19122ad
-status: in-progress
+status: done
 ---
 
 # SPEC-483: Deep security and quality audit: fix what it finds
 
-Status: in-progress
+Status: done
 Date: 2026-11-13
 Owner: Yulius task #465
 Scope authorization: the request of task #465: "Execute a deep security and quality audit and fix
@@ -69,7 +69,7 @@ no code path reaches; documents, texts shown to agents and people, and code that
       #1309), QA8 and QC6 slice 37 (merged, #1313);
   18. the web UI's script and style policy (W1b), and the engine leaf's limits (C4): two small
       changes of their own, taken out of slice 9, which is one concern: W1b is slice 38
-      (merged, #1317), C4 slice 39;
+      (merged, #1317), C4 slice 39 (merged, #1318);
   19. the connection that carries the server's token in a clone its agents configure (G2,
       found in slice 10): taken as slice 11 of the Plan (the earlier number 11, V6, follows
       it): merged, pull request #1252;
@@ -1384,7 +1384,7 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - [x] Slice 36: a watcher's poll reads only what was written since (merged, #1309)
 - [x] Slice 37: a project's task list reads the project once (merged, #1313)
 - [x] Slice 38: the web UI runs under a strict content security policy (merged, #1317)
-- [ ] Slice 39: a sandbox's Docker engine runs below the group that holds its limits
+- [x] Slice 39: a sandbox's Docker engine runs below the group that holds its limits (merged, #1318)
 
 ## Acceptance criteria
 
@@ -3190,3 +3190,19 @@ later slices follow.
     stopping, no busy at the bound).
 - **Gate after round 2.** `scripts/dev ci` at `3b4ca452e`: exit 0; `4457 tests run: 4457 passed
   (1 slow), 17 skipped` (`gate3.log`).
+- **Review, round 3** (the same session, head `eb85727fb`): approve, no own-code finding open.
+  The race between a front's restore and the stop's two writes was judged acceptable: one stop
+  then keeps the split, which was routine before.
+- **Merged** as pull request #1318 (squash `f7545d4c1` on `dev`), on its own green Yulius CI run.
+
+### Closing (2026-11-15)
+
+All 39 slices are merged into `dev`, each on its own green Yulius CI run (#1240 to #1318); every
+finding of the ledger is fixed or answered there. This task promoted nothing to `main`: slices
+1 to 16 (#1240 to #1265) reached it in the owner's promotions #1262 and #1267; slices 17 to 39
+are on `dev` only. What could not be tested is named in each slice's Evidence. The largest gaps:
+- Vidoc is disabled for this project: never run, not passed.
+- A sandbox's real engine under Yulius in a QEMU guest. The guest cannot make real sandboxes:
+  no GitHub App, no Claude. So C4 was proven with the kernel, bwrap and a real `dockerd` by hand.
+- Sandbox pages in a real Chrome against the real server (W1b): they need a sandbox, so only
+  the e2e suite covers them, under the same policy file.
