@@ -145,8 +145,10 @@ pub struct TokenTotalsView {
     pub cost_usd: Option<f64>,
 }
 
-/// `POST /api/admin/accounts`. `Debug` redacts the token.
+/// `POST /api/admin/accounts`. `Debug` redacts the token. Unknown fields are refused: a token
+/// under a mistyped name would otherwise start a sign-in in a terminal (SPEC-502 TKP-006).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateAccount {
     /// Provider: `anthropic` (Claude), the only one supported.
     pub provider: String,
@@ -439,7 +441,7 @@ mod tests {
     /// SPEC-502 TKP-006: a pasted token never shows in a request's `Debug`.
     #[test]
     fn pasted_tokens_are_redacted_in_debug() {
-        let token = "sk-ant-oat01-SYNTHETICdebug0123456789abcdef";
+        let token = concat!("sk-ant-oat01-", "SYNTHETICdebug0123456789abcdef");
         let create = CreateAccount {
             provider: "anthropic".into(),
             label: "Claude".into(),

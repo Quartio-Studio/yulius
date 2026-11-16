@@ -464,7 +464,6 @@ async fn a_malformed_token_is_refused_and_creates_nothing() -> TestResult {
     Ok(())
 }
 
-/// AC-3 (TKP-004): a token Claude refuses (401) is 422 and creates nothing.
 /// TKP-006: a body that is not the request's shape is refused without quoting it, so a token sent
 /// as a bare string (or anywhere serde would quote it) never comes back in the answer.
 #[tokio::test]
@@ -479,6 +478,9 @@ async fn a_malformed_body_never_echoes_the_token() -> TestResult {
             json!(PASTED),
             json!({"token": [PASTED]}),
             json!({"tokens": PASTED}),
+            // A complete request with the token under a mistyped name: refused, not taken for a
+            // request without a token (which would start a sign-in in a terminal).
+            json!({"provider": "anthropic", "label": "typo", "tokn": PASTED}),
         ] {
             let refused = call(&w.h.router, method.clone(), &path, Some(body), &w.admin).await?;
             assert_eq!(
@@ -494,6 +496,22 @@ async fn a_malformed_body_never_echoes_the_token() -> TestResult {
         record(&w, &id).await?.credential.is_none(),
         "nothing was stored"
     );
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &w.admin,
+    )
+    .await?;
+    let labels: Vec<&str> = listed
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .filter_map(|a| a["label"].as_str())
+        .collect();
+    assert_eq!(labels, ["Claude #5"], "nothing was created");
     Ok(())
 }
 
@@ -535,6 +553,7 @@ async fn a_pasted_token_has_its_usage_read_at_once() -> TestResult {
     Ok(())
 }
 
+/// AC-3 (TKP-004): a token Claude refuses (401) is 422 and creates nothing.
 #[tokio::test]
 async fn a_token_claude_refuses_creates_nothing() -> TestResult {
     let w = world().await?;
