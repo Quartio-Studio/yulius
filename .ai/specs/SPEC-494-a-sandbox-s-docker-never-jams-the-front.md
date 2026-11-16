@@ -155,13 +155,18 @@ ever reaches it).
 - **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem; the one cause
   now is `docker` (the sandbox's Docker does not answer), and another value is refused. The agent
   names the cause (Yulius cannot tell from free text that seven requests are the same problem;
-  the tool's description says when). The Needs you of one sandbox naming the same cause show as
-  one row in the sidebar's Needs you group ("This project's Docker: #4, #12"), on the first
-  asking task's row, whose tooltip says that answering one answers them all. A person answering
-  one of them (writing to that task) ends every request of the sandbox naming that cause; so does
-  Yulius's repair: the end of the sandbox's Docker trouble (after `BACK_AFTER` passes) and the
-  Superagent's `docker_restart`. The tasks whose request it ended hear that Docker is no longer
-  full with those told of the trouble.
+  the tool's description says when). In the sidebar's Needs you group, the tasks of a sandbox
+  naming the same cause are grouped under one card that names them (each a link, first asker
+  first), with their own rows under it; the notification center holds one entry per such problem
+  (from its oldest open request), not one per task; the Superagent's task list says the request
+  is a shared problem. A person's answer to one of them (a prompt or message to a running task
+  whose request is shown) ends the requests of the sandbox's other tasks naming that cause and
+  asked before, and those tasks are told so in their session; the end of the sandbox's Docker
+  trouble and the Superagent's `docker_restart` end the requests asked before them, and their
+  tasks hear that Docker works again. A request replaced meanwhile stays; each request ended
+  this way is audited (`task.needs_you.answered_shared`). Counts (the Home card, the tab's
+  "need you", the group's count) stay per task: they count tasks that wait, and the card shows
+  they wait for one thing.
 
 ### Fronts do not run old code for days (slice 5)
 
@@ -195,7 +200,7 @@ ever reaches it).
 - [x] Slice 2 reviewed independently, findings fixed test-first
 - [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [x] The Superagent restarts its sandbox's Docker
-- [ ] Slice 3 reviewed independently, findings fixed test-first
+- [x] Slice 3 reviewed independently, findings fixed test-first
 - [x] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
 - [ ] An adopted front from another build is replaced when quiet
@@ -428,45 +433,28 @@ in slice 3's pull request.
   #4 and #12, and each on its own row once answered: failed before (no such row), passes after;
   `attention.e2e.ts`, `navigation.e2e.ts` still pass (22 passed).
 
-### Slice 5 (fronts do not run old code for days)
-
-- `front_repair::tests`: `a_front_from_another_file_runs_another_build` (this test process
-  against its own executable and `/bin/sh`), `a_quiet_front_holds_no_connection_and_runs_no_engine`
-  (from a state file, and from `/proc` for a front without one: a child makes it busy).
-- `an_outdated_front_is_replaced_once_it_is_quiet` (manager, the fake front, whose file is not
-  the server's executable): kept while its state holds connections, replaced (counted) once it
-  holds none.
-- The quiet test first failed only under the shell tool here: its inherited stdin was a socket;
-  the server starts fronts with a null stdin, as the test now does.
-
-### Slice 6 (br_netfilter)
-
-- Reproduced the failure in this sandbox's engine: `docker network create -o
-  com.docker.network.bridge.enable_icc=false t476b` → "cannot restrict inter-container
-  communication or run without the userland proxy: stat /proc/sys/net/bridge/
-  bridge-nf-call-iptables: no such file or directory: set environment variable
-  DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore".
-- `engine::tests::the_engine_gets_its_own_namespaces_capabilities_and_environment` asserts the
-  variable in the engine's argv: failed before, passes after.
-- Not tested here: a network create on an engine started with the variable (this sandbox's
-  engine is started by the production server, not by this branch; it takes it once its front
-  starts again after the update).
-
-### Slice 7 (measures on the instance)
-
-- `give_ways_are_counted_once` (front_gate): each give-way counted once, an adopted front's
-  history not again; `an_asked_restart_starts_a_new_front_and_ends_the_trouble` takes one
-  `restarted` event, once.
-- `the_instance_counts_docker_restarts_give_ways_and_needs_you_per_week` (Cockpit fixture, an
-  isolation reporting events): restarts 2 (one of the production engine), give-ways 5, Docker
-  Needs you 1, in one week; an unknown sandbox's event is dropped.
-- `a_week_is_named_by_its_monday` (the week's Monday, UTC).
-- `npx e2e run tests/pipeline.e2e.ts`: the Docker card's totals and "a week" figures (failed
-  before: no card; 18 passed after).
-
 ### Slice 3, review round 4 (approve; its two nits fixed in the next pull request)
 
 PR #1335 approved at 3714d7af1 (round 4, Opus 5.5). Its nits, own code: a restart that stopped no
 front (none ran) is no restart, now or when a later tick starts one
 (`an_asked_restart_that_stopped_nothing_is_not_counted_later`: red before, counted 1); the
 operations line is wrapped.
+
+### Slice 4, review round 1 (request changes; every finding own code, fixed)
+
+- The end pass answered requests asked after the trouble ended: requests are answered only if
+  asked before the end (or the restart), through `end_task_needs_you_asking` (a request replaced
+  meanwhile stays). In `requests_naming_the_sandboxs_docker_are_answered_together`: a request
+  asked after the end stays (red with the cutoff removed).
+- A person's answer to one task dropped the others without a word: it spreads only from a
+  running task's shown request, and the tasks answered through it are told (`DOCKER_ANSWERED`,
+  typed with the usual guards); the test answers through the Superagent's `task_message`, and a
+  request without the cause stays (red with the cause filter removed).
+- The sidebar no longer hides rows: the shared tasks are grouped under one card naming them
+  (links, first asker first) with their own rows, so keyboard, menus, ownership and counts are
+  unchanged (`shared-needs-you.e2e.ts`: the card, its links' order, both rows, focus kept on an
+  activity change, one notification entry).
+- Tests: the tool's `cause` (accepted, shown, refused for an unknown one; `cd.rs`), the
+  Superagent's `docker_restart` answering a request (`cockpit.rs`), the Superagent's task text
+  naming the shared problem (`mcp_text`).
+- The Evidence of slices 5 to 7 leaves this pull request with their code.

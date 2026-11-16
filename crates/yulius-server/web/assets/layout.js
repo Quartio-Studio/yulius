@@ -1087,12 +1087,32 @@ export function createSidebar(ctx) {
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
   // One Needs you card per sandbox-level problem (SPEC-494): the tasks whose request names the
-  // same cause show on the first one's row, which names them all.
+  // same cause are grouped under one card that names them all, first asker first; each keeps
+  // its own row (its link, menu and place in the counts).
   const CAUSES = { docker: 'This project’s Docker' };
-  const causeOf = (task) => (task.needs_you && CAUSES[task.needs_you.cause] ? task.needs_you.cause : null);
-  const plainAction = (task) => ((task.needs_you && task.needs_you.action) || '').replaceAll('`', '');
+  const causeOf = (task) => (task.needs_you && Object.hasOwn(CAUSES, task.needs_you.cause || '') ? task.needs_you.cause : null);
+  const askedAt = (task) => Date.parse(task.needs_you.at) || 0;
+  const sharedCards = new Map();
 
-  function rowFor(task, shared = null) {
+  /** The card of `cause` over its asking `tasks` (oldest request first), kept across repaints. */
+  function sharedCard(cause, tasks) {
+    const key = JSON.stringify([cause, tasks.map((t) => [t.number, t.needs_you.action]), sandbox.slug]);
+    let card = sharedCards.get(cause);
+    if (card && card.key === key) return card.el;
+    const links = tasks.map((t) => {
+      const path = `/s/${encodeURIComponent(sandbox.slug)}/t/${t.number}`;
+      return h('a', { href: href(path), dataset: { route: path }, title: `Task #${t.number} ${t.title || ''}`.trim() }, `#${t.number}`);
+    });
+    const list = links.flatMap((link, at) => (at ? [', ', link] : [link]));
+    const el = h('div', { class: 'task-shared', role: 'listitem', title: `${CAUSES[cause]}: ${tasks.length} tasks asked a person about it. Answering one of them, or ${BRAND.name}’s own repair, answers them all.` },
+      statusMark({ icon: 'st-attention', tone: 'attention' }, 16),
+      h('span', { class: 'task-shared-text' }, `${CAUSES[cause]} · asked by `, ...list));
+    card = { key, el };
+    sharedCards.set(cause, card);
+    return el;
+  }
+
+  function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
       // One line: state icon, task number, pull request, title, age. What the task needs is said
@@ -1125,12 +1145,11 @@ export function createSidebar(ctx) {
     }
     row.task = task;
     row.info = rowInfo(task);
-    row.shared = shared ? shared.map((other) => other.number) : null;
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
     row.time = taskTime(task, row.info);
-    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login, row.shared]);
+    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -1164,12 +1183,6 @@ export function createSidebar(ctx) {
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
     row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;
-    if (row.shared) {
-      const tasks = row.shared.map((number) => `#${number}`).join(', ');
-      row.title.textContent = `${CAUSES[causeOf(task)]}: ${tasks}`;
-      row.link.title = `${CAUSES[causeOf(task)]} — asked by tasks ${tasks}: ${plainAction(task)}. Answering one of them, or ${BRAND.name}’s own repair, answers them all.`;
-      row.sub.textContent = `, needs you, shared by tasks ${tasks}`;
-    }
     // What the time measures depends on the group, and the words say it (SPEC-087 TIM-003).
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
@@ -1277,23 +1290,34 @@ export function createSidebar(ctx) {
     }
     const seen = new Set();
     const grouped = new Map(GROUPS.map((g) => [g.id, []]));
-    const sharing = new Map();
-    for (const task of tasks) {
-      const cause = causeOf(task);
-      if (cause && rowInfo(task).group === 'needs') sharing.set(cause, [...(sharing.get(cause) || []), task]);
-    }
     for (const task of tasks) {
       seen.add(task.id);
-      const shared = sharing.get(causeOf(task));
-      const sharedHere = shared && shared.length > 1 && shared.includes(task) ? shared : null;
-      // Shown on the first asking task's card.
-      if (sharedHere && sharedHere[0] !== task) continue;
-      const row = rowFor(task, sharedHere);
+      const row = rowFor(task);
       grouped.get(row.info.group).push(row);
     }
+    // The Needs you group: each shared problem's card, then its tasks by the age of their
+    // request, then the rest in their order.
+    const needs = grouped.get('needs');
+    const sharing = new Map();
+    for (const r of needs) {
+      const cause = causeOf(r.task);
+      if (cause) sharing.set(cause, [...(sharing.get(cause) || []), r]);
+    }
+    const shared = [...sharing].filter(([, rs]) => rs.length > 1);
+    for (const cause of [...sharedCards.keys()]) if (!shared.some(([c]) => c === cause)) sharedCards.delete(cause);
+    const inShared = new Set(shared.flatMap(([, rs]) => rs));
+    const needsItems = [
+      ...shared.flatMap(([cause, rs]) => {
+        const ordered = [...rs].sort((a, b) => askedAt(a.task) - askedAt(b.task) || a.task.number - b.task.number);
+        return [{ shared: sharedCard(cause, ordered.map((r) => r.task)), cause }, ...ordered];
+      }),
+      ...needs.filter((r) => !inShared.has(r)),
+    ];
+    const itemsOf = (g) => (g.id === 'needs' ? needsItems : grouped.get(g.id));
+    const itemId = (item) => (item.shared ? `shared:${item.cause}:${sharedCards.get(item.cause).key}` : item.task.id);
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     // Rebuild only when the grouping or order changed, so focus is not lost on every update.
-    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
+    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${itemsOf(g).map(itemId).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
     // The keyboard stays in the list across a rebuild (SPEC-062): on the same control (a group's
@@ -1305,7 +1329,7 @@ export function createSidebar(ctx) {
     const neighbours = row ? [row.nextElementSibling, row.previousElementSibling].map((el) => el && el.querySelector('.task-link')) : [];
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
       groupHead(g, grouped.get(g.id)),
-      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
+      g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, itemsOf(g).map((item) => (item.shared ? item.shared : item.el))))));
     if (focused && document.activeElement !== focused) {
       const target = [control && list.querySelector(control), focused, ...neighbours].find((el) => el && list.contains(el))
         || list.querySelector('a.task-link, button.task-group-head');

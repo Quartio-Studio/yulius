@@ -226,7 +226,7 @@ impl App {
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
         let next = match cause.as_deref() {
             Some(cause) => format!(
-                "People see one \"Needs you\" card for every task of this sandbox that names cause {cause}; answering it, or Yulius's own repair of the sandbox's Docker, closes yours too, and you are told when Docker is no longer full. Print the request in the session as it is; go on with other work."
+                "People see the tasks of this sandbox that name cause {cause} under one shared \"Needs you\" card; a person's answer to one of them, or Yulius's own repair of the sandbox's Docker, closes yours too, and you are told so here. Print the request in the session as it is; go on with other work."
             ),
             None => "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.".to_owned(),
         };
@@ -257,9 +257,10 @@ impl App {
     }
 
     /// A prompt typed into the task ends its request: a person answered. A request about a
-    /// sandbox-level cause is answered for every task of the sandbox that names it (one card,
-    /// SPEC-494 DFJ-011).
-    pub async fn end_needs_you(&self, task: &TaskId) {
+    /// sandbox-level cause, shown on a live task, is answered for every task of the sandbox that
+    /// asked it before (one card, SPEC-494 DFJ-011); those tasks are told so. A resting task's
+    /// stored request (a Continue) answers no other.
+    pub(crate) async fn end_needs_you(&self, task: &TaskId) {
         let shared = match self.deps.store.task_needs_you(task).await {
             Ok(Some(request)) => request.cause,
             _ => None,
@@ -267,8 +268,14 @@ impl App {
         self.end_one_needs_you(task).await;
         if let Some(cause) = shared
             && let Ok(Some(record)) = self.deps.store.task(task).await
+            && record.status == yulius_domain::task::TaskStatus::Running
         {
-            self.end_shared_needs_you(&record.sandbox_id, &cause).await;
+            let others = self
+                .end_shared_needs_you(&record.sandbox_id, &cause, self.now().0)
+                .await;
+            if cause == "docker" {
+                self.tell_docker_answered(record.sandbox_id.as_str(), others);
+            }
         }
     }
 
@@ -291,24 +298,57 @@ impl App {
         }
     }
 
-    /// Ends the requests of `sandbox`'s tasks that name `cause` (a person answered the shared
-    /// card, or Yulius repaired the cause); returns the tasks whose request ended.
+    /// Ends the requests of `sandbox`'s tasks that name `cause` and were asked by
+    /// `asked_until_ms` (a person answered the shared card, or Yulius repaired the cause); a
+    /// request replaced meanwhile stays (`end_task_needs_you_asking`). Returns the tasks whose
+    /// request ended.
     pub(crate) async fn end_shared_needs_you(
         &self,
         sandbox: &yulius_domain::ids::SandboxId,
         cause: &str,
+        asked_until_ms: i64,
     ) -> Vec<TaskId> {
         let Ok(tasks) = self.deps.store.needs_you_tasks(sandbox).await else {
             return Vec::new();
         };
         let mut ended = Vec::new();
         for task in tasks {
-            let names_it = matches!(
-                self.deps.store.task_needs_you(&task).await,
-                Ok(Some(request)) if request.cause.as_deref() == Some(cause)
-            );
-            if names_it && self.end_one_needs_you(&task).await {
-                ended.push(task);
+            let Ok(Some(request)) = self.deps.store.task_needs_you(&task).await else {
+                continue;
+            };
+            if request.cause.as_deref() != Some(cause) || request.at > asked_until_ms {
+                continue;
+            }
+            match self
+                .deps
+                .store
+                .end_task_needs_you_asking(&task, &request.action, self.now())
+                .await
+            {
+                Ok(true) => {
+                    self.publish_task(&task).await;
+                    // Ended for another task's answer or a repair: said in the audit log, as a
+                    // person's dismissal is.
+                    if let Err(err) = self
+                        .deps
+                        .store
+                        .audit(
+                            self.now(),
+                            "yulius",
+                            "task.needs_you.answered_shared",
+                            Some(task.as_str()),
+                            Some(cause),
+                        )
+                        .await
+                    {
+                        tracing::warn!(task = %task, error = %err, "auditing a shared answer failed");
+                    }
+                    ended.push(task);
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(task = %task, error = %err, "ending a shared needs_you request failed");
+                }
             }
         }
         if !ended.is_empty() {

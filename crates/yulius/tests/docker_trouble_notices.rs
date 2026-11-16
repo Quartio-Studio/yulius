@@ -147,11 +147,14 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
     })
 }
 
-/// AC-7 (DFJ-011): two tasks' requests about the sandbox's Docker are one shared problem: a
-/// person answering one answers both, and the end of the Docker trouble (Yulius's repair)
-/// answers both and tells them it is no longer full.
+/// AC-7 (DFJ-011): requests about the sandbox's Docker are one shared problem. A person's
+/// answer to one task (a message through the Superagent) answers the others asked before and
+/// tells them so; the end of the Docker trouble (Yulius's repair) answers those asked before its
+/// end, and they hear that Docker works again. A request without the cause, and one asked after
+/// the end, stay open.
 #[test]
 fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
+    use yulius_app::docker_trouble::DOCKER_ANSWERED;
     use yulius_ptyhost::test_support::locate_fake_agent;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
@@ -166,7 +169,8 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let first = new_task(&app, &sandbox, &user, "First").await?;
         let second = new_task(&app, &sandbox, &user, "Second").await?;
-        for (id, title) in [(&first, "First"), (&second, "Second")] {
+        let other = new_task(&app, &sandbox, &user, "Other").await?;
+        for (id, title) in [(&first, "First"), (&second, "Second"), (&other, "Other")] {
             wait_for("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 let expected = format!("ECHO: {title}: answer with an echo");
@@ -174,16 +178,17 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
             })
             .await?;
         }
-        let docker = |action: &str, at: i64| yulius_app::needs_you::NeedsYouRecord {
-            action: action.into(),
-            happened: None,
-            problem: None,
-            decision: false,
-            link: None,
-            at,
-            cause: Some("docker".into()),
-        };
-        let ask = |id: &yulius_domain::ids::TaskId, at: i64| {
+        let request =
+            |action: &str, at: i64, cause: Option<&str>| yulius_app::needs_you::NeedsYouRecord {
+                action: action.into(),
+                happened: None,
+                problem: None,
+                decision: false,
+                link: None,
+                at,
+                cause: cause.map(str::to_owned),
+            };
+        let ask = |id: &yulius_domain::ids::TaskId, at: i64, cause: Option<&'static str>| {
             let app = std::sync::Arc::clone(&app);
             let id = id.clone();
             async move {
@@ -191,7 +196,7 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
                     .store
                     .set_task_needs_you(
                         &id,
-                        Some(&docker("Restart Docker", at)),
+                        Some(&request("Restart Docker", at, cause)),
                         yulius_domain::time::Timestamp(at),
                     )
                     .await
@@ -208,18 +213,71 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
                     .map(|r| r.is_some())
             }
         };
-        ask(&first, 1).await?;
-        ask(&second, 2).await?;
-        // A person answers one: both are answered.
-        app.end_needs_you(&first).await;
+        // Passes until each of `ids` heard `text` once (sessions in their start window or behind
+        // a request of their own are told at a later pass).
+        let hear = |ids: Vec<yulius_domain::ids::TaskId>, text: &'static str| {
+            let app = std::sync::Arc::clone(&app);
+            async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let mut heard = Vec::new();
+                while ids.iter().any(|id| !heard.contains(&(id.clone(), text)))
+                    && std::time::Instant::now() < deadline
+                {
+                    heard.extend(app.tell_docker_troubles().await);
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                heard
+            }
+        };
+        let now = app.now().0;
+        ask(&first, now - 2_000, Some("docker")).await?;
+        ask(&second, now - 1_000, Some("docker")).await?;
+        ask(&other, now - 1_000, None).await?;
+        // A person answers the first through the Superagent: the second is answered and told.
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: sandbox.clone(),
+            user: user.clone(),
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: "cockpit:admin".into(),
+            detail: serde_json::json!({"via": "cockpit"}),
+        };
+        // A session in its start window takes no message yet: sent again until it does.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let sent = loop {
+            match app
+                .tool_task_message(
+                    &caller,
+                    &serde_json::json!({"task_id": first.as_str(), "text": "Docker is fine now"}),
+                )
+                .await
+            {
+                Ok(sent) => break sent,
+                Err(yulius_app::error::AppError::Conflict(_))
+                    if std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        };
+        assert_eq!(sent["delivered"], "sent", "{sent}");
         assert!(
             !open(&first).await? && !open(&second).await?,
             "both answered"
         );
-        // Asked again; the sandbox's Docker trouble begins and ends (a repair): both answered,
-        // and both hear that it is no longer full.
-        ask(&first, 3).await?;
-        ask(&second, 4).await?;
+        assert!(open(&other).await?, "a request without the cause stays");
+        let heard = hear(vec![second.clone()], DOCKER_ANSWERED).await;
+        assert_eq!(
+            heard.iter().filter(|(id, _)| *id == second).count(),
+            1,
+            "{heard:?}"
+        );
+        // Asked again; the sandbox's Docker trouble begins and ends (a repair): both are answered
+        // and hear that Docker works again; a request asked after the end stays.
+        let now = app.now().0;
+        ask(&first, now - 2_000, Some("docker")).await?;
+        ask(&second, now - 1_000, Some("docker")).await?;
         let health = app.connection_health();
         health.refused_times(
             Refusal {
@@ -234,32 +292,26 @@ fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
         );
         app.tell_docker_troubles().await;
         health.held(Limit::Docker, Some(sandbox.as_str()), 0);
-        let mut heard = Vec::new();
-        for _ in 0..yulius_app::docker_trouble::BACK_AFTER {
-            heard.extend(app.tell_docker_troubles().await);
-        }
+        app.tell_docker_troubles().await;
+        ask(&other, app.now().0 + 60_000, Some("docker")).await?;
+        let heard = hear(vec![first.clone(), second.clone()], DOCKER_BACK).await;
         assert!(
             !open(&first).await? && !open(&second).await?,
             "the repair answered both"
         );
-        // Sessions still in their start window are told at a later pass.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let back = |heard: &[(yulius_domain::ids::TaskId, &str)]| {
-            heard
-                .iter()
-                .filter(|(_, text)| *text == DOCKER_BACK)
-                .map(|(id, _)| id.clone())
-                .collect::<Vec<_>>()
-        };
-        while back(&heard).len() < 2 && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            heard.extend(app.tell_docker_troubles().await);
-        }
-        let told = back(&heard);
-        assert!(told.contains(&first) && told.contains(&second), "{heard:?}");
-        assert_eq!(told.len(), 2, "each told once: {heard:?}");
+        assert!(open(&other).await?, "asked after the end: stays");
+        let back: Vec<_> = heard
+            .iter()
+            .filter(|(_, text)| *text == DOCKER_BACK)
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert!(
+            back.contains(&first) && back.contains(&second) && back.len() == 2,
+            "{heard:?}"
+        );
         stop(&app, &first).await?;
         stop(&app, &second).await?;
+        stop(&app, &other).await?;
         Ok(())
     })
 }

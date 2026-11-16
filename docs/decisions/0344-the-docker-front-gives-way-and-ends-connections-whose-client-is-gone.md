@@ -61,10 +61,13 @@ whether the client half-closed or hung up entirely.
   do not get it, since it would stop every other task's and CI job's containers.
 
 - **One shared problem, one Needs you** (SPEC-494 slice 4). `needs_you` takes `cause: docker`
-  for a problem of the whole sandbox. The requests of a sandbox naming it show as one row of the
-  sidebar's Needs you group naming their tasks; a person answering one, the end of the Docker
-  trouble or `docker_restart` ends them all, and their tasks hear that Docker is no longer full.
-  The agent names the cause: Yulius cannot tell from free text that requests are the same.
+  for a problem of the whole sandbox. The tasks of a sandbox naming it are grouped under one card
+  in the sidebar's Needs you group, and the notification center holds one entry for it. A
+  person's answer to one running task's request, the end of the Docker trouble or
+  `docker_restart` ends the requests asked before it, audited, and their tasks are told. Anyone
+  who may write to one of those tasks answers them all: the problem is the sandbox's, not one
+  owner's. The agent names the cause: Yulius cannot tell from free text that requests are the
+  same.
 
 ## Alternatives
 
