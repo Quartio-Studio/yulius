@@ -23,8 +23,9 @@ class HomeLockTests(unittest.TestCase):
             holder.start()
             try:
                 self.assertTrue(ready.wait(10))
-                threading.Timer(1, release.set).start()
+                # The clock starts before the timer, so a loaded host only makes `waited` longer.
                 started = time.monotonic()
+                threading.Timer(1, release.set).start()
                 with exclusive(path):
                     waited = time.monotonic() - started
                 self.assertGreaterEqual(waited, 0.8)
