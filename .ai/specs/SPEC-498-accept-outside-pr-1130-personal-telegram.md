@@ -165,7 +165,7 @@ the notification center would show:
 - [x] A subscription switch sends no Telegram notice, as in the notification center
 - [x] A sandbox-wide Docker Needs you reaches a chat once per episode
 - [x] A request for control of a task reaches its owner's chat
-- [ ] Docs, lint, e2e and security scan green on current dev
+- [x] Docs, lint, e2e and security scan green on current dev
 - [ ] Independent review approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
@@ -237,6 +237,42 @@ and a two-round independent review.
   one vertical slice (a bot nobody can link, or links that send nothing, are not shippable).
 
 ## Evidence
+
+### Brought onto current `dev` (task #480, 2026-11-16, on `dev` at `c7348d044`)
+
+- `git cherry-pick` of #1130's one commit (`22ea236ac`, base `8aacb40be`, 134 pull requests behind):
+  four conflicts, all lists (`ports/mod.rs`, `yulius-domain/src/lib.rs`, the admin routes in
+  `routes/mod.rs`, the migration list); kept as the contributor's commit (author
+  studenciak00owl). The `sandboxes.rs` change (`browser_requests` `pub(crate)`) was already on
+  `dev`, so it fell out. Renumbered only in the lines #1130 added (`dev`'s own SPEC-444 and
+  ADR-0287 are other records): SPEC-498, ADR-0351, migration `0063_telegram_channel.sql`.
+- `scripts/dev check` (cargo check, all targets): first two runs failed on `dev`'s changes —
+  `FailReason::StartTimeout` removed (#1282), `NeedsYouRecord.cause`, `AccountView.email_typed` /
+  `usage_read`, the boxed `AccountUpdated` — fixed in the brought commit; then exit 0.
+- `cargo nextest run -p yulius-store`: `tests::the_latest_schema_versions_keep_their_migrations`
+  failed until version 63 was pinned; then 125/125 passed.
+- Test-first for each adaptation, each test failing on the brought head before its change:
+  - TGC-025 `telegram::a_subscription_switch_is_no_news`: failed with chat 100 sent "Needs you"
+    twice (`left: 3, right: 2`); passes after the notifier skips a switching task. (A first
+    version with an open `needs_you` request passed unchanged: such a request keeps a switching
+    task in Needs you, so the test now uses "Your turn", a step open.)
+  - TGC-026 `telegram::a_sandbox_wide_docker_needs_you_is_told_once_per_episode`: failed on the
+    text (no sandbox-wide wording, one message per task); passes.
+  - TGC-027 `telegram::a_request_for_control_reaches_the_owner_only`: failed (`chat 100 got 1 of
+    2`); passes.
+  - TGC-028 `notify::tests::every_end_has_the_web_uis_words`: pins each end's words to
+    `status.js`'s `STOP_LABELS`.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^telegram::/)'`: 12/12 passed;
+  `-p yulius-domain -E 'test(/notify/)'`: 14/14; the app, store and wiring Telegram unit tests
+  passed.
+- `scripts/dev lint` (fmt, clippy `-D warnings`, Linux and macOS targets): exit 0.
+- e2e: `npx e2e run tests/telegram.e2e.ts`: 4/4; the files that open Settings or the notification
+  center (`api-tokens`, `consistency`, `content-security-policy`, `playground-guests`,
+  `responsive`, `quality`, `notifications`): 7 files, 77/77 passed.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 401 "Missing or invalid API
+  key" for the instance key, as for task #478 earlier today. Neither passed nor failed; the pull
+  request's CI `security` job reports what it gets.
+- The whole gate is Yulius CI's on the pull request head.
 
 ### The contributor's evidence (their fork, 2026-11-07, before #1130 was brought onto `dev`)
 
