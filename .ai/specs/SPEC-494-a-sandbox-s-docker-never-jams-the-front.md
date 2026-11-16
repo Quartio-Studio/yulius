@@ -512,6 +512,30 @@ operations line is wrapped.
   engine is started by the production server, not by this branch; it takes it once its front
   starts again after the update).
 
+### Slice 5 (fronts do not run old code for days)
+
+- `front_repair::tests`: `a_front_from_another_file_runs_another_build` (this test process
+  against its own executable and `/bin/sh`), `a_quiet_front_holds_no_connection_and_runs_no_engine`
+  (from a state file, and from `/proc` for a front without one: a child makes it busy).
+- `an_outdated_front_is_replaced_once_it_is_quiet` (manager, the fake front, whose file is not
+  the server's executable): kept while its state holds connections, replaced (counted) once it
+  holds none.
+- The quiet test first failed only under the shell tool here: its inherited stdin was a socket;
+  the server starts fronts with a null stdin, as the test now does.
+
+### Slice 6 (br_netfilter)
+
+- Reproduced the failure in this sandbox's engine: `docker network create -o
+  com.docker.network.bridge.enable_icc=false t476b` → "cannot restrict inter-container
+  communication or run without the userland proxy: stat /proc/sys/net/bridge/
+  bridge-nf-call-iptables: no such file or directory: set environment variable
+  DOCKER_IGNORE_BR_NETFILTER_ERROR=1 to ignore".
+- `engine::tests::the_engine_gets_its_own_namespaces_capabilities_and_environment` asserts the
+  variable in the engine's argv: failed before, passes after.
+- Not tested here: a network create on an engine started with the variable (this sandbox's
+  engine is started by the production server, not by this branch; it takes it once its front
+  starts again after the update).
+
 ### Slice 7 (measures on the instance)
 
 - `give_ways_are_counted_once` (front_gate): each give-way counted once, an adopted front's
