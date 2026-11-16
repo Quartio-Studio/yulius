@@ -370,25 +370,40 @@ impl Git {
         let counts = counts.ok_or_else(|| disagree("its counts do not parse"))?;
         let sections = parse_unified_zero(&patch.stdout)
             .ok_or_else(|| disagree("its patch does not parse"))?;
-        if sections.len() != counts.len() {
+        // One record per file; a type change (a link become a file) is two sections of the
+        // patch, a deletion and an addition, and one record (review round 2 of fix 6).
+        let mut sections = sections.into_iter().peekable();
+        let mut files = Vec::with_capacity(counts.len());
+        let sizes = |s: &Section| (s.added.len(), s.removed.len());
+        for (path, numbers) in counts {
+            let mut section = sections
+                .next()
+                .ok_or_else(|| disagree("its patch and its counts name different files"))?;
+            if let Some(n) = numbers
+                && n != sizes(&section)
+                && section.added.is_empty()
+                && let Some(next) = sections.next_if(|next| {
+                    next.removed.is_empty() && n == (next.added.len(), section.removed.len())
+                })
+            {
+                section.added = next.added;
+                section.opaque |= next.opaque;
+            }
+            // Git counts a file its attributes call binary as `-`: the patch (`--text`) says.
+            if numbers.is_some_and(|n| n != sizes(&section)) {
+                return Err(disagree(&format!("the counts of `{path}` differ")));
+            }
+            files.push(CommitFileLines {
+                path,
+                added: section.added,
+                removed: section.removed,
+                opaque: section.opaque,
+            });
+        }
+        if sections.next().is_some() {
             return Err(disagree("its patch and its counts name different files"));
         }
-        counts
-            .into_iter()
-            .zip(sections)
-            .map(|((path, numbers), section)| {
-                // Git counts a file its attributes call binary as `-`: the patch (`--text`) says.
-                if numbers.is_some_and(|n| n != (section.added.len(), section.removed.len())) {
-                    return Err(disagree(&format!("the counts of `{path}` differ")));
-                }
-                Ok(CommitFileLines {
-                    path,
-                    added: section.added,
-                    removed: section.removed,
-                    opaque: section.opaque,
-                })
-            })
-            .collect()
+        Ok(files)
     }
 
     /// Keeps Yulius's block in `info/attributes` of the clone `repo` (read by every worktree of
