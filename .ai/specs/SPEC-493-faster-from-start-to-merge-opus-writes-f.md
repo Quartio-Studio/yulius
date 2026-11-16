@@ -532,8 +532,10 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   of the same paths types nothing again; after A's release the mark is gone.
 - **AC-22** (SCO-004) `task_create` with `paths` overlapping a live task's claim answers the
   overlap and the offer; with `after` set to that task it is created queued behind it.
-- **AC-23** (DEF-001) A goal run with a queue entry never taken out: the first Stop stays for it,
-  the next Stop moves the session although no `turn_duration` was written between them.
+- **AC-23** (DEF-001) A turn whose Stops a hook blocks (a goal's or the gate's), with a
+  notification Claude Code never takes out: the first Stop stays for it, the next Stop after a
+  tool result moves the session although no `turn_duration` was written between them. A
+  prompt in its place keeps the session.
 - **AC-24** (DEF-002) A browser started before the policy, with a file chooser possibly open, is
   not unlocked when the policy appears until it was restarted or the chooser is known closed.
 
@@ -638,6 +640,19 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     records' reports. The command's own time is in each spec's Evidence.
   - Fix 9: the share of pull requests that hit a conflict: `audit_log` actions
     `delivery.conflict` per merged pull request (baseline 29 of 60 in quartio-v2, 7 of 42 here).
+  - Fix 10a: the server log's "the session is not moved to another subscription at this turn's
+    end: a prompt waits in Claude Code's queue" lines, by task and day (`journalctl -u yulius
+    --since -7d | grep -c`); a task with more than two of them in a row in one turn is this
+    defect. The week before the merge is the baseline.
+- **Fix 10a: a blocked Stop's left-over notification is told by kind and tool result.** A Stop
+  a hook blocks writes no `turn_duration`, so SWQ-002's rule never ran in a goal run. Counting
+  every entry that waited at two Stops would lose a real prompt whose continuation called no
+  tool (Claude Code hands it on at the Stop that ends the turn, probe run-7 of task #452). In
+  this sandbox's transcripts the entries never taken out are 16 notifications (5 prompts, lost
+  to killed processes); notifications leave at a tool result (1,297 `remove`, 762 at the first
+  one after their `enqueue`). So only a `<task-notification>` that waited at a Stop and through
+  a tool result written after it is left at the next Stop. ADR-0310 is amended in place: it is
+  that decision's rule, narrowed for one record Claude Code does not write.
 
 ## Evidence
 
