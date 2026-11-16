@@ -1239,6 +1239,41 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-493 RLM-004 (AC-12): resume a cut-off reviewer, never start a new one for the same
+    /// round; a reviewer runs at high effort, never max: the same everywhere reviews are
+    /// described.
+    #[test]
+    fn every_place_says_resume_a_cut_off_reviewer() -> TestResult {
+        const RULE: &str = "a usage limit can cut a reviewer off before its report: resume that \
+            same reviewer with sendmessage to its agent id, never start a new one for the same \
+            round. a reviewer runs at high effort, never max.";
+        let normal = |text: &str| {
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for rel in [
+            "catalog/skills/yulius/delivery-pipeline/SKILL.md",
+            "catalog/skills/open-mercato/om-code-review/SKILL.md",
+            ".apm/skills/yulius-review/SKILL.md",
+            ".apm/skills/yulius-git/SKILL.md",
+            "docs/engineering/workflow.md",
+            "docs/engineering/git.md",
+            "AGENTS.md",
+        ] {
+            let text = normal(&fs::read_to_string(root.join(rel))?);
+            assert!(
+                text.contains(&normal(RULE)),
+                "{rel} does not state the rule"
+            );
+        }
+        // The reviewer agents Yulius defines run at that effort.
+        assert_eq!(yulius_domain::review::REVIEWER_EFFORT, "high");
+        Ok(())
+    }
+
     /// Hostile repositories: special files and links leaving the repository are ignored.
     #[test]
     fn hostile_repository_files_are_ignored() -> TestResult {
