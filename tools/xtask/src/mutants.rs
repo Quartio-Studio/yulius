@@ -611,6 +611,22 @@ mod tests {
         assert!(!outcomes.unreached.is_empty(), "{outcomes:?}");
         assert!(!outcomes.held());
         let _ = std::fs::remove_dir_all(&slow);
+        // A tree whose own tests fail is cargo-mutants' failure, said as such, not mutants
+        // unreached (review round 1 of fix 8).
+        let (broken, broken_base) = fixture("broken")?;
+        commit(
+            &broken,
+            "src/lib.rs",
+            "pub fn one() -> u32 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_is_one() {\n        assert_eq!(super::one(), 1);\n    }\n}\n",
+        )?;
+        let failed = run(&broken, "cargo", &settings(&broken_base));
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("cargo-mutants failed")),
+            "{failed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&broken);
         Ok(())
     }
 
