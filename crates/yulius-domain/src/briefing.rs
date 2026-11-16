@@ -1209,8 +1209,8 @@ fn parallel(input: &BriefingInput<'_>) -> String {
     }
     out.push_str(&more_line(input.parallel_tasks.len(), MAX_PARALLEL_TASKS));
     out.push_str(
-        "\nClaim paths with `scope_claim` before editing areas another task may touch; \
-         overlaps are shown to you.\n\n",
+        "\nClaim paths with `scope_claim` before editing shared areas; on an overlap, wait \
+         for the other's PR or agree by claim note.\n\n",
     );
     out
 }

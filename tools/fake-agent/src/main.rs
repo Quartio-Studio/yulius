@@ -21,7 +21,7 @@
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
 //!            [--turn-hold-file PATH] [--resume-record]
 //!            [--queue-prompts [--queue-record-file PATH] [--queue-handover-file PATH]
-//!            [--queue-turn-file PATH]]
+//!            [--queue-turn-file PATH] [--stop-tool]]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -182,7 +182,9 @@
 //! `UserPromptSubmit` hook at once and, unless the hook blocks it, a `queue-operation` record
 //! `enqueue` with its text, and prints `QUEUED: <line>`; it is not answered yet. A Stop answer
 //! that blocks releases nothing: the turn goes on (Claude Code's "Stop hook feedback" record
-//! and another answer) to another Stop. After the Stop that lets the turn end, the waiting
+//! and another answer) to another Stop; with `--stop-tool` that answer first calls a tool and
+//! writes its result, where Claude Code takes what waits into the turn (SPEC-493 DEF-001; the
+//! fake takes nothing in). After the Stop that lets the turn end, the waiting
 //! lines are handed on together: one `dequeue` record each, then the ended turn's closing
 //! records, then one `user` record each (`promptSource: "queued"`) and one turn that answers
 //! them all (`ECHO: <line>` each), with no further prompt hook; lines entered during that turn
@@ -201,7 +203,7 @@
 //! (a turn a usage limit cuts in Claude Code runs none), and what was entered meanwhile stays
 //! unanswered. A waiting line that begins with `/stuck ` stands for an entry Claude Code never
 //! takes out of its queue, as it does with some of its own notifications (SPEC-479): its
-//! `enqueue` record with the rest of the line, no prompt hook, `QUEUED: <rest>`; no turn's end
+//! `enqueue` record with the rest of the line as a `<task-notification>`, no prompt hook, `QUEUED: <rest>`; no turn's end
 //! hands it on and it is never answered. A waiting line that begins with `/alone ` stands for
 //! an entry Claude Code hands on alone, as it does with a notification of its own, a slash
 //! command and a `!` line (seen with 2.1.322, SPEC-479): its `enqueue` record with the rest of
@@ -398,6 +400,7 @@ struct Options {
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
     queue_prompts: bool,
+    stop_tool: bool,
     queue_record_file: Option<PathBuf>,
     queue_handover_file: Option<PathBuf>,
     queue_turn_file: Option<PathBuf>,
@@ -471,6 +474,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         stuck_at_start_file: None,
         turn_hold_file: None,
         queue_prompts: false,
+        stop_tool: false,
         queue_record_file: None,
         queue_handover_file: None,
         queue_turn_file: None,
@@ -633,6 +637,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
             }
             "--queue-prompts" => options.queue_prompts = true,
+            "--stop-tool" => options.stop_tool = true,
             "--queue-record-file" => {
                 options.queue_record_file = Some(
                     args.next()
@@ -998,7 +1003,7 @@ impl Transcript {
 
     /// A Stop hook blocked the turn's end: Claude Code's record of the hook's reason, and the
     /// answer the model gives to it.
-    fn stop_feedback(&mut self, reason: &str) -> io::Result<()> {
+    fn stop_feedback(&mut self, reason: &str, tool: bool) -> io::Result<()> {
         self.turns += 1;
         let uuid = format!("fake-{}-{}-feedback", self.session_id, self.turns);
         let mut meta = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
@@ -1007,6 +1012,10 @@ impl Transcript {
             "content": format!("Stop hook feedback:\n{reason}")});
         self.last_uuid = Some(uuid);
         self.append(&[meta])?;
+        if tool {
+            self.tool_use()?;
+            self.tool_result("ok", json!({"stdout": "ok", "stderr": ""}))?;
+        }
         self.answer("Stop hook feedback", "AGAIN")
     }
 
@@ -1671,6 +1680,14 @@ impl Waiting<'_> {
                         if scheduled {
                             let _ = t.scheduled_fire();
                         }
+                        // What Claude Code never takes out is a notification of its own.
+                        let text = if stuck {
+                            format!(
+                                "<task-notification>\n<summary>{text}</summary>\n</task-notification>"
+                            )
+                        } else {
+                            text
+                        };
                         let _ = t.queue_operation("enqueue", Some(&text));
                     }
                 };
@@ -1805,7 +1822,7 @@ fn queued_echo(
             if blocks > MAX_STOP_BLOCKS {
                 break;
             }
-            write(&mut |t| t.stop_feedback(&reason))?;
+            write(&mut |t| t.stop_feedback(&reason, options.stop_tool))?;
         }
         let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if waiting.lines.is_empty() {
@@ -3243,6 +3260,7 @@ mod tests {
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--queue-prompts"]).is_ok_and(|o| o.queue_prompts));
+        assert!(parse(&["--stop-tool"]).is_ok_and(|o| o.stop_tool));
         assert!(parse(&["--queue-record-file"]).is_err());
         assert!(parse(&["--queue-handover-file"]).is_err());
         assert!(parse(&["--queue-turn-file"]).is_err());

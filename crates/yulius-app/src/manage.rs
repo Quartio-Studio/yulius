@@ -321,6 +321,27 @@ impl App {
                     .to_owned(),
             ),
         };
+        // The paths it will touch (SPEC-493 SCO-004): claimed for it, and an overlap with a live
+        // or waiting task's claims is answered before it is made, with the offer to run it after
+        // that task, unless it already waits for a task or the caller starts it anyway.
+        let paths = crate::scopes::paths_arg(args)?;
+        let start_anyway = flag_arg(args, "start_anyway")?;
+        if !paths.is_empty() && after_task_id.is_none() && !start_anyway {
+            let own = caller.task.as_ref().map(|t| &t.id);
+            let overlaps = self.planned_overlaps(&caller.sandbox, &paths, own).await?;
+            if let Some(first) = overlaps.first() {
+                return Ok(json!({
+                    "created": false,
+                    "overlaps": overlaps,
+                    "offer": format!(
+                        "Task #{} holds paths this task would touch. To run this task after it, \
+                         call task_create again with `after_task: {}`; to start it now all the \
+                         same, with `start_anyway: true`.",
+                        first["task_number"], first["task_number"]
+                    ),
+                }));
+            }
+        }
         let workflow_id = match opt_str(args, "workflow")? {
             Some(auto) if auto == AUTO => Some(auto),
             Some(_) => self.agent_workflow(caller, args).await?,
@@ -374,6 +395,11 @@ impl App {
             }
         };
         tracing::info!(task = %task.id, number = task.number, actor = %caller.actor, "task created by a tool");
+        // The task exists: a claim that cannot be written is said, not an error that invites
+        // a second task (review round 1 of fix 9).
+        if let Err(err) = self.claim_for_new_task(&task, &paths).await {
+            tracing::warn!(error = %err, task = %task.id, "the new task's paths were not claimed");
+        }
         Ok(json!({
             "task": self.task_brief(&task).await?,
             "note": match all_tasks {

@@ -340,6 +340,9 @@ pub struct App {
     pub(crate) github_callback: crate::github_callback::CallbackKept,
     /// What the tasks were told of their sandbox's Docker trouble (SPEC-494 DFJ-007).
     pub(crate) docker_told: crate::docker_trouble::DockerTold,
+    /// The overlaps a holding task was told of (or is being told), by holder, claimer and paths:
+    /// one message each (SPEC-493 SCO-001).
+    pub(crate) scope_told: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl App {
@@ -408,6 +411,7 @@ impl App {
             connection_health,
             github_callback: crate::github_callback::CallbackKept::default(),
             docker_told: crate::docker_trouble::DockerTold::default(),
+            scope_told: std::sync::Mutex::default(),
         })
     }
 

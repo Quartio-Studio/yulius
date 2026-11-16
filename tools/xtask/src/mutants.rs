@@ -411,7 +411,7 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     ] {
         if !mutants.is_empty() {
             println!("{what}:");
-            if what.starts_with("Missed") {
+            if what.starts_with("Missed") && filter.is_some() {
                 println!(
                     "  (each ran the tests this branch changed; a mutant held by other \
                      integration tests needs `--tests`)"

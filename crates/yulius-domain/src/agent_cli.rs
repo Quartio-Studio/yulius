@@ -151,12 +151,21 @@ pub struct MoveFacts {
 pub enum QueueChange {
     /// An entry waits (`enqueue`).
     Added,
+    /// An entry waits that is a notification of Claude Code's own (`enqueue` of a
+    /// `<task-notification>`). Some of them it never takes out (SPEC-493 DEF-001).
+    Notice,
     /// An entry was handed on to a turn of its own, which starts next (`dequeue`).
     HandedOn,
     /// An entry left without a turn of its own (`remove`, `popAll`, `popOne`): taken into the
     /// running turn at a tool result, given to another agent, put back into the prompt box, or
     /// dropped.
     Taken,
+    /// A notification of Claude Code's own left without a turn of its own (`remove` of a
+    /// `<task-notification>`).
+    NoticeTaken,
+    /// A tool's result went into the session's turn: Claude Code takes what waits into the
+    /// turn there (`remove`, `absorbed_mid_turn`), but for what it never takes out.
+    ToolResult,
     /// The entry that was handed on was only written to the transcript (a notification with
     /// `queueTranscriptOnly`, SPEC-486): its hand-over is over and no turn starts.
     Written,
@@ -177,6 +186,16 @@ pub struct Queue {
     /// How many of the entries that wait were left by a turn's end: its closing record found
     /// them waiting and that end had handed nothing on (SPEC-479 SWQ-002).
     left_over: u32,
+    /// How many of the entries that wait are notifications of Claude Code's own, as far as
+    /// their records say (a leave that names nothing is taken to be one).
+    notices: u32,
+    /// Of those, how many waited at the last Stop that no closing record followed yet, and
+    /// when that Stop came (SPEC-493 DEF-001).
+    at_stop: u32,
+    stop_at: Option<Timestamp>,
+    /// Of those, how many still waited when a tool result written after that Stop was read:
+    /// any notification Claude Code would take in, it took there.
+    through_tool: u32,
 }
 
 impl Queue {
@@ -185,8 +204,13 @@ impl Queue {
     pub fn record(&mut self, change: QueueChange, at: Option<Timestamp>) {
         match change {
             QueueChange::Added => self.waiting = self.waiting.saturating_add(1),
+            QueueChange::Notice => {
+                self.waiting = self.waiting.saturating_add(1);
+                self.notices = self.notices.saturating_add(1);
+            }
             QueueChange::HandedOn => {
                 self.waiting = self.waiting.saturating_sub(1);
+                self.notice_left();
                 // The latest of a batch, whatever order they are read in; a record without a
                 // time may be the latest, so with one the time is not known.
                 self.handed_on_at = match (self.handing_on, self.handed_on_at, at) {
@@ -196,9 +220,28 @@ impl Queue {
                 };
                 self.handing_on = true;
             }
-            QueueChange::Taken => self.waiting = self.waiting.saturating_sub(1),
+            QueueChange::Taken => {
+                self.waiting = self.waiting.saturating_sub(1);
+                // A prompt or a notice: one marked notice is no longer known to wait.
+                self.at_stop = self.at_stop.saturating_sub(1);
+                self.through_tool = self.through_tool.saturating_sub(1);
+            }
+            QueueChange::NoticeTaken => {
+                self.waiting = self.waiting.saturating_sub(1);
+                self.notice_left();
+            }
+            QueueChange::ToolResult => {
+                if let (Some(at), Some(stop)) = (at, self.stop_at)
+                    && at > stop
+                {
+                    self.through_tool = self.at_stop;
+                }
+            }
             QueueChange::Written => self.turn_seen(),
         }
+        self.notices = self.notices.min(self.waiting);
+        self.at_stop = self.at_stop.min(self.notices);
+        self.through_tool = self.through_tool.min(self.at_stop);
         // No record names the entry that left: it is taken to be one that was not left over,
         // while there is one (SPEC-479 SWQ-002).
         self.left_over = self.left_over.min(self.waiting);
@@ -215,6 +258,34 @@ impl Queue {
         if !self.handing_on {
             self.left_over = self.waiting;
         }
+        self.at_stop = 0;
+        self.through_tool = 0;
+        self.stop_at = None;
+    }
+
+    /// A notification of Claude Code's own, or an entry whose kind its record does not say,
+    /// left: taken to be a marked notice, which then is not left over at the next Stop.
+    fn notice_left(&mut self) {
+        self.notices = self.notices.saturating_sub(1);
+        self.at_stop = self.at_stop.saturating_sub(1);
+        self.through_tool = self.through_tool.saturating_sub(1);
+    }
+
+    /// A Stop came at `now`; `read` says the lines written before it were read first. A Stop a
+    /// hook blocks writes no closing record ([`Self::turn_closed`]): what is left by such
+    /// Stops is the notifications of Claude Code's own that waited at the last one, then
+    /// through a tool result written after it, and still wait. A notification Claude Code
+    /// would take in is taken at a tool result; a prompt, a slash command or a `!` line is
+    /// never marked this way (SPEC-493 DEF-001). A Stop whose lines were not read leaves
+    /// nothing: the record that took a notice in at the tool result may not be read yet
+    /// (review round 1 of fix 10a). It marks what waits for the next Stop all the same.
+    pub fn stop_seen(&mut self, now: Timestamp, read: bool) {
+        if read {
+            self.left_over = self.left_over.max(self.through_tool).min(self.waiting);
+        }
+        self.at_stop = self.notices;
+        self.through_tool = 0;
+        self.stop_at = Some(now);
     }
 
     /// The prompt record of a turn was read: what was handed on has its turn.
@@ -963,6 +1034,123 @@ mod tests {
         assert!(queue.hands_on(), "its turn is not known yet");
         queue.turn_seen();
         assert!(!queue.hands_on());
+    }
+
+    /// SPEC-493 DEF-001 (AC-23): a Stop a hook blocks writes no closing record, so in a goal
+    /// run a notification Claude Code never takes out was never marked left over and kept the
+    /// session at every Stop. Claude Code takes a waiting notification into the turn at the next
+    /// tool result (2.1.322, 1,297 `remove` records over this sandbox's transcripts): one of its
+    /// own that waited at a Stop, then through a tool result written after that Stop, and still
+    /// waits at the next Stop, is left. A prompt never counts that way, nor a tool result
+    /// written before the Stop, nor one without a time.
+    #[test]
+    fn a_notice_that_waited_through_a_blocked_stops_tool_result_is_left() {
+        let at = |ms| Some(Timestamp(ms));
+        let counts = |queue: &Queue| (queue.waiting(), queue.left_over());
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), true);
+        assert!(
+            queue.hands_on(),
+            "the first Stop: nothing says yet that it stays"
+        );
+        // The continuation's tool result, then the next Stop: no closing record between them.
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 1));
+        assert!(!queue.hands_on());
+        assert!(queue.holds(), "the restart's rule still counts it");
+
+        // No tool result after the Stop: the continuation took nothing in, so it may still be
+        // handed on at the Stop that ends the turn.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::ToolResult, at(150));
+        queue.record(QueueChange::ToolResult, None);
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(
+            counts(&queue),
+            (1, 0),
+            "a result written before the Stop, or without a time"
+        );
+        // The next tool result after that Stop does it.
+        queue.record(QueueChange::ToolResult, at(500));
+        queue.stop_seen(Timestamp(600), true);
+        assert_eq!(counts(&queue), (1, 1));
+
+        // A prompt is taken in at a tool result or handed on at the turn's end: never left.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Added, at(100));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 0));
+        assert!(queue.hands_on());
+
+        // A notice taken in at the tool result leaves nothing marked; one that came after the
+        // Stop is not marked by it.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::NoticeTaken, at(300));
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.record(QueueChange::Notice, at(350));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 0));
+        // A notice taken in while a prompt waits: what is left waiting is the prompt.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.record(QueueChange::Added, at(110));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::NoticeTaken, at(300));
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 0), "the prompt is never left");
+        // A leave whose kind is not known takes a marked notice first.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.record(QueueChange::Added, at(110));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.record(QueueChange::HandedOn, at(310));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 0), "the one left may be the prompt");
+
+        // Review round 1: a Stop whose lines were not read first marks nothing. The tool
+        // result was read, the `remove` that took the notice in at it not yet: counting the
+        // notice then would leave the mark on the prompt once the `remove` is read.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.record(QueueChange::Added, at(110));
+        queue.stop_seen(Timestamp(200), true);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), false);
+        queue.record(QueueChange::NoticeTaken, at(301));
+        assert_eq!(counts(&queue), (1, 0), "the prompt is never left");
+        assert!(queue.hands_on());
+        // The next Stop that was read decides from what was marked at the unread one.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), false);
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(counts(&queue), (1, 1));
+        // A closing record between the two Stops decides by itself, as before.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Notice, at(100));
+        queue.stop_seen(Timestamp(200), true);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (1, 1));
+        queue.record(QueueChange::Taken, at(250));
+        queue.record(QueueChange::Notice, at(260));
+        queue.record(QueueChange::ToolResult, at(300));
+        queue.stop_seen(Timestamp(400), true);
+        assert_eq!(
+            counts(&queue),
+            (1, 0),
+            "the new notice did not wait at a Stop of this turn"
+        );
     }
 
     /// SPEC-479 SWQ-002 (review round 1): Claude Code hands a notification of its own, a slash

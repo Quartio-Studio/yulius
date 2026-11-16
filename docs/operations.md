@@ -1266,7 +1266,9 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    for a restart on a newer Claude Code ("Claude Code updates" above); an entry a turn's end
    left in the queue when it handed nothing on (Claude Code leaves some of its own
    notifications there for good) keeps no move, so such a session stays only until a turn's
-   end hands nothing on, usually one. A prompt that waits behind a notification of finished
+   end hands nothing on, usually one. In a turn whose Stops a hook blocks (the gate's, a
+   goal's) no turn ends: such a notification keeps the session for one Stop, and the next Stop
+   after a tool result moves it. A prompt that waits behind a notification of finished
    background work, a slash command or a `!` line is not such an entry: Claude Code hands
    those on alone and the prompt one turn's end later, and the session stays until then. The
    server's log says when a

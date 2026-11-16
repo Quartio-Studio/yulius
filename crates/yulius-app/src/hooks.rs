@@ -946,6 +946,18 @@ impl App {
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
         let decision = rotation::decide(&pool, Trigger::Proactive);
+        // A Stop a hook blocks writes no closing record: what such Stops leave in Claude Code's
+        // queue is told at each Stop, after the turn's lines were read when a move may be made
+        // here (SPEC-493 DEF-001).
+        let read = (matches!(decision.0, Decision::Switch { .. })
+            && !self.switch_cooling(&task.id))
+            || self.runtime(&task.id).reviewer_move.load(Ordering::SeqCst);
+        if read {
+            self.await_transcript_read(&task.id).await;
+        }
+        let now = self.now();
+        self.runtime(&task.id)
+            .with_queue(|queue| queue.stop_seen(now, read));
         // A reviewer a usage limit cut off moves the session to a subscription that can run
         // its model, at this turn's end, as a switch the pool decides would (SPEC-493 RLM-002).
         // While a round is open its cut-off may be in this turn's lines: they are read first.

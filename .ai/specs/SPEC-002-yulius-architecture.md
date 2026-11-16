@@ -2054,7 +2054,7 @@ SPEC-086, ADR-0069): what changed, what is next and what the agent passes back, 
 `structuredContent`. Every tool result (and error, and record) is redacted of the sandbox's agent
 secrets before it is returned (VLT-007).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
-longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent only (no message, SPEC-012).
+longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent with the holding task's note, step and pull request, and the holding task is told once by a typed Yulius note (SPEC-493 SCO-001, ADR-0348; it amends SPEC-012's "no message").
 `scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for
 the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
 
