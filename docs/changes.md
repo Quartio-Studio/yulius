@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Notifications reach a person's own Telegram chat (SPEC-498, task #480,
+  [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
+  part 1 of #1107, from outside pull request #1130 by studenciak00owl).
+  An instance administrator sets one bot in Settings → Administration (checked with `getMe`, sealed,
+  removable, which stops polling and unlinks every chat). Each person links their private chat with
+  a single-use 10-minute code from a browser session (`t.me/<bot>?start=<code>`), unlinks in
+  Settings or with `/stop` (audited `telegram.linked` / `telegram.unlinked`), and chooses Needs you
+  (default), Done, failed or stopped, and (administrators) subscription problems. Only events their
+  event stream carries are sent, with the task's link, redacted like transcripts, at most five a
+  minute with the rest folded into one summary. The server long-polls Telegram (no inbound port,
+  backoff after errors; `YULIUS_TELEGRAM_API_URL` for a fake in tests), behind a
+  `NotificationChannel` port that part 2 (replies and new tasks) extends. Brought onto current
+  `dev`, the chat follows what the notification center learned since: a subscription switch is no
+  news, a project's Docker trouble is one message per episode, and a request for control of a task
+  reaches its owner.
 - Dialogs show their whole content in Safari (SPEC-500, task #482, outside pull request #1142 by
   studenciak00owl). In Safari 26.0 every dialog's body was 32 px tall (WebKit resolves the body's
   `0%` flex basis to zero in an auto-height dialog), so Add subscription, Add sandbox, Import
