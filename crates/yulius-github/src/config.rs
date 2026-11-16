@@ -29,7 +29,8 @@ pub struct AppCredentials {
     pub slug: String,
 }
 
-/// Retry bounds for idempotent GET requests (SPEC-002 §9).
+/// Retry bounds for idempotent GET requests (SPEC-002 §9); `max_total` and `base_delay` also
+/// bound a merge's wait for GitHub's mergeability (SPEC-495, at most 12 s of waits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryPolicy {
     /// Total attempts including the first (default 3).

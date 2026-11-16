@@ -48,6 +48,7 @@ pub use config::{
 };
 pub use error::GitHubError;
 pub use issues::{MAX_ISSUE_LABELS, MAX_LABEL_BYTES};
+pub use pulls::MERGE_ATTEMPTS;
 pub use reqwest::Url;
 pub use secret::Secret;
 pub use statuses::{CommitStatus, MAX_STATUS_CONTEXT_BYTES, MAX_STATUS_DESCRIPTION_CHARS};
