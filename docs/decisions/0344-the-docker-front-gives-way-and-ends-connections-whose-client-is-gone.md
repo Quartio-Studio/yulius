@@ -71,9 +71,12 @@ whether the client half-closed or hung up entirely.
 
 - **A front from an earlier build is replaced when quiet** (SPEC-494 slice 5). The upkeep compares
   the file a front process runs (`/proc/<pid>/exe`) with the server's executable; when they
-  differ (an update replaced it) and the front holds no connection and runs no engine (its state,
-  or for a front from before this change no child and no socket but its listener), it is
-  restarted. A busy one is kept and journaled once a day.
+  differ (an update replaced it) and the front is quiet, it is restarted. Quiet is read live just
+  before: no child process (its engine) and no connection at its socket, accepted or waiting
+  (`/proc/<pid>/net/unix` lists those under the listener's path), and, when the front writes a
+  state, the state agrees. A state alone is up to 5 s old, and a front from before this change
+  writes none and holds four sockets when idle, so neither the state nor a socket count decides
+  (review round 1 of slices 5 to 7). A busy one is kept and journaled once a day.
 
 - **Engines do not ask for `br_netfilter`** (SPEC-494 slice 6). A sandbox's engine runs with
   `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`: networks with `enable_icc=false` are created, without

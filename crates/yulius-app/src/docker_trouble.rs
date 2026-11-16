@@ -299,10 +299,11 @@ impl App {
             return;
         };
         for event in isolation.take_docker_events() {
-            let (id, production) = match event.sandbox.strip_suffix(".prod") {
-                Some(id) => (id.to_owned(), true),
-                None => (event.sandbox.clone(), false),
-            };
+            let (id, production) =
+                match yulius_contracts::sandbox::production_sandbox(&event.sandbox) {
+                    Some(id) => (id.to_owned(), true),
+                    None => (event.sandbox.clone(), false),
+                };
             let Ok(id) = yulius_domain::ids::SandboxId::parse(&id) else {
                 continue;
             };

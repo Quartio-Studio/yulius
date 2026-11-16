@@ -1103,15 +1103,19 @@ from a sandbox, and no daemon needs to run on the host.
   running containers stop, volumes
   and images stay. The sandbox's Superagent restarts it at once with `docker_restart` when its
   person asks. A front kept across an update (it runs the replaced executable) is replaced at its
-  first quiet moment (no connection, no engine running); a busy one is journaled once a day
-  ("runs an earlier build; it is replaced once it is quiet").
+  first quiet moment, fronts from before ADR-0344 included: read just before, it holds no
+  connection at its socket (accepted or waiting) and runs no engine (no child process); the
+  journal says `replaced the sandbox's Docker front with this build's`. A busy one is journaled
+  once a day ("runs an earlier build; it is replaced once it is quiet"). A front from before
+  ADR-0344 writes no state, so it is never seen full: one that stays busy (connections it leaked
+  keep it so) is restarted by hand, with `docker_restart` through the Superagent or `kill -TERM`
+  of the pid in `docker-front.json` (the upkeep starts a new one within a tick; its engine and
+  running containers stop, volumes stay).
 - **Networks that restrict inter-container traffic** (SPEC-494, ADR-0344). The host does not
   load `br_netfilter`; a sandbox's engine runs with `DOCKER_IGNORE_BR_NETFILTER_ERROR=1`, so
   `docker network create -o com.docker.network.bridge.enable_icc=false` (and Compose networks
-  asking for it) succeeds, and its containers can still reach each other inside the sandbox. A front started by an
-  earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in
-  `docker-front.json` and the upkeep starts a new one within a tick (its engine and running
-  containers stop; volumes stay).
+  asking for it) succeeds, and its containers can still reach each other inside the sandbox. An
+  engine started by an earlier front gets the variable once that front is replaced (above).
 
 ### Task intake (Jev)
 
