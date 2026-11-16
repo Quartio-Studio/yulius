@@ -59,6 +59,9 @@ struct Sample {
     cpu_usec: u64,
     rate: Option<f64>,
     anon_bytes: u64,
+    /// A new base after a stale one, with no rate since: what CI uses is not settled for anyone
+    /// until a window passed (review round 2).
+    rebased: bool,
 }
 
 /// What a CI job holds while it runs: its reservation out of the CI budget, given back when
@@ -149,14 +152,16 @@ impl CiAdmission {
     /// forgotten.
     fn measure(
         &self,
-        now: Instant,
-        running: &[SandboxId],
+        now: impl FnOnce() -> Instant,
+        running: impl FnOnce() -> Vec<SandboxId>,
         read: impl Fn(&SandboxId) -> Option<(u64, u64)>,
     ) -> Measured {
         let mut state = self.lock();
+        // The clock and the list are read under the lock too: a caller with an older list must
+        // not drop a base a job's start just made (review round 2).
+        let (now, running) = (now(), running());
         state.samples.retain(|sandbox, _| running.contains(sandbox));
-        let mut settled = true;
-        for sandbox in running {
+        for sandbox in &running {
             let Some((cpu_usec, anon_bytes)) = read(sandbox) else {
                 continue;
             };
@@ -165,6 +170,7 @@ impl CiAdmission {
                 cpu_usec,
                 rate: None,
                 anon_bytes,
+                rebased: false,
             };
             let Some(sample) = state.samples.get_mut(sandbox) else {
                 state.samples.insert(sandbox.clone(), fresh);
@@ -175,8 +181,10 @@ impl CiAdmission {
             if cpu_usec < sample.cpu_usec {
                 *sample = fresh;
             } else if elapsed > STALE_WINDOW {
-                *sample = fresh;
-                settled = false;
+                *sample = Sample {
+                    rebased: true,
+                    ..fresh
+                };
             } else if elapsed >= SAMPLE_WINDOW {
                 #[allow(clippy::cast_precision_loss, reason = "microseconds of CPU time")]
                 let rate = (cpu_usec - sample.cpu_usec) as f64 / elapsed.as_micros() as f64;
@@ -188,6 +196,7 @@ impl CiAdmission {
                 };
             }
         }
+        let settled = state.samples.values().all(|s| !s.rebased);
         let rates: Vec<f64> = state.samples.values().filter_map(|s| s.rate).collect();
         let anon: u64 = state
             .samples
@@ -495,12 +504,14 @@ impl App {
         let Some(isolation) = self.isolation.get() else {
             return Measured::NOTHING;
         };
-        let running = self.ci_sandboxes_running();
-        self.ci_admission()
-            .measure(Instant::now(), &running, |sandbox| {
+        self.ci_admission().measure(
+            Instant::now,
+            || self.ci_sandboxes_running(),
+            |sandbox| {
                 let used = isolation.ci_use(sandbox)?;
                 Some((used.cpu_usec, used.anon_bytes))
-            })
+            },
+        )
     }
 
     /// Waits until `budget` fits beside what CI holds on the whole host and holds it (SPEC-082
@@ -572,14 +583,22 @@ mod tests {
             }
         };
         let both = [a.clone(), b.clone()];
-        let first = admission.measure(at(0), &both, readings(&[(&a, 0, 0), (&b, 0, 0)]));
+        let first = admission.measure(
+            || at(0),
+            || both.to_vec(),
+            readings(&[(&a, 0, 0), (&b, 0, 0)]),
+        );
         assert_eq!(first, Measured::NOTHING, "a base, no rate");
-        let early = admission.measure(at(2), &both, readings(&[(&a, 9_000_000, 0), (&b, 0, 0)]));
+        let early = admission.measure(
+            || at(2),
+            || both.to_vec(),
+            readings(&[(&a, 9_000_000, 0), (&b, 0, 0)]),
+        );
         assert_eq!(early.used, None, "two seconds are no window");
         // 2 CPUs and 1.5 CPUs over 5 s (with a microsecond more of the clock): 4 after a tenth.
         let used = admission.measure(
-            at(5),
-            &both,
+            || at(5),
+            || both.to_vec(),
             readings(&[(&a, 10_000_001, 3 << 20), (&b, 7_500_000, 1 << 20)]),
         );
         assert_eq!(
@@ -595,19 +614,34 @@ mod tests {
         // A rate of exactly 3 measured with clock noise stays 3.
         let noisy = CiAdmission::new(Capacity::new(64, 64 * 1024));
         let one = [a.clone()];
-        let _ = noisy.measure(at(0), &one, readings(&[(&a, 0, 0)]));
-        let three = noisy.measure(at(5), &one, readings(&[(&a, 15_000_001, 0)]));
+        let _ = noisy.measure(|| at(0), || one.to_vec(), readings(&[(&a, 0, 0)]));
+        let three = noisy.measure(|| at(5), || one.to_vec(), readings(&[(&a, 15_000_001, 0)]));
         assert_eq!(three.used.map(|u| u.cpus), Some(3));
         // `b` no longer runs a job: only `a` counts.
-        let alone = admission.measure(at(6), &one, readings(&[(&a, 10_000_001, 0)]));
+        let alone = admission.measure(|| at(6), || one.to_vec(), readings(&[(&a, 10_000_001, 0)]));
         assert_eq!(alone.used.map(|u| u.cpus), Some(2));
         // A counter that went back starts over: no rate until the next window.
-        let again = admission.measure(at(11), &one, readings(&[(&a, 5, 0)]));
+        let again = admission.measure(|| at(11), || one.to_vec(), readings(&[(&a, 5, 0)]));
         assert_eq!(again, Measured::NOTHING);
-        // A base older than the stale window: a new base, not settled.
-        let stale = admission.measure(at(60), &one, readings(&[(&a, 500_000_000, 0)]));
+        // A base older than the stale window: a new base, not settled, for whoever reads next
+        // within the window too (review round 2).
+        let stale = admission.measure(
+            || at(60),
+            || one.to_vec(),
+            readings(&[(&a, 500_000_000, 0)]),
+        );
         assert!(!stale.settled, "{stale:?}");
-        let next = admission.measure(at(65), &one, readings(&[(&a, 505_000_000, 0)]));
+        let soon = admission.measure(
+            || at(61),
+            || one.to_vec(),
+            readings(&[(&a, 501_000_000, 0)]),
+        );
+        assert!(!soon.settled, "{soon:?}");
+        let next = admission.measure(
+            || at(65),
+            || one.to_vec(),
+            readings(&[(&a, 505_000_000, 0)]),
+        );
         assert_eq!(next.used.map(|u| u.cpus), Some(1));
         assert!(next.settled);
     }

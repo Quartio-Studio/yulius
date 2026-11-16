@@ -2974,6 +2974,81 @@ async fn a_job_waits_for_docker_networks() -> TestResult {
     measured.networks.store(1, Ordering::SeqCst);
     f.settle().await?;
     assert_eq!(only_job_state(&f, &head).await?, Some(RunState::Passed));
+    // Its wait is no longer its reason (review round 2).
+    for run in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+        if run.sha == head {
+            let jobs = f.h.store.ci_jobs(&run.id, false).await?;
+            assert!(jobs.iter().all(|j| j.reason.is_none()), "{jobs:?}");
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-497 (review rounds 1 and 2): a run's jobs that declare no `cpus` get shares of the CI
+/// budget, so they run at once on an idle host. 4 CPUs give a budget of 3: two jobs of 1 CPU
+/// each; shares of the capacity (2 each) would run one after the other.
+#[tokio::test]
+async fn a_runs_default_shares_run_together() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"a\"\ncommand = '{hold}; echo \"cpus=$YULIUS_CPUS\"'\n\n\
+             [[ci.jobs]]\nname = \"b\"\ncommand = '{hold}; echo \"cpus=$YULIUS_CPUS\"'\n",
+            // Only the pull request's jobs hold (dev's end at once).
+            hold = format_args!(
+                "if [ -e feature.txt ]; then while [ ! -e \"{}\" ]; do sleep 0.05; done; fi",
+                data.join("go").display()
+            ),
+        )
+    })
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let pull = f.running("pr/1").await?;
+    let id = pull["id"].as_str().ok_or("id")?.to_owned();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let jobs = f.h.store.ci_jobs(&id, false).await?;
+        if jobs.iter().all(|j| j.state == RunState::Running) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the run's two jobs never ran together: {jobs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+    for job in detail["jobs"].as_array().ok_or("jobs")? {
+        let output = job["output"].as_str().unwrap_or_default();
+        assert!(
+            output.contains("[yulius] budget: 1 CPU, 2048 MiB") && output.contains("cpus=1"),
+            "{output}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-497 HBA-004 (review round 2): the isolation hears the CPUs a job holds, not the number
+/// of jobs.
+#[tokio::test]
+async fn a_job_weighs_by_the_cpus_it_holds() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncpus = 2\ncommand = 'true'\n".to_owned()
+    })
+    .await?;
+    let weighing = Arc::new(Weighing::default());
+    assert!(f.h.app.set_isolation(weighing.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let cpus = weighing.cpus.lock().map_err(|_| "lock")?.clone();
+    let history = weighing.history();
+    assert!(cpus.contains(&2), "{cpus:?}");
+    for (cpus, jobs) in cpus.iter().zip(&history) {
+        assert_eq!(*cpus, jobs * 2, "{cpus} CPUs for {jobs} jobs");
+    }
+    assert_eq!(cpus.last(), Some(&0));
     Ok(())
 }
 

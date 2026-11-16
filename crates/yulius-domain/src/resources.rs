@@ -217,11 +217,15 @@ impl Capacity {
     /// use yulius_domain::resources::Capacity;
     /// assert_eq!(Capacity::new(64, 512 * 1024).ci_budget(), Capacity::new(56, 448 * 1024));
     /// assert_eq!(Capacity::new(4, 8192).ci_budget(), Capacity::new(3, 6144));
+    /// assert_eq!(Capacity::new(1, 2048).ci_budget(), Capacity::new(1, 1024));
     /// ```
     #[must_use]
     pub fn ci_budget(&self) -> Self {
         let cpus = (self.cpus / CI_RESERVE_SHARE).max(CI_RESERVE_MIN_CPUS);
-        let memory = (self.memory_mb / u64::from(CI_RESERVE_SHARE)).max(CI_RESERVE_MIN_MB);
+        // At most half: a small host's jobs keep memory to run in (review round 2).
+        let memory = (self.memory_mb / u64::from(CI_RESERVE_SHARE))
+            .max(CI_RESERVE_MIN_MB)
+            .min(self.memory_mb / 2);
         Self::new(
             self.cpus.saturating_sub(cpus),
             self.memory_mb.saturating_sub(memory),

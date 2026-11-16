@@ -2041,11 +2041,13 @@ impl Manager {
         let socket = self.engine_socket(sandbox).await?;
         match crate::engine::prune_networks(&socket).await {
             Ok(removed) => {
-                tracing::info!(
-                    sandbox,
-                    removed,
-                    "pruned the Docker engine's unused networks"
-                );
+                if removed > 0 {
+                    tracing::info!(
+                        sandbox,
+                        removed,
+                        "pruned the Docker engine's unused networks"
+                    );
+                }
                 Some(removed)
             }
             Err(error) => {
