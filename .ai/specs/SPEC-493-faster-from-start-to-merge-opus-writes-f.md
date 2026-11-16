@@ -361,9 +361,10 @@ person's decision is read as holding after an approval).
   summary line for the spec's Evidence. Its bound and cost are measured on real changes of this
   repository and stated.
 - **MUT-002** The rules say, in words that hold for any project (`om-code-review`,
-  `delivery-pipeline`, `test-driven-development`, the workflows) and for this one (`yulius-verify`,
-  `yulius-review`, `docs/engineering/development.md`): the author runs the project's mutation
-  command once, on the head it asks the review for, and puts the result in the Evidence; without
+  `delivery-pipeline`, `test-driven-development`; the workflows through `delivery-pipeline`, their
+  instructions having no byte to spare) and for this one (`yulius-verify`, `yulius-review`,
+  `docs/engineering/development.md`): the author runs the project's mutation command once, on the
+  first head it asks a review for, and puts the result in the Evidence; without
   such a command it undoes the few lines its tests are meant to hold; the reviewer reads the
   result and may check single mutants it doubts, and runs no campaign; nobody writes a mutation
   script by hand. A test that cannot fail is still fixed in the same pull request (ADR-0141).
@@ -1603,11 +1604,13 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   tools, so the quality job has it).
   - It mutates the Rust lines changed since the merge base with `--base` (default
     `origin/<integration>`), without `tools/**` and `crates/*/tests/**`.
-  - Each mutant runs nextest across the workspace. The `yulius` package runs only the test
-    functions the branch added or changed in `crates/yulius/tests/`, or `--tests FILTER`, and
-    only where that package exists.
-  - Bounds: `--minutes` (30) for the whole run, which kills the process group and names the
-    mutants not reached; `--mutant-seconds` (300); `--jobs` (2).
+  - Each mutant runs nextest across the workspace, `--all-features`. The `yulius` package's
+    own unit tests always run; its integration binary runs only the test functions a hunk of
+    `git diff -W` is in (the ones the branch added or changed), or `--tests FILTER`, and only
+    where that package exists. (As first reviewed: only added `fn` lines; see round 1.)
+  - Bounds: `--minutes` (30) for the whole run, at which cargo-mutants is asked to end (SIGTERM;
+    it stops its builds and tests) and the mutants not reached are named; `--mutant-seconds`
+    (300); `--jobs` (2).
   - The last line is `mutants: N listed, C caught, M missed, T timed out, U unviable, R not
     reached (bound X min, took S s)`. The exit code is non-zero when M, T or R is not zero.
   - Unit tests: `each_mutant_runs_the_tests_the_branch_wrote`,
@@ -1620,12 +1623,14 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     - 248 listed; 84 tested: 59 caught, 25 unviable, 0 missed;
     - 164 named as not reached;
     - 1,501 s wall, 5.6 GB peak memory: about 18 s a mutant.
+    - This was measured before round 1 added the product's unit tests and `--all-features` to
+      each mutant's run, which make a mutant slower; the figure is a lower bound.
   - On this pull request's own head: "No mutant in the Rust lines changed against
     origin/dev." Its Rust lines are the test tool's (`tools/`) and test code.
 - MUT-002: the rule's sentence is in `om-code-review`, `delivery-pipeline` and
   `test-driven-development`; with "Here the command is `scripts/dev mutants`." it is in
   `yulius-verify`, `yulius-review` and docs/engineering/development.md (also its commands
-  table); the short form is in the Feature and Fix workflows.
+  table). The Feature and Fix workflows reach it through `delivery-pipeline` (round 1).
   `skills::every_place_says_mutation_testing_once_per_pull_request` holds them.
 - ADR-0347, changes. How to read it a week later: the share of blocking review rounds whose
   findings are about test strength only, from the rounds' reports (fix 1's records), and each
@@ -1633,7 +1638,9 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - Fix 7's round-3 nits are in: RLM-002's requirement and Evidence lines say the turn's end, and
   the doubled 2026-11-16 heading in changes.md is merged.
 - Review round 1 (Opus 5.5, head `af510168e`): request changes. 1 blocker, 2 majors, 3 minors
-  and nits, all in own code. Answered test-first; all five mutations below fail a test.
+  and nits, all in own code. Answered test-first; each of these mutations fails a test: keeping
+  `CARGO_TARGET_DIR`, dropping `not kind(test)`, reading only added lines for test names,
+  ignoring cargo-mutants' exit status, never ending the run at the bound.
   - Blocker: doctor asked `cargo-mutants --version`, which the tool refuses, so every gate
     failed. Fixed in `7867a8333`: doctor and bootstrap ask a tool that runs only as a cargo
     subcommand as `cargo-<x> <x> --version` (unittest `test_a_tool_that_runs_only_as_a_cargo_subcommand_is_asked_as_one`).
@@ -1671,3 +1678,18 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     their heading (`workflows::catalog::tests`, #555), with 3 and 1 bytes left. Their short form
     is taken out again, and they reach the rule through `delivery-pipeline`, which each tells the
     agent to follow; the rule test holds that.
+- Review round 2 (Opus 5.5, head `57e8a0de1`): approve, with two minors and nits; the local gate
+  passed at that head (4612 tests). The minors are fixed before the merge (ADR-0141), with a
+  delta review:
+  - `mutants_command` removed every `NEXTEST*` variable, `NEXTEST_TEST_THREADS` (the sandbox's
+    CPU budget) too. Now only what an outer nextest run sets goes (`outer_nextest`: `NEXTEST`,
+    `NEXTEST_PROFILE`, `NEXTEST_RUN_ID`, `NEXTEST_EXECUTION_MODE`, `NEXTEST_BIN_EXE_*`); the unit
+    test holds both sides.
+  - This spec's MUT-002 and its Evidence now say what the code does (the workflows reach the rule
+    through `delivery-pipeline`; the filter; the bound's SIGTERM; the measurement as a lower
+    bound; the mutations named).
+  - Nits: `selection` has its doc again; the opening line names the bound in seconds; a missed
+    mutant's list says that only the tests the branch changed ran and `--tests` widens them.
+    Answered in words: off Unix the bound kills cargo-mutants only (its builds end with it, its
+    temporary copies may stay); a failed real-tool test leaves its `/tmp/xtask-mutants-*`
+    fixtures for a look, and a pass removes them.

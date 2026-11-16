@@ -215,11 +215,21 @@ fn git(root: &Path, args: &[&str]) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The cargo-mutants arguments that choose the mutants: those in `diff`, outside [`EXCLUDED`].
+/// What an outer nextest run sets for the tests it runs (its profile and its own run): not the
+/// settings of the mutants' own runs. `NEXTEST_TEST_THREADS`, the sandbox's CPU budget, is
+/// kept (review round 2 of fix 8).
+fn outer_nextest(name: &str) -> bool {
+    name == "NEXTEST"
+        || name == "NEXTEST_PROFILE"
+        || name == "NEXTEST_RUN_ID"
+        || name == "NEXTEST_EXECUTION_MODE"
+        || name.starts_with("NEXTEST_BIN_EXE_")
+}
+
 /// A cargo-mutants command in `root`, in an environment of its own: no shared target directory
 /// (with more than one job, copies writing one target directory test each other's builds and
-/// report mutants caught or missed wrongly; review round 1 of fix 8) and none of an outer
-/// nextest's settings (a profile the tree may not have).
+/// report mutants caught or missed wrongly; review round 1 of fix 8) and nothing an outer
+/// nextest run set ([`outer_nextest`]).
 fn mutants_command(cargo: &str, root: &Path) -> Command {
     let mut command = Command::new(cargo);
     command
@@ -227,13 +237,14 @@ fn mutants_command(cargo: &str, root: &Path) -> Command {
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR");
     for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("NEXTEST") {
+        if outer_nextest(&name.to_string_lossy()) {
             command.env_remove(name);
         }
     }
     command
 }
 
+/// The cargo-mutants arguments that choose the mutants: those in `diff`, outside [`EXCLUDED`].
 fn selection(diff: &Path) -> Vec<String> {
     let mut args = vec![
         "mutants".to_owned(),
@@ -324,12 +335,12 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
         .then(|| test_filter(settings.tests.as_deref(), &changed_tests(&functions)));
     println!(
         "{} mutants in the changed lines; each tested with nextest ({}), {} at once, \
-         {} s each at most, {} min in all.",
+         {} s each at most, {} s in all.",
         listed.len(),
         filter.as_deref().unwrap_or("all tests"),
         settings.jobs,
         settings.mutant_seconds,
-        settings.minutes
+        settings.bound().as_secs()
     );
     let started = Instant::now();
     let mut command = mutants_command(cargo, root);
@@ -400,6 +411,12 @@ pub fn run(root: &Path, cargo: &str, settings: &Settings) -> io::Result<Option<O
     ] {
         if !mutants.is_empty() {
             println!("{what}:");
+            if what.starts_with("Missed") {
+                println!(
+                    "  (each ran the tests this branch changed; a mutant held by other \
+                     integration tests needs `--tests`)"
+                );
+            }
             for mutant in mutants {
                 println!("  {mutant}");
             }
@@ -644,6 +661,16 @@ mod tests {
             assert!(removed.iter().any(|r| r == name), "{name}: {removed:?}");
         }
         assert!(selection(Path::new("d")).contains(&"--all-features".to_owned()));
+        // What an outer nextest run set goes; the sandbox's CPU budget stays (review round 2).
+        for name in [
+            "NEXTEST",
+            "NEXTEST_PROFILE",
+            "NEXTEST_RUN_ID",
+            "NEXTEST_BIN_EXE_xtask",
+        ] {
+            assert!(outer_nextest(name), "{name}");
+        }
+        assert!(!outer_nextest("NEXTEST_TEST_THREADS"));
     }
 
     #[test]
