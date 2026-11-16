@@ -74,10 +74,10 @@ links (#1149).
 ## Plan
 
 - [x] Safari fix: a dialog's body takes its content height (contributor's commit on current dev)
-- [ ] Task spec SPEC-500 from the contributor's SPEC-448, changes entry
-- [ ] e2e guard passes with the fix and fails without it
-- [ ] The task search shows its results in Safari (same rule, found on current dev)
-- [ ] Measured in real WebKit and Chromium before and after
+- [x] Task spec SPEC-500 from the contributor's SPEC-448, changes entry
+- [x] e2e guard passes with the fix and fails without it
+- [x] The task search shows its results in Safari (same rule, found on current dev)
+- [x] Measured in real WebKit and Chromium before and after
 - [ ] Independent review of the Safari fix
 - [ ] README links yulius.dev on line 12 and in the diagram (contributor's commit plus line 47)
 - [ ] Independent review of the README links
@@ -117,6 +117,37 @@ links (#1149).
   found by measuring every auto-height dialog in WebKit 26.0 rather than only `openModal`'s.
 - Two pull requests, one per contribution, as the acceptance asked; the dialog fix goes first
   because it carries the spec.
+
+## Evidence
+
+Part 1, the dialog fix (#1142), on `dev` `c7348d044` with the branch's commits (the contributor's
+`1283b202f` kept as theirs):
+
+- Real engines, the script `target/evidence/measure-dialogs.mjs` (not committed): WebKit 26.0
+  from the `mcr.microsoft.com/playwright:v1.56.1-noble` image's `run-server`, WebKit 26.6 and
+  Chromium 153 from the e2e suite's playwright-core 1.63.0, on the mock, body shown / content
+  height in px, `dev`'s stylesheet (before) and the branch's (after):
+
+  | Dialog, 1440 × 900 | WebKit 26.0 before | WebKit 26.0 after | Chromium 153 and WebKit 26.6, before and after |
+  |---|---|---|---|
+  | Add a Claude subscription | 32 / 150 | 150 / 150 | 150 / 150 |
+  | Add sandbox (playground) | 32 / 653 | 653 / 653 | 653 / 653 |
+  | Import repository | 32 / 418 | 418 / 418 | 418 / 418 |
+  | Search tasks, results list | 16 / 705 | 466 / 705 (dialog at its 560 px limit) | 466 / 705 |
+  | Sign in (`modal-full`): dialog, body, terminal | 852, 744, 664 | 852, 744, 664 | 852, 744, 664 |
+
+  At 1440 × 380 in WebKit 26.0: Add sandbox and Import repository 32 → 224 shown (the body
+  scrolls, dialog 332 = the window less 48 px), the search 16 → 190 (dialog 284 = its limit),
+  Add subscription 32 → 150; Chromium is 224, 224, 190 and 150 before and after; the sign-in dialog
+  is 332 tall with a 320 px terminal in both engines, before and after.
+- e2e, the two guards (`npx e2e run tests/task-graph.e2e.ts tests/subscriptions.e2e.ts --grep
+  'also in Safari'`): 2 passed. The search guard failed before its fix (`expected "0%" to be
+  "auto"`); the dialog guard fails with `dev`'s `.modal-body { flex: 1 }` restored (`expected
+  "0%" to be "auto"`, 1 failed) and passes with the fix.
+- Full e2e suite (`npx e2e run`): 1064 passed, 1 skipped (87 files, 5 min).
+- `python3 scripts/check_repository.py`: "Repository contracts passed".
+- `yulius security-scan`: exit 2, not run: Vidoc refused the instance's key (HTTP 401). Only CSS
+  and e2e tests changed.
 
 ## Known limits
 
