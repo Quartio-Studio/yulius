@@ -1984,9 +1984,12 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
         refresh(&app, &user, "b-second").await?;
 
         app.send_input(&id, b"hello\r").await?;
+        // The run's attempt is live a moment before its task is Running (two writes): wait for both.
         wait_for("the move to b-second", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+            attempts.len() == 2
+                && attempts[1].state == yulius_domain::task::AttemptState::Live
+                && has_status(&app, &id, TaskStatus::Running).await
         })
         .await?;
         let attempts = app.deps.store.attempts(&id).await?;
@@ -2819,9 +2822,12 @@ fn a_chosen_subscription_that_filled_up_while_waiting_is_given_up() -> TestResul
         probe.set("b-second", usage(100.0, 4 * HOUR, 30.0, 100));
         refresh(&app, &user, "b-second").await?;
         stop(&app, &holder).await?;
+        // The run's attempt is live a moment before its task is Running (two writes): wait for both.
         wait_for("the continued run", Duration::from_secs(60), || async {
             let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+            attempts.len() == 2
+                && attempts[1].state == yulius_domain::task::AttemptState::Live
+                && has_status(&app, &id, TaskStatus::Running).await
                 || task(&app, &id).await.is_ok_and(|t| t.status.is_resting())
         })
         .await?;

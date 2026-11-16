@@ -28,6 +28,7 @@ mod sessions;
 mod skills;
 mod spans;
 mod tasks;
+mod telegram;
 mod updates;
 mod users;
 mod variables;
@@ -173,7 +174,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0061_capacity_window_indexes.sql"),
     // Schema version 62 (SPEC-493 REV-002).
     include_str!("migrations/0062_review_rounds.sql"),
-    // Schema version 63 (SPEC-497 OFC-001). The file is 0064, the number `record_number` gave
+    // Schema version 63 (SPEC-498, from the contributor's SPEC-444). The file is 0063, the number
+    // `record_number` gave this task; it goes after every migration `dev` had when it merged (the
+    // position is the version).
+    include_str!("migrations/0063_telegram_channel.sql"),
+    // Schema version 64 (SPEC-497 OFC-001). The file is 0064, the number `record_number` gave
     // this task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0064_ci_job_infrastructure.sql"),
@@ -436,8 +441,9 @@ mod tests {
                 include_str!("migrations/0061_capacity_window_indexes.sql"),
             ),
             (62, include_str!("migrations/0062_review_rounds.sql")),
+            (63, include_str!("migrations/0063_telegram_channel.sql")),
             (
-                63,
+                64,
                 include_str!("migrations/0064_ci_job_infrastructure.sql"),
             ),
         ];
@@ -448,7 +454,7 @@ mod tests {
                 "schema version {version}"
             );
         }
-        assert_eq!(MIGRATIONS.len(), 63, "a new migration is pinned here too");
+        assert_eq!(MIGRATIONS.len(), 64, "a new migration is pinned here too");
     }
 
     /// SPEC-483 slice 35 (QC1): the capacity and accounts views read the runs and pauses of

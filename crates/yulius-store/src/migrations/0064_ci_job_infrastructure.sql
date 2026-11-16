@@ -1,4 +1,4 @@
--- Yulius migration 0064, schema version 63 (SPEC-497 OFC-001, OFC-003): a CI job that ended for
+-- Yulius migration 0064, schema version 64 (SPEC-497 OFC-001, OFC-003): a CI job that ended for
 -- an infrastructure reason runs again once by itself. `infra` is that reason (`address_pool`,
 -- `docker_socket`, `out_of_memory`, `host_lost`), `infra_ms` the time of the runs it threw away,
 -- and `infra_end` 1 when its end itself was the infrastructure's (it met one again).
