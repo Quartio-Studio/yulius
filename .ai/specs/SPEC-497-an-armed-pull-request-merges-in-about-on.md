@@ -84,13 +84,22 @@ mode.
 - **HBA-001** One CI budget for the whole instance: CPU and memory of the host, less a reserve
   for the server and agent sessions (an eighth of each, at least 1 CPU and 2 GiB). Every
   sandbox's jobs are admitted from it.
-- **HBA-002** A job is admitted when its reservation fits beside what CI holds now, where CI
-  holds the larger of the running jobs' reservations and what every sandbox's `ci` and `engine`
-  groups were measured to use over the last sampling window (CPU time per second; anonymous
-  memory). A job that uses more than it declared, or Docker containers it starts, therefore
-  hold the host back from the next job. Waiters are served first come, first served; a job
-  larger than the budget runs alone. A job's default share (no `cpus`) is a share of the CI
-  budget, so a run's jobs start together on an idle host.
+- **HBA-002** (amended 16 Nov 2026, [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md))
+  A job starts when, with no CI job running, at once; otherwise when all of these hold:
+  - **No contention.** CI's processes waited for a CPU at most 10 % of the last 10 seconds (the
+    sandboxes' `ci` groups' `cpu.pressure`).
+  - **Bounded worst case.** The running jobs' budgets with its own are at most twice the CI
+    budget's CPUs.
+  - **Room.** The sum of these fits in the CI budget, in CPUs and memory: what every sandbox's
+    `ci` and `engine` groups were measured to use over the last window, what jobs started in the
+    last minute may still bring, and its own start. A starting job counts as its budget, at most
+    a quarter of the CI budget. Where nothing is measured, the reservations decide.
+  - **A free slot.** The job takes it when it is admitted.
+
+  Waiting jobs are ordered: merge trains' and playground merges' jobs first, then pull requests',
+  then branches', and in each the longest waiting. A job that cannot start lets the ones behind it
+  that can; one that waited 10 minutes holds them back until it starts. A job's default share (no
+  `cpus`) is a share of the CI budget, so a run's jobs start together on an idle host.
 - **HBA-003** Docker networks are part of the budget per engine. Each engine gets address
   pools of /24 networks within Docker's own default ranges (4,096 networks instead of 31), read
   back from the engine's `/info` (an engine started before keeps 31). A job of a sandbox whose
@@ -100,8 +109,9 @@ mode.
   sandboxes grows with the CPUs its running jobs hold, so under contention its CI gets about its
   reservation; agent processes keep their own weight and nice level.
 - **HBA-005** `YULIUS_CI_LANES` stays the bound of runs at once per sandbox, with its host-sized
-  default; it no longer sizes the load, the budget does, so neither the lanes nor a project's
-  `cpus` can overload the host. The job's wait says which part of the budget it waits for.
+  default; it no longer sizes the load, the budget does: neither the lanes nor a project's `cpus`
+  take CI past twice the CI budget's CPUs (HBA-002 as amended), and contention measured by the
+  kernel stops further starts. The job's wait says which part of the budget it waits for.
 
 ### Slice B: a failure outside the change is handled as such
 
@@ -141,11 +151,16 @@ mode.
 - [x] Slice A: Docker networks per engine in the budget, larger address pools
 - [x] Slice A: a sandbox's weight follows the CPUs its jobs hold
 - [x] Slice A: documents and ADR
-- [ ] Slice A: review rounds answered
-- [ ] Slice B: infrastructure failures rerun once by themselves
+- [x] Slice A: review rounds answered
+- [x] Slice A2: the operator's CI admission fix applied, its first review answered
+- [ ] Slice A2: the admission fix's last review round
+- [x] Slice B: infrastructure failures rerun once by themselves
+- [x] Slice B: CI minutes by outcome read and shown
+- [x] Slice B: review round 1 answered: reruns tied to the failure, minutes kept per day
+- [ ] Slice A2: CI wait job-minutes per hour and host busy % measured and shown
+- [ ] Slice B: documents, ADR and review of the reruns and minutes
 - [ ] Slice B: flaky tests quarantined with an issue, the project told
-- [ ] Slice B: CI minutes by outcome read and shown
-- [ ] Slice B: documents, ADR and review
+- [ ] Slice B: quarantine documents, ADR and review
 - [ ] Slice C: a failed member leaves without cancelling the candidate
 - [ ] Slice C: a passed candidate merges while own runs go
 - [ ] Slice C: derived-file conflicts handled without a wasted cycle
@@ -177,6 +192,19 @@ mode.
 
 ## Decisions
 
+- **What CI uses decides; declarations bound the worst case** (16 Nov 2026, amending the next
+  decision; [ADR-0353](../../docs/decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)).
+  Measured on production the same evening:
+  - Reservations held 50–56 of 64 CPUs while the host was 25–30 % busy. Jobs waited a median
+    10–11 min to start, against 5 min of work.
+  - A one-job run (autoresearch `gate`, 12 s of work) asked for the whole host. Served first in
+    line, it kept every job waiting 7–37 min after each push.
+  - Pools at twice the host ran five jobs instead of two at ~68 % busy, but CI's processes waited
+    for a CPU 10–25 % of 10-second windows at compile peaks.
+
+  Hence measured use plus starting jobs for room, twice the budget for the worst case, the
+  kernel's CPU pressure against contention, and jobs that fit passing one that does not, within
+  10 minutes.
 - **The budget counts measured use, not only declarations** (slice A): a job's `cpus` is a
   promise the job does not keep (its tools and containers use what is free), so admitting by
   declarations let four 16-CPU jobs take 18.8 min each. Measuring per job would need each
@@ -195,7 +223,8 @@ mode.
 ### Slice A: CI never takes more than the host has
 
 - HBA-001, HBA-002: `yulius_domain::resources::{Capacity::ci_budget, admit}`; unit
-  `resources::tests::ci_jobs_are_admitted_by_what_ci_really_holds` (64 CPUs give 56 for CI; four
+  `resources::tests::ci_jobs_are_admitted_by_what_ci_really_holds` (renamed by ADR-0353 to
+  `ci_jobs_are_admitted_by_what_ci_uses_within_a_bounded_worst_case`; 64 CPUs give 56 for CI; four
   16-CPU jobs no longer fit; two jobs that reserved 32 but use 45 hold a 16-CPU job back with
   "CI holds 45 of the host's 56 CPUs for CI (32 reserved, 45 measured); this job needs 16"; memory
   too; a job larger than the budget alone). `App::ci_reserve` (`CiAdmission`, first come first
@@ -298,3 +327,57 @@ mode.
   - Nits: the clock and the running list are read under the lock; a prune logs at info only when
     it removed something; the memory reserve is at most half the capacity (a 2 GiB host keeps
     1 GiB for CI: doctest); the Evidence above describes this head's code.
+
+### Slice A2: the operator's CI admission fix (its own pull request, first)
+
+- The instance's operator built production 1d52db59 (16 Nov 2026, 21:57 UTC): main with #1357,
+  #1356 (slice A) and a fix to CI admission, because slice A's rule left the host 25-30 % busy
+  while jobs waited a median 10-11 min to start. The same commit on top of dev is applied here as
+  it came (`git am`, commit 94d4fc2fb, author the operator): HBA-002 amended, ADR-0353. It
+  replaces this task's own `YULIUS_CI_OVERCOMMIT` carry-forward, no-convoy rule and default-share
+  cap, which were never pushed (kept in this branch's history before b4447577f).
+- To deliver it alone, b4447577f sets the branch to `dev`'s tree (slice B's reruns, minutes and
+  CI-load work are held back); slice B comes back by reverting b4447577f once this is merged.
+- Checks run on this head: `cargo fmt --check`; `cargo clippy -D warnings` on `yulius-domain`,
+  `yulius-sandbox`, `yulius-app`, `yulius` (all targets); the resources, `ci::` and `cgroup`
+  unit tests (116 passed); the whole `local_ci::` suite (79 passed).
+- Its review (Fable 5.2, head e092c94bb). Request changes, all in the patch. Answered:
+  - Major: the slot taken after admission had no test that failed without it.
+    `local_ci::a_job_that_cannot_start_holds_no_slot` (two slots, a CI budget of 3: `a` with 2
+    CPUs runs, `b` with 3 cannot start, `c` with 1 runs beside `a`). With the slot taken before
+    admission (the two lines swapped back) it fails: `b` holds the slot and `c` never starts.
+    The priority's own order is held by `jobs_that_fit_pass_one_that_does_not` and
+    `CiPriority::of`'s doctest; `exec.rs` passes `CiPriority::of(&run.reference)` (read, no test
+    of a merge train's job before a pull request's through the executor).
+  - Minor: the decision index listed 0352 twice, 0353 before 0350. Fixed.
+  - Minor: `architecture.md` described the old rule and wait text: the job waits section, its
+    diagram and the pressure line say what the code does.
+  - Minor: a job that ended in its first minute still counted as starting.
+    `a_started_job_counts_until_the_readings_show_it` drops one of four starts and a fifth starts
+    at once; without `started.retain` in `Reservation::drop` it fails.
+  - Minor: pressure was untested from the port to the decision.
+    `local_ci::a_job_waits_while_cis_processes_wait_for_cpus` (25.0 %: the job waits with "CI's
+    jobs waited for a CPU 25.0 % of the last 10 seconds; a job starts at 10 % or less", then
+    starts at 5 %); with `ci_measured` reading no pressure it fails. Unit
+    `cgroup::tests::cpu_pressure_reads_some_avg10`: no `some` line, `nan`, negative, no `avg10`,
+    over 100 %.
+  - Minor: a counter that went back read as 0 CPUs. It is now a new base, not settled until a
+    window passed (`what_ci_uses_is_measured_over_a_recent_window`).
+  - Minor: a failed read kept the old pressure. It is forgotten
+    (`ci_pressure_is_the_most_any_sandbox_waited`).
+  - Minor: the 10-minute bound holds back the jobs of its priority and lower, not every job: the
+    ADR and the constant's comment say so (the priority order is the decided design).
+  - Direction (memory): the worst-case bound is on CPUs; ADR-0353's consequences and
+    `operations.md` say that `memory_gb` counts at a job's start and measured memory after.
+  - Nits: "a job starts at 10 % or less"; the start allowance's comment; a raised job limit wakes
+    the waiting jobs at once (`ci_resize_slots`).
+  - HBA-005 says what the bounded worst case allows. `scripts/dev mutants` on this head: 87
+    listed, 78 caught, 0 missed, 0 timed out, 9 unviable, 0 not reached (1426 s).
+- HBA-002 as amended, clause by clause: no contention (`Admission::Contended`, unit
+  `ci_jobs_are_admitted_by_what_ci_uses_within_a_bounded_worst_case`,
+  `a_started_job_counts_until_the_readings_show_it`, `local_ci::a_job_waits_while_cis_processes_wait_for_cpus`);
+  the bounded worst case (the same domain unit); room beside measured use and recent starts
+  (`a_started_job_counts_until_the_readings_show_it`,
+  `local_ci::a_job_waits_while_ci_uses_more_than_it_reserved`); the slot after admission
+  (`local_ci::a_job_that_cannot_start_holds_no_slot`); the order and passing
+  (`jobs_that_fit_pass_one_that_does_not`).

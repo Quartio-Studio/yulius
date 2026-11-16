@@ -30,6 +30,7 @@ pub mod intake;
 pub mod leftovers;
 pub mod limits;
 pub mod merge_queue;
+pub mod notify;
 pub mod numbering;
 pub mod permission;
 pub mod pricing;

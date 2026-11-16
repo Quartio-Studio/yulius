@@ -174,6 +174,8 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 # Optional: a Vidoc key file (see "Security scans (Vidoc)" below); Settings → Instance wins too.
 #Environment=YULIUS_VIDOC_API_KEY_FILE=/var/lib/yulius/vidoc.key
+# Optional: another Telegram Bot API (see "Telegram notifications" below); the bot is set in Settings.
+#Environment=YULIUS_TELEGRAM_API_URL=https://api.telegram.org
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
 # Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
@@ -1163,6 +1165,20 @@ wins over the file.
   task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
   as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
 
+### Telegram notifications
+
+An instance administrator sets one Telegram bot (from @BotFather) in Settings → Administration →
+Telegram bot; people then link their own chats in Settings → Notifications (SPEC-498). The server
+only makes outbound HTTPS requests to Telegram (long polling `getUpdates`, `sendMessage`), so no
+port is opened and an instance on a private network works. After an error it retries with backoff
+(1 s doubling to 60 s); the card says `retrying` and why (`refused`: the token was revoked, set a
+new one; `conflict`: another program polls with the same token). Removing the bot stops it at once
+and unlinks every chat. The log names the bot, never its token.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API for the personal notification channel (SPEC-498). HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token itself is set in Settings → Administration, never here; the server only makes outbound requests (long polling), so no port is opened. |
+
 ### Security scans (Vidoc)
 
 Optional ([SPEC-195](../.ai/specs/SPEC-195-vidoc-is-built-into-yulius-an-optional-i.md),
@@ -1485,9 +1501,11 @@ involved.
   the configured ones, go like their checkouts (stale CI leftovers).
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
-- CI jobs share the sandbox's CPUs and memory by budget (SPEC-082): a job starts once the CPUs
-  and memory it declares (`cpus`, `memory_gb` in `[[ci.jobs]]`, else an equal share among its
-  run's jobs) are free, so the jobs of all lanes never ask for more than the sandbox has. Each
+- CI jobs share the host's CI budget (SPEC-082, SPEC-497 HBA-002, ADR-0353): a job starts when
+  CI's processes are not short of CPUs, the running jobs' declared CPUs (`cpus`, else an equal
+  share among the run's jobs) with its own stay within twice the budget, and its start fits
+  beside what CI is measured to use. `memory_gb` is the job's budget and counts at its start;
+  after that the measured memory decides. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
   `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
   `YULIUS_CI_JOB_TIMEOUT_MIN`, or its own `timeout_minutes` (1-360) in `[[ci.jobs]]`, counted from
@@ -1504,11 +1522,20 @@ involved.
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
 - CI jobs of every sandbox come out of one budget: the host's CPUs and memory less an eighth for
-  the server and the agents. A job starts when it fits beside the larger of what the running
-  jobs reserved and what their sandboxes' CI and Docker engine were measured to use; a waiting
-  job's reason in `ci_status` (and the run's API) says what it waits for, CPUs, memory or Docker
-  networks ([ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
-  A job's default share (no `cpus`) is an equal share of that budget among its run's jobs.
+  the server and the agents. A job starts when:
+  - CI's processes are not waiting for CPUs (`cpu.pressure` of the sandboxes' `ci` groups at most
+    10 %);
+  - the running jobs' budgets with its own stay within twice the budget's CPUs;
+  - what CI was measured to use, what jobs started in the last minute may still bring, and its own
+    start (its budget, at most a quarter of the budget) fit.
+
+  Merge trains' jobs go first, then pull requests', then branches'. A job that cannot start lets
+  later ones pass for 10 minutes at most. A waiting job's reason in `ci_status` (and the run's API)
+  says what it waits for: contention, the worst case, CPUs, memory, a slot or Docker networks
+  ([ADR-0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md),
+  [ADR-0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)). A job's
+  default share (no `cpus`) is an equal share of that budget among its run's jobs: what it may use
+  at once, not what it holds.
 - Each sandbox's Docker engine makes /24 networks from Docker's own ranges (172.17.0.0/16 to
   172.31.0.0/16 and 192.168.0.0/16): 4,096 networks from its next start, instead of 31. The first
   network a project makes is 172.17.1.0/24 (`docker0` stays 172.17.0.1), not 172.18.0.0/16, and

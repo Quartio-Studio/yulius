@@ -628,6 +628,17 @@ watching, steering and unblocking.
   (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
+- **Notifications on a person's phone** (SPEC-498, ADR-0351, part 1 of #1107): an instance
+  administrator sets one Telegram bot for the instance in Settings → Administration (checked with
+  Telegram, stored encrypted, never shown again). Each person links their own chat in Settings →
+  Notifications with a single-use, 10-minute code (only from the browser, never with an API
+  token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
+  problems for administrators) and unlinks there or with `/stop`. Only what their notification
+  center would show them is sent (a subscription switch is no news, a project's Docker trouble is
+  one message however many tasks ask, a request for control of their task reaches them under
+  Needs you), with a link to the task, agent secrets removed, at most five
+  messages a minute with the rest in one summary. The server asks Telegram for messages, so no
+  inbound port is needed. Replies and new tasks from Telegram are part 2.
 
 ## Principles
 

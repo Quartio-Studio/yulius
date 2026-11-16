@@ -1285,6 +1285,22 @@ test('a Claude sign-in the server no longer has says so instead of reconnecting 
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #3 is connected")')).toBeVisible();
 });
 
+test('a dialog shows its whole body, also in Safari (SPEC-500 DLG-001)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await screen.getByRole('button', 'Add subscription').first().click();
+  await expect(screen.getByRole('dialog', 'Add a Claude subscription')).toBeVisible();
+  const body = await browser.evaluate(() => {
+    const element = document.querySelector('dialog.modal[open] .modal-body') as HTMLElement;
+    return { basis: getComputedStyle(element).flexBasis, shrink: getComputedStyle(element).flexShrink, shown: element.clientHeight, content: element.scrollHeight };
+  });
+  // WebKit resolves a 0% basis to zero in an auto-height dialog and the body shrinks to its
+  // padding; this suite runs Chromium only, so the rule WebKit needs is checked directly.
+  expect(body.basis).toBe('auto');
+  // A body taller than the window still shrinks and scrolls (DLG-002).
+  expect(body.shrink).toBe('1');
+  expect(body.shown).toBe(body.content);
+});
+
 test('a subscription is connected, or signed in again, by pasting a token made elsewhere (SPEC-502 TKP-008, TKP-009)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
   await screen.getByRole('button', 'Add subscription').first().click();

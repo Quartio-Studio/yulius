@@ -44,6 +44,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
+  APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
@@ -81,12 +82,17 @@ follows the CPUs the sandbox's running jobs hold: 100 plus 100 per CPU, at least
 10,000, so a sandbox holding 30 CPUs gets about 45 of 64 against four sandboxes whose agents build
 ([decision 0350](decisions/0350-ci-jobs-are-admitted-by-what-ci-really-holds-on-the-host.md)).
 `ci/slots.rs` counts the jobs; `resources.rs` (`CiAdmission`) admits them from one CI budget for the
-whole instance, the capacity less an eighth for the server and the agents: a job starts when its
-reservation fits beside the larger of the running jobs' reservations and what the `ci` and
-`engine` groups of the sandboxes running them were measured to use (`Delegation::ci_use`: CPU time
-over at least 5 s, read at each job's start, each dispatcher pass and each look of a waiting job,
-under the admission's lock; anonymous memory), so containers and tools that use more than the job declared
-hold the next job back. The CI executor counts a job
+whole instance, the capacity less an eighth for the server and the agents. A job starts when:
+- the highest CPU pressure of the `ci` groups of the sandboxes running jobs is at most 10 %;
+- the running jobs' budgets with its own stay within twice the budget;
+- the measured use of the `ci` and `engine` groups of the sandboxes running jobs, what jobs
+  started in the last minute may still bring, and its own start fit (`Delegation::ci_use`: CPU
+  time over at least 5 s, read at each job's start, each dispatcher pass and each look of a
+  waiting job, under the admission's lock; anonymous memory; `cpu.pressure` `some avg10`).
+
+Waiting jobs start by priority (merge trains', pull requests', branches') and age; one that cannot
+start lets the others pass for 10 minutes at most, and a job takes its slot once admitted
+([decision 0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md)). The CI executor counts a job
 from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
 preparation keeps it, and every start and stop of the server writes 100 again
 ([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
@@ -2612,6 +2618,52 @@ flowchart LR
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
 ```
 
+## The personal Telegram channel
+
+Each person can get their notifications in their own Telegram chat
+([SPEC-498](../.ai/specs/SPEC-498-accept-outside-pr-1130-personal-telegram.md),
+[decision 0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
+
+- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
+  `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
+  Bot API over `reqwest` (`YULIUS_TELEGRAM_API_URL`, no redirects, bounded answers, errors typed
+  without the token-bearing URL). The store keeps the bot in the `instance` row (sealed like the Jev
+  and Vidoc keys) and `telegram_links` / `telegram_link_codes` (migration 0063).
+- **The bot and linking** (`crates/yulius-app/src/telegram.rs`). An instance administrator sets the
+  token (`getMe` first); `App::activate` aborts the previous long poll and starts one for the new
+  bot, which retries with 1-60 s backoff. Received messages are only `/start <code>` (a private
+  chat, a code from `POST /api/me/telegram/link`, consumed by its hash) and `/stop`; anything else
+  gets a fixed reply. Replies go through one bounded send queue.
+- **The notifier** (`crates/yulius-app/src/notify.rs`) subscribes to the UI event bus. For a task
+  event it reads the task, classifies it with `App::task_group` (`AttentionFacts`, the sidebar's
+  rule) and `yulius_domain::notify::task_notice`, remembers the last signature per task (a new
+  `needs_you` request is new); that memory is seeded with what is the case when a bot becomes
+  active (`App::seed_notices`), so only later changes are told. As the
+  notification center does, a switching task is skipped without touching that memory, a request
+  naming a sandbox-wide cause (`docker`) is told once per episode (`App::shared_episode`), and a
+  waiting request for control goes to the task's owner only, once per request. For each linked
+  person who chose that kind it applies `App::envelope_reaches`, the same function that filters
+  `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
+  passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
+
+```mermaid
+sequenceDiagram
+  participant P as Person (browser)
+  participant Y as yulius serve
+  participant T as Telegram Bot API
+  participant C as Person's chat
+  P->>Y: POST /api/me/telegram/link (session only)
+  Y-->>P: code, t.me/<bot>?start=<code>
+  C->>T: /start <code>
+  Y->>T: getUpdates (long poll)
+  T-->>Y: message from chat
+  Y->>Y: consume code hash, link chat, audit telegram.linked
+  Note over Y: a task enters Needs you: event bus → notifier
+  Y->>Y: envelope_reaches(person) · choices · redact · throttle
+  Y->>T: sendMessage(chat, text with /s/{slug}/t/{n})
+  T-->>C: notification
+```
+
 ## Vidoc: the instance key and the security scan
 
 Vidoc is an optional instance service, like Jev
@@ -3550,10 +3602,13 @@ A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.r
 `exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
 `tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),
 then for room in its sandbox's Docker engine (at least 32 more networks of what its pools hold,
-read from its `/info`; networks no container used for 10 minutes are pruned first), then for a job slot and its CPU and
-memory budget out of the host's CI budget (SPEC-497, decision 0350). While it waits its reason says
-for what ("waits for the host's CI budget: CI holds 50 of the host's 56 CPUs for CI (32 reserved,
-50 measured); this job needs 16"). All waits are the job's `wait` stage;
+read from its `/info`; networks no container used for 10 minutes are pruned first), then for
+admission by the host's CI budget (SPEC-497 HBA-002,
+[decision 0353](decisions/0353-ci-jobs-start-by-what-ci-uses-within-a-bounded-worst-case.md):
+no contention, the bounded worst case, room beside what CI uses), and only then for a job slot,
+which admission kept free. While it waits its reason says for what ("waits for the host's CI
+budget: CI uses 3 of the host's 3 CPUs for CI and jobs that just started may bring 1 more; this
+job starts with 1"). All waits are the job's `wait` stage;
 a cancellation ends them. The job records how long it waited (`ci_jobs.waited_ms`) with its start.
 Its time limit, its own `timeout_minutes` or else `YULIUS_CI_JOB_TIMEOUT_MIN`, starts when its
 process starts (`ci_watch`), so no wait counts; a job that runs out of it is killed and errors
@@ -3566,7 +3621,7 @@ flowchart LR
   Q["job queued (run started)"] -->|"exclusive"| T["its turn: the earlier run of it ended"]
   Q -->|"not exclusive"| N
   T --> N["Docker networks: 32 left in its engine"]
-  N --> S["a job slot and its budget: reserved or measured CI use fits"]
+  N --> S["admitted by the CI budget, then its job slot"]
   S -->|"waited_ms recorded"| R["process starts: the limit starts"]
   R -->|"ends within timeout_minutes or the instance's"| E["its exit decides its state"]
   R -->|"runs out of it"| X["killed: error, says ran and waited"]
