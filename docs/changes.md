@@ -14,6 +14,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   /24 networks instead of 31 from its next start (the first is 172.17.1.0/24, not
   172.18.0.0/16) and a job waits, saying so, while fewer than 32 are left; a sandbox's weight follows the CPUs its jobs hold, so agents'
   local builds take what CI does not. A waiting job's reason says what it waits for.
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-501, task #483, #1110; outside pull
+  request #1143 by studenciak00owl). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
+- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-499, task #481, outside pull
+  request #1131 by studenciak00owl). The two CI lanes of a sandbox no longer race the rustup
+  installer and `rustup toolchain install` in the shared `~/.rustup` (a run failed on a
+  half-installed toolchain): `scripts/bootstrap.py` holds a lock in the home
+  (`~/.cache/yulius-tools/.rustup.lock`) around them, and a second run says it waits, waits, and
+  then finds the toolchain installed. The pinned tool builds and the
+  zig download take their locks through the same helper, `scripts/home_lock.py`.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's

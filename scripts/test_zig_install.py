@@ -1,6 +1,7 @@
 """Bootstrap's zig for the macOS check: verified before it is unpacked, reused, never fatal elsewhere."""
 import hashlib
 import io
+import os
 import tarfile
 import tempfile
 import unittest
@@ -57,6 +58,24 @@ class Install(unittest.TestCase):
         self.assertEqual((self.bin / "zig").resolve(), (self.cache / f"zig-{VERSION}" / NAME / "zig").resolve())
         for role in ("macos-cc", "macos-ar"):
             self.assertEqual((self.bin / role).resolve(), (self.root / "scripts/zig_macos.py").resolve())
+
+    @unittest.skipIf(os.name == "nt", "flock is POSIX only; no lock is held on Windows")
+    def test_the_download_runs_under_the_caches_zig_lock(self):
+        import fcntl
+        held, body = [], self.body
+
+        def opener(url, timeout):
+            # Another open file description of the lock: refused while install holds it.
+            with open(self.cache / f".zig-{VERSION}.lock", "a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    held.append(False)
+                except BlockingIOError:
+                    held.append(True)
+            return io.BytesIO(body)
+
+        self.run_install(opener)
+        self.assertEqual(held, [True])
 
     def test_a_tarball_of_another_digest_is_refused_and_leaves_nothing(self):
         with self.assertRaises(SystemExit):
