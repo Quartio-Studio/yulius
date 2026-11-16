@@ -485,6 +485,25 @@ pub struct Manager {
     disk_max: AtomicU64,
     /// Fronts restarted since the server started, by repair or on request (SPEC-494).
     docker_restarts: AtomicU64,
+    /// Events of the sandboxes' fronts for the instance's measures, until the app takes them
+    /// (SPEC-494 DFJ-013); bounded by [`DOCKER_EVENTS_MAX`].
+    docker_events: Mutex<std::collections::VecDeque<DockerEvent>>,
+}
+
+/// Most front events kept until the app takes them (it does every few seconds).
+pub const DOCKER_EVENTS_MAX: usize = 4096;
+
+/// An event of a sandbox's front the instance counts (SPEC-494 DFJ-013).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerEvent {
+    /// The sandbox (a production holder's name for its production engine).
+    pub sandbox: String,
+    /// `restarted` (the front and engine, by a repair, a request or an update) or `gave_way`.
+    pub kind: &'static str,
+    /// How many (give-ways since the last tick; 1 for a restart).
+    pub count: u64,
+    /// Why, for a restart.
+    pub detail: String,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -552,6 +571,7 @@ impl Manager {
             bases: Bases::new(&config.data_dir),
             disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
             docker_restarts: AtomicU64::new(0),
+            docker_events: Mutex::new(std::collections::VecDeque::new()),
             config,
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
@@ -839,6 +859,10 @@ impl Manager {
         let paths = StatePaths::new(self.state_dir(sandbox));
         let seen = crate::front_gate::read_state(&paths.docker_state(), front.pid)?;
         let grown = live.front_watch.observe(&seen, Instant::now());
+        let gave_way = live.front_watch.new_gave_way(&seen);
+        if gave_way > 0 {
+            self.docker_event(sandbox, "gave_way", gave_way, String::new());
+        }
         // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
         // name is no sandbox the panel knows, so it is journaled only.
         let jammed = if production_sandbox(sandbox).is_none() {
@@ -982,6 +1006,7 @@ impl Manager {
         }
         if state.live.as_ref().is_some_and(|live| live.front.is_some()) {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
+            self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
             tracing::warn!(
                 sandbox,
                 why = why.says(),
@@ -1011,6 +1036,25 @@ impl Manager {
         let mut state = entry.lock().await;
         self.restart_front(sandbox, &mut state, crate::front_repair::Why::Asked)
             .await
+    }
+
+    /// Keeps an event for the instance's measures, dropping the oldest past the bound.
+    fn docker_event(&self, sandbox: &str, kind: &'static str, count: u64, detail: String) {
+        let mut events = lock(&self.docker_events);
+        if events.len() >= DOCKER_EVENTS_MAX {
+            events.pop_front();
+        }
+        events.push_back(DockerEvent {
+            sandbox: sandbox.to_owned(),
+            kind,
+            count,
+            detail,
+        });
+    }
+
+    /// The front events kept since the last call, oldest first.
+    pub fn take_docker_events(&self) -> Vec<DockerEvent> {
+        lock(&self.docker_events).drain(..).collect()
     }
 
     /// Fronts restarted since the server started, by repair or on request.
@@ -3049,6 +3093,14 @@ while True:
         let second = front_of(&manager)
             .await
             .ok_or("no front after the restart")?;
+        // The instance counts the restart (SPEC-494 DFJ-013), once.
+        let events = manager.take_docker_events();
+        assert_eq!(
+            events.iter().map(|e| (e.kind, e.count)).collect::<Vec<_>>(),
+            vec![("restarted", 1)],
+            "{events:?}"
+        );
+        assert!(manager.take_docker_events().is_empty(), "taken once");
         write_json(&paths.docker_state(), &state(second.pid, 0))?;
         {
             let entry = manager.entry("s1");

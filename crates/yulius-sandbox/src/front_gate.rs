@@ -501,6 +501,8 @@ pub struct StateWatch {
     said: [(Option<Instant>, u64); 4],
     /// The front's refusals already reported as its sandbox's trouble.
     reported_refused: u64,
+    /// The front's give-ways already counted for the instance's measures (SPEC-494 DFJ-013).
+    counted_gave_way: u64,
 }
 
 /// A kind of event that grew, as the journal says it.
@@ -520,6 +522,7 @@ impl StateWatch {
         self.front = Some(pid);
         self.said = [(None, 0); 4];
         self.reported_refused = 0;
+        self.counted_gave_way = 0;
     }
 
     /// Takes `state` (read at `now`) and returns what to journal. A front first seen here that
@@ -530,6 +533,7 @@ impl StateWatch {
             self.front = Some(state.pid);
             self.said = [(None, 0); 4];
             self.reported_refused = state.refused;
+            self.counted_gave_way = state.gave_way;
         }
         let after = counts(state);
         let mut grew = Vec::new();
@@ -606,6 +610,13 @@ impl StateWatch {
         }
         self.reported_refused = state.refused;
         jammed
+    }
+
+    /// The give-ways of `state` not counted yet, counted now (after [`StateWatch::observe`]).
+    pub fn new_gave_way(&mut self, state: &DockerFrontState) -> u64 {
+        let new = state.gave_way.saturating_sub(self.counted_gave_way);
+        self.counted_gave_way = state.gave_way;
+        new
     }
 
     /// Counts `state`'s refusals as reported without reporting them (a front journaled only).
@@ -1214,6 +1225,23 @@ mod tests {
         // A refusal alone (the front below its limit) begins a new one.
         read(state_at(7, 10, 6));
         assert_eq!(health.troubles().len(), 1);
+    }
+
+    /// SPEC-494 DFJ-013: each give-way is counted once for the instance; an adopted front's past
+    /// ones are not counted again after a restart.
+    #[test]
+    fn give_ways_are_counted_once() {
+        let mut watch = StateWatch::default();
+        watch.started(7);
+        let mut state = state_of(7, 3, 0);
+        watch.observe(&state, Instant::now());
+        assert_eq!(watch.new_gave_way(&state), 3);
+        assert_eq!(watch.new_gave_way(&state), 0);
+        state.gave_way = 5;
+        assert_eq!(watch.new_gave_way(&state), 2);
+        let mut adopted = StateWatch::default();
+        adopted.observe(&state, Instant::now());
+        assert_eq!(adopted.new_gave_way(&state), 0, "history not counted again");
     }
 
     /// Slice 2 review round 1: after a server restart, an adopted front's past refusals are no

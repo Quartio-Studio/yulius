@@ -329,6 +329,35 @@ pub struct MergeQueueAnalytics {
     pub median_arm_to_merge_minutes: Option<f64>,
 }
 
+/// `GET /api/analytics/docker`: what the sandboxes' Docker fronts needed over the range, per week
+/// (SPEC-494 DFJ-013).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DockerAnalytics {
+    /// The range read.
+    pub range: AnalyticsRange,
+    /// Per week (from its Monday, UTC), oldest first; weeks with nothing are left out.
+    pub weeks: Vec<DockerWeek>,
+    /// Fronts restarted (by a repair, a person's ask or an update) over the range.
+    pub restarts: u64,
+    /// Connections that gave way to a new one at a front's limit over the range.
+    pub gave_way: u64,
+    /// Needs you naming the sandbox's Docker over the range.
+    pub needs_you: u64,
+}
+
+/// One week of [`DockerAnalytics`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DockerWeek {
+    /// Its Monday, `YYYY-MM-DD` (UTC).
+    pub week: String,
+    /// See [`DockerAnalytics::restarts`].
+    pub restarts: u64,
+    /// See [`DockerAnalytics::gave_way`].
+    pub gave_way: u64,
+    /// See [`DockerAnalytics::needs_you`].
+    pub needs_you: u64,
+}
+
 /// One day of [`MergeQueueAnalytics`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MergeQueueDay {

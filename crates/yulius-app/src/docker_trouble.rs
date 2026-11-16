@@ -49,6 +49,20 @@ pub const DOCKER_ANSWERED: &str = "Yulius: a person answered this sandbox's shar
      through another task that asked it too, so yours is answered as well. If Docker still \
      fails here, call needs_you again with cause docker.";
 
+/// The audit action of a front restarted (SPEC-494 DFJ-013); its detail says why.
+pub const DOCKER_RESTARTED: &str = "sandbox.docker.restarted";
+/// The audit action of connections that gave way at a front's limit; its detail is how many.
+pub const DOCKER_GAVE_WAY: &str = "sandbox.docker.gave_way";
+
+/// The Monday (UTC) of the week of `ms`, `YYYY-MM-DD`.
+fn week_of(ms: i64) -> String {
+    let day = ms.div_euclid(86_400_000);
+    // 1970-01-01 was a Thursday: three days after a Monday.
+    let monday = day - (day + 3).rem_euclid(7);
+    let at = crate::auth::rfc3339(yulius_domain::time::Timestamp(monday * 86_400_000));
+    at.chars().take(10).collect()
+}
+
 /// What was told of one sandbox's trouble.
 #[derive(Debug, Default)]
 pub struct Told {
@@ -146,6 +160,7 @@ impl App {
     /// per trouble, and the tasks told of a trouble ended for [`BACK_AFTER`] passes
     /// [`DOCKER_BACK`]. Returns what was typed into which task.
     pub async fn tell_docker_troubles(self: &Arc<Self>) -> Vec<(TaskId, &'static str)> {
+        self.record_docker_events().await;
         let open: BTreeSet<String> = self
             .connection_health
             .troubles()
@@ -277,6 +292,119 @@ impl App {
         typed
     }
 
+    /// Writes the fronts' events since the last pass to the audit log, about their sandbox's
+    /// slug, for the instance's measures (SPEC-494 DFJ-013).
+    pub async fn record_docker_events(&self) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        for event in isolation.take_docker_events() {
+            let (id, production) = match event.sandbox.strip_suffix(".prod") {
+                Some(id) => (id.to_owned(), true),
+                None => (event.sandbox.clone(), false),
+            };
+            let Ok(id) = yulius_domain::ids::SandboxId::parse(&id) else {
+                continue;
+            };
+            let Ok(Some(sandbox)) = self.deps.store.sandbox(&id).await else {
+                continue;
+            };
+            let (action, detail) = match event.kind.as_str() {
+                "restarted" => (
+                    DOCKER_RESTARTED,
+                    format!(
+                        "{}{}",
+                        event.detail,
+                        if production {
+                            " (production engine)"
+                        } else {
+                            ""
+                        }
+                    ),
+                ),
+                "gave_way" => (DOCKER_GAVE_WAY, event.count.to_string()),
+                _ => continue,
+            };
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    self.now(),
+                    "yulius",
+                    action,
+                    Some(&sandbox.slug),
+                    Some(&detail),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "a Docker front event could not be recorded");
+            }
+        }
+    }
+
+    /// `GET /api/analytics/docker` (SPEC-494 DFJ-013): front restarts, connections that gave way
+    /// and Needs you naming the sandbox's Docker, per week, over the range.
+    ///
+    /// # Errors
+    /// An invalid range, a sandbox the caller cannot see, store failures.
+    pub async fn analytics_docker(
+        &self,
+        ctx: &crate::auth::AuthContext,
+        sandbox: Option<&str>,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> crate::error::AppResult<yulius_contracts::api::analytics::DockerAnalytics> {
+        use yulius_contracts::api::analytics::{DockerAnalytics, DockerWeek};
+        let (sandboxes, from_at, to_at, range) =
+            self.analytics_window(ctx, sandbox, from, to).await?;
+        let actions = [
+            DOCKER_RESTARTED,
+            DOCKER_GAVE_WAY,
+            crate::needs_you::DOCKER_NEEDS_YOU,
+        ];
+        let mut weeks: std::collections::BTreeMap<String, DockerWeek> =
+            std::collections::BTreeMap::new();
+        for id in &sandboxes {
+            let Some(record) = self.deps.store.sandbox(id).await? else {
+                continue;
+            };
+            let mut tasks = self.deps.store.tasks(id, false).await?;
+            tasks.extend(self.deps.store.tasks(id, true).await?);
+            let ids: Vec<String> = tasks.iter().map(|t| t.id.to_string()).collect();
+            let entries = self
+                .deps
+                .store
+                .audit_of_sandbox(&record.slug, &ids, &actions, from_at, to_at, 20_000)
+                .await?;
+            for (_, entry) in entries {
+                let week = week_of(entry.at.0);
+                let row = weeks.entry(week.clone()).or_insert_with(|| DockerWeek {
+                    week,
+                    ..DockerWeek::default()
+                });
+                match entry.action.as_str() {
+                    DOCKER_RESTARTED => row.restarts += 1,
+                    DOCKER_GAVE_WAY => {
+                        row.gave_way += entry
+                            .detail
+                            .as_deref()
+                            .and_then(|d| d.parse::<u64>().ok())
+                            .unwrap_or(0);
+                    }
+                    _ => row.needs_you += 1,
+                }
+            }
+        }
+        let weeks: Vec<DockerWeek> = weeks.into_values().collect();
+        Ok(DockerAnalytics {
+            range,
+            restarts: weeks.iter().map(|w| w.restarts).sum(),
+            gave_way: weeks.iter().map(|w| w.gave_way).sum(),
+            needs_you: weeks.iter().map(|w| w.needs_you).sum(),
+            weeks,
+        })
+    }
+
     /// Ends the requests of `sandbox`'s tasks that name the `docker` cause and were asked by
     /// `asked_until_ms`, and has those tasks hear that Docker works again with the ones told of
     /// the trouble.
@@ -340,6 +468,18 @@ fn keeps_waiting(status: Option<TaskStatus>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-494 DFJ-013: a week runs from its Monday (UTC).
+    #[test]
+    fn a_week_is_named_by_its_monday() {
+        // 2026-11-15 was a Sunday, 2026-11-16 a Monday.
+        let day = |d: i64| d * 86_400_000;
+        let sunday = day(20_772);
+        assert_eq!(week_of(sunday), "2026-11-09");
+        assert_eq!(week_of(sunday + day(1)), "2026-11-16");
+        assert_eq!(week_of(sunday + day(7) + 86_399_999), "2026-11-16");
+        assert_eq!(week_of(0), "1969-12-29");
+    }
 
     /// Slice 2 review round 2: each reason a session may take no paste blocks it alone.
     #[test]
