@@ -181,6 +181,9 @@ taken-back control and a stalled pull request.
 - [x] The notifier remembers every task when a bot becomes active, so a state entered later is told
 - [x] An oversized getUpdates batch can no longer stop linking
 - [x] Review round 1 minors: stalled PR decision, poll state, relink keeps choices, label test, mutants
+- [x] Independent review round 2 run (request changes: answered by the items below)
+- [x] The notifier seeds itself in order with events, outside the memory's bound, and a restart is tested
+- [ ] Round 2 minors: an oversized update skipped by its id, the bot card refreshes while starting
 - [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed

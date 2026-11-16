@@ -25,18 +25,23 @@ use crate::events::{Envelope, Reach};
 use crate::model::TaskRecord;
 use crate::needs_you::NeedsYouRecord;
 
-/// Subjects whose last notification is remembered; beyond it the memory is read again from the
-/// store (seeded), so nothing already the case is told as new.
-const TOLD_MAX: usize = 20_000;
+/// Episodes and requests for control remembered as told; beyond it that memory starts again (a
+/// still-open one may then be told once more). Tasks and subscriptions are bounded by the store.
+const ONCE_MAX: usize = 20_000;
 
 /// The notifier's memory, in this process only.
 #[derive(Debug, Default)]
 pub(crate) struct NotifierState {
-    /// The last signature told (or seen) per subject (`task:<id>`, `account:<id>`, `shared:…`,
-    /// `control:…`), seeded with what is the case when a bot becomes active (TGC-022).
+    /// The last signature told (or seen) per task (`task:<id>`) and subscription (`account:<id>`),
+    /// replaced by the seed when a bot becomes active (TGC-022); a removed task is forgotten.
     told: Mutex<HashMap<String, String>>,
-    /// The memory was cleared at [`TOLD_MAX`]: it is seeded again before the next event.
-    reseed: AtomicBool,
+    /// The sandbox-wide episodes (`shared:…`) and requests for control (`control:…`) told.
+    once: Mutex<HashSet<String>>,
+    /// A bot became active and its seed has not run yet: events wait for it (the seed reads
+    /// what they changed).
+    seed_due: AtomicBool,
+    /// Asks the notifier's own task to seed, answering when it did.
+    seed_tx: std::sync::OnceLock<tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>>,
     /// Each person's chat and rate bound.
     throttles: Mutex<HashMap<UserId, (String, Throttle)>>,
 }
@@ -71,14 +76,18 @@ struct Notice {
 impl NotifierState {
     /// Records `signature` for `subject`; the earlier one (`None` when first seen).
     fn remember(&self, subject: String, signature: String) -> Option<String> {
-        let Ok(mut told) = self.told.lock() else {
-            return None;
+        self.told.lock().ok()?.insert(subject, signature)
+    }
+
+    /// Records `subject` as told; whether it was already.
+    fn told_once(&self, subject: String) -> bool {
+        let Ok(mut once) = self.once.lock() else {
+            return true;
         };
-        if told.len() >= TOLD_MAX && !told.contains_key(&subject) {
-            told.clear();
-            self.reseed.store(true, Ordering::SeqCst);
+        if once.len() >= ONCE_MAX && !once.contains(&subject) {
+            once.clear();
         }
-        told.insert(subject, signature)
+        !once.insert(subject)
     }
 
     fn forget(&self, subject: &str) {
@@ -96,6 +105,10 @@ impl App {
         };
         let flush_every = services.tuning.flush_every;
         let mut rx = self.events.subscribe();
+        let (seed_tx, mut seed_rx) = tokio::sync::mpsc::channel(4);
+        if services.notifier.seed_tx.set(seed_tx).is_err() {
+            return;
+        }
         let app = Arc::clone(self);
         tokio::spawn(async move {
             let mut flush = tokio::time::interval(flush_every);
@@ -103,6 +116,15 @@ impl App {
             flush.tick().await;
             loop {
                 tokio::select! {
+                    // A seed goes before the events waiting behind it (they changed what it reads).
+                    biased;
+                    Some(done) = seed_rx.recv() => {
+                        app.seed_notices().await;
+                        if let Ok(services) = app.channel_services() {
+                            services.notifier.seed_due.store(false, Ordering::SeqCst);
+                        }
+                        let _ = done.send(());
+                    }
                     event = rx.recv() => match event {
                         Ok(envelope) => app.notify_envelope(&envelope).await,
                         Err(RecvError::Lagged(missed)) => {
@@ -123,8 +145,9 @@ impl App {
         if services.active().is_none() {
             return;
         }
-        if services.notifier.reseed.swap(false, Ordering::SeqCst) {
-            self.seed_notices().await;
+        // Before its bot's seed, an event's change is read by the seed itself.
+        if services.notifier.seed_due.load(Ordering::SeqCst) {
+            return;
         }
         // Only tasks and subscriptions are told; every other event costs nothing.
         if let UiEvent::TaskRemoved { task_id } = &envelope.event {
@@ -189,8 +212,7 @@ impl App {
         else {
             return Ok(None);
         };
-        let subject = control_subject(&id, &request);
-        if services.notifier.remember(subject, "told".into()).is_some() {
+        if services.notifier.told_once(control_subject(&id, &request)) {
             return Ok(None);
         }
         let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
@@ -246,12 +268,31 @@ impl App {
         }))
     }
 
+    /// Makes `bot` the one in use from what is the case now (TGC-022): events wait while the
+    /// notifier's own task seeds its memory, and this returns once it did (a bounded store read).
+    pub(crate) async fn activate_seeded(self: &Arc<Self>, bot: crate::telegram::ActiveBot) {
+        let Ok(services) = self.channel_services() else {
+            return;
+        };
+        services.notifier.seed_due.store(true, Ordering::SeqCst);
+        self.activate(Some(bot));
+        let (done, seeded) = tokio::sync::oneshot::channel();
+        let asked = match services.notifier.seed_tx.get() {
+            Some(tx) => tx.send(done).await.is_ok(),
+            None => false,
+        };
+        if !asked || seeded.await.is_err() {
+            // No notifier runs: nothing is told, nothing waits.
+            services.notifier.seed_due.store(false, Ordering::SeqCst);
+        }
+    }
+
     /// Seeds the notifier's memory with what is the case now: every task's reading, its
-    /// sandbox-wide episode and waiting request for control, and every subscription's problem. Run
-    /// when a bot becomes active (a start, a bot set in Settings) and after the memory was
-    /// cleared, so only what changes after it is told (TGC-022; review round 1: judging "first
-    /// seen" by the task's state time dropped a chain blocked later, for good).
-    pub(crate) async fn seed_notices(&self) {
+    /// sandbox-wide episode and waiting request for control, and every subscription's problem,
+    /// replacing what it held in one step, so only what changes after it is told (TGC-022; review
+    /// round 1: judging "first seen" by the task's state time dropped a chain blocked later, for
+    /// good). Run by the notifier's own task, in order with the events (review round 2).
+    async fn seed_notices(&self) {
         match self.try_seed_notices().await {
             Ok(tasks) => tracing::info!(tasks, "the notifier knows what is the case now"),
             Err(err) => {
@@ -262,8 +303,9 @@ impl App {
 
     async fn try_seed_notices(&self) -> AppResult<usize> {
         let services = self.channel_services()?;
-        let notifier = &services.notifier;
         let store = &self.deps.store;
+        let mut told = HashMap::new();
+        let mut once = HashSet::new();
         let mut seeded = 0;
         for sandbox in store.sandboxes().await? {
             let requested = self.browser_requests(&sandbox.id).await;
@@ -278,13 +320,12 @@ impl App {
                         });
                         if let Some((cause, at)) = shared {
                             let episode = self.shared_episode(&task.id, &cause, at).await;
-                            notifier
-                                .remember(shared_subject(&task, &cause, episode), "told".into());
+                            once.insert(shared_subject(&task, &cause, episode));
                         }
-                        notifier.remember(format!("task:{}", task.id), reading.signature);
+                        told.insert(format!("task:{}", task.id), reading.signature);
                     }
                     if let Some(request) = store.control_request(&task.id).await? {
-                        notifier.remember(control_subject(&task.id, &request), "told".into());
+                        once.insert(control_subject(&task.id, &request));
                     }
                     seeded += 1;
                 }
@@ -293,7 +334,13 @@ impl App {
         for account in store.accounts().await? {
             let status = account.status.as_str();
             let seen = account_problem(status).map_or_else(String::new, |_| status.to_owned());
-            notifier.remember(format!("account:{}", account.id), seen);
+            told.insert(format!("account:{}", account.id), seen);
+        }
+        if let Ok(mut held) = services.notifier.told.lock() {
+            *held = told;
+        }
+        if let Ok(mut held) = services.notifier.once.lock() {
+            *held = once;
         }
         Ok(seeded)
     }
@@ -337,8 +384,10 @@ impl App {
             .and_then(|(cause, at)| shared_cause(cause).map(|words| (cause, at, words)));
         if let Some((cause, at, _)) = shared {
             let episode = self.shared_episode(&id, cause, at).await;
-            let subject = shared_subject(&task, cause, episode);
-            if services.notifier.remember(subject, "told".into()).is_some() {
+            if services
+                .notifier
+                .told_once(shared_subject(&task, cause, episode))
+            {
                 return Ok(None);
             }
         }
@@ -492,22 +541,16 @@ impl App {
 mod tests {
     use super::*;
 
-    /// A full memory is cleared and seeded again before the next event, so what is already the
-    /// case is not told as new (review round 1).
+    /// The episodes and requests for control told are bounded: a full memory starts again.
     #[test]
-    fn a_full_memory_is_seeded_again() {
+    fn the_once_memory_is_bounded() {
         let state = NotifierState::default();
-        for n in 0..TOLD_MAX {
-            assert_eq!(state.remember(format!("task:{n}"), "s".into()), None);
+        for n in 0..ONCE_MAX {
+            assert!(!state.told_once(format!("control:{n}")));
         }
-        assert!(!state.reseed.load(Ordering::SeqCst));
-        assert_eq!(
-            state.remember("task:0".into(), "t".into()),
-            Some("s".into())
-        );
-        assert!(!state.reseed.load(Ordering::SeqCst), "a known subject fits");
-        assert_eq!(state.remember("task:new".into(), "s".into()), None);
-        assert!(state.reseed.load(Ordering::SeqCst));
-        assert_eq!(state.told.lock().map(|t| t.len()).unwrap_or(0), 1);
+        assert!(state.told_once("control:0".into()), "a known subject fits");
+        assert!(!state.told_once("control:new".into()));
+        assert_eq!(state.once.lock().map(|o| o.len()).unwrap_or(0), 1);
+        assert!(state.told_once("control:new".into()));
     }
 }

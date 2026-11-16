@@ -214,18 +214,18 @@ impl App {
             Ok(channel) => {
                 tracing::info!(bot = %stored.identity.username, "the Telegram channel is on");
                 // What is the case at the start is not news (TGC-022).
-                self.seed_notices().await;
-                self.activate(Some(ActiveBot {
+                self.activate_seeded(ActiveBot {
                     channel,
                     identity: stored.identity,
-                }));
+                })
+                .await;
             }
             Err(err) => tracing::warn!("the saved Telegram bot token is not usable: {err}"),
         }
     }
 
     /// Makes `bot` the one in use: the earlier poll ends at once, a new one starts.
-    fn activate(self: &Arc<Self>, bot: Option<ActiveBot>) {
+    pub(crate) fn activate(self: &Arc<Self>, bot: Option<ActiveBot>) {
         let Ok(services) = self.channel_services() else {
             return;
         };
@@ -509,10 +509,12 @@ impl App {
         let detail = format!("@{} (unlinked {unlinked})", identity.username);
         // A bot that becomes active starts from what is the case now (TGC-022); the same bot set
         // again keeps the memory it has.
+        let bot = ActiveBot { channel, identity };
         if services.active().is_none() {
-            self.seed_notices().await;
+            self.activate_seeded(bot).await;
+        } else {
+            self.activate(Some(bot));
         }
-        self.activate(Some(ActiveBot { channel, identity }));
         self.deps
             .store
             .audit(
