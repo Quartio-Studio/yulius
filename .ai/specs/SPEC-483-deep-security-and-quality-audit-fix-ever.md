@@ -1499,7 +1499,8 @@ its change is reviewed and ready to merge, and the next is added when it is merg
 - **AC-36** A browser on a (fake) display whose Chrome does not block the marker refuses a
   viewer's button press, key press and typed text with the reason and presses nothing on the
   display, while releases and moves pass; one probe serves them; after the policy appears,
-  input is taken without a restart. A window a page opens at the probe's address is listed
+  input is taken without a restart (amended by SPEC-493 DEF-002: unless an agent clicked or
+  typed in it meanwhile, then only after a restart). A window a page opens at the probe's address is listed
   and shown; a page of Chrome's own is not.
 - **AC-37** Against a real Chrome (opt-in): with the policy installed a click on a file input
   opens no window, the accelerators for Open, Save, Print, the page's source and the

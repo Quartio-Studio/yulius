@@ -29,7 +29,9 @@ fn failure(error: BrowserError) -> BrowserFailure {
         BrowserError::UrlRefused(_) => BrowserFailureKind::UrlRefused,
         BrowserError::TabNotFound(_) => BrowserFailureKind::NotFound,
         BrowserError::TooManyTabs(_) | BrowserError::InputBacklog => BrowserFailureKind::Capacity,
-        BrowserError::InputLocked => BrowserFailureKind::InputLocked,
+        BrowserError::InputLocked | BrowserError::InputLockedUntilRestart => {
+            BrowserFailureKind::InputLocked
+        }
         BrowserError::SecretPageRefused(_)
         | BrowserError::SecretPageLeaving(_)
         | BrowserError::SecretFrameRefused(_) => BrowserFailureKind::SecretPageRefused,

@@ -1589,6 +1589,239 @@ async fn viewer_clicks_and_keys_wait_for_the_hosts_browser_policy() -> TestResul
     .await
 }
 
+/// SPEC-493 DEF-002 (AC-24): a running browser that an agent clicked in while the host's
+/// policy was not in force may still show a native file chooser that click opened, and the
+/// policy closes no window. When the policy appears, viewers' input stays off and says why,
+/// until the browser restarts; a browser no agent touched in that time takes input at once
+/// (above).
+#[tokio::test]
+async fn a_file_chooser_opened_before_the_policy_keeps_input_off_until_a_restart() -> TestResult {
+    chooser_before_the_policy(
+        "browser_click",
+        |tab| json!({"tab_id": tab, "x": 50, "y": 60}),
+    )
+    .await
+}
+
+/// The same for an Enter the agent types, which opens a focused file input's chooser.
+#[tokio::test]
+async fn an_enter_typed_before_the_policy_keeps_input_off_until_a_restart() -> TestResult {
+    chooser_before_the_policy("browser_type", |tab| json!({"tab_id": tab, "text": "\n"})).await
+}
+
+/// Review round 1 of fix 10b: on a host set up from the start, an agent that clicks or types
+/// before any viewer pressed anything (the policy was never asked yet) opens no chooser, and
+/// the viewer it hands over to (a captcha, a sign-in) gets input. The first rule took "never
+/// asked" for "not in force" and locked such a browser until its restart.
+#[tokio::test]
+async fn an_agent_first_on_a_host_with_the_policy_keeps_viewers_input() -> TestResult {
+    for (tool, args) in [
+        ("browser_click", json!({"x": 50, "y": 60})),
+        ("browser_type", json!({"text": "\n"})),
+    ] {
+        with_display(FakeDisplay::new(), |f| async move {
+            let display = display_of(&f)?;
+            f.fake.set_browser_policy(true);
+            let served = serve(f.h.router.clone()).await?;
+            let mut socket =
+                ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+            let tabs = next_json(&mut socket).await?;
+            let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+            let mut args = args.clone();
+            args["tab_id"] = json!(tab);
+            let done = mcp_tool(&f.h, TOKEN, tool, args).await?;
+            assert_eq!(done["isError"], false, "{done}");
+            let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+            send(&mut socket, down).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            assert!(
+                display.wait_for_input(pressed, WAIT).await,
+                "{tool}: the viewer was refused on a host with the policy"
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+/// Review round 2 of fix 10b: on a host without the policy an agent clicks before anything
+/// asked it; its own look finds "no" and marks the browser, so once the policy appears the
+/// viewer is still refused, for the restart's reason (the reviewer's probe).
+#[tokio::test]
+async fn an_agent_first_without_the_policy_keeps_input_off_until_a_restart() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let clicked = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_click",
+            json!({"tab_id": tab, "x": 50, "y": 60}),
+        )
+        .await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        f.fake.set_browser_policy(true);
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        // Until the agent's "no" is asked again, then for the restart's reason.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let error = wait_json(&mut socket, |m| m["type"] == "error").await?;
+            if error["message"].as_str().is_some_and(|m| m.contains("restarts")) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{error}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(
+            !display
+                .inputs()
+                .iter()
+                .any(|i| matches!(i, DisplayInput::Button { press: true, .. })),
+            "{:?}",
+            display.inputs()
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// Review round 2 of fix 10b: one look at the policy that fails during an agent's click (Chrome
+/// busy) is asked once more before it counts as "no": on a host with the policy the browser is
+/// not marked for a hiccup, and its viewer keeps input.
+#[tokio::test]
+async fn a_look_at_the_policy_that_fails_once_is_asked_again() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(true);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // The probe's own tab is the next one made: that request fails, once.
+        let made = f.fake.calls_for("Target.createTarget").len();
+        f.fake
+            .fail_nth("Target.createTarget", made + 1, -32000, "Chrome is busy");
+        let clicked = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_click",
+            json!({"tab_id": tab, "x": 50, "y": 60}),
+        )
+        .await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        assert_eq!(
+            f.fake.calls_for("Target.createTarget").len(),
+            made + 2,
+            "asked once more"
+        );
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        send(&mut socket, down).await?;
+        let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+        assert!(display.wait_for_input(pressed, WAIT).await, "the viewer was refused");
+        Ok(())
+    })
+    .await
+}
+
+/// AC-24: an agent's `tool` with `args(tab)` while the policy is not in force.
+async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        // The policy is asked (and found missing) before the agent's click.
+        send(&mut socket, down.clone()).await?;
+        wait_json(&mut socket, |m| m["type"] == "error").await?;
+        // The agent clicks a page's file input: Chrome may open its chooser on the display.
+        let clicked = mcp_tool(&f.h, TOKEN, tool, args(&tab)).await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+
+        // Host setup ran: the policy is in force, and input stays off with its reason.
+        f.fake.set_browser_policy(true);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let refused = loop {
+            send(&mut socket, down.clone()).await?;
+            let error = wait_json(&mut socket, |m| m["type"] == "error").await?;
+            if error["message"]
+                .as_str()
+                .is_some_and(|m| !m.contains("sudo yulius host setup"))
+            {
+                break error;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "the policy was not asked again");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert_eq!(refused["code"], "input_locked", "{refused}");
+        assert!(
+            refused["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("file dialog") && m.contains("restarts")),
+            "{refused}"
+        );
+        assert!(
+            !display
+                .inputs()
+                .iter()
+                .any(|i| matches!(i, DisplayInput::Button { press: true, .. })),
+            "{:?}",
+            display.inputs()
+        );
+
+        // The browser restarts: the new one takes input.
+        drop(socket);
+        assert!(f.h.app.deps.browser.stop(&SandboxId::parse("s1")?).await);
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            if display.wait_for_input(pressed, Duration::from_millis(500)).await {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "input stayed off after the restart");
+        }
+        // Under the policy an agent's input opens no chooser: viewers keep their input.
+        let clicked = mcp_tool(&f.h, TOKEN, tool, args(&tab)).await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        send(&mut socket, json!({"type": "mouse", "tab_id": tab, "event": "up", "x": 10, "y": 20, "button": "left"})).await?;
+        send(&mut socket, down.clone()).await?;
+        let presses = |inputs: Vec<DisplayInput>| {
+            inputs
+                .iter()
+                .filter(|i| **i == DisplayInput::Button { button: 1, press: true })
+                .count()
+        };
+        let deadline = tokio::time::Instant::now() + WAIT;
+        while presses(display.inputs()) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "an agent's input under the policy locked it: {:?}",
+                display.inputs()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
+    })
+    .await
+}
+
 /// ADR-15: a viewer's pointer and keys are real input on the display (XTest), the wheel scrolls
 /// the shown tab by CSS pixels through CDP, text no key types is inserted, copy answers with the
 /// selection, and everything the viewer held is released when it leaves.
