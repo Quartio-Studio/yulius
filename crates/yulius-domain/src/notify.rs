@@ -95,20 +95,27 @@ pub fn task_signature(kind: NoticeKind, status: TaskStatus, needs_you_at: Option
     }
 }
 
-/// The words for a failed or abnormally stopped task, as the web UI's `status.js` says them.
+/// The words for a failed or abnormally stopped task, as the web UI's `status.js` says them
+/// (`STOP_LABELS`). Matched on the status itself, so a new one has words before it compiles
+/// (TGC-028); a status that is no end reads "Stopped".
 #[must_use]
 pub fn ended_label(status: TaskStatus) -> &'static str {
-    match status.as_str() {
-        "stopped_crashed" => "Stopped (crashed)",
-        "stopped_killed" => "Stopped (process ended)",
-        "stopped_lost" => "Stopped (process lost)",
-        "stopped_switch_failed" => "Stopped (switch failed)",
-        "stopped_switch_timeout" => "Stopped (switch timed out)",
-        "stopped_server_lost" => "Stopped (server restarted)",
-        "failed_spawn_error" => "Failed to start",
-        "failed_start_timeout" => "Failed (start timeout)",
-        "failed_precondition" => "Failed (precondition)",
-        "failed_no_account" => "Failed (no Claude account)",
+    use crate::task::FailReason;
+    match status {
+        TaskStatus::Stopped(reason) => match reason {
+            StopReason::Cancelled => "Stopped",
+            StopReason::Crashed => "Stopped (crashed)",
+            StopReason::Killed => "Stopped (process ended)",
+            StopReason::Lost => "Stopped (process lost)",
+            StopReason::SwitchFailed => "Stopped (switch failed)",
+            StopReason::SwitchTimeout => "Stopped (switch timed out)",
+            StopReason::ServerLost => "Stopped (server restarted)",
+        },
+        TaskStatus::Failed(reason) => match reason {
+            FailReason::SpawnError => "Failed to start",
+            FailReason::Precondition => "Failed (precondition)",
+            FailReason::NoAccount => "Failed (no Claude account)",
+        },
         _ => "Stopped",
     }
 }
@@ -247,6 +254,30 @@ pub fn account_text(
     }
     lines.push(link.to_owned());
     (headline, truncate(&lines.join("\n")))
+}
+
+/// A request for control of a task, for its owner: (headline, text), before redaction (TGC-027),
+/// in the notification center's words.
+#[must_use]
+pub fn control_text(
+    by: &str,
+    number: u32,
+    title: &str,
+    sandbox: &str,
+    link: &str,
+) -> (String, String) {
+    let headline = format!(
+        "@{} asks for control of #{number} {}",
+        one_line(by),
+        one_line(title)
+    );
+    let text = [
+        headline.clone(),
+        format!("It would act on GitHub as them · {}", one_line(sandbox)),
+        link.to_owned(),
+    ]
+    .join("\n");
+    (headline, truncate(&text))
 }
 
 /// Backticks around code are dropped from plain text (SPEC-327).
@@ -482,6 +513,78 @@ mod tests {
             link: "L",
         };
         assert_eq!(notice.text(), "Stopped (crashed) · Shop\n#3 T\nL");
+    }
+
+    /// TGC-028: every end has the words of `status.js`'s `STOP_LABELS`.
+    #[test]
+    fn every_end_has_the_web_uis_words() {
+        use crate::task::FailReason;
+        let ends = [
+            (
+                TaskStatus::Stopped(StopReason::Crashed),
+                "stopped_crashed",
+                "Stopped (crashed)",
+            ),
+            (
+                TaskStatus::Stopped(StopReason::Killed),
+                "stopped_killed",
+                "Stopped (process ended)",
+            ),
+            (
+                TaskStatus::Stopped(StopReason::Lost),
+                "stopped_lost",
+                "Stopped (process lost)",
+            ),
+            (
+                TaskStatus::Stopped(StopReason::SwitchFailed),
+                "stopped_switch_failed",
+                "Stopped (switch failed)",
+            ),
+            (
+                TaskStatus::Stopped(StopReason::SwitchTimeout),
+                "stopped_switch_timeout",
+                "Stopped (switch timed out)",
+            ),
+            (
+                TaskStatus::Stopped(StopReason::ServerLost),
+                "stopped_server_lost",
+                "Stopped (server restarted)",
+            ),
+            (
+                TaskStatus::Failed(FailReason::SpawnError),
+                "failed_spawn_error",
+                "Failed to start",
+            ),
+            (
+                TaskStatus::Failed(FailReason::Precondition),
+                "failed_precondition",
+                "Failed (precondition)",
+            ),
+            (
+                TaskStatus::Failed(FailReason::NoAccount),
+                "failed_no_account",
+                "Failed (no Claude account)",
+            ),
+        ];
+        let web = include_str!("../../yulius-server/web/assets/status.js");
+        for (status, name, words) in ends {
+            assert_eq!(status.as_str(), name);
+            assert_eq!(ended_label(status), words, "{name}");
+            assert!(
+                web.contains(&format!("  {name}: '{words}',")),
+                "status.js: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_control_request_names_who_asks() {
+        let (headline, text) = control_text("bob", 7, "Fix\nit", "Shop", "L");
+        assert_eq!(headline, "@bob asks for control of #7 Fix it");
+        assert_eq!(
+            text,
+            "@bob asks for control of #7 Fix it\nIt would act on GitHub as them · Shop\nL"
+        );
     }
 
     #[test]

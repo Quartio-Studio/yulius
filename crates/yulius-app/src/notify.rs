@@ -14,8 +14,8 @@ use yulius_contracts::api::tasks::TaskSummary;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::notify::{
-    AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, shared_cause,
-    task_notice, task_signature,
+    AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, control_text,
+    shared_cause, task_notice, task_signature,
 };
 use yulius_domain::time::Timestamp;
 
@@ -120,20 +120,84 @@ impl App {
         {
             return;
         }
-        let notice = match &envelope.event {
-            UiEvent::TaskUpdated { task } => self.task_event_notice(task).await,
-            UiEvent::AccountUpdated { account } => Ok(self.account_notice(account)),
-            _ => Ok(None),
-        };
-        match notice {
-            Ok(Some(notice)) => {
-                if let Err(err) = self.deliver(envelope, &notice).await {
-                    tracing::warn!(error = %err, "a notification could not be delivered");
+        let mut notices = Vec::new();
+        match &envelope.event {
+            UiEvent::TaskUpdated { task } => {
+                notices.push(
+                    self.task_event_notice(task)
+                        .await
+                        .map(|n| n.map(|n| (n, None))),
+                );
+                notices.push(
+                    self.control_notice(task)
+                        .await
+                        .map(|n| n.map(|(owner, n)| (n, Some(owner)))),
+                );
+            }
+            UiEvent::AccountUpdated { account } => {
+                notices.push(Ok(self.account_notice(account).map(|n| (n, None))));
+            }
+            _ => {}
+        }
+        for notice in notices {
+            match notice {
+                Ok(Some((notice, only))) => {
+                    if let Err(err) = self.deliver(envelope, &notice, only.as_ref()).await {
+                        tracing::warn!(error = %err, "a notification could not be delivered");
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "a task's notification could not be read");
                 }
             }
-            Ok(None) => {}
-            Err(err) => tracing::warn!(error = %err, "a task's notification could not be read"),
         }
+    }
+
+    /// A person's request for control of a task (SPEC-490 OWN-008), for the task's owner only,
+    /// once per request (TGC-027): the notification center's entry, wherever the owner is.
+    async fn control_notice(&self, summary: &TaskSummary) -> AppResult<Option<(UserId, Notice)>> {
+        if summary.control_request.is_none() {
+            return Ok(None);
+        }
+        let services = self.channel_services()?;
+        let Ok(id) = TaskId::parse(&summary.id) else {
+            return Ok(None);
+        };
+        let store = &self.deps.store;
+        let (Some(task), Some(request)) =
+            (store.task(&id).await?, store.control_request(&id).await?)
+        else {
+            return Ok(None);
+        };
+        let subject = format!("control:{id}:{}:{}", request.by, request.at.0);
+        if services.notifier.remember(subject, "told".into()).is_some() {
+            return Ok(None);
+        }
+        // A request that waited before the start was told then, or shown in the browser.
+        if request.at.0 < services.notifier.started_at.get().map_or(0, |t| t.0) {
+            return Ok(None);
+        }
+        let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
+            return Ok(None);
+        };
+        let link = format!(
+            "{}/s/{}/t/{}",
+            self.config.public_url.trim_end_matches('/'),
+            sandbox.slug,
+            task.number
+        );
+        let by = self.login_of(&request.by).await;
+        let (headline, text) =
+            control_text(&by, task.number, &task.title, &sandbox.repo_name, &link);
+        Ok(Some((
+            task.owner.clone(),
+            Notice {
+                kind: NoticeKind::NeedsYou,
+                headline: self.redact_for_sandbox(&task.sandbox_id, &headline).await,
+                text: self.redact_for_sandbox(&task.sandbox_id, &text).await,
+            },
+        )))
     }
 
     /// The notification a task's change calls for (TGC-022), once per new state.
@@ -194,11 +258,7 @@ impl App {
         if let Some((cause, at, _)) = shared {
             let episode = self.shared_episode(&id, cause, at).await;
             let subject = format!("shared:{}:{cause}:{episode}", task.sandbox_id);
-            if services
-                .notifier
-                .remember(subject, "told".into())
-                .is_some()
-            {
+            if services.notifier.remember(subject, "told".into()).is_some() {
                 return Ok(None);
             }
         }
@@ -268,13 +328,18 @@ impl App {
         })
     }
 
-    /// Sends `notice` to every linked person who chose its kind and whose event stream carries
-    /// `envelope` (TGC-020, TGC-021), under each one's rate bound (TGC-024).
-    async fn deliver(&self, envelope: &Envelope, notice: &Notice) -> AppResult<()> {
+    /// Sends `notice` to every linked person (or `only` that one) who chose its kind and whose
+    /// event stream carries `envelope` (TGC-020, TGC-021), under each one's rate bound (TGC-024).
+    async fn deliver(
+        &self,
+        envelope: &Envelope,
+        notice: &Notice,
+        only: Option<&UserId>,
+    ) -> AppResult<()> {
         let services = self.channel_services()?;
         let store = &self.deps.store;
         for link in store.chat_links().await? {
-            if !link.choices.wants(notice.kind) {
+            if only.is_some_and(|only| *only != link.user) || !link.choices.wants(notice.kind) {
                 continue;
             }
             let Some(person) = store.user(&link.user).await? else {

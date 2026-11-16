@@ -164,7 +164,7 @@ the notification center would show:
 - [x] Brought Telegram tests pass on current dev
 - [x] A subscription switch sends no Telegram notice, as in the notification center
 - [x] A sandbox-wide Docker Needs you reaches a chat once per episode
-- [ ] A request for control of a task reaches its owner's chat
+- [x] A request for control of a task reaches its owner's chat
 - [ ] Docs, lint, e2e and security scan green on current dev
 - [ ] Independent review approved
 

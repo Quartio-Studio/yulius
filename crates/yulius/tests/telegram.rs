@@ -22,7 +22,9 @@ use support::{
 };
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::notify::ChatLinkStore as _;
-use yulius_app::ports::store::{AuditStore as _, CoordinationStore as _, TaskStore as _, UserStore as _};
+use yulius_app::ports::store::{
+    AuditStore as _, CoordinationStore as _, TaskStore as _, UserStore as _,
+};
 use yulius_app::ports::store_ext::NeedsYouStore as _;
 use yulius_app::telegram::{ChannelServices, ChannelTuning, UNLINKED_REPLY};
 use yulius_domain::ids::TaskId;
@@ -935,5 +937,81 @@ async fn a_sandbox_wide_docker_needs_you_is_told_once_per_episode() -> TestResul
         sent[2].starts_with("Needs you · app: its Docker needs you\n"),
         "{sent:?}"
     );
+    Ok(())
+}
+
+/// TGC-027: a person's request for control of a task (SPEC-490 OWN-008) reaches the task's
+/// owner's chat once, under the Needs you choice, and no other viewer's.
+#[tokio::test]
+async fn a_request_for_control_reaches_the_owner_only() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    w.h.github.set_perm("bob", "acme/app", perms("write"));
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.bob, 200).await?;
+    link(&w, &w.carol, 300).await?;
+    let alice = user_id(&w, "alice").await?;
+    let task = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    let r = api(
+        &w,
+        Method::POST,
+        "/api/tasks/t1/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let sent = w.fake.wait_sent(100, 2).await?;
+    let text = &sent[1];
+    assert!(
+        text.starts_with(&format!(
+            "@bob asks for control of #{} task t1\n",
+            task.number
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("It would act on GitHub as them · app"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!("https://yulius.test/s/app/t/{}", task.number)),
+        "{text}"
+    );
+    // The same request seen again is no news; the asker and others hear nothing of it.
+    w.h.app.publish_task(&task.id).await;
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
+    assert_eq!(w.fake.sent_to(200).len(), 1, "{:?}", w.fake.sent_to(200));
+
+    // An owner who turned Needs you off does not get it.
+    api(
+        &w,
+        Method::DELETE,
+        "/api/tasks/t1/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(json!({"needs_you": false, "done": false, "failed": false, "account": false})),
+        &w.alice,
+    )
+    .await?;
+    w.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    let r = api(
+        &w,
+        Method::POST,
+        "/api/tasks/t1/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    barrier(&w, "c2").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
     Ok(())
 }
