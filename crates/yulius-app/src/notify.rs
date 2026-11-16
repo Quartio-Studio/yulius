@@ -6,7 +6,6 @@
 //! only through the send queue (`telegram.rs`).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast::error::RecvError;
@@ -37,14 +36,15 @@ pub(crate) struct NotifierState {
     told: Mutex<HashMap<String, String>>,
     /// The sandbox-wide episodes (`shared:…`) and requests for control (`control:…`) told.
     once: Mutex<HashSet<String>>,
-    /// A bot became active and its seed has not run yet: events wait for it (the seed reads
-    /// what they changed).
-    seed_due: AtomicBool,
-    /// Asks the notifier's own task to seed, answering when it did.
-    seed_tx: std::sync::OnceLock<tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>>,
+    /// Asks the notifier's own task to seed and then make a bot the one in use, answering when
+    /// it did.
+    seed_tx: std::sync::OnceLock<tokio::sync::mpsc::Sender<SeedRequest>>,
     /// Each person's chat and rate bound.
     throttles: Mutex<HashMap<UserId, (String, Throttle)>>,
 }
+
+/// A bot to make the one in use once the memory is seeded, and who waits for it.
+type SeedRequest = (crate::telegram::ActiveBot, tokio::sync::oneshot::Sender<()>);
 
 /// What a task reads as for the chat ([`App::task_reading`]).
 struct TaskReading {
@@ -116,13 +116,13 @@ impl App {
             flush.tick().await;
             loop {
                 tokio::select! {
-                    // A seed goes before the events waiting behind it (they changed what it reads).
+                    // A seed goes before the events waiting behind it. Until its bot is active no
+                    // event is handled, and the events published while it reads are handled after
+                    // it, against what it read (review rounds 2 and 3).
                     biased;
-                    Some(done) = seed_rx.recv() => {
+                    Some((bot, done)) = seed_rx.recv() => {
                         app.seed_notices().await;
-                        if let Ok(services) = app.channel_services() {
-                            services.notifier.seed_due.store(false, Ordering::SeqCst);
-                        }
+                        app.activate(Some(bot));
                         let _ = done.send(());
                     }
                     event = rx.recv() => match event {
@@ -143,10 +143,6 @@ impl App {
             return;
         };
         if services.active().is_none() {
-            return;
-        }
-        // Before its bot's seed, an event's change is read by the seed itself.
-        if services.notifier.seed_due.load(Ordering::SeqCst) {
             return;
         }
         // Only tasks and subscriptions are told; every other event costs nothing.
@@ -268,23 +264,23 @@ impl App {
         }))
     }
 
-    /// Makes `bot` the one in use from what is the case now (TGC-022): events wait while the
-    /// notifier's own task seeds its memory, and this returns once it did (a bounded store read).
+    /// Makes `bot` the one in use from what is the case now (TGC-022): the notifier's own task
+    /// seeds its memory and then activates the bot, and this returns once it did (a bounded store
+    /// read). Without a notifier the bot is activated here (nothing is told then).
     pub(crate) async fn activate_seeded(self: &Arc<Self>, bot: crate::telegram::ActiveBot) {
         let Ok(services) = self.channel_services() else {
             return;
         };
-        services.notifier.seed_due.store(true, Ordering::SeqCst);
-        self.activate(Some(bot));
         let (done, seeded) = tokio::sync::oneshot::channel();
-        let asked = match services.notifier.seed_tx.get() {
-            Some(tx) => tx.send(done).await.is_ok(),
-            None => false,
+        let Some(tx) = services.notifier.seed_tx.get() else {
+            self.activate(Some(bot));
+            return;
         };
-        if !asked || seeded.await.is_err() {
-            // No notifier runs: nothing is told, nothing waits.
-            services.notifier.seed_due.store(false, Ordering::SeqCst);
+        if let Err(refused) = tx.send((bot, done)).await {
+            self.activate(Some(refused.0.0));
+            return;
         }
+        let _ = seeded.await;
     }
 
     /// Seeds the notifier's memory with what is the case now: every task's reading, its

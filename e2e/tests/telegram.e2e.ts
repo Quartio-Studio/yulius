@@ -8,7 +8,14 @@ failOnPageErrors();
 // Settings → Administration (TGC-001, TGC-002); a person links their chat with a single-use code,
 // chooses what reaches it and unlinks in Settings → Notifications (TGC-010..TGC-020).
 
-type Mocked = Window & { __yuliusMock: { telegramStart: (text: string) => boolean } };
+type MockTelegram = {
+  choices?: { done?: boolean };
+  holdRead?: Promise<void>;
+  releaseRead?: () => void;
+  readsHeld?: number;
+  lateAnswers?: number;
+};
+type Mocked = Window & { __yuliusMock: { telegramStart: (text: string) => boolean; telegram: MockTelegram } };
 
 function botSends(browser: Browser, text: string): Promise<boolean> {
   return browser.evaluate((t) => (window as unknown as Mocked).__yuliusMock.telegramStart(t), text);
@@ -33,6 +40,34 @@ test('an instance administrator sets and removes the Telegram bot', async ({ app
   expect(await axeViolations(browser)).toEqual([]);
   await card.getByRole('button', 'Remove').click();
   await screen.getByRole('dialog', 'Remove the Telegram bot?').getByRole('button', 'Remove').click();
+  await expect(card.getByText(/No bot: nobody can link a Telegram chat/)).toBeVisible();
+});
+
+test('a state read before the bot was removed does not come back after it', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings', '&role=admin'));
+  const card = screen.getByRole('region', 'Telegram bot');
+  await firstShown(card.getByText(/No bot: nobody can link a Telegram chat/));
+  await browser.locator('#settings-telegram-token').fill('12345:a-good-token');
+  await card.getByRole('button', 'Save').click();
+  await expect(card.getByText(/is starting: waiting for Telegram's first answer/)).toBeVisible();
+  // The card's next read of the state ("receiving") is answered only after the bot is removed.
+  await browser.evaluate(() => {
+    const t = (window as unknown as Mocked).__yuliusMock.telegram;
+    t.holdRead = new Promise((resolve) => { t.releaseRead = resolve; });
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.telegram.readsHeld ?? 0), { timeout: 10000 }).toBe(1);
+  await card.getByRole('button', 'Remove').click();
+  await screen.getByRole('dialog', 'Remove the Telegram bot?').getByRole('button', 'Remove').click();
+  await expect(card.getByText(/No bot: nobody can link a Telegram chat/)).toBeVisible();
+  await browser.evaluate(() => {
+    const t = (window as unknown as Mocked).__yuliusMock.telegram;
+    delete t.holdRead;
+    t.releaseRead?.();
+  });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.telegram.lateAnswers ?? 0)).toBe(1);
+  // The late answer has reached the page once a frame passed after it (review round 3).
+  await browser.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(card.getByText(/is receiving/)).toHaveCount(0);
   await expect(card.getByText(/No bot: nobody can link a Telegram chat/)).toBeVisible();
 });
 
@@ -64,7 +99,10 @@ test('a person links their chat with a code, chooses what reaches it and unlinks
   // A member is not offered subscription problems.
   await expect(screen.getByRole('checkbox', /Subscription problems/)).toHaveCount(0);
   await done.check();
-  // The choice is the server's: it is there when the page is opened again.
+  // The choice is the server's: it is there when the page is opened again, once saved (the mock
+  // answers after a random delay: leaving at once could read the choices before the save; review
+  // round 3).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.telegram.choices?.done === true)).toBe(true);
   await browser.evaluate(() => { window.location.hash = '#/'; });
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
   await browser.evaluate(() => { window.location.hash = '#/settings'; });

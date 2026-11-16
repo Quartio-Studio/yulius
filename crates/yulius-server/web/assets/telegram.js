@@ -30,6 +30,9 @@ export function telegramBotCard(ctx) {
   let state = null;
   let statusBox = null;
   let refresh = null;
+  // Each render and save is a generation: a refresh read started before one is dropped (review
+  // round 3: a read answered after Remove brought "is receiving" back).
+  let generation = 0;
 
   function statusText() {
     if (!state.configured) return 'No bot: nobody can link a Telegram chat.';
@@ -43,6 +46,7 @@ export function telegramBotCard(ctx) {
   }
 
   function render() {
+    generation += 1;
     const input = h('input', { class: 'input mono', type: 'password', id: 'settings-telegram-token', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste the bot token from @BotFather', 'aria-describedby': 'settings-telegram-hint' });
     const save = h('button', { type: 'submit', class: 'btn btn-primary btn-sm', disabled: true }, state.configured ? 'Replace' : 'Save');
     input.addEventListener('input', () => { save.disabled = !input.value.trim(); });
@@ -86,14 +90,17 @@ export function telegramBotCard(ctx) {
     setChildren(statusBox, icon(on ? 'check' : 'key', { size: 14 }), h('span', { role: 'status' }, statusText()));
     clearTimeout(refresh);
     if (!['starting', 'retrying'].includes(state.state)) return;
+    const asked = generation;
     refresh = setTimeout(async () => {
-      if (!card.isConnected) return;
+      if (!card.isConnected || asked !== generation) return;
       try {
-        state = await ctx.api.get('/api/admin/telegram');
+        const fresh = await ctx.api.get('/api/admin/telegram');
+        if (asked !== generation) return;
+        state = fresh;
       } catch {
         // Read again at the next turn.
       }
-      if (card.isConnected) showStatus();
+      if (card.isConnected && asked === generation) showStatus();
     }, 2000);
   }
 

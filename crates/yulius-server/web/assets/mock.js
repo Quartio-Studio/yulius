@@ -5334,7 +5334,21 @@ function myTelegramView(db) {
 }
 const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
 // A saved bot reads `starting` until the next read, as if Telegram's first poll answered then.
-route('GET', '/api/admin/telegram', ({ db }) => { instanceAdminOnly(db); const view = telegramBotView(db); db.telegram.starting = false; return view; });
+// A test can keep a read's answer back (`telegram.holdRead = promise`): it is read when asked and
+// answered when the promise resolves, as a slow answer; `readsHeld` counts those kept back now,
+// `lateAnswers` those answered after a hold.
+route('GET', '/api/admin/telegram', async ({ db }) => {
+  instanceAdminOnly(db);
+  db.telegram.starting = false;
+  const view = telegramBotView(db);
+  const hold = db.telegram.holdRead;
+  if (hold) {
+    db.telegram.readsHeld = (db.telegram.readsHeld || 0) + 1;
+    try { await hold; } finally { db.telegram.readsHeld -= 1; }
+    db.telegram.lateAnswers = (db.telegram.lateAnswers || 0) + 1;
+  }
+  return view;
+});
 route('PUT', '/api/admin/telegram', ({ db, body }) => {
   instanceAdminOnly(db);
   const token = String(body.token || '').trim();

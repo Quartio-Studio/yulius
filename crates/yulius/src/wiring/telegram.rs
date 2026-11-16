@@ -241,7 +241,8 @@ fn parse_updates(result: &Value) -> Result<Received, ChannelError> {
             .get("update_id")
             .and_then(Value::as_i64)
             .ok_or(ChannelError::Invalid)?;
-        next = Some(next.map_or(id + 1, |n| n.max(id + 1)));
+        let after = id.checked_add(1).ok_or(ChannelError::Invalid)?;
+        next = Some(next.map_or(after, |n| n.max(after)));
         let Some(message) = update.get("message") else {
             continue;
         };
@@ -321,8 +322,9 @@ impl NotificationChannel for TelegramBot {
             update = id,
             "a Telegram update over the answer bound was skipped"
         );
+        let after = id.checked_add(1).ok_or(ChannelError::Invalid)?;
         Ok(Received {
-            cursor: Some((id + 1).to_string()),
+            cursor: Some(after.to_string()),
             messages: Vec::new(),
         })
     }
@@ -515,6 +517,12 @@ mod tests {
         };
         assert!(!format!("{client:?}").contains("synthetic"));
         Ok(())
+    }
+
+    #[test]
+    fn the_last_update_id_is_invalid() {
+        let last = json!([{"update_id": i64::MAX, "message": {"chat": {"id": 1}, "text": "x"}}]);
+        assert!(matches!(parse_updates(&last), Err(ChannelError::Invalid)));
     }
 
     #[test]
