@@ -2747,3 +2747,28 @@ fn a_follow_up_is_read_from_the_commits_themselves() -> TestResult {
     assert_eq!((files[0].added.len(), files[0].removed.len()), (2, 1));
     Ok(())
 }
+
+/// Review round 3 of SPEC-493 fix 6: reading no grafts makes Git say nothing about them: no
+/// command's error output starts with the graft file's deprecation hint.
+#[cfg(unix)]
+#[test]
+fn reading_no_grafts_prints_no_hint() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let said = fx.path("stderr.log");
+    let wrapper = fx.path("stderr-git");
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nexec git \"$@\" 2>>'{}'\n", said.display()),
+    )?;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    fs::write(repo.join("a.txt"), "changed\n")?;
+    git.commit_all(&repo, "Change", &author())?;
+    git.commit_lines(&repo, "HEAD")?;
+    git.log(&repo, "HEAD", 5)?;
+    let stderr = fs::read_to_string(&said).unwrap_or_default();
+    assert!(!stderr.contains("grafts"), "{stderr}");
+    Ok(())
+}

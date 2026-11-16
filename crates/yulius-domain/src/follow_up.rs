@@ -93,8 +93,9 @@ impl FileLines {
 }
 
 /// The test modules of a Rust file's `text`, as 1-based inclusive line spans: a `#[cfg(test)]`
-/// attribute whose item, after any further attributes, is `mod name {`, to that module's
-/// closing brace. The text is read as Rust tokens: comments, strings (raw ones too) and
+/// attribute, first of its item, whose item after any further attributes is `mod name {`, to
+/// that module's closing brace, at the top of the file or inside modules only (not in a macro's
+/// input, where the macro may drop the attribute and keep the body). The text is read as Rust tokens: comments, strings (raw ones too) and
 /// character literals are skipped, so nothing in them opens or closes a span (review round 2 of
 /// SPEC-493 fix 6). Anything else, such as `#[cfg(test)] mod tests;` or a single test-only item,
 /// is no span, and a text that does not lex (an unclosed comment or string) has none: when in
@@ -143,21 +144,59 @@ pub fn test_module_spans(text: &str) -> Vec<(u32, u32)> {
         let next = tokens.partition_point(|&k| k < end);
         (!word.is_empty()).then_some((word, next))
     };
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    // The word whose last character is token `u`, and the token of its first character.
+    let word_ending_at = |u: usize| -> Option<(String, usize)> {
+        let end = *tokens.get(u)?;
+        if !ident(code[end].0) {
+            return None;
+        }
+        let mut start = end;
+        while start > 0 && ident(code[start - 1].0) {
+            start -= 1;
+        }
+        let word: String = code[start..=end].iter().map(|&(c, _)| c).collect();
+        Some((word, tokens.partition_point(|&k| k < start)))
+    };
+    // Whether the `{` at token `t` opens a module (`mod name {`).
+    let opens_module = |t: usize| {
+        t.checked_sub(1)
+            .and_then(word_ending_at)
+            .and_then(|(_, first)| first.checked_sub(1))
+            .and_then(word_ending_at)
+            .is_some_and(|(word, _)| word == "mod")
+    };
     let mut spans = Vec::new();
+    // The open delimiters around the scan, each whether it is a module's brace: a test module
+    // counts only among modules, never inside a macro's input or a function (review round 3).
+    let mut enclosing: Vec<bool> = Vec::new();
+    // Where the last outer attribute ended: `#[cfg(test)]` must be the item's first one, so no
+    // attribute macro before it sees the module (review round 3).
+    let mut attribute_end = None;
     let mut t = 0;
-    while t < tokens.len() {
-        if char_at(t) != Some('#') || char_at(t + 1) != Some('[') {
+    while let Some(c) = char_at(t) {
+        if c != '#' || char_at(t + 1) != Some('[') {
+            match c {
+                '{' => enclosing.push(opens_module(t)),
+                '(' | '[' => enclosing.push(false),
+                '}' | ')' | ']' => {
+                    enclosing.pop();
+                }
+                _ => {}
+            }
             t += 1;
             continue;
         }
         let Some(after) = after_brackets(t + 1) else {
             break;
         };
+        let first = attribute_end != Some(t);
+        attribute_end = Some(after);
         let body: String = tokens[t + 2..after - 1]
             .iter()
             .map(|&k| code[k].0)
             .collect();
-        if body != "cfg(test)" {
+        if body != "cfg(test)" || !first || !enclosing.iter().all(|&module| module) {
             t = after;
             continue;
         }
@@ -560,5 +599,21 @@ mod tests {
         assert!(test_module_spans("#[cfg(test)]\nmod t {\n\"open\n}\n").is_empty());
         let spaced = "#[ cfg( test ) ]\npub mod  t\n{\n}\n";
         assert_eq!(test_module_spans(spaced), [(1, 4)]);
+        // Review round 3: inside a macro's input, a function or a non-module brace, after an
+        // attribute macro: no span. Inside modules, and after an inner attribute: a span.
+        for hidden in [
+            "macro_rules! keep { (#[cfg(test)] mod $n:ident { $($b:tt)* }) => { $($b)* }; }\n\
+             keep! {\n#[cfg(test)]\nmod t {\n    pub fn evil() -> u32 { 42 }\n}\n}\n",
+            "keep!(\n#[cfg(test)]\nmod t {\n    pub fn evil() {}\n}\n);\n",
+            "keep![\n#[cfg(test)]\nmod t {\n}\n];\n",
+            "fn f() {\n#[cfg(test)]\nmod t {\n}\n}\n",
+            "impl A {\n#[cfg(test)]\nmod t {\n}\n}\n",
+            "#[keep]\n#[cfg(test)]\nmod t {\n    pub fn evil() {}\n}\n",
+        ] {
+            assert!(test_module_spans(hidden).is_empty(), "{hidden}");
+        }
+        let among_modules = "#![allow(dead_code)]\nmod a {\n    pub mod b {\n        #[cfg(test)]\n\
+                             #[allow(x)]\n        mod t {\n        }\n    }\n}\n";
+        assert_eq!(test_module_spans(among_modules), [(4, 7)]);
     }
 }

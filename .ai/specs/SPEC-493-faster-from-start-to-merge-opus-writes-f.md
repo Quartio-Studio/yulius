@@ -416,6 +416,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [ ] Fix 5's independent review answered test-first
 - [ ] Fix 6: delivery_merge keeps an approval across at most 20 product lines and records what it counted (APR-001 to APR-004)
 - [ ] Fix 6: the review rules state the bound; a project sets what counts as product code; the decision amending the reviewed-head rule (APR-002, APR-005)
+- [ ] Fix 6's review rounds 1 and 2 answered test-first: plumbing reads, Rust-token test spans, the integration commit from its origin
 - [ ] Fix 6's independent review answered test-first
 - [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
 - [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)

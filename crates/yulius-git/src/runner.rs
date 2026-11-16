@@ -101,6 +101,11 @@ const FIXED_CONFIG: &[&str] = &[
     "core.commitGraph=false",
 ];
 
+/// A graft file that does not exist: Git then reads no grafts and says nothing (an existing empty
+/// one, such as `/dev/null`, prints the deprecation hint on every command; review round 3 of
+/// SPEC-493 fix 6).
+const NO_GRAFT_FILE: &str = "/nonexistent/yulius-reads-no-grafts";
+
 /// The environment of every command, after the adapter's own. Constant.
 ///
 /// - No editor is started (`:` is Git's word for none): it would get a file's path.
@@ -121,7 +126,7 @@ const FIXED_ENV: &[(&str, &str)] = &[
     ("GCM_INTERACTIVE", "never"),
     ("GIT_NO_LAZY_FETCH", "1"),
     ("GIT_NO_REPLACE_OBJECTS", "1"),
-    ("GIT_GRAFT_FILE", "/dev/null"),
+    ("GIT_GRAFT_FILE", NO_GRAFT_FILE),
     ("LC_ALL", "C"),
 ];
 
@@ -1058,7 +1063,7 @@ mod tests {
             ("GIT_TERMINAL_PROMPT", "0"),
             ("GIT_NO_LAZY_FETCH", "1"),
             ("GIT_NO_REPLACE_OBJECTS", "1"),
-            ("GIT_GRAFT_FILE", "/dev/null"),
+            ("GIT_GRAFT_FILE", NO_GRAFT_FILE),
         ] {
             assert!(
                 command.get_envs().any(
