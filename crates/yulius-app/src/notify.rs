@@ -501,7 +501,10 @@ mod tests {
             assert_eq!(state.remember(format!("task:{n}"), "s".into()), None);
         }
         assert!(!state.reseed.load(Ordering::SeqCst));
-        assert_eq!(state.remember("task:0".into(), "t".into()), Some("s".into()));
+        assert_eq!(
+            state.remember("task:0".into(), "t".into()),
+            Some("s".into())
+        );
         assert!(!state.reseed.load(Ordering::SeqCst), "a known subject fits");
         assert_eq!(state.remember("task:new".into(), "s".into()), None);
         assert!(state.reseed.load(Ordering::SeqCst));

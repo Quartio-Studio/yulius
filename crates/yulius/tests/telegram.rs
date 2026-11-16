@@ -146,6 +146,9 @@ async fn bot_api(
                 let _ = tokio::time::timeout(wait, arrived).await;
                 ready = pending(&fake);
             }
+            // Telegram answers at most `limit` updates, 100 when none is asked for.
+            let limit = body["limit"].as_u64().unwrap_or(100);
+            ready.truncate(usize::try_from(limit).unwrap_or(100));
             Value::Array(ready)
         }
         _ => return (StatusCode::NOT_FOUND, Json(json!({"ok": false}))),
@@ -1126,5 +1129,24 @@ async fn a_request_for_control_reaches_the_owner_only() -> TestResult {
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     barrier(&w, "c2").await?;
     assert_eq!(w.fake.sent_to(100).len(), 2, "{:?}", w.fake.sent_to(100));
+    Ok(())
+}
+
+/// TGC-003 (review round 1): a backlog of long messages (here 100 of 4096 CJK characters, about
+/// 1.2 MB, over the client's 1 MiB answer bound) does not stop the poll: a `/start` behind it
+/// still links.
+#[tokio::test]
+async fn a_backlog_of_long_messages_does_not_stop_linking() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let r = api(&w, Method::POST, "/api/me/telegram/link", None, &w.alice).await?;
+    let code = r.body["code"].as_str().ok_or("code")?.to_owned();
+    let long = "\u{6f22}".repeat(4096);
+    for _ in 0..100 {
+        w.fake.message(-900, false, &long);
+    }
+    w.fake.message(100, true, &format!("/start {code}"));
+    let sent = w.fake.wait_sent(100, 1).await?;
+    assert!(sent[0].starts_with("Linked"), "{sent:?}");
     Ok(())
 }

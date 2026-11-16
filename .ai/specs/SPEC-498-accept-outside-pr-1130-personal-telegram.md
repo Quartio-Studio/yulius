@@ -60,7 +60,10 @@ any inbound port.
   unlinks every chat; setting the same bot's token again keeps them.
 - TGC-003: the server long-polls `getUpdates` (no webhook, no inbound port). After an error from
   Telegram or the network it retries with exponential backoff (1 s doubling to at most 60 s, reset
-  after a successful poll); the admin state shows `retrying` with the last error's kind.
+  after a successful poll); the admin state shows `retrying` with the last error's kind. A poll asks
+  for at most 20 updates, so an answer fits the client's 1 MiB bound; one over it anyway is asked
+  again one update at a time, and a single update over it is stepped past with a log (review round
+  1: 100 long messages, Telegram's default batch, stopped every `/start` for good).
 - TGC-004: the Telegram Bot API base URL is configurable (`YULIUS_TELEGRAM_API_URL`, default
   `https://api.telegram.org`); a non-HTTPS URL is accepted only for a loopback host (tests run a
   fake server). The token never appears in a log line, an error or an API answer.
@@ -171,7 +174,11 @@ the notification center would show:
 - [x] A sandbox-wide Docker Needs you reaches a chat once per episode
 - [x] A request for control of a task reaches its owner's chat
 - [x] Docs, lint, e2e and security scan green on current dev
-- [ ] Independent review approved
+- [x] Independent review round 1 run (request changes: answered by the items below)
+- [x] The notifier remembers every task when a bot becomes active, so a state entered later is told
+- [x] An oversized getUpdates batch can no longer stop linking
+- [ ] Review round 1 minors: stalled PR decision, poll state, relink keeps choices, label test, mutants
+- [ ] Independent review of the fixes approved
 
 The contributor's own plan (all done on their fork): spec, ADR and the channel port; the sealed
 bot token; long polling with backoff; link codes, `/start` and `/stop`; notifications classified,

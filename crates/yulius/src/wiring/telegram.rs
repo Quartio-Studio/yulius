@@ -25,6 +25,10 @@ pub const POLL_SECONDS: u64 = 25;
 const CALL_DEADLINE: Duration = Duration::from_secs(10);
 /// Largest answer read.
 const MAX_ANSWER_BYTES: usize = 1 << 20;
+/// Updates asked for per `getUpdates` (Telegram's default is 100): a message is at most 4096
+/// characters with at most 100 entities, so 20 fit [`MAX_ANSWER_BYTES`] with room to spare; an
+/// answer over it anyway is asked again one update at a time (review round 1).
+const POLL_LIMIT: u64 = 20;
 /// Longest token accepted (Telegram's are about 46 characters).
 const MAX_TOKEN_CHARS: usize = 200;
 
@@ -119,6 +123,14 @@ impl std::fmt::Debug for TelegramBot {
     }
 }
 
+/// Why a call gave no result.
+enum CallFailure {
+    /// The answer is longer than [`MAX_ANSWER_BYTES`].
+    TooLarge,
+    /// Any other failure.
+    Channel(ChannelError),
+}
+
 impl TelegramBot {
     /// Calls `method` with `body`; the answer's `result`.
     async fn call(
@@ -127,34 +139,75 @@ impl TelegramBot {
         body: &Value,
         deadline: Duration,
     ) -> Result<Value, ChannelError> {
+        self.call_bounded(method, body, deadline)
+            .await
+            .map_err(|failure| match failure {
+                CallFailure::TooLarge => ChannelError::Invalid,
+                CallFailure::Channel(err) => err,
+            })
+    }
+
+    /// [`Self::call`], telling an answer over the bound apart.
+    async fn call_bounded(
+        &self,
+        method: &str,
+        body: &Value,
+        deadline: Duration,
+    ) -> Result<Value, CallFailure> {
+        use CallFailure::Channel;
         let url = format!("{}/bot{}/{method}", self.base, self.token);
         let request = self.http.post(url).json(body).timeout(deadline).send();
-        let mut response = request.await.map_err(|_| ChannelError::Unavailable)?;
+        let mut response = request
+            .await
+            .map_err(|_| Channel(ChannelError::Unavailable))?;
         match response.status().as_u16() {
             200..=299 => {}
             // A wrong or revoked token: 401; a malformed one: 404.
-            401 | 404 => return Err(ChannelError::Refused),
+            401 | 404 => return Err(Channel(ChannelError::Refused)),
             // The chat blocked the bot, or does not exist (any more).
-            400 | 403 => return Err(ChannelError::Blocked),
-            409 => return Err(ChannelError::Conflict),
-            _ => return Err(ChannelError::Unavailable),
+            400 | 403 => return Err(Channel(ChannelError::Blocked)),
+            409 => return Err(Channel(ChannelError::Conflict)),
+            _ => return Err(Channel(ChannelError::Unavailable)),
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| ChannelError::Unavailable)?
+            .map_err(|_| Channel(ChannelError::Unavailable))?
         {
             if bytes.len() + chunk.len() > MAX_ANSWER_BYTES {
-                return Err(ChannelError::Invalid);
+                return Err(CallFailure::TooLarge);
             }
             bytes.extend_from_slice(&chunk);
         }
-        let answer: Value = serde_json::from_slice(&bytes).map_err(|_| ChannelError::Invalid)?;
+        let answer: Value =
+            serde_json::from_slice(&bytes).map_err(|_| Channel(ChannelError::Invalid))?;
         if answer.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err(ChannelError::Invalid);
+            return Err(Channel(ChannelError::Invalid));
         }
-        answer.get("result").cloned().ok_or(ChannelError::Invalid)
+        answer
+            .get("result")
+            .cloned()
+            .ok_or(Channel(ChannelError::Invalid))
+    }
+
+    /// One `getUpdates` from `offset`, at most `limit` updates, waiting `wait` seconds for one.
+    async fn updates(
+        &self,
+        offset: Option<i64>,
+        limit: u64,
+        wait: u64,
+    ) -> Result<Value, CallFailure> {
+        let mut body = json!({
+            "timeout": wait,
+            "limit": limit,
+            "allowed_updates": ["message"],
+        });
+        if let Some(offset) = offset {
+            body["offset"] = json!(offset);
+        }
+        let deadline = Duration::from_secs(wait) + CALL_DEADLINE;
+        self.call_bounded("getUpdates", &body, deadline).await
     }
 }
 
@@ -226,16 +279,33 @@ impl NotificationChannel for TelegramBot {
     }
 
     async fn receive(&self, cursor: Option<&str>) -> Result<Received, ChannelError> {
-        let mut body = json!({
-            "timeout": self.poll_seconds,
-            "allowed_updates": ["message"],
-        });
-        if let Some(offset) = cursor.and_then(|c| c.parse::<i64>().ok()) {
-            body["offset"] = json!(offset);
+        let offset = cursor.and_then(|c| c.parse::<i64>().ok());
+        let failed = |failure| match failure {
+            CallFailure::TooLarge => ChannelError::Invalid,
+            CallFailure::Channel(err) => err,
+        };
+        match self.updates(offset, POLL_LIMIT, self.poll_seconds).await {
+            Err(CallFailure::TooLarge) => {}
+            answer => return parse_updates(&answer.map_err(failed)?),
         }
-        let deadline = Duration::from_secs(self.poll_seconds) + CALL_DEADLINE;
-        let result = self.call("getUpdates", &body, deadline).await?;
-        parse_updates(&result)
+        // Over the bound: the same updates one at a time (they wait already, so no long poll).
+        match self.updates(offset, 1, 0).await {
+            Err(CallFailure::TooLarge) => {}
+            answer => return parse_updates(&answer.map_err(failed)?),
+        }
+        // One update alone is over it: stepped past (update ids follow each other), or the poll
+        // would ask for it forever.
+        let Some(offset) = offset else {
+            return Err(ChannelError::Invalid);
+        };
+        tracing::warn!(
+            update = offset,
+            "a Telegram update over the answer bound was skipped"
+        );
+        Ok(Received {
+            cursor: Some((offset + 1).to_string()),
+            messages: Vec::new(),
+        })
     }
 }
 
@@ -269,11 +339,22 @@ mod tests {
             return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false})));
         }
         let blocked = body["chat_id"] == json!(403);
+        let (offset, limit) = (body["offset"].clone(), body["limit"].clone());
         if let Ok(mut bodies) = fake.bodies.lock() {
             bodies.push((method.clone(), body));
         }
         let result = match method.as_str() {
             "getMe" => json!({"id": 1000, "is_bot": true, "username": "yulius_test_bot"}),
+            // From offset 100 the backlog is over the bound unless asked one at a time; at 200
+            // one update alone is.
+            "getUpdates" if offset == json!(100) || offset == json!(200) => {
+                let alone = limit == json!(1) && offset == json!(100);
+                if alone {
+                    json!([{"update_id": 100, "message": {"chat": {"id": 42, "type": "private"}, "text": "/stop"}}])
+                } else {
+                    json!([{"update_id": 100, "message": {"text": "x".repeat(MAX_ANSWER_BYTES)}}])
+                }
+            }
             "getUpdates" => json!([
                 {"update_id": 7, "message": {"chat": {"id": 42, "type": "private"}, "text": "/start abc"}},
                 {"update_id": 8, "message": {"chat": {"id": -5, "type": "group"}, "text": "hi"}},
@@ -361,7 +442,26 @@ mod tests {
             .find(|(m, _)| m == "getUpdates")
             .ok_or("poll")?;
         assert_eq!(poll.1["offset"], json!(7));
+        assert_eq!(poll.1["limit"], json!(POLL_LIMIT));
         assert_eq!(poll.1["allowed_updates"], json!(["message"]));
+        Ok(())
+    }
+
+    /// Review round 1: a batch over the answer bound is asked again one update at a time, and an
+    /// update over it alone is stepped past, so the poll never asks for the same batch forever.
+    #[tokio::test]
+    async fn a_batch_over_the_bound_is_read_one_at_a_time_or_skipped() -> TestResult {
+        let (base, fake) = fake().await?;
+        let bot = TelegramBots::new(base, 1).connect(&Secret(TOKEN.into()))?;
+        let received = bot.receive(Some("100")).await.map_err(|e| e.as_str())?;
+        assert_eq!(received.cursor.as_deref(), Some("101"));
+        assert_eq!(received.messages.len(), 1);
+        assert_eq!(received.messages[0].text, "/stop");
+        let skipped = bot.receive(Some("200")).await.map_err(|e| e.as_str())?;
+        assert_eq!(skipped.cursor.as_deref(), Some("201"));
+        assert!(skipped.messages.is_empty());
+        let polls = fake.bodies.lock().map(|b| b.len()).unwrap_or(0);
+        assert_eq!(polls, 4, "two tries each");
         Ok(())
     }
 
