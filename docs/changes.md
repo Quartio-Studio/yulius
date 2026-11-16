@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- A Claude subscription can be connected by pasting a token (SPEC-502, task #484,
+  [ADR-0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md); from
+  outside pull request #1144 by studenciak00owl). Its owner runs `claude setup-token` on any
+  computer and the administrator pastes what it printed: Add subscription offers "Sign in here"
+  (the terminal, as before) or "Paste token", and every card has "Paste a new token" to sign one in
+  again. Only that token shape is taken, a token Claude refuses is said under the field, and the
+  token is sealed like a captured one and never echoed, logged or audited
+  (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`). A new token is a
+  new sign-in like the terminal's: it keeps a typed email and drops the old sign-in's model limits.
+
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's
@@ -1126,12 +1136,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   instead of Opus 5.5 at high. The composer lists Fable 5.2, its price is known, and a spent weekly
   Opus cap no longer keeps a default task off a subscription. A subscription without Fable access
   needs Opus 5.5 picked by hand.
-- A Claude subscription can be connected by pasting a token (SPEC-502, ADR-0352). Its owner runs
-  `claude setup-token` on any computer and the administrator pastes what it printed: Add
-  subscription offers "Sign in here" (the terminal, as before) or "Paste token", and every card
-  has "Paste a new token" to sign one in again. Only that token shape is taken, a token Claude
-  refuses is said under the field, and the token is sealed like a captured one and never echoed,
-  logged or audited (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`).
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's

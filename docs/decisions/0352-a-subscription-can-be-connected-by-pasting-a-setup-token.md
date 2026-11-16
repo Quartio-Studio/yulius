@@ -28,11 +28,21 @@ the owner can make it on their laptop; Yulius had no way to take it.
 - **One profile request checks it.** Claude's 401 refuses the paste (422, nothing stored); 403 is
   the normal answer for a `setup-token` and accepts it; a temporary failure accepts it and leaves
   the email to the background round.
-- **Stored exactly as a captured token**: sealed with the master key, status `ok`, errors and email
-  cleared, the pool told, the usage read. The token is never echoed, logged, published or audited;
+- **Stored exactly as a captured token**: sealed with the master key and written through the same
+  path as the terminal's sign-in (`App::store_sealed_credential`, under the subscription's state
+  lock): status `ok`, errors and the email read from Claude cleared, an email a person typed kept
+  (SPEC-463), the model limits Claude reported to the previous sign-in dropped (SPEC-464), the
+  pool told, the usage read. The token is never echoed, logged, published or audited;
   the audit says `account.created` with `via=token`, or `account.token_replaced`.
 - **The UI warns** that a token is a credential that should not be sent through chats in clear
   text.
+
+- **A sign-in that does not let go is not overtaken.** The paste cancels a running sign-in and
+  waits for it at most 15 s; one still running then is a 409 and nothing is stored, since it could
+  still store a token it captured over the pasted one.
+
+Proposed by studenciak00owl in outside pull request #1144 (as their ADR-0289 and SPEC-450) and
+brought onto `dev` by task #484, where those numbers were taken.
 
 ## Alternatives
 

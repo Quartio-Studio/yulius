@@ -516,8 +516,10 @@ subscription's owner runs `claude setup-token` on any computer and the administr
 it printed: in the Add dialog ("Paste token") for a new subscription, or with "Paste a new token"
 on a card. The server takes only that token shape and asks Claude's profile once with it: a 401
 refuses it and nothing changes, and every other answer accepts it. It then seals and stores the
-token as the terminal does (status `ok`, no process, no temporary folder), after cancelling and
-waiting out a sign-in still running in a terminal. The token is never echoed, logged or audited.
+token through the terminal's own path (`store_sealed_credential`: status `ok`, a typed email kept,
+the old sign-in's model limits dropped; no process, no temporary folder), after cancelling and
+waiting out a sign-in still running in a terminal (409 when it has not ended within 15 s). The
+token is never echoed, logged or audited.
 
 ## Usage limits
 

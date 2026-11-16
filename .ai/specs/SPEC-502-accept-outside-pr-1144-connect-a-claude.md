@@ -85,7 +85,7 @@ requests later). What changed under it since:
 - [x] A pasted new token drops the old sign-in's model limits and keeps a typed email
 - [x] A paste a sign-in does not let go of is refused with 409
 - [x] The paste dialogs pass e2e on the current Subscriptions page, focus back on the card
-- [ ] Docs on current dev: api.md, architecture, product, changes, ADR-0352
+- [x] Docs on current dev: api.md, architecture, product, changes, ADR-0352
 - [ ] Independent review approves the branch head
 
 ## Acceptance criteria
@@ -123,6 +123,10 @@ requests later). What changed under it since:
   AC-1 to AC-4, including the audit rows and that no response or audit detail holds the token.
 - Integration (same file, real `PtySessionHost` and fake agent, the `pool_supervision` builders):
   AC-5.
+- Integration (same file, added on current `dev`): AC-7
+  (`a_new_token_drops_the_old_model_limits_and_keeps_a_typed_email`) and AC-8
+  (`a_paste_a_sign_in_does_not_let_go_of_is_refused`: a sign-in that ignores its stop and a kill
+  that hangs in `block_in_place`, so the 15 s wait is real time on a multi-thread runtime).
 - e2e (`e2e/tests/subscriptions.e2e.ts`, mock mode): AC-6.
 
 ## Decisions
@@ -140,10 +144,46 @@ requests later). What changed under it since:
   slower, a new adapter).
 - **Shape bound of 512 characters.** Real tokens are about 100 characters; the bound keeps a
   mistaken paste (a whole terminal screen) out and is far above any plausible token growth.
+- **Brought onto current `dev`, not re-implemented.** The contributor's commit cherry-picked with
+  conflicts only beside it (imports, a neighbouring function, docs lines), so it stays theirs as
+  author; what current `dev` changed under it is fitted in separate commits: the replaced
+  credential goes through `store_sealed_credential`, the half of `store_credential` after sealing,
+  rather than a second writer of a subscription's credential that would skip SPEC-464's model-limit
+  drop and the state lock; the mock keeps a typed email. SPEC-450 and ADR-0289 were taken on `dev`
+  meanwhile, so they are SPEC-502 and ADR-0352.
+- **The Add dialog's choice and the card button are kept as they were.** The current page already
+  gives the keyboard back to the button after either dialog and keeps it through a redraw, so a
+  `data-focus-key` for the new button was tried and dropped: the test written for it passed
+  without it.
 - **No migration.** The account row is the same; only how its credential arrived differs, and
   that lives in the audit log.
 
 ## Evidence
+
+### On current `dev` (task #484, branch `feat/484-accept-outside-pr-1144-connect-a-claude`)
+
+From `dev` at c7348d04, 2026-11-16, Rust 1.99.0, Node 24.21.0.
+
+- `git cherry-pick` of 75508e786 (studenciak00owl): conflicts in `accounts.rs` (imports,
+  `validate_typed_email` beside `pasted_token`, `update_account`'s doc), `admin.js` (the empty
+  state beside dev's `shown` map), `docs/api.md`, `docs/product.md`, `e2e/README.md`; all resolved
+  keeping both sides. Two compile fits in the same commit: the new record's `email_typed: false`,
+  and the background usage read through `read_account_usage` (dev's `fetch_and_record_usage` takes
+  a second argument now).
+- `cargo clippy --locked -p yulius-app -p yulius-contracts -p yulius-server -p yulius
+  --all-targets -- -D warnings`: clean.
+- `cargo test -p yulius --test main -- account_token:: accounts:: account_email::`: all passed
+  (8 `account_token` tests, among them the two added here).
+- `cargo test -p yulius-app -p yulius-contracts -- pasted`: 2 passed (TKP-003, TKP-006).
+- AC-7 failed before the fix (`weekly_opus` still stored after the paste), passes after it.
+- AC-8 mutation: the 409 guard disabled (`if false && …`) makes
+  `a_paste_a_sign_in_does_not_let_go_of_is_refused` fail at its status assertion; restored.
+- `npx e2e run` of `subscriptions`, `claude-connect`, `consistency`, `onboarding-flow`,
+  `subscription-names`, `loading-shapes`, `subscription-touch`: 117 passed.
+- `python3 scripts/check_repository.py`: passed.
+- The 409 branch the fork left untested (below) is AC-8 now.
+
+### In the contributor's fork (as SPEC-450, 2026-11-10)
 
 Run on `feat/claude-token-paste` from upstream `dev` at 91a0cec5 (2026-11-10). Builds used
 `CARGO_INCREMENTAL=0 -j 1` (the machine's memory).
