@@ -568,6 +568,9 @@ impl App {
     /// fewer as running jobs end.
     pub(crate) fn ci_resize_slots(&self) {
         self.ci_slots().resize(self.ci_job_slots());
+        // Waiting jobs decide again at once, not at their next look (review of the CI
+        // admission fix).
+        self.ci_admission_changed();
     }
 
     /// Counts one more (`started`) or one fewer running CI job of `sandbox` and tells the

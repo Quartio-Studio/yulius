@@ -1835,6 +1835,30 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-497 HBA-002 (review of the CI admission fix): `some avg10` in thousandths; none
+    /// without a `some` line or with a value that is no percentage; above 100 % counts as 100 %.
+    #[test]
+    fn cpu_pressure_reads_some_avg10() {
+        let file = |some: &str| format!("{some}\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n");
+        assert_eq!(
+            some_avg10(&file("some avg10=24.50 avg60=1.00 avg300=0.00 total=5")),
+            Some(245)
+        );
+        assert_eq!(some_avg10(&file("some avg10=0.00 avg60=0.00")), Some(0));
+        assert_eq!(
+            some_avg10("full avg10=50.00 avg60=0.00\n"),
+            None,
+            "no some line"
+        );
+        assert_eq!(some_avg10(&file("some avg10=nan avg60=0.00")), None);
+        assert_eq!(some_avg10(&file("some avg10=-1.00 avg60=0.00")), None);
+        assert_eq!(some_avg10(&file("some avg60=1.00")), None, "no avg10");
+        assert_eq!(
+            some_avg10(&file("some avg10=250.00 avg60=0.00")),
+            Some(1000)
+        );
+    }
+
     /// SPEC-362 CSW-005: without the `cpu` controller nothing is weighted.
     #[test]
     fn without_the_cpu_controller_ci_jobs_weigh_nothing() -> Result<(), Box<dyn std::error::Error>>

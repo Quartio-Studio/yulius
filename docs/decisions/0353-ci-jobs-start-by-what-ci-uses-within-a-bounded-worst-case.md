@@ -72,8 +72,9 @@ Waiting jobs are ordered by what waits for them, then by how long they have wait
 - then branches'.
 
 A job that cannot start lets later ones that can start before it, and one before it that can start
-goes first. A job that has waited 10 minutes (`OVERTAKE_LIMIT`) holds back everything behind it
-until it starts or leaves, so it waits at most about one more job's length.
+goes first. A job that has waited 10 minutes (`OVERTAKE_LIMIT`) holds back the jobs after it in
+the order (its priority and lower) until it starts or leaves; a job of a higher priority still
+goes first, so a branch's job can wait longer while merges and pull requests keep coming.
 
 ## Consequences
 
@@ -93,3 +94,7 @@ until it starts or leaves, so it waits at most about one more job's length.
   still its budget.
 - **Projects' `cpus` still matter.** They bound the worst case and set a job's parallelism, but they
   no longer decide how many jobs run.
+- **`memory_gb` no longer reserves memory for a job's whole run.** The worst-case bound is on CPUs;
+  a job's memory counts at its start as its budget (at most a quarter of the CI budget's), then as
+  the anonymous memory measured. Jobs that peak late in memory together can meet the sandbox's
+  memory limit; a memory bound was left for when it is seen.

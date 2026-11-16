@@ -1501,9 +1501,11 @@ involved.
   the configured ones, go like their checkouts (stale CI leftovers).
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
-- CI jobs share the sandbox's CPUs and memory by budget (SPEC-082): a job starts once the CPUs
-  and memory it declares (`cpus`, `memory_gb` in `[[ci.jobs]]`, else an equal share among its
-  run's jobs) are free, so the jobs of all lanes never ask for more than the sandbox has. Each
+- CI jobs share the host's CI budget (SPEC-082, SPEC-497 HBA-002, ADR-0353): a job starts when
+  CI's processes are not short of CPUs, the running jobs' declared CPUs (`cpus`, else an equal
+  share among the run's jobs) with its own stay within twice the budget, and its start fits
+  beside what CI is measured to use. `memory_gb` is the job's budget and counts at its start;
+  after that the measured memory decides. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
   `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
   `YULIUS_CI_JOB_TIMEOUT_MIN`, or its own `timeout_minutes` (1-360) in `[[ci.jobs]]`, counted from

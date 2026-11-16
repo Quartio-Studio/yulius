@@ -621,6 +621,13 @@ impl App {
         }
     }
 
+    /// Wakes the jobs waiting for admission: something they decide by changed.
+    pub(crate) fn ci_admission_changed(&self) {
+        if let Some(admission) = self.ci.budget.get() {
+            admission.changed.notify_waiters();
+        }
+    }
+
     fn ci_admission(&self) -> Arc<CiAdmission> {
         Arc::clone(
             self.ci
