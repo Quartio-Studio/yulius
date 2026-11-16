@@ -62,8 +62,9 @@ it serves one person, polls every few seconds and keeps the bot token in a file.
   keeps agent secrets out, and the event choices let a person keep it to Needs you.
 - Migration 0063 adds the bot's columns to `instance` and two tables, `telegram_links` and
   `telegram_link_codes`, both removed with their person.
-- A server restart loses the per-task "already told" memory: a task first seen after a restart is
-  notified only for a state entered after the start, so nothing is repeated and a change while the
-  server was down is not sent.
+- The "already told" memory lives in the process: when a bot becomes active (a start, a bot set in
+  Settings) the notifier first reads what is the case into it (every task, subscription and
+  request for control), so nothing is repeated, a change while the server was down is not sent,
+  and every change after it is, whatever moved.
 - Part 2 (replies to a notification become a `task_message`, new messages become tasks, `/status`,
   `/task`) adds to the receive side only.

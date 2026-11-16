@@ -96,8 +96,13 @@ any inbound port.
   a new `needs_you` request arrives while it is there, it becomes Done, or it ends failed or
   stopped abnormally (`failed_*`, `stopped_*` except a person's stop). It carries the sandbox,
   task number and title, the `needs_you` action/problem (or "Decide"), and a link
-  `{PUBLIC_URL}/s/{slug}/t/{n}`. A task first seen after a restart is notified only for a state
-  entered after the server started.
+  `{PUBLIC_URL}/s/{slug}/t/{n}`. What is the case when a bot becomes active (a start of the
+  server, a bot set in Settings) is read into the notifier's memory first (every task, its
+  sandbox-wide episode and request for control, every subscription), and remembered while nobody
+  is linked too, so only a change after it is told, whatever moved (a status, a chain blocked, a
+  pull request's checks). (#1130 judged a task first seen after the start by its state time, which
+  a blocked chain or a pull request's checks do not move: such news was dropped for good; review
+  round 1.)
 - TGC-023: every notification's text passes the same redaction as transcripts: a task's text
   `App::redact_for_sandbox` of its sandbox; an account's text the instance-wide redaction of
   credential shapes. Plain text only (no Telegram markup), at most 4000 characters.

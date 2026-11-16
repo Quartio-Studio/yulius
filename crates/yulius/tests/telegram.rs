@@ -20,14 +20,16 @@ use support::{
     Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness, perms,
     seed_sandbox, seed_task, setup_superadmin_creds,
 };
+use yulius_app::model::{AccountRecord, AccountStatus};
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::notify::ChatLinkStore as _;
 use yulius_app::ports::store::{
-    AuditStore as _, CoordinationStore as _, TaskStore as _, UserStore as _,
+    AccountStore as _, AuditStore as _, CoordinationStore as _, TaskStore as _, UserStore as _,
 };
 use yulius_app::ports::store_ext::NeedsYouStore as _;
 use yulius_app::telegram::{ChannelServices, ChannelTuning, UNLINKED_REPLY};
-use yulius_domain::ids::TaskId;
+use yulius_domain::harness::Provider;
+use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 
 /// Synthetic bot tokens of the fake (never a real bot's).
@@ -656,18 +658,16 @@ async fn polling_retries_after_errors_and_recovers() -> TestResult {
     Ok(())
 }
 
-/// A task whose state was entered before the channel started is not told again after a restart.
+/// TGC-022: what was already the case when the bot became active (a start of the server, or a
+/// bot set in Settings) is not told; a change after it is, even one that moves no status or
+/// activity (review round 1: a chain blocked later was dropped for good).
 #[tokio::test]
 async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
+    use yulius_app::ports::store_ext::IntakeStore as _;
     let w = world().await?;
-    set_bot(&w, TOKEN_A).await?;
-    link(&w, &w.alice, 100).await?;
-    link(&w, &w.carol, 300).await?;
     let alice = user_id(&w, "alice").await?;
-    // The task and its request date from a minute before the notifier started, as after a
-    // restart of the server.
-    w.h.clock.0.fetch_sub(MINUTE_MS, Ordering::SeqCst);
-    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    // Before the bot: t1 needs you, t2 waits for t1, a subscription must sign in again.
+    let first = seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
     let id = TaskId::parse("t1")?;
     let request = NeedsYouRecord {
         action: "old".into(),
@@ -681,11 +681,124 @@ async fn a_state_entered_before_the_start_is_not_told() -> TestResult {
     w.h.store
         .set_task_needs_you(&id, Some(&request), w.h.app.now())
         .await?;
+    seed_task(&w.h, "t2", "s1", &alice, TaskStatus::Chained, None).await?;
+    let t2 = TaskId::parse("t2")?;
+    w.h.store
+        .insert_chain(&yulius_app::intake::ChainRecord {
+            task_id: t2.clone(),
+            after_task_id: Some(id.clone()),
+            after_number: first.number,
+            blocked_reason: None,
+            created_at: w.h.app.now(),
+            rule: None,
+        })
+        .await?;
+    subscription(&w, AccountStatus::Relogin).await?;
     w.h.clock.0.fetch_add(MINUTE_MS, Ordering::SeqCst);
+
+    set_bot(&w, TOKEN_A).await?;
+    link(&w, &w.alice, 100).await?;
+    link(&w, &w.carol, 300).await?;
+    let all = json!({"needs_you": true, "done": true, "failed": true, "account": true});
+    api(
+        &w,
+        Method::PUT,
+        "/api/me/telegram/choices",
+        Some(all),
+        &w.alice,
+    )
+    .await?;
     w.h.app.publish_task(&id).await;
+    w.h.app.publish_task(&t2).await;
+    account_event(&w, "relogin");
     barrier(&w, "c1").await?;
     assert_eq!(w.fake.sent_to(100).len(), 1, "only the link's reply");
+
+    // After it: the chain is blocked (no status or activity moves) and the subscription is
+    // limited: both are news.
+    w.h.store
+        .set_chain_blocked(&t2, Some("#1 crashed. Start this task now or cancel it."))
+        .await?;
+    w.h.app.publish_task(&t2).await;
+    let sent = w.fake.wait_sent(100, 2).await?;
+    assert!(
+        sent[1].starts_with(&format!("Needs you · app\n#{} task t2\n", first.number + 1)),
+        "{sent:?}"
+    );
+    account_event(&w, "limited");
+    let sent = w.fake.wait_sent(100, 3).await?;
+    assert!(
+        sent[2].starts_with("Team Max reached its usage limit\n"),
+        "{sent:?}"
+    );
     Ok(())
+}
+
+/// Review round 1: while the bot is active, what happens before anyone links is remembered, so
+/// the first person to link is not told of hours-old states as new.
+#[tokio::test]
+async fn a_state_entered_before_anyone_linked_is_not_told_later() -> TestResult {
+    let w = world().await?;
+    set_bot(&w, TOKEN_A).await?;
+    let alice = user_id(&w, "alice").await?;
+    seed_task(&w.h, "t1", "s1", &alice, TaskStatus::Running, None).await?;
+    ask(&w, "t1", "nobody is linked yet").await?;
+    // The notifier handled it (the bot's poll and the bus run on): carol links and her barrier
+    // passes after it.
+    link(&w, &w.carol, 300).await?;
+    barrier(&w, "c0").await?;
+    link(&w, &w.alice, 100).await?;
+    w.h.app.publish_task(&TaskId::parse("t1")?).await;
+    barrier(&w, "c1").await?;
+    assert_eq!(w.fake.sent_to(100).len(), 1, "{:?}", w.fake.sent_to(100));
+    Ok(())
+}
+
+/// A subscription `acc1` ("Team Max") with `status`, stored.
+async fn subscription(w: &World, status: AccountStatus) -> TestResult {
+    w.h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc1")?,
+            provider: Provider::Anthropic,
+            label: "Team Max".into(),
+            credential: None,
+            status,
+            usage_json: None,
+            last_error: None,
+            created_at: w.h.app.now(),
+            updated_at: w.h.app.now(),
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+        })
+        .await?;
+    Ok(())
+}
+
+/// Publishes `acc1`'s view with `status`, as the accounts code does after a change.
+fn account_event(w: &World, status: &str) {
+    use yulius_contracts::api::admin::{AccountUsageView, AccountView};
+    use yulius_contracts::events::UiEvent;
+    w.h.app.events.publish(
+        None,
+        true,
+        UiEvent::AccountUpdated {
+            account: Box::new(AccountView {
+                id: "acc1".into(),
+                provider: "anthropic".into(),
+                label: "Team Max".into(),
+                status: status.into(),
+                usage: AccountUsageView::default(),
+                last_error: None,
+                email: None,
+                email_typed: false,
+                in_use_by: 0,
+                tokens_24h: None,
+                tokens_7d: None,
+                usage_read: None,
+            }),
+        },
+    );
 }
 
 /// Review round 1: a summary held for a chat is never sent after that chat was unlinked (TGC-013).

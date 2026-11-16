@@ -5,8 +5,9 @@
 //! like transcripts, and folds a burst under the per-person rate bound. It speaks to the channel
 //! only through the send queue (`telegram.rs`).
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::broadcast::error::RecvError;
 use yulius_contracts::api::admin::AccountView;
@@ -17,24 +18,47 @@ use yulius_domain::notify::{
     AskedOf, NoticeKind, TaskNotice, Throttle, account_problem, account_text, control_text,
     shared_cause, task_notice, task_signature,
 };
-use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::error::AppResult;
 use crate::events::{Envelope, Reach};
+use crate::model::TaskRecord;
+use crate::needs_you::NeedsYouRecord;
 
-/// Subjects whose last notification is remembered; beyond it the memory starts again.
+/// Subjects whose last notification is remembered; beyond it the memory is read again from the
+/// store (seeded), so nothing already the case is told as new.
 const TOLD_MAX: usize = 20_000;
 
 /// The notifier's memory, in this process only.
 #[derive(Debug, Default)]
 pub(crate) struct NotifierState {
-    /// When the notifier started: a task first seen later is told only of a state entered since.
-    started_at: OnceLock<Timestamp>,
-    /// The last signature told (or seen) per subject (`task:<id>`, `account:<id>`).
+    /// The last signature told (or seen) per subject (`task:<id>`, `account:<id>`, `shared:…`,
+    /// `control:…`), seeded with what is the case when a bot becomes active (TGC-022).
     told: Mutex<HashMap<String, String>>,
+    /// The memory was cleared at [`TOLD_MAX`]: it is seeded again before the next event.
+    reseed: AtomicBool,
     /// Each person's chat and rate bound.
     throttles: Mutex<HashMap<UserId, (String, Throttle)>>,
+}
+
+/// What a task reads as for the chat ([`App::task_reading`]).
+struct TaskReading {
+    /// The notification its state calls for, if any.
+    kind: Option<NoticeKind>,
+    /// What makes it new; empty when it calls for none.
+    signature: String,
+    /// Its open `needs_you` request while it needs you.
+    asked: Option<NeedsYouRecord>,
+}
+
+/// The memory's subject of a sandbox-wide problem's episode (TGC-026).
+fn shared_subject(task: &TaskRecord, cause: &str, episode: i64) -> String {
+    format!("shared:{}:{cause}:{episode}", task.sandbox_id)
+}
+
+/// The memory's subject of one request for control (TGC-027).
+fn control_subject(task: &TaskId, request: &crate::model::ControlRequest) -> String {
+    format!("control:{task}:{}:{}", request.by, request.at.0)
 }
 
 /// One notification, redacted.
@@ -52,6 +76,7 @@ impl NotifierState {
         };
         if told.len() >= TOLD_MAX && !told.contains_key(&subject) {
             told.clear();
+            self.reseed.store(true, Ordering::SeqCst);
         }
         told.insert(subject, signature)
     }
@@ -69,7 +94,6 @@ impl App {
         let Ok(services) = self.channel_services() else {
             return;
         };
-        let _ = services.notifier.started_at.set(self.now());
         let flush_every = services.tuning.flush_every;
         let mut rx = self.events.subscribe();
         let app = Arc::clone(self);
@@ -99,6 +123,9 @@ impl App {
         if services.active().is_none() {
             return;
         }
+        if services.notifier.reseed.swap(false, Ordering::SeqCst) {
+            self.seed_notices().await;
+        }
         // Only tasks and subscriptions are told; every other event costs nothing.
         if let UiEvent::TaskRemoved { task_id } = &envelope.event {
             services.notifier.forget(&format!("task:{task_id}"));
@@ -110,16 +137,8 @@ impl App {
         ) {
             return;
         }
-        // Nobody linked: nothing to read or remember (keeps the notifier ahead of the bus).
-        if self
-            .deps
-            .store
-            .chat_links()
-            .await
-            .map_or(true, |links| links.is_empty())
-        {
-            return;
-        }
+        // Read and remembered while nobody is linked too, so the first person to link is not told
+        // of older states as new (review round 1).
         let mut notices = Vec::new();
         match &envelope.event {
             UiEvent::TaskUpdated { task } => {
@@ -170,12 +189,8 @@ impl App {
         else {
             return Ok(None);
         };
-        let subject = format!("control:{id}:{}:{}", request.by, request.at.0);
+        let subject = control_subject(&id, &request);
         if services.notifier.remember(subject, "told".into()).is_some() {
-            return Ok(None);
-        }
-        // A request that waited before the start was told then, or shown in the browser.
-        if request.at.0 < services.notifier.started_at.get().map_or(0, |t| t.0) {
             return Ok(None);
         }
         let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
@@ -200,6 +215,89 @@ impl App {
         )))
     }
 
+    /// What `task` reads as for the chat now (TGC-022); `None` while it switches: a switch is under
+    /// the hood (TGC-025, as the notification center: SPEC-468 CCF-008), it sends nothing and keeps
+    /// what was told, so a task that reads afterwards as it did before is no news.
+    async fn task_reading(
+        &self,
+        task: &TaskRecord,
+        requested: &HashSet<String>,
+    ) -> AppResult<Option<TaskReading>> {
+        if task.status == yulius_domain::task::TaskStatus::Switching {
+            return Ok(None);
+        }
+        let group = self.task_group(task, requested).await?;
+        let kind = task_notice(group, task.status);
+        let asked = match kind {
+            Some(NoticeKind::NeedsYou) => self.deps.store.task_needs_you(&task.id).await?,
+            _ => None,
+        };
+        let signature = kind.map_or_else(String::new, |kind| {
+            task_signature(
+                kind,
+                task.status,
+                asked.as_ref().map(|a| a.at.to_string()).as_deref(),
+            )
+        });
+        Ok(Some(TaskReading {
+            kind,
+            signature,
+            asked,
+        }))
+    }
+
+    /// Seeds the notifier's memory with what is the case now: every task's reading, its
+    /// sandbox-wide episode and waiting request for control, and every subscription's problem. Run
+    /// when a bot becomes active (a start, a bot set in Settings) and after the memory was
+    /// cleared, so only what changes after it is told (TGC-022; review round 1: judging "first
+    /// seen" by the task's state time dropped a chain blocked later, for good).
+    pub(crate) async fn seed_notices(&self) {
+        match self.try_seed_notices().await {
+            Ok(tasks) => tracing::info!(tasks, "the notifier knows what is the case now"),
+            Err(err) => {
+                tracing::warn!(error = %err, "the notifier could not read what is the case")
+            }
+        }
+    }
+
+    async fn try_seed_notices(&self) -> AppResult<usize> {
+        let services = self.channel_services()?;
+        let notifier = &services.notifier;
+        let store = &self.deps.store;
+        let mut seeded = 0;
+        for sandbox in store.sandboxes().await? {
+            let requested = self.browser_requests(&sandbox.id).await;
+            for archived in [false, true] {
+                for task in store.tasks(&sandbox.id, archived).await? {
+                    if let Some(reading) = self.task_reading(&task, &requested).await? {
+                        let shared = reading.asked.as_ref().and_then(|a| {
+                            a.cause
+                                .as_deref()
+                                .filter(|cause| shared_cause(cause).is_some())
+                                .map(|cause| (cause.to_owned(), a.at))
+                        });
+                        if let Some((cause, at)) = shared {
+                            let episode = self.shared_episode(&task.id, &cause, at).await;
+                            notifier
+                                .remember(shared_subject(&task, &cause, episode), "told".into());
+                        }
+                        notifier.remember(format!("task:{}", task.id), reading.signature);
+                    }
+                    if let Some(request) = store.control_request(&task.id).await? {
+                        notifier.remember(control_subject(&task.id, &request), "told".into());
+                    }
+                    seeded += 1;
+                }
+            }
+        }
+        for account in store.accounts().await? {
+            let status = account.status.as_str();
+            let seen = account_problem(status).map_or_else(String::new, |_| status.to_owned());
+            notifier.remember(format!("account:{}", account.id), seen);
+        }
+        Ok(seeded)
+    }
+
     /// The notification a task's change calls for (TGC-022), once per new state.
     async fn task_event_notice(&self, summary: &TaskSummary) -> AppResult<Option<Notice>> {
         let services = self.channel_services()?;
@@ -210,43 +308,25 @@ impl App {
         let Some(task) = store.task(&id).await? else {
             return Ok(None);
         };
-        // A switch is under the hood (TGC-025, as the notification center: SPEC-468 CCF-008): it
-        // sends nothing and keeps what was told, so a task that reads afterwards as it did before
-        // is no news.
-        if task.status == yulius_domain::task::TaskStatus::Switching {
-            return Ok(None);
-        }
         let requested = self.browser_requests(&task.sandbox_id).await;
-        let group = self.task_group(&task, &requested).await?;
-        let kind = task_notice(group, task.status);
-        let asked = match kind {
-            Some(NoticeKind::NeedsYou) => store.task_needs_you(&id).await?,
-            _ => None,
+        let Some(TaskReading {
+            kind,
+            signature,
+            asked,
+        }) = self.task_reading(&task, &requested).await?
+        else {
+            return Ok(None);
         };
-        let signature = kind.map(|kind| {
-            task_signature(
-                kind,
-                task.status,
-                asked.as_ref().map(|a| a.at.to_string()).as_deref(),
-            )
-        });
+        // What was the case when the bot became active is in the memory (seeded), so a task first
+        // seen here is new (TGC-022).
         let previous = services
             .notifier
-            .remember(format!("task:{id}"), signature.clone().unwrap_or_default());
-        let (Some(kind), Some(signature)) = (kind, signature) else {
+            .remember(format!("task:{id}"), signature.clone());
+        let Some(kind) = kind else {
             return Ok(None);
         };
         if previous.as_deref() == Some(signature.as_str()) {
             return Ok(None);
-        }
-        if previous.is_none() {
-            // First seen since the start: told only of a state entered after it.
-            let state_at = store.task_times(&id).await?.map_or(0, |t| t.state_at.0);
-            let since = state_at.max(asked.as_ref().map_or(0, |a| a.at));
-            let started = services.notifier.started_at.get().map_or(0, |t| t.0);
-            if since < started {
-                return Ok(None);
-            }
         }
         // A request about a problem of the whole sandbox (SPEC-494) is told once per episode, the
         // one the notification center names by its oldest open request, whichever task asked
@@ -257,7 +337,7 @@ impl App {
             .and_then(|(cause, at)| shared_cause(cause).map(|words| (cause, at, words)));
         if let Some((cause, at, _)) = shared {
             let episode = self.shared_episode(&id, cause, at).await;
-            let subject = format!("shared:{}:{cause}:{episode}", task.sandbox_id);
+            let subject = shared_subject(&task, cause, episode);
             if services.notifier.remember(subject, "told".into()).is_some() {
                 return Ok(None);
             }
@@ -405,5 +485,26 @@ impl App {
                 self.enqueue(chat, summary);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full memory is cleared and seeded again before the next event, so what is already the
+    /// case is not told as new (review round 1).
+    #[test]
+    fn a_full_memory_is_seeded_again() {
+        let state = NotifierState::default();
+        for n in 0..TOLD_MAX {
+            assert_eq!(state.remember(format!("task:{n}"), "s".into()), None);
+        }
+        assert!(!state.reseed.load(Ordering::SeqCst));
+        assert_eq!(state.remember("task:0".into(), "t".into()), Some("s".into()));
+        assert!(!state.reseed.load(Ordering::SeqCst), "a known subject fits");
+        assert_eq!(state.remember("task:new".into(), "s".into()), None);
+        assert!(state.reseed.load(Ordering::SeqCst));
+        assert_eq!(state.told.lock().map(|t| t.len()).unwrap_or(0), 1);
     }
 }

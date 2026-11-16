@@ -213,6 +213,8 @@ impl App {
         match services.connector.connect(&token) {
             Ok(channel) => {
                 tracing::info!(bot = %stored.identity.username, "the Telegram channel is on");
+                // What is the case at the start is not news (TGC-022).
+                self.seed_notices().await;
                 self.activate(Some(ActiveBot {
                     channel,
                     identity: stored.identity,
@@ -503,6 +505,11 @@ impl App {
             .set_chat_bot(Some((&sealed, &identity, &login)), now)
             .await?;
         let detail = format!("@{} (unlinked {unlinked})", identity.username);
+        // A bot that becomes active starts from what is the case now (TGC-022); the same bot set
+        // again keeps the memory it has.
+        if services.active().is_none() {
+            self.seed_notices().await;
+        }
         self.activate(Some(ActiveBot { channel, identity }));
         self.deps
             .store
