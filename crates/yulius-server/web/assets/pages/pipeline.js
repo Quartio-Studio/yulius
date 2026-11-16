@@ -121,15 +121,17 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
     // The review's numbers (SPEC-493 REV-006) and the merge queue's (MQC-005) beside the
     // stages; the stages show without them.
     const range = new URLSearchParams({ sandbox: sandbox.id, from: p.from, to: p.to });
-    const [summary, reviews, queue, docker] = await Promise.all([
+    const [summary, reviews, queue, docker, load] = await Promise.all([
       ctx.api.get(`${api}/stages/summary?${params()}`),
       ctx.api.get(`/api/analytics/reviews?${range}`).catch(() => null),
       ctx.api.get(`/api/analytics/merge-queue?${range}`).catch(() => null),
       // What the sandbox's Docker front needed (SPEC-494): restarts, give-ways, Needs you.
       ctx.api.get(`/api/analytics/docker?${range}`).catch(() => null),
+      // The host's load from CI per hour (SPEC-497): jobs' waits, CPUs busy, held, measured.
+      ctx.api.get(`/api/analytics/ci-load?${new URLSearchParams({ from: p.from, to: p.to })}`).catch(() => null),
     ]);
     const weeks = Math.max(1, (Date.parse(`${p.to}T00:00:00Z`) - Date.parse(`${p.from}T00:00:00Z`)) / 86400000 + 1) / 7;
-    return { ...summary, reviews, queue, docker: docker && { ...docker, rangeWeeks: weeks } };
+    return { ...summary, reviews, queue, load, docker: docker && { ...docker, rangeWeeks: weeks } };
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
@@ -153,6 +155,7 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       summary.reviews ? reviewCard(summary.reviews) : null,
       summary.queue ? queueCard(summary.queue) : null,
       summary.docker ? dockerCard(summary.docker) : null,
+      summary.load && summary.load.hours && summary.load.hours.length ? loadCard(summary.load) : null,
       h('section', { class: 'card db-card', 'aria-label': `Trend: ${label}` },
         h('header', { class: 'db-card-head' },
           h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, label),
@@ -264,6 +267,24 @@ export function mountPipelineSection(ctx, sandbox, route, section, actions) {
       tile('Outside the change', wasted,
         `${int(Math.round(m.failed_outside || 0))} min failed for the infrastructure · ${int(Math.round(m.cancelled || 0))} min cancelled · ${int(Math.round(m.rerun || 0))} min run again; target 15%`),
     ];
+  }
+
+  /** The host's load from CI in the range (SPEC-497): job-minutes waited to start, the host's
+   * CPUs busy, and the busiest hour; the instance's, not the sandbox's. */
+  function loadCard(l) {
+    const peak = (l.hours || []).reduce((top, hour) => (!top || hour.wait_job_minutes > top.wait_job_minutes ? hour : top), null);
+    const busy = Number.isFinite(l.busy_percent) ? `${Math.round(l.busy_percent)}%` : '—';
+    const held = (l.hours || []).filter((hr) => Number.isFinite(hr.held_cpus));
+    const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+    const heldAvg = avg(held.map((hr) => hr.held_cpus));
+    const measuredAvg = avg((l.hours || []).filter((hr) => Number.isFinite(hr.measured_cpus)).map((hr) => hr.measured_cpus));
+    return h('section', { class: 'card db-card', 'aria-label': 'CI load' },
+      h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, 'CI load'),
+        h('span', { class: 'db-card-sub' }, 'the host, all projects: jobs waiting to start and the CPUs busy, per hour (UTC)'))),
+      h('div', { class: 'db-kpis pl-kpis' },
+        tile('Waiting to start', `${int(l.wait_job_minutes || 0)} job-min`, peak ? `most in one hour: ${int(peak.wait_job_minutes)} (${peak.hour.slice(11)}:00)` : 'in this range'),
+        tile('Host busy', busy, 'average of the hours read'),
+        tile('CPUs held by CI', heldAvg === null ? '—' : `${Math.round(heldAvg)}`, measuredAvg === null ? 'by the running jobs\u2019 budgets' : `${Math.round(measuredAvg)} measured in use`)));
   }
 
   /** What the sandbox's Docker front needed in the range (SPEC-494): totals and per week. */

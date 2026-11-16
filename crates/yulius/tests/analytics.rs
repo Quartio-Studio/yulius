@@ -1169,6 +1169,43 @@ async fn the_merge_queue_read_counts_ci_minutes_by_outcome() -> TestResult {
     Ok(())
 }
 
+/// SPEC-497: once a minute the dispatcher keeps the host's load from CI (its CPUs busy since the
+/// last reading, the CPUs running jobs reserved and measured, the jobs waiting), and
+/// `GET /api/analytics/ci-load` reads it by hour for anyone signed in; a reversed range is
+/// refused.
+#[tokio::test]
+async fn the_hosts_ci_load_is_kept_each_minute_and_read_by_hour() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let h = harness()?;
+    let (_admin, alice) = base(&h).await?;
+    let start = OCT1 + 6 * 24 * HOUR; // 2026-10-07T00:00Z
+    h.clock.0.store(start, Ordering::SeqCst);
+    h.system.set_ticks(0, 0);
+    h.app.ci_dispatch().await;
+    // Twice in one minute: one reading.
+    h.app.ci_dispatch().await;
+    h.clock.0.store(start + 60_000, Ordering::SeqCst);
+    h.system.set_ticks(300, 1000);
+    h.app.ci_dispatch().await;
+    let read = |query: &'static str| {
+        let (router, who) = (h.router.clone(), alice.clone());
+        async move { call(&router, Method::GET, query, None, &who).await }
+    };
+    let seen = read("/api/analytics/ci-load?from=2026-10-07&to=2026-10-07").await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(
+        seen.body["hours"],
+        json!([{"hour": "2026-10-07T00", "minutes": 2, "wait_job_minutes": 0,
+                "busy_percent": 30.0, "held_cpus": 0.0, "measured_cpus": null}]),
+        "{}",
+        seen.body
+    );
+    assert_eq!(seen.body["busy_percent"], 30.0);
+    let reversed = read("/api/analytics/ci-load?from=2026-10-08&to=2026-10-07").await?;
+    assert_eq!(reversed.status, StatusCode::UNPROCESSABLE_ENTITY);
+    Ok(())
+}
+
 /// Review round 2 of SPEC-493 fix 4: the merge queue's audit read keeps the newest entries
 /// within its limit (oldest first), reads `<slug>` and `<slug>#<n>` but not `<slug>2#<n>`, and the
 /// task ids it is given.

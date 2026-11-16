@@ -4144,6 +4144,16 @@ route('GET', '/api/analytics/merge-queue', ({ db, query }) => {
   };
 });
 
+// GET /api/analytics/ci-load (SPEC-497): `db.ciLoad` replaces the mock's figures.
+route('GET', '/api/analytics/ci-load', ({ db, query }) => db.ciLoad || {
+  range: { sandbox: null, from: query.get('from'), to: query.get('to') },
+  hours: [
+    { hour: '2026-11-16T18', minutes: 60, wait_job_minutes: 648, busy_percent: 27.5, held_cpus: 52.3, measured_cpus: 17.1 },
+    { hour: '2026-11-16T19', minutes: 60, wait_job_minutes: 904, busy_percent: 29.0, held_cpus: 55.8, measured_cpus: 18.4 },
+  ],
+  wait_job_minutes: 1552, peak_wait_job_minutes: 904, busy_percent: 28.3,
+});
+
 // GET /api/analytics/docker (SPEC-494 DFJ-013): `db.dockerAnalytics` replaces the mock's figures.
 route('GET', '/api/analytics/docker', ({ db, query }) => {
   if (query.get('sandbox') && !db.sandboxes.some((s) => s.id === query.get('sandbox'))) fail(404, 'not_found', 'not found');
