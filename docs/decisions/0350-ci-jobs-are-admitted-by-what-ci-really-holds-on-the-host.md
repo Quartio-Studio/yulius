@@ -85,17 +85,19 @@ sandboxes' agents built. Each sandbox's Docker engine had Docker's default pools
   per sandbox with running jobs costs nothing measurable.
 - Engines started before this change keep Docker's default pools until their next start; the
   network wait holds their jobs back at 7 free, with its reason, before a run fails for it.
-- A project's networks are /24s from its engine's next start: the first one a project makes is
-  172.17.1.0/24 (`docker0` keeps 172.17.0.1), not 172.18.0.0/16. A project that wrote a gateway
+- A project's networks are /24s from its engine's next start. Once the sandbox itself started
+  again (its `docker0` made fresh as 172.17.0.0/24) the first one a project makes is
+  172.17.1.0/24; an engine restarted inside a sandbox that kept running keeps `docker0` at
+  172.17.0.0/16, so its first network is 172.18.0.0/24 and about 3,840 can be made, not 4,096,
+  until the sandbox's next start (review round 3). A project that wrote a gateway
   such as 172.18.0.1 into its files, or puts more than 253 containers on one network, sets its
   own `subnet` in its compose file.
 - A sandbox running agents' Docker containers beside its CI counts them as CI's: its next job
   waits a little more. Containers of sandboxes running no CI job are not counted.
-- Jobs that arrive within one window (a run's jobs arrive together) are each checked against the
-  same reading, so the excess of jobs already running over their reservations is counted once,
-  not once per new job: on a budget of 56, one job reserving 16 and measured at 40 lets five
-  8-CPU jobs start together. Counting the reservations made since the last reading was left for
-  later: the reading of the next window holds the job after them back.
+- Jobs that arrive within one window (a run's jobs arrive together) add to the reading: what CI
+  holds is the larger of the reservations and the measured use plus the reservations admitted
+  after the reading. On a budget of 56, one job reserving 16 and measured at 40 lets two of five
+  8-CPU jobs start, not five (review round 3).
 - A project that declares `cpus` above half the budget runs one such job at a time: quartio-v2's
   `cpus = 30` twice is 60 of 56. It is told so (SPEC-497 slice E); 28 fits twice.
 - An engine restarted with networks made under Docker's old pools counts each of them as one of
