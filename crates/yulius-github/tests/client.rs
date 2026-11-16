@@ -1210,6 +1210,32 @@ async fn merge_retries_stop_at_the_retry_budget() -> TestResult {
     Ok(())
 }
 
+/// SPEC-495 MRG-002: the merge's waits are capped at 12 s whatever the retry budget, below the
+/// CD page's 30 s request timeout: a first delay of 12 s does not fit, so one merge request.
+#[tokio::test]
+async fn merge_waits_are_capped_at_twelve_seconds() -> TestResult {
+    let (fake, _, token, number, head) = fresh_pull().await?;
+    let client = GitHubClient::new(GitHubConfig {
+        retry: RetryPolicy {
+            max_attempts: 3,
+            max_total: Duration::from_secs(30),
+            base_delay: Duration::from_secs(12),
+        },
+        ..fake.config()
+    })?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 100).message(BASE_MODIFIED));
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("after 1 attempt "), "{message}");
+    assert_eq!(fake.count("PUT", &merge), 1);
+    Ok(())
+}
+
 /// SPEC-495 MRG-001: the wait for GitHub's mergeability stays within the retry budget.
 #[tokio::test]
 async fn the_wait_for_mergeability_stops_at_the_retry_budget() -> TestResult {

@@ -960,9 +960,12 @@ fn pull_json(state: &FakeState, repo: &FakeRepo, pull: &FakePull) -> Value {
         } else {
             json!(pull.state == PullState::Open && pull.mergeable)
         },
+        // GitHub reads `blocked` for a base under a ruleset rule, also for a caller who may
+        // bypass it (a repository admin promoting past Yulius's production ruleset).
         "mergeable_state": match (pull.state, pull.computing, pull.mergeable) {
             (PullState::Open, 1.., _) => "unknown",
             (PullState::Open, 0, false) => "dirty",
+            (PullState::Open, 0, true) if ruled(repo, &pull.base) => "blocked",
             (PullState::Open, 0, true) => "clean",
             _ => "unknown",
         },
@@ -1880,6 +1883,15 @@ fn may_bypass(
                 _ => false,
             }
         })
+    })
+}
+
+/// Whether a ruleset with rules is in force on `branch`, whoever asks.
+fn ruled(repo: &FakeRepo, branch: &str) -> bool {
+    rulesets_on(repo, branch).any(|ruleset| {
+        ruleset["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty())
     })
 }
 

@@ -26,9 +26,12 @@ deploy, `delivery_merge`, the merge train and remote file edits.
   pull request until GitHub has computed its mergeability (`mergeable` not `null`, at most 6
   reads with doubling backoff). A 405 is transient when GitHub's message says "Base branch was
   modified" or GitHub was still computing at that read; a transient 405 on a pull request GitHub
-  then reports open, not a draft, mergeable and neither blocked nor behind is sent again with
-  doubling backoff.
-- **Bounded**: at most `MERGE_ATTEMPTS` (4) merge requests and 6 reads per wait; all the sleeps
+  then reports open, not a draft and mergeable is sent again with doubling backoff. A
+  `mergeable_state` of `blocked` or `behind` does not stop the retry: GitHub reads it for a caller
+  who may bypass the rule too (a repository admin's promotion past Yulius's production ruleset,
+  ADR-0114), and a merge that is really blocked ends at its next, non-transient 405.
+- **Bounded**: at most `MERGE_ATTEMPTS` (4) merge requests and 6 reads per wait (with the default
+  500 ms first delay 5 reads fit in the 12 s, the sixth only with a shorter delay); all the sleeps
   of one call end within the client's `RetryPolicy::max_total`, capped at 12 s (`MERGE_WAIT`),
   counted from the first request. Each request has its own timeout (10 s) and each read its GET
   retries on top, so against a GitHub that answers at once the call ends within about 12 s, well

@@ -48,8 +48,8 @@ message says which.
   its mergeability (`mergeable` not `null`), at most 6 reads, within the merge's wait budget.
 - MRG-002: A `405` is transient when GitHub's message says "Base branch was modified" or the pull
   request's mergeability was still being computed when Yulius read it. A transient 405 on a pull
-  request GitHub then reports open, mergeable, not a draft and neither blocked nor behind is
-  retried, with doubling backoff, at most `MERGE_ATTEMPTS` (4) merge requests in all. All the
+  request GitHub then reports open, mergeable and not a draft is retried (also when it reads
+  `blocked` or `behind`, which a caller who may bypass the rule reads too), with doubling backoff, at most `MERGE_ATTEMPTS` (4) merge requests in all. All the
   sleeps of one merge end within the client's retry budget (`max_total`), capped at 12 s
   (`MERGE_WAIT`), below the CD page's 30 s request timeout; each request keeps its own timeout.
 - MRG-003: Any other 405, or one GitHub still refuses after the bound, ends the merge with
@@ -102,7 +102,7 @@ message says which.
 
 ## Evidence
 
-- `cargo test -p yulius-github --features fake`: 19 unit and 37 integration tests pass, among them
+- `cargo test -p yulius-github --features fake`: 19 unit and 38 integration tests pass, among them
   AC1 `a_merge_goes_through_githubs_transient_base_branch_was_modified` (2 merge requests), AC2
   `a_merge_waits_until_github_has_computed_the_mergeability` (4 reads, 2 merge requests),
   `any_405_while_github_computes_the_mergeability_is_retried`, AC3
@@ -111,9 +111,13 @@ message says which.
   `a_transient_405_that_never_clears_stops_after_four_merge_requests`,
   `a_mergeability_github_never_computes_ends_the_merge_saying_so` (6 reads),
   `merge_retries_stop_at_the_retry_budget` and `the_wait_for_mergeability_stops_at_the_retry_budget`
-  (1 s budget: 2 merge requests, 2 reads), unit tests `a_refusal_names_its_reason`,
+  (1 s budget: 2 merge requests, 2 reads), `merge_waits_are_capped_at_twelve_seconds` (30 s budget,
+  12 s first delay: 1 merge request), unit tests `a_refusal_names_its_reason`,
   `only_a_mergeable_pull_request_is_merged_again`, `the_merge_wait_is_capped_below_the_client_budget`.
-- `cargo test -p yulius --test main -- github_ production_branch::`: 56 pass, among them MRG-005
+- `cargo test -p yulius --test main -- github_ production_branch::`: 57 pass, among them
+  `an_admins_promotion_past_the_production_ruleset_goes_through_the_transient_405` (the
+  repository admin's promotion under `rulesets_for`'s production ruleset, which the fake now
+  reports `blocked` as GitHub does: 2 merge requests, merged) and MRG-005
   `a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops` (the production
   `GitHubAdapter` over the HTTP fake GitHub: a promotion opened and merged at once goes through
   the 405; a conflicting one is refused with "it conflicts with 'main'", one merge request).
@@ -130,6 +134,13 @@ message says which.
   computing trigger and both time budgets, exact read counts, the "nothing merged" assertion,
   waits capped at 12 s below the CD page's 30 s request timeout, blocked or behind pull requests
   not merged again, "1 attempt", tokio `Instant`, `RetryPolicy` doc and SPEC-002 limits row.
+- Review round 2 (Fable 5.2): request changes; answered: `blocked`/`behind` no longer stop the
+  retry (round 1's change would have refused the admin's promotion past Yulius's own production
+  ruleset; the new production_branch test and the updated unit test failed before the fix), a
+  test holds the 12 s cap inside `merge_pull`, the refusal wording names restricted updates, and
+  the ADR and SPEC-002 row say 5 reads fit with the default delay. The two tight-budget tests keep
+  the 600 ms margin of the existing `retry_budget_bounds_total_time` (a request and a read on
+  the local fake).
 - Not tested here: a real GitHub's 405 timing (the fake models it) and a full CD deploy through
   the HTTP fake: the CD tests' in-process `GitHubPort` bypasses the adapter, so the deploy-level
   proof is the production adapter's promotion test above.

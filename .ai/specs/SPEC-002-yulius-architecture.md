@@ -2469,7 +2469,7 @@ reach the default), a `wf-quick-task` row is listed as a custom instance workflo
 | Session page / agent read | 500 entries, ~2 MiB; text 32 KiB, results 16 KiB, diffs 16 KiB × 20 / 200 entries, 100 000 characters | `next` / `next_from` |
 | Session search | 200 characters, 12 terms; 20 sessions × 3 passages | cut |
 | GitHub retries | 3 attempts, ≤ 30 s total, honoring `Retry-After` | surface error |
-| GitHub merge after a transient 405 (SPEC-495) | 4 merge requests, 6 reads per wait for mergeability, waits ≤ min(retry budget, 12 s) | `NotMergeable` with the reason |
+| GitHub merge after a transient 405 (SPEC-495) | 4 merge requests, 6 reads per wait for mergeability (5 fit with the default 500 ms delay), waits ≤ min(retry budget, 12 s) | `NotMergeable` with the reason |
 | Permission cache | 5 min | refetch |
 | Preview handshakes / grants | 1024 pending (60 s) / 4096 (12 h, re-checked every 30 s) | refuse with 429 / drop the oldest |
 | Egress proxy connections | 256; connect and TLS handshake 10 s; request head 60 s; 24 h per connection; a plain request's response head 300 s with no progress (SPEC-369) | 503; 504 for the response head |

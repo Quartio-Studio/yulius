@@ -40,16 +40,15 @@ fn merge_budget(policy: &RetryPolicy) -> Duration {
 }
 
 /// Whether a pull request GitHub refused with a transient 405 is worth merging again: open, not
-/// a draft, mergeable, and not blocked by branch protection or behind its base (MRG-002).
+/// a draft and mergeable (MRG-002). `blocked` and `behind` do not stop it: GitHub reads them for
+/// a caller who may bypass the rule too (a repository admin's promotion past Yulius's production
+/// ruleset), and a merge that is really blocked ends at its next, non-transient 405.
 fn worth_retrying(pull: Option<&WireMergeability>) -> bool {
     pull.is_some_and(|p| {
         p.state == "open"
             && p.mergeable == Some(true)
             && p.draft != Some(true)
-            && !matches!(
-                p.mergeable_state.as_deref(),
-                Some("blocked" | "behind" | "dirty" | "draft")
-            )
+            && p.mergeable_state.as_deref() != Some("dirty")
     })
 }
 
@@ -83,7 +82,7 @@ fn refusal(
         } else {
             match p.mergeable_state.as_deref() {
                 Some("blocked") => Some(
-                    "branch protection blocks it (required reviews or required checks)".to_owned(),
+                    "branch protection or a ruleset blocks it (required reviews or checks, or restricted updates)".to_owned(),
                 ),
                 Some("behind") => Some(format!(
                     "it is behind '{}', which branch protection requires it to contain",
@@ -547,7 +546,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"mergeable_state": "blocked"}),
-                "branch protection blocks it (required reviews or required checks)",
+                "branch protection or a ruleset blocks it (required reviews or checks, or restricted updates)",
             ),
             (
                 serde_json::json!({"mergeable_state": "behind"}),
@@ -600,17 +599,18 @@ mod tests {
         assert_eq!(refusal(None, github, 1, true), github);
     }
 
-    /// A transient 405 is retried only on a pull request GitHub reports open, mergeable and
-    /// not blocked (MRG-002): a blocked, behind, draft or conflicting one is a real refusal.
+    /// A transient 405 is retried on a pull request GitHub reports open, mergeable and not a
+    /// draft (MRG-002). `blocked` and `behind` stay retried: a caller who may bypass the rule (an
+    /// admin's promotion) reads them too, and a really blocked merge ends at its next 405.
     #[test]
     fn only_a_mergeable_pull_request_is_merged_again() {
-        assert!(worth_retrying(Some(&pull(serde_json::json!({})))));
-        assert!(worth_retrying(Some(&pull(
-            serde_json::json!({"mergeable_state": "unstable"})
-        ))));
+        for state in ["clean", "unstable", "blocked", "behind", "has_hooks"] {
+            assert!(
+                worth_retrying(Some(&pull(serde_json::json!({"mergeable_state": state})))),
+                "{state}"
+            );
+        }
         for fields in [
-            serde_json::json!({"mergeable_state": "blocked"}),
-            serde_json::json!({"mergeable_state": "behind"}),
             serde_json::json!({"draft": true}),
             serde_json::json!({"mergeable": false, "mergeable_state": "dirty"}),
             serde_json::json!({"mergeable": null, "mergeable_state": "unknown"}),

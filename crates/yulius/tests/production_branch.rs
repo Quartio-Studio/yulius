@@ -220,6 +220,34 @@ async fn a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops(
     Ok(())
 }
 
+/// SPEC-495 review round 2: under the production ruleset Yulius gives a new project, GitHub reads
+/// the promotion pull request `blocked` even for the repository admin who may bypass it. The
+/// admin's promotion, opened and merged at once, still goes through GitHub's transient 405.
+#[tokio::test]
+async fn an_admins_promotion_past_the_production_ruleset_goes_through_the_transient_405()
+-> TestResult {
+    let w = world().await?;
+    for ruleset in rulesets_for(&DeliveryProfile::standard()) {
+        w.adapter
+            .create_ruleset(&w.admin, "acme", "app", &ruleset)
+            .await?;
+    }
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let promoted = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await?;
+    assert_eq!(w.main(), Some(promoted), "promoted");
+    assert_eq!(
+        w.fake
+            .count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        2,
+        "the 405, then the merge"
+    );
+    Ok(())
+}
+
 /// SPEC-184 (issue #574): CD and promotion read the integration and production heads through the
 /// adapter, with the installation token and with a person's. The adapter asks GitHub for them;
 /// a branch GitHub does not have is `None`, and a nested branch name is one branch.
