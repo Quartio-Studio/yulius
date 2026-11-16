@@ -470,7 +470,8 @@ impl App {
     /// CDX-004): stored under the lock every usage write takes, and only when it is not older
     /// than what is stored ([`rollout_reading`]).
     pub(crate) async fn rollout_usage(&self, account: &AccountId, reading: &AccountUsage) {
-        self.change_account_usage(account, |stored| rollout_reading(stored, reading))
+        let now = self.now();
+        self.change_account_usage(account, |stored| rollout_reading(stored, reading, now))
             .await;
     }
 
@@ -1163,9 +1164,16 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 /// `stored` with a Codex rollout's `reading` (SPEC-503 CDX-004), `None` when the reading is older
 /// than what is stored: a watch that starts again reads its rollout from the start. The windows it
 /// carries replace the stored ones; a reached limit is recorded, and one it does not carry stays
-/// until its reset. It is a reading of the usage only when it carries both windows.
-fn rollout_reading(stored: AccountUsage, reading: &AccountUsage) -> Option<AccountUsage> {
-    if let (Some(read), Some(known)) = (reading.observed_at, stored.observed_at)
+/// until its reset. It is a reading of the usage only when it carries both windows. The line's
+/// time is the agent's to write: one ahead of `now` counts as read now, so it cannot keep later
+/// readings out.
+fn rollout_reading(
+    stored: AccountUsage,
+    reading: &AccountUsage,
+    now: Timestamp,
+) -> Option<AccountUsage> {
+    let read_at = reading.observed_at.map(|at| at.min(now));
+    if let (Some(read), Some(known)) = (read_at, stored.observed_at)
         && read < known
     {
         return None;
@@ -1178,7 +1186,7 @@ fn rollout_reading(stored: AccountUsage, reading: &AccountUsage) -> Option<Accou
         usage.limit_resets_at = reading.limit_resets_at;
     }
     if reading.primary.is_some() && reading.secondary.is_some() {
-        usage.observed_at = reading.observed_at.or(usage.observed_at);
+        usage.observed_at = read_at.or(usage.observed_at);
     }
     Some(usage)
 }
@@ -1211,8 +1219,9 @@ mod tests {
             observed_at: Some(Timestamp(1_000)),
             ..AccountUsage::default()
         };
+        let now = Timestamp(5_000);
         assert_eq!(
-            rollout_reading(stored, &older),
+            rollout_reading(stored, &older, now),
             None,
             "an older reading is dropped"
         );
@@ -1224,7 +1233,7 @@ mod tests {
             observed_at: Some(Timestamp(3_000)),
             ..AccountUsage::default()
         };
-        let merged = rollout_reading(stored, &newer).unwrap_or_default();
+        let merged = rollout_reading(stored, &newer, now).unwrap_or_default();
         assert_eq!(merged.primary, Some(window(60.0)));
         assert_eq!(
             merged.secondary,
@@ -1241,9 +1250,22 @@ mod tests {
             ..newer
         };
         assert_eq!(
-            rollout_reading(stored, &both).and_then(|u| u.observed_at),
+            rollout_reading(stored, &both, now).and_then(|u| u.observed_at),
             Some(Timestamp(3_000))
         );
+        // A line dated ahead of the server's clock counts as read now: it cannot keep later
+        // readings out.
+        let ahead = AccountUsage {
+            observed_at: Some(Timestamp(99_000)),
+            ..both
+        };
+        let stored_ahead = rollout_reading(stored, &ahead, now).unwrap_or_default();
+        assert_eq!(stored_ahead.observed_at, Some(now));
+        let later = AccountUsage {
+            observed_at: Some(Timestamp(6_000)),
+            ..both
+        };
+        assert!(rollout_reading(stored_ahead, &later, Timestamp(6_000)).is_some());
     }
 
     /// SPEC-482: a task of a Fable model falls back to Opus 5.5; a default task is an Opus task

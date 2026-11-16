@@ -253,7 +253,9 @@ fn message_texts(payload: &Map<String, Value>) -> Vec<&str> {
 
 /// Whether a user-role message was typed, as Codex 0.169 marks it: each content item's
 /// `provenance.type` is `user` for what a person typed and `harness` for what Codex added (its
-/// environment context, a blocking hook's continuation). `None` without that metadata.
+/// environment context, a blocking hook's continuation). `None` without that metadata, and when
+/// every item is `unknown`, which may be either (Codex's own `is_user_authorization_message`
+/// treats it as possibly the user's): the text decides then.
 fn typed_by_provenance(payload: &Map<String, Value>) -> Option<bool> {
     let items = obj_of(payload, "internal_chat_message_metadata_passthrough")?
         .get("content_item_metadata")?
@@ -261,6 +263,7 @@ fn typed_by_provenance(payload: &Map<String, Value>) -> Option<bool> {
     let kinds: Vec<&str> = items
         .iter()
         .filter_map(|item| item.get("provenance")?.get("type")?.as_str())
+        .filter(|kind| *kind != "unknown")
         .collect();
     (!kinds.is_empty()).then(|| kinds.contains(&"user"))
 }
@@ -275,6 +278,43 @@ fn is_injected_context(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex marks what a person typed `user` and what it added `harness`; an item it marks
+    /// `unknown` may be either (its own `is_user_authorization_message` treats it as possibly
+    /// the user's), so the text decides as for a message without provenance.
+    #[test]
+    fn unknown_provenance_lets_the_text_decide() {
+        let message = |kind: &str, text: &str| {
+            serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+                "internal_chat_message_metadata_passthrough": {
+                    "content_item_metadata": [{"provenance": {"type": kind}}]
+                }
+            })
+        };
+        let typed = |value: serde_json::Value| {
+            let line = serde_json::json!({
+                "timestamp": "2026-11-16T20:53:49.000Z",
+                "type": "response_item",
+                "payload": value
+            });
+            observe_line(&line.to_string())
+                .iter()
+                .any(|o| matches!(o, Observed::UserTurn { .. }))
+        };
+        assert!(typed(message("unknown", "Fix the failing test")));
+        assert!(!typed(message(
+            "unknown",
+            "<environment_context><cwd>/w</cwd>"
+        )));
+        assert!(typed(message(
+            "user",
+            "<environment_context> typed by a person"
+        )));
+        assert!(!typed(message("harness", "Run the gate first.")));
+    }
 
     #[test]
     fn injected_context_is_not_a_prompt() {

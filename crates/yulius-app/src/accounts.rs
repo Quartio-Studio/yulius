@@ -277,7 +277,6 @@ impl LoginTerminal {
     }
 }
 
-/// Best-effort zeroing of a plaintext copy before it is freed.
 /// The largest `auth.json` a Codex sign-in may leave (`yulius_harness::login`'s bound).
 const CODEX_LOGIN_AUTH_MAX: usize = 1024 * 1024;
 
@@ -318,6 +317,7 @@ fn read_codex_login_auth(
     }
 }
 
+/// Best-effort zeroing of a plaintext copy before it is freed.
 fn scrub(bytes: Option<Vec<u8>>) {
     if let Some(mut bytes) = bytes {
         bytes.fill(0);

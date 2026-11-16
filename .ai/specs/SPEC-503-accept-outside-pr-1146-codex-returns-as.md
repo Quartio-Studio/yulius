@@ -291,8 +291,20 @@ Five pull requests, each merged into `dev` on green before the next begins.
   clean; the same `cargo nextest` set plus `metrics_recount`: 2235 passed, 0 failed. Yulius CI
   passed on `9bfa82ec5`.
 - **Review round 2** (Fable 5.2): approve of `ddc533f47`, with one minor (the fixtures README rows)
-  and four nits, all carried into slice B. Its merge candidate on `dev` failed the repository check
+  and four nits; answered in this pull request after round 3 (below). Its merge candidate on `dev` failed the repository check
   (run `cdfcd297`): `dev` had taken ADR number 0353 meanwhile (CI admission), so this decision is
   ADR-0355; `origin/dev` merged cleanly, `python3 scripts/check_repository.py` passed, clippy clean,
   `cargo nextest` for `yulius-harness`, `yulius-domain`, `yulius-app`: 1350 passed.
+- **Review round 3** (Fable 5.2, `2a40700a7`, request changes): the merge and the renumbering were
+  right, but round 2's own-code findings were to be fixed here, not in slice B (ADR-0141). Fixed:
+  the fixtures README lists both real rollouts and counts usage from `token_usage_record`;
+  `scrub`'s doc line is back on `scrub`; a user message whose provenance is all `unknown` is
+  decided by its text (`codex::tests::unknown_provenance_lets_the_text_decide`, failing first); a
+  rollout line dated ahead of the server's clock counts as read now
+  (`capacity::tests::a_rollout_reading_replaces_only_an_older_one` extended, failing first); the
+  0355 index line is last; the pull request body names ADR-0355. Left as found: a reading of one
+  window does not date the stored reading (as Claude's session readings, SPEC-473); whether a
+  Codex account's rollouts carry one window is for slice C2 to see with Codex runs. Noted for slice
+  C1: dev's notification text "Failed (no Claude account)" (`yulius-domain/src/notify.rs`) is to
+  name a Codex task's provider once Codex tasks exist.
 
