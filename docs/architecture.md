@@ -2606,7 +2606,10 @@ Each person can get their notifications in their own Telegram chat
 - **The notifier** (`crates/yulius-app/src/notify.rs`) subscribes to the UI event bus. For a task
   event it reads the task, classifies it with `App::task_group` (`AttentionFacts`, the sidebar's
   rule) and `yulius_domain::notify::task_notice`, remembers the last signature per task (a new
-  `needs_you` request is new), and after a restart tells only states entered since. For each linked
+  `needs_you` request is new), and after a restart tells only states entered since. As the
+  notification center does, a switching task is skipped without touching that memory, a request
+  naming a sandbox-wide cause (`docker`) is told once per episode (`App::shared_episode`), and a
+  waiting request for control goes to the task's owner only, once per request. For each linked
   person who chose that kind it applies `App::envelope_reaches`, the same function that filters
   `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
   passes `App::redact_for_sandbox` (account text: the shape-based `redact`).

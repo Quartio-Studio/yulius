@@ -631,7 +631,9 @@ watching, steering and unblocking.
   Notifications with a single-use, 10-minute code (only from the browser, never with an API
   token), chooses what reaches it (Needs you by default; Done; failed or stopped; subscription
   problems for administrators) and unlinks there or with `/stop`. Only what their notification
-  center would show them is sent, with a link to the task, agent secrets removed, at most five
+  center would show them is sent (a subscription switch is no news, a project's Docker trouble is
+  one message however many tasks ask, a request for control of their task reaches them under
+  Needs you), with a link to the task, agent secrets removed, at most five
   messages a minute with the rest in one summary. The server asks Telegram for messages, so no
   inbound port is needed. Replies and new tasks from Telegram are part 2.
 

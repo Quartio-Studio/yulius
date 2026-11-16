@@ -17,7 +17,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   event stream carries are sent, with the task's link, redacted like transcripts, at most five a
   minute with the rest folded into one summary. The server long-polls Telegram (no inbound port,
   backoff after errors; `YULIUS_TELEGRAM_API_URL` for a fake in tests), behind a
-  `NotificationChannel` port that part 2 (replies and new tasks) extends.
+  `NotificationChannel` port that part 2 (replies and new tasks) extends. Brought onto current
+  `dev`, the chat follows what the notification center learned since: a subscription switch is no
+  news, a project's Docker trouble is one message per episode, and a request for control of a task
+  reaches its owner.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's
