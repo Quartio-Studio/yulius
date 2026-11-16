@@ -80,7 +80,15 @@ fn refusal(
         } else if p.mergeable.is_none() {
             Some("GitHub had not finished checking whether it can merge".to_owned())
         } else {
+            // A transient last refusal is GitHub's, not the rule's: a caller who may bypass a
+            // rule reads `blocked` too, and a real block ends on a non-transient 405.
             match p.mergeable_state.as_deref() {
+                _ if transient => {
+                    let plural = if attempts == 1 { "" } else { "s" };
+                    Some(format!(
+                        "GitHub still refused it after {attempts} attempt{plural}"
+                    ))
+                }
                 Some("blocked") => Some(
                     "branch protection or a ruleset blocks it (required reviews or checks, or restricted updates)".to_owned(),
                 ),
@@ -88,12 +96,6 @@ fn refusal(
                     "it is behind '{}', which branch protection requires it to contain",
                     p.base()
                 )),
-                _ if transient => {
-                    let plural = if attempts == 1 { "" } else { "s" };
-                    Some(format!(
-                        "GitHub still refused it after {attempts} attempt{plural}"
-                    ))
-                }
                 _ => None,
             }
         }
@@ -575,6 +577,16 @@ mod tests {
         assert_eq!(
             refusal(
                 Some(&pull(serde_json::json!({}))),
+                "Base branch was modified.",
+                4,
+                true
+            ),
+            "GitHub still refused it after 4 attempts (GitHub: Base branch was modified.)"
+        );
+        // A transient last refusal does not blame a rule the caller may bypass.
+        assert_eq!(
+            refusal(
+                Some(&pull(serde_json::json!({"mergeable_state": "blocked"}))),
                 "Base branch was modified.",
                 4,
                 true

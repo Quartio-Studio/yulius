@@ -9,7 +9,7 @@ use yulius_app::model::Secret;
 use yulius_app::ports::github::{GitHubAppConfig, GitHubPort, NewPull};
 use yulius_app::projects::rulesets_for;
 use yulius_domain::delivery::DeliveryProfile;
-use yulius_github::fake::FakeGitHub;
+use yulius_github::fake::{FakeFault, FakeGitHub};
 use yulius_github::{GitHubPermissions, OwnerKind};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -245,6 +245,53 @@ async fn an_admins_promotion_past_the_production_ruleset_goes_through_the_transi
         2,
         "the 405, then the merge"
     );
+    Ok(())
+}
+
+/// SPEC-495 review round 3: under the production ruleset, a transient 405 that never clears ends
+/// the admin's promotion saying GitHub kept refusing, not blaming the rule the admin bypasses;
+/// the agent's merge, which the rule really refuses, ends at its next 405 with the rule's reason.
+#[tokio::test]
+async fn under_the_production_ruleset_each_refusal_names_its_own_reason() -> TestResult {
+    let w = world().await?;
+    for ruleset in rulesets_for(&DeliveryProfile::standard()) {
+        w.adapter
+            .create_ruleset(&w.admin, "acme", "app", &ruleset)
+            .await?;
+    }
+    let agent = w.agent_token().await?;
+    let number = w.promotion(&agent).await?;
+    let merges = format!("/repos/acme/app/pulls/{number}/merge");
+
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let refused = w
+        .adapter
+        .merge_pull(&agent, "acme", "app", number, "merge", &w.dev)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("ruleset blocks it"), "{message}");
+    assert_eq!(
+        w.fake.count("PUT", &merges),
+        2,
+        "retried once, then the rule"
+    );
+
+    w.fake.inject_fault(
+        FakeFault::new("PUT", merges.clone(), 405, 100)
+            .message("Base branch was modified. Review and try the merge again."),
+    );
+    let refused = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("after 4 attempts"), "{message}");
+    assert!(!message.contains("ruleset blocks it"), "{message}");
+    assert_eq!(w.main(), Some(w.root.clone()), "main never moved");
     Ok(())
 }
 

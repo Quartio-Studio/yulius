@@ -49,9 +49,11 @@ message says which.
 - MRG-002: A `405` is transient when GitHub's message says "Base branch was modified" or the pull
   request's mergeability was still being computed when Yulius read it. A transient 405 on a pull
   request GitHub then reports open, mergeable and not a draft is retried (also when it reads
-  `blocked` or `behind`, which a caller who may bypass the rule reads too), with doubling backoff, at most `MERGE_ATTEMPTS` (4) merge requests in all. All the
-  sleeps of one merge end within the client's retry budget (`max_total`), capped at 12 s
-  (`MERGE_WAIT`), below the CD page's 30 s request timeout; each request keeps its own timeout.
+  `blocked` or `behind`, which a caller who may bypass the rule reads too), with doubling
+  backoff, at most `MERGE_ATTEMPTS` (4) merge requests in all. All the sleeps of one merge end
+  within the client's retry budget (`max_total`), capped at 12 s (`MERGE_WAIT`), below the CD
+  page's 30 s request timeout; each request keeps its own timeout. A merge whose last 405 was
+  transient says GitHub kept refusing, never a rule the caller may bypass.
 - MRG-003: Any other 405, or one GitHub still refuses after the bound, ends the merge with
   `GitHubError::NotMergeable` whose message names the reason: conflicts with the base branch,
   branch protection or required checks/reviews, behind the base branch, a draft, closed, or
@@ -141,6 +143,11 @@ message says which.
   the ADR and SPEC-002 row say 5 reads fit with the default delay. The two tight-budget tests keep
   the 600 ms margin of the existing `retry_budget_bounds_total_time` (a request and a read on
   the local fake).
+- Review round 3 (Opus 5.5): approved df6ef342d; its two minors fixed after the approval
+  (product lines within the allowance): a transient last refusal names GitHub's refusals, not a
+  bypassed rule, and `under_the_production_ruleset_each_refusal_names_its_own_reason` holds both
+  the admin's case (failed before the fix) and the agent's really blocked merge (2 merge
+  requests, the rule's reason); MRG-002 rewrapped.
 - Not tested here: a real GitHub's 405 timing (the fake models it) and a full CD deploy through
   the HTTP fake: the CD tests' in-process `GitHubPort` bypasses the adapter, so the deploy-level
   proof is the production adapter's promotion test above.
