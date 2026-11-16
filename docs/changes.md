@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The README links the Yulius website at https://www.yulius.dev/ (SPEC-500, task #482, outside
   pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
-  named `juliusz.dev`.
+  named an old domain.
 
 - Dialogs show their whole content in Safari (SPEC-500, task #482, outside pull request #1142 by
   studenciak00owl). In Safari 26.0 every dialog's body was 32 px tall (WebKit resolves the body's

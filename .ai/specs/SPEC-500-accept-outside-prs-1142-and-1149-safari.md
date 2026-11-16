@@ -1,11 +1,11 @@
 ---
 yulius-task: d68a94dd-e1e4-4cb7-a8b9-aedb8bfd7dd9
-status: in-progress
+status: done
 ---
 
 # SPEC-500: A dialog shows its whole body in Safari; the README links yulius.dev
 
-Status: in-progress
+Status: done
 Date: 2026-11-16
 Owner: Yulius task #482, bringing two accepted outside pull requests onto current `dev`:
 #1142 by studenciak00owl (its spec, SPEC-448, is this spec's first part, renumbered because the
@@ -82,7 +82,7 @@ links (#1149).
 - [x] Independent review of the Safari fix
 - [x] CI's pool_supervision race: two tests wait for Running (found by this PR's CI)
 - [x] README links yulius.dev on line 12 and in the diagram (contributor's commit plus line 47)
-- [ ] Independent review of the README links
+- [x] Independent review of the README links
 
 ## Acceptance criteria
 
@@ -93,7 +93,8 @@ links (#1149).
 - In WebKit 26.0 the task search shows its results (up to its `max-height`), as in Chromium.
 - The e2e guard passes: the Add subscription dialog's body has flex basis `auto` and shows all of
   its content; it fails with `dev`'s rule.
-- `grep -rn juliusz.dev` finds it nowhere in the repository outside this spec; both README places read `yulius.dev`
+- `grep -rn juliusz.dev` finds it nowhere in the repository outside this spec; both README
+  places read `yulius.dev`
   and the line-12 link goes to https://www.yulius.dev/.
 
 ## Test plan
@@ -192,6 +193,15 @@ Part 2, the README links (#1149), on `dev` after #1359:
   this spec, which quotes the old name.
 - `curl -L https://www.yulius.dev/`: 200, title "Yulius — coding agents, with discipline".
   `juliusz.dev` cannot be reached from the sandbox: the egress proxy refuses it (403).
+- The README's diagram rendered with mermaid 11.4.1 in Chromium, at the base and at the head
+  (independent review): 15 nodes and 15 edges both times, only node B's label changed ("You open
+  yulius.dev / or this GitHub page"). `https://yulius.dev/` answers 308 to `www`, so the bare
+  name in the diagram works too.
+- Independent review (Fable 5.2) approved `eab65cfa1`. Its two minor findings were in this
+  spec's wording: the changes entry had also named the old domain, and the diagram render had
+  no Evidence line. Both are fixed by the entry's rewording and the line above. Its nit on
+  `Cargo.toml`'s `repository` (`Quartio-Studio/yulius-v2`, which redirects to
+  `Quartio-Studio/yulius`) is older and is not the website, so it stays out of this change.
 
 ## Known limits
 
