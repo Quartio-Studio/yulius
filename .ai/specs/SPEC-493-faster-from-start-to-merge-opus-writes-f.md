@@ -1949,3 +1949,15 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
     page shows it and no agent uses it, or with the server (`reap_idle`). Changed in the
     message, ADR-0318 and the operations guide.
   - Suites: `browser` 41 passed (4 opt-in ignored); e2e `browser.e2e.ts` lock tests 2 passed.
+- Review round 2 (Opus 5.5, head `99c2c2ffa`, its CI run passed): approve, with two minors and a
+  nit in own code, closed after the approval within fix 6's bound (18 product lines):
+  - Minor: the agent's look at the policy came after the click's target was found (a look can
+    take seconds, the page can move), and a marked browser still looked at every input. The
+    look now comes first and a marked browser asks nothing. No test can tell the order with the
+    fake page; the 43 `browser` tests pass.
+  - Minor: one failed look during an agent's input marked a browser on a host with the policy.
+    A failed look is now made once more before it counts as "no".
+    `browser::a_look_at_the_policy_that_fails_once_is_asked_again` (the probe's tab fails
+    once) failed before and passes.
+  - Nit: the reviewer's probe is committed as
+    `browser::an_agent_first_without_the_policy_keeps_input_off_until_a_restart`.

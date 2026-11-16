@@ -2389,7 +2389,11 @@ impl BrowserInstance {
     /// without it, and a "yes" from long ago is not taken to stand (review round 1 of fix
     /// 10b). An answer that cannot be had counts as "no".
     async fn agent_input(&self) {
-        if self.display.is_some() && !self.policy_in_force().await {
+        // A marked browser stays so until its restart: nothing to ask.
+        if self.display.is_none() || self.chooser_may_be_open() {
+            return;
+        }
+        if !self.policy_in_force().await {
             self.chooser_may_be_open
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
@@ -2415,7 +2419,13 @@ impl BrowserInstance {
         if fresh(known) {
             return known.in_force;
         }
-        let in_force = match self.probe_policy().await {
+        // A look that fails (Chrome busy) is made once more before it counts as "no": an
+        // agent's input would mark the browser for it (review round 2 of fix 10b).
+        let looked = match self.probe_policy().await {
+            Err(_) => self.probe_policy().await,
+            answer => answer,
+        };
+        let in_force = match looked {
             Ok(in_force) => in_force,
             Err(error) => {
                 warn!(sandbox = %self.sandbox, %error, "the browser's policy could not be asked");
@@ -3075,6 +3085,9 @@ impl BrowserInstance {
         self.touch();
         let target = params.target()?;
         let session = self.session(&params.tab_id).await?;
+        // Before the target is found: a look at the policy may take seconds, in which the page
+        // can move.
+        self.agent_input().await;
         let (x, y) = match &target {
             ClickTarget::Point { x, y } => {
                 check_coordinate("x", *x)?;
@@ -3083,7 +3096,6 @@ impl BrowserInstance {
             }
             ClickTarget::Selector(selector) => self.element_center(&session, selector).await?,
         };
-        self.agent_input().await;
         let _input = self.input_lock.lock().await;
         for (kind, button, buttons, count) in [
             ("mouseMoved", "none", 0, 0),

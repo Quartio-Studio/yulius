@@ -1645,6 +1645,92 @@ async fn an_agent_first_on_a_host_with_the_policy_keeps_viewers_input() -> TestR
     Ok(())
 }
 
+/// Review round 2 of fix 10b: on a host without the policy an agent clicks before anything
+/// asked it; its own look finds "no" and marks the browser, so once the policy appears the
+/// viewer is still refused, for the restart's reason (the reviewer's probe).
+#[tokio::test]
+async fn an_agent_first_without_the_policy_keeps_input_off_until_a_restart() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(false);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        let clicked = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_click",
+            json!({"tab_id": tab, "x": 50, "y": 60}),
+        )
+        .await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        f.fake.set_browser_policy(true);
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        // Until the agent's "no" is asked again, then for the restart's reason.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            send(&mut socket, down.clone()).await?;
+            let error = wait_json(&mut socket, |m| m["type"] == "error").await?;
+            if error["message"].as_str().is_some_and(|m| m.contains("restarts")) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{error}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(
+            !display
+                .inputs()
+                .iter()
+                .any(|i| matches!(i, DisplayInput::Button { press: true, .. })),
+            "{:?}",
+            display.inputs()
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// Review round 2 of fix 10b: one look at the policy that fails during an agent's click (Chrome
+/// busy) is asked once more before it counts as "no": on a host with the policy the browser is
+/// not marked for a hiccup, and its viewer keeps input.
+#[tokio::test]
+async fn a_look_at_the_policy_that_fails_once_is_asked_again() -> TestResult {
+    with_display(FakeDisplay::new(), |f| async move {
+        let display = display_of(&f)?;
+        f.fake.set_browser_policy(true);
+        let served = serve(f.h.router.clone()).await?;
+        let mut socket =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+        let tabs = next_json(&mut socket).await?;
+        let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+        // The probe's own tab is the next one made: that request fails, once.
+        let made = f.fake.calls_for("Target.createTarget").len();
+        f.fake
+            .fail_nth("Target.createTarget", made + 1, -32000, "Chrome is busy");
+        let clicked = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_click",
+            json!({"tab_id": tab, "x": 50, "y": 60}),
+        )
+        .await?;
+        assert_eq!(clicked["isError"], false, "{clicked}");
+        assert_eq!(
+            f.fake.calls_for("Target.createTarget").len(),
+            made + 2,
+            "asked once more"
+        );
+        let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+        send(&mut socket, down).await?;
+        let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+        assert!(display.wait_for_input(pressed, WAIT).await, "the viewer was refused");
+        Ok(())
+    })
+    .await
+}
+
 /// AC-24: an agent's `tool` with `args(tab)` while the policy is not in force.
 async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) -> TestResult {
     with_display(FakeDisplay::new(), |f| async move {
