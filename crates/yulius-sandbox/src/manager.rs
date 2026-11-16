@@ -1009,8 +1009,9 @@ impl Manager {
             self.docker_restarts.fetch_add(1, Ordering::Relaxed);
             self.docker_event(sandbox, "restarted", 1, why.says().to_owned());
             if why == crate::front_repair::Why::Outdated {
-                // Quiet when read: no engine ran; only a client that came between that read and
-                // the new front's start (DFJ-010) met a closed or missing socket.
+                // Quiet when read: no engine ran; only a Docker call that came between that read
+                // and the new front's `ready` failed at once (refused, or cut once the old front
+                // accepted it) and can be run again (DFJ-010).
                 tracing::info!(
                     sandbox,
                     why = why.says(),

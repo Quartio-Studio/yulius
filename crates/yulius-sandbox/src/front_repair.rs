@@ -141,12 +141,14 @@ pub fn runs_another_build(pid: u32, exe: &Path) -> Option<bool> {
     Some((running.dev(), running.ino()) != (current.dev(), current.ino()))
 }
 
-/// Whether a front is quiet, so replacing it now loses nothing (SPEC-494 DFJ-010): its state,
-/// if it writes one, says it holds no connection and runs no engine, and, read live just before
-/// the decision, it has no child process (its engine) and no connection at its `socket`,
+/// Whether a front is quiet, so replacing it now cuts no connection (SPEC-494 DFJ-010): its
+/// state, if it writes one, says it holds no connection and runs no engine, and, read live just
+/// before the decision, it has no child process (its engine) and no connection at its `socket`,
 /// accepted or still waiting. The state alone is up to [`crate::front_gate`]'s write interval
 /// old, and a front from before ADR-0344 writes none; how many sockets a front holds besides
-/// says nothing (an idle one holds four). Review round 1 of slices 5 to 7.
+/// says nothing (an idle one holds four). Review round 1 of slices 5 to 7. Only the moment after
+/// the read is not covered: a Docker call that comes between it and the new front's `ready`
+/// fails at once (refused, or cut once the old front accepted it) and can be run again.
 #[must_use]
 pub fn quiet(
     state: Option<&yulius_contracts::sandbox::DockerFrontState>,
@@ -161,9 +163,12 @@ pub fn quiet(
 /// at `socket`, read from its network namespace's `/proc/<pid>/net/unix`, where an accepted or
 /// queued connection carries its listener's path. Only clients in that namespace are listed (the
 /// kernel creates the accepted socket in the client's): every run, CI job and CD run of the
-/// sandbox; a container's connection is covered by the engine, a child of the front. `None` when that cannot be told: the table is
-/// unreadable or too long, or no listener of `pid`'s namespace is bound at `socket` (another
-/// path than the front's, an ended front), so a doubt never makes a front quiet.
+/// sandbox. An engine front's containers are covered by its engine, its child; a relay front
+/// (a legacy holder whose engine is the holder's, ADR-0158) has no such child, so a client of
+/// it from another namespace is seen only in its state, and before ADR-0344 not at all.
+/// `None` when that cannot be told: the table is unreadable or too long, or no listener of
+/// `pid`'s namespace is bound at `socket` (another path than the front's, an ended front), so a
+/// doubt never makes a front quiet.
 fn connections_on(pid: u32, socket: &Path) -> Option<usize> {
     use std::io::Read as _;
     /// Listening sockets carry `__SO_ACCEPTCON` in the table's flags.
@@ -417,11 +422,18 @@ mod tests {
             let mut line = [0u8; 6];
             out.read_exact(&mut line)?;
         }
-        let held = quiet(Some(&state(0, false)), taking.id(), &socket_taken);
+        let accepted = (
+            connections_on(taking.id(), &socket_taken),
+            quiet(Some(&state(0, false)), taking.id(), &socket_taken),
+        );
         drop(client);
         taking.kill()?;
         taking.wait()?;
-        assert!(!held, "an accepted connection keeps the front");
+        assert_eq!(
+            accepted,
+            (Some(1), false),
+            "an accepted connection is counted and keeps the front"
+        );
         assert_eq!(
             idle,
             (true, true, false, false, Some(4)),
