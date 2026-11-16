@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-499, task #481, outside pull
+  request #1131 by studenciak00owl). The two CI lanes of a sandbox no longer race the rustup
+  installer and `rustup toolchain install` in the shared `~/.rustup` (a run failed on a
+  half-installed toolchain): `scripts/bootstrap.py` holds a lock in the tools cache around them,
+  and a second run waits and then finds the toolchain installed. The pinned tool builds and the
+  zig download take their locks through the same helper, `scripts/home_lock.py`.
 - A production deploy no longer fails on a promotion pull request GitHub has not finished
   checking (SPEC-495, task #477,
   [ADR-0349](decisions/0349-a-merge-waits-out-githubs-unsettled-mergeability.md)): after GitHub's
@@ -1198,10 +1204,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   agent secret from the stored value, bound to those hosts, while the production secret stays
   production's. The task waits flagged until the answer, and production refusals now name the
   tool.
-- Bootstrap tolerates a concurrent run in the shared CI home (SPEC-445). The two CI lanes of a
-  sandbox no longer race `rustup toolchain install` in `~/.rustup` (a run failed on a
-  half-installed toolchain): `scripts/bootstrap.py` takes a lock in the home around it, and a
-  second run waits and then finds the toolchain installed.
 - Cancelling an update acts at once (SPEC-439, ADR-0283, task #421, #1117). **Cancel update**
   during the build marked the update cancelled but left the release build compiling for minutes,
   so the server stayed busy and a restart or a new update waited behind it; the page kept saying
