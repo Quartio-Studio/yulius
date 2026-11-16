@@ -44,7 +44,7 @@ The full list is in the [product summary](docs/product.md).
 
 ```mermaid
 flowchart TD
-    A["👀 You see Yulius<br/>on X/Twitter or online"] --> B["🌐 You open juliusz.dev<br/>or this GitHub page"]
+    A["👀 You see Yulius<br/>on X/Twitter or online"] --> B["🌐 You open yulius.dev<br/>or this GitHub page"]
     B --> C{"Is it for you?<br/>(table above)"}
     C -- "not yet" --> Z["⭐ Star the repo and<br/>come back later"]
     C -- "yes" --> D["🖥️ Rent a Linux VPS<br/>(8 vCPU, 16 GB RAM)"]
