@@ -2100,6 +2100,64 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
     Ok(())
 }
 
+/// SPEC-502 TKP-005: a subscription connected by pasting a token is in the pool at once. A task
+/// waiting for capacity (nothing says when it can go on, so the resume loop sleeps its full
+/// recheck of 5 minutes) starts on it within seconds, woken by the paste, with no resume round
+/// called here. The loop's own round after the pause and one called here run first, so neither
+/// can take the pasted subscription for the paste's wake.
+#[test]
+fn a_task_waiting_for_capacity_starts_on_a_pasted_subscription_at_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        app.start_capacity_loop();
+        let (id, user, transcript) = first_turn(&app, &data, Some("claude-opus-5-5")).await?;
+        append_refused_turn(&transcript, "first")?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let _ = app.resume_round().await;
+        assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let token = concat!(
+            "sk-ant-oat01-",
+            "SYNTHETICwakes0123456789abcdefghijklmnop-test"
+        );
+        let created = app
+            .create_account(
+                &ctx,
+                yulius_contracts::api::admin::CreateAccount {
+                    provider: "anthropic".into(),
+                    label: "pasted".into(),
+                    token: Some(token.into()),
+                },
+            )
+            .await?;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            run_accounts(&app, &id).await[1].as_deref(),
+            Some(created.account.id.as_str())
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// "With no answer from the agent in between" (UCL-010): a limit nothing says the end of that
 /// comes after the model answered again is a new one, with its own retry. The task waits for
 /// it like for the first; it does not ask a person at once because it met such a limit before.

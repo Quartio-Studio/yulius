@@ -209,6 +209,10 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/admin/accounts/{id}/relogin", post(accounts::relogin))
         .route(
+            "/api/admin/accounts/{id}/token",
+            put(accounts::replace_token),
+        )
+        .route(
             "/api/admin/accounts/{id}/usage",
             post(accounts::refresh_usage),
         )
