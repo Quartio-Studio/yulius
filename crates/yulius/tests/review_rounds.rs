@@ -683,6 +683,31 @@ async fn a_tight_round_with_nowhere_roomier_starts_where_it_is() -> TestResult {
     Ok(())
 }
 
+/// SPEC-493 RLM-003: a move for room gives way to the session's work: with background work
+/// running, the round starts where it is rather than being refused.
+#[tokio::test]
+async fn a_tight_round_with_work_running_starts_where_it_is() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let used = |percent: f64| {
+        json!({"primary": {"used_percent": percent, "window_minutes": 300,
+            "resets_at": 4_102_444_800_000_i64}})
+        .to_string()
+    };
+    let account = add_account(&h, "acc-1", Some(used(95.0))).await?;
+    add_account(&h, "acc-2", Some(used(20.0))).await?;
+    let task = running_task(&h, TaskMode::Prompt, &account).await?;
+    h.app.background_agents_observed(&task, 1).await;
+    let (_, _, answer) = hook(&h.internal, "PreToolUse", agent_start("yulius-reviewer")).await?;
+    assert_ne!(
+        answer["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{answer}"
+    );
+    assert_eq!(rounds(&h, &task, true).await?.len(), 1);
+    assert!(h.store.switches(&task).await?.is_empty());
+    Ok(())
+}
+
 /// SPEC-493 REV-004: what the reviewer's transcript says is noted on its round: the model that
 /// answered (the latest), and that a usage limit cut it off, which its later report keeps.
 #[tokio::test]
