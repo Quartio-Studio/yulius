@@ -97,7 +97,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
         app.tool_scope_claim(&claimer, &json!({"pattern": "crates/a/**"}))
             .await?;
         // A second message would be typed at once (the check that stops it runs before any
-        // typing): none comes within a bounded look.
+        // typing; a refused paste is tried again 10 s later): none comes within a bounded look.
         // Each message shows once as its paste.
         let echoed = "200~Yulius: task #";
         assert_eq!(
@@ -106,7 +106,7 @@ fn an_overlapping_claim_is_told_to_both_tasks() -> TestResult {
             "{}",
             screen(&app, &a)
         );
-        let again = wait_for("a second message", Duration::from_secs(5), || {
+        let again = wait_for("a second message", Duration::from_secs(25), || {
             let shown = screen(&app, &a);
             async move { shown.matches(echoed).count() > 1 }
         })
