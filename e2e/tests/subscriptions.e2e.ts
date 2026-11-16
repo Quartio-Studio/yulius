@@ -1340,4 +1340,11 @@ test('a subscription is connected, or signed in again, by pasting a token made e
   await expect(dialog).toBeHidden();
   await expect(browser.locator('.toast-ok .toast-msg:has-text("New token saved: Claude #3 is connected. Tasks can use it now.")')).toBeVisible();
   await expect(card.getByRole('button', 'Sign in again')).toHaveCount(0);
+  // The card drawn again without its Sign in again keeps the keyboard on Paste a new token, not
+  // on the control that moved into its place (Remove), as its neighbours do (SPEC-463).
+  const focused = () => browser.evaluate(() => {
+    const el = document.activeElement;
+    return `${(el?.textContent ?? '').trim()} @ ${el?.closest('.card')?.textContent?.includes('Claude #3') ?? false}`;
+  });
+  await expect.poll(focused).toBe('Paste a new token @ true');
 });

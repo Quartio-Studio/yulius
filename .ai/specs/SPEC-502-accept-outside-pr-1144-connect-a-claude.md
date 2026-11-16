@@ -82,9 +82,9 @@ requests later). What changed under it since:
 ## Plan
 
 - [x] Contributor's commit on current dev: conflicts resolved, spec and ADR renumbered
-- [ ] A pasted new token drops the old sign-in's model limits and keeps a typed email
-- [ ] A paste a sign-in does not let go of is refused with 409
-- [ ] The card's Paste a new token button keeps focus like its neighbours; e2e green
+- [x] A pasted new token drops the old sign-in's model limits and keeps a typed email
+- [x] A paste a sign-in does not let go of is refused with 409
+- [x] The paste dialogs pass e2e on the current Subscriptions page, focus back on the card
 - [ ] Docs on current dev: api.md, architecture, product, changes, ADR-0352
 - [ ] Independent review approves the branch head
 
