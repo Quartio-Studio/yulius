@@ -656,7 +656,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "action": {"type": "string", "description": "To do: what the person should do (or decide, with decision: true), imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
                 "decision": {"type": "boolean", "description": "true: the person chooses (name the options in action) rather than does something"},
                 "link": {"type": "string", "description": "Where to do it: a Yulius page URL"},
-                "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"}
+                "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"},
+                "cause": {"type": "string", "enum": crate::needs_you::CAUSES, "description": "A problem of the whole sandbox, shared by its tasks: docker (the sandbox's Docker does not answer). Every task naming it shows as one card, answered together, and Yulius's own repair answers it"}
             }), &[]),
         },
         ToolDescriptor {

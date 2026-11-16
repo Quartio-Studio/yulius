@@ -5433,6 +5433,7 @@ fn the_agents_own_request_stays_when_the_session_works_after_a_goal_pause() -> T
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store

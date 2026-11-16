@@ -257,6 +257,10 @@ pub struct NeedsYouView {
     pub link: Option<String>,
     /// When it was asked (RFC 3339).
     pub at: String,
+    /// The sandbox-level problem it is about (`docker`), shared with the sandbox's other tasks
+    /// that name it: one card shows them all (SPEC-494 DFJ-011).
+    #[serde(default)]
+    pub cause: Option<String>,
 }
 
 /// Why a task was flagged `needs_attention` (SPEC-472, ADR-0306).

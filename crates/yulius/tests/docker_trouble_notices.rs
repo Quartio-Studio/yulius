@@ -70,6 +70,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store
@@ -113,6 +114,7 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
             decision: false,
             link: None,
             at: 1,
+            cause: None,
         };
         app.deps
             .store
@@ -141,6 +143,123 @@ fn a_sandboxs_tasks_hear_of_its_docker_trouble_once_and_of_its_end() -> TestResu
         })
         .await?;
         stop(&app, &id).await?;
+        Ok(())
+    })
+}
+
+/// AC-7 (DFJ-011): two tasks' requests about the sandbox's Docker are one shared problem: a
+/// person answering one answers both, and the end of the Docker trouble (Yulius's repair)
+/// answers both and tells them it is no longer full.
+#[test]
+fn requests_naming_the_sandboxs_docker_are_answered_together() -> TestResult {
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_tuned(&data, &fake, agent, |config| config.goal_ready_ms = 2_000)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        for (id, title) in [(&first, "First"), (&second, "Second")] {
+            wait_for("the first answer", Duration::from_secs(30), || {
+                let shown = screen(&app, id);
+                let expected = format!("ECHO: {title}: answer with an echo");
+                async move { shown.contains(&expected) }
+            })
+            .await?;
+        }
+        let docker = |action: &str, at: i64| yulius_app::needs_you::NeedsYouRecord {
+            action: action.into(),
+            happened: None,
+            problem: None,
+            decision: false,
+            link: None,
+            at,
+            cause: Some("docker".into()),
+        };
+        let ask = |id: &yulius_domain::ids::TaskId, at: i64| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .set_task_needs_you(
+                        &id,
+                        Some(&docker("Restart Docker", at)),
+                        yulius_domain::time::Timestamp(at),
+                    )
+                    .await
+            }
+        };
+        let open = |id: &yulius_domain::ids::TaskId| {
+            let app = std::sync::Arc::clone(&app);
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .task_needs_you(&id)
+                    .await
+                    .map(|r| r.is_some())
+            }
+        };
+        ask(&first, 1).await?;
+        ask(&second, 2).await?;
+        // A person answers one: both are answered.
+        app.end_needs_you(&first).await;
+        assert!(
+            !open(&first).await? && !open(&second).await?,
+            "both answered"
+        );
+        // Asked again; the sandbox's Docker trouble begins and ends (a repair): both answered,
+        // and both hear that it is no longer full.
+        ask(&first, 3).await?;
+        ask(&second, 4).await?;
+        let health = app.connection_health();
+        health.refused_times(
+            Refusal {
+                limit: Limit::Docker,
+                sandbox: Some(sandbox.as_str().to_owned()),
+                held: 256,
+                max: 256,
+                holders: Vec::new(),
+            },
+            1,
+            5,
+        );
+        app.tell_docker_troubles().await;
+        health.held(Limit::Docker, Some(sandbox.as_str()), 0);
+        let mut heard = Vec::new();
+        for _ in 0..yulius_app::docker_trouble::BACK_AFTER {
+            heard.extend(app.tell_docker_troubles().await);
+        }
+        assert!(
+            !open(&first).await? && !open(&second).await?,
+            "the repair answered both"
+        );
+        // Sessions still in their start window are told at a later pass.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let back = |heard: &[(yulius_domain::ids::TaskId, &str)]| {
+            heard
+                .iter()
+                .filter(|(_, text)| *text == DOCKER_BACK)
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+        while back(&heard).len() < 2 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            heard.extend(app.tell_docker_troubles().await);
+        }
+        let told = back(&heard);
+        assert!(told.contains(&first) && told.contains(&second), "{heard:?}");
+        assert_eq!(told.len(), 2, "each told once: {heard:?}");
+        stop(&app, &first).await?;
+        stop(&app, &second).await?;
         Ok(())
     })
 }

@@ -73,6 +73,9 @@ impl App {
             .restart_docker(sandbox)
             .await
             .map_err(AppError::Conflict)?;
+        // The repair answers the sandbox's shared Docker request; its tasks are told once the
+        // trouble (if any) has stayed ended (SPEC-494 DFJ-011).
+        self.answer_docker_requests(sandbox.as_str()).await;
         tracing::info!(sandbox = %sandbox, "the sandbox's Docker was restarted at a person's ask");
         Ok(serde_json::json!({
             "restarted": true,
@@ -149,6 +152,11 @@ impl App {
         let held = self.update_holds_starts();
         let mut typed = Vec::new();
         for (sandbox, back) in due {
+            if back {
+                // Yulius's repair (or the room the front found again) answers the sandbox's
+                // shared Docker request; its tasks hear it with the others (SPEC-494 DFJ-011).
+                self.answer_docker_requests(&sandbox).await;
+            }
             let told_tasks = self
                 .docker_told()
                 .get(&sandbox)
@@ -203,6 +211,21 @@ impl App {
             }
         }
         typed
+    }
+
+    /// Ends the requests of `sandbox`'s tasks that name the `docker` cause, and has those tasks
+    /// hear that it is no longer full with the ones told of the trouble.
+    async fn answer_docker_requests(&self, sandbox: &str) {
+        let Ok(id) = yulius_domain::ids::SandboxId::parse(sandbox) else {
+            return;
+        };
+        let ended = self.end_shared_needs_you(&id, "docker").await;
+        if ended.is_empty() {
+            return;
+        }
+        let mut told = self.docker_told();
+        let entry = told.entry(sandbox.to_owned()).or_default();
+        entry.tasks.extend(ended);
     }
 
     /// Drops the told tasks of `sandbox`'s ended trouble that rest now (or are gone), and the

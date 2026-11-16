@@ -109,6 +109,7 @@ mod tests {
             decision: false,
             link: None,
             at: 200,
+            cause: None,
         }
     }
 

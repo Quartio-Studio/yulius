@@ -6855,6 +6855,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         decision: true,
         link: None,
         at: now.0,
+        cause: None,
     };
     store
         .set_task_needs_you(
@@ -6996,6 +6997,7 @@ async fn the_superagent_sees_why_tasks_need_its_person_and_answers_for_them() ->
         decision: false,
         link: None,
         at: now.0,
+        cause: None,
     };
     store
         .set_task_needs_you(&carols.id, Some(&old_row), now)

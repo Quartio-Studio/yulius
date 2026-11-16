@@ -46,7 +46,14 @@ pub struct NeedsYouRecord {
     pub link: Option<String>,
     /// When it was asked (ms).
     pub at: i64,
+    /// The sandbox-level problem it is about ([`CAUSES`]), shared by the sandbox's tasks that
+    /// name it: they show as one card and are answered together (SPEC-494 DFJ-011).
+    #[serde(default)]
+    pub cause: Option<String>,
 }
+
+/// The sandbox-level causes a request may name: `docker`, the sandbox's Docker does not answer.
+pub const CAUSES: &[&str] = &["docker"];
 
 impl NeedsYouRecord {
     /// The API view.
@@ -59,6 +66,7 @@ impl NeedsYouRecord {
             decision: self.decision,
             link: self.link.clone(),
             at: rfc3339(Timestamp(self.at)),
+            cause: self.cause.clone(),
         }
     }
 
@@ -105,6 +113,8 @@ struct Args {
     link: Option<String>,
     #[serde(default)]
     resolved: bool,
+    #[serde(default)]
+    cause: Option<String>,
 }
 
 /// One line of at most `max` characters: control characters become spaces, characters that
@@ -188,6 +198,16 @@ impl App {
                 Some(link)
             }
         };
+        let cause = match args.cause.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(cause) if CAUSES.contains(&cause) => Some(cause.to_owned()),
+            Some(other) => {
+                return Err(AppError::Invalid(format!(
+                    "cause is one of {} (a problem of the whole sandbox), not {other:?}",
+                    CAUSES.join(", ")
+                )));
+            }
+        };
         let record = NeedsYouRecord {
             action: action.clone(),
             happened,
@@ -195,6 +215,7 @@ impl App {
             decision: args.decision,
             link: link.clone(),
             at: self.now().0,
+            cause: cause.clone(),
         };
         // The request itself puts the task in Needs you (`AttentionFacts`, `taskInfo`), whatever the
         // agent does meanwhile; its activity is left to its turns.
@@ -203,11 +224,18 @@ impl App {
             .await?;
         self.publish_task(&ctx.task.id).await;
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
+        let next = match cause.as_deref() {
+            Some(cause) => format!(
+                "People see one \"Needs you\" card for every task of this sandbox that names cause {cause}; answering it, or Yulius's own repair of the sandbox's Docker, closes yours too, and you are told when Docker is no longer full. Print the request in the session as it is; go on with other work."
+            ),
+            None => "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.".to_owned(),
+        };
         Ok(json!({
             "asked": action,
             "print": record.printed(),
             "link": link,
-            "next": "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.",
+            "cause": cause,
+            "next": next,
         }))
     }
 
@@ -228,20 +256,65 @@ impl App {
         }
     }
 
-    /// A prompt typed into the task ends its request: a person answered.
-    pub(crate) async fn end_needs_you(&self, task: &TaskId) {
+    /// A prompt typed into the task ends its request: a person answered. A request about a
+    /// sandbox-level cause is answered for every task of the sandbox that names it (one card,
+    /// SPEC-494 DFJ-011).
+    pub async fn end_needs_you(&self, task: &TaskId) {
+        let shared = match self.deps.store.task_needs_you(task).await {
+            Ok(Some(request)) => request.cause,
+            _ => None,
+        };
+        self.end_one_needs_you(task).await;
+        if let Some(cause) = shared
+            && let Ok(Some(record)) = self.deps.store.task(task).await
+        {
+            self.end_shared_needs_you(&record.sandbox_id, &cause).await;
+        }
+    }
+
+    async fn end_one_needs_you(&self, task: &TaskId) -> bool {
         match self
             .deps
             .store
             .set_task_needs_you(task, None, self.now())
             .await
         {
-            Ok(true) => self.publish_task(task).await,
-            Ok(false) => {}
+            Ok(true) => {
+                self.publish_task(task).await;
+                true
+            }
+            Ok(false) => false,
             Err(err) => {
-                tracing::warn!(task = %task, error = %err, "ending a needs_you request failed")
+                tracing::warn!(task = %task, error = %err, "ending a needs_you request failed");
+                false
             }
         }
+    }
+
+    /// Ends the requests of `sandbox`'s tasks that name `cause` (a person answered the shared
+    /// card, or Yulius repaired the cause); returns the tasks whose request ended.
+    pub(crate) async fn end_shared_needs_you(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        cause: &str,
+    ) -> Vec<TaskId> {
+        let Ok(tasks) = self.deps.store.needs_you_tasks(sandbox).await else {
+            return Vec::new();
+        };
+        let mut ended = Vec::new();
+        for task in tasks {
+            let names_it = matches!(
+                self.deps.store.task_needs_you(&task).await,
+                Ok(Some(request)) if request.cause.as_deref() == Some(cause)
+            );
+            if names_it && self.end_one_needs_you(&task).await {
+                ended.push(task);
+            }
+        }
+        if !ended.is_empty() {
+            tracing::info!(sandbox = %sandbox, cause, tasks = ended.len(), "a shared Needs you was answered");
+        }
+        ended
     }
 
     /// The task's open request, for its summary.

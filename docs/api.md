@@ -380,7 +380,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
+  "needs_you": {"action","happened|null","problem|null","decision","link|null","at","cause"?}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`); `cause` `docker`: a problem of the whole sandbox (SPEC-494), shown as one card with the other tasks naming it
   "attention": {"kind":"terminal|yulius","problem|null","action|null","link|null"}|null,   // SPEC-472: why `activity` is `needs_attention`
   "background_shells": "0|1|…|null",
   "spec_unfinished": false,

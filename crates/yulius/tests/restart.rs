@@ -519,6 +519,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
                     decision: true,
                     link: None,
                     at: closed,
+                    cause: None,
                 }),
                 yulius_domain::time::Timestamp(closed),
             )

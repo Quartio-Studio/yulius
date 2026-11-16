@@ -152,9 +152,16 @@ ever reaches it).
 
 ### One shared problem, one Needs you (slice 4)
 
-- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem (`docker`).
-  Needs you of one sandbox with the same open cause show as one card naming its tasks; answering
-  it answers them all, and Yulius's repair of that cause answers them all too.
+- **DFJ-011** `needs_you` takes an optional `cause` naming a sandbox-level problem; the one cause
+  now is `docker` (the sandbox's Docker does not answer), and another value is refused. The agent
+  names the cause (Yulius cannot tell from free text that seven requests are the same problem;
+  the tool's description says when). The Needs you of one sandbox naming the same cause show as
+  one row in the sidebar's Needs you group ("This project's Docker: #4, #12"), on the first
+  asking task's row, whose tooltip says that answering one answers them all. A person answering
+  one of them (writing to that task) ends every request of the sandbox naming that cause; so does
+  Yulius's repair: the end of the sandbox's Docker trouble (after `BACK_AFTER` passes) and the
+  Superagent's `docker_restart`. The tasks whose request it ended hear that Docker is no longer
+  full with those told of the trouble.
 
 ### Fronts do not run old code for days (slice 5)
 
@@ -189,7 +196,7 @@ ever reaches it).
 - [x] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [x] The Superagent restarts its sandbox's Docker
 - [ ] Slice 3 reviewed independently, findings fixed test-first
-- [ ] Needs you of one sandbox-level cause show as one card
+- [x] Needs you of one sandbox-level cause show as one card
 - [ ] Slice 4 reviewed independently, findings fixed test-first
 - [ ] An adopted front from another build is replaced when quiet
 - [ ] br_netfilter decided on a real host and applied
@@ -412,3 +419,11 @@ in slice 3's pull request.
 - Accepted, not changed: an unanswered ping waits up to 5 s under the sandbox's upkeep lock (once
   per tick, only beside a client of a running engine); bounded, and releasing the lock mid-tick
   would let a run start between the reading and the repair.
+### Slice 4 (one shared problem, one Needs you)
+
+- `requests_naming_the_sandboxs_docker_are_answered_together` (fake agents, two tasks): a person
+  answering one ends both; the end of the Docker trouble ends both, and both hear that it is no
+  longer full, each once.
+- `npx e2e run tests/shared-needs-you.e2e.ts`: two tasks naming `docker` show as one row naming
+  #4 and #12, and each on its own row once answered: failed before (no such row), passes after;
+  `attention.e2e.ts`, `navigation.e2e.ts` still pass (22 passed).

@@ -1086,7 +1086,13 @@ export function createSidebar(ctx) {
 
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
-  function rowFor(task) {
+  // One Needs you card per sandbox-level problem (SPEC-494): the tasks whose request names the
+  // same cause show on the first one's row, which names them all.
+  const CAUSES = { docker: 'This project’s Docker' };
+  const causeOf = (task) => (task.needs_you && CAUSES[task.needs_you.cause] ? task.needs_you.cause : null);
+  const plainAction = (task) => ((task.needs_you && task.needs_you.action) || '').replaceAll('`', '');
+
+  function rowFor(task, shared = null) {
     let row = rows.get(task.id);
     if (!row) {
       // One line: state icon, task number, pull request, title, age. What the task needs is said
@@ -1119,11 +1125,12 @@ export function createSidebar(ctx) {
     }
     row.task = task;
     row.info = rowInfo(task);
+    row.shared = shared ? shared.map((other) => other.number) : null;
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
     row.time = taskTime(task, row.info);
-    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login]);
+    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr, ctx.store.state.me?.user?.login, row.shared]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -1157,6 +1164,12 @@ export function createSidebar(ctx) {
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
     row.sub.textContent = `, ${activityLine(task, info)}${owner ? `, owned by @${owner}` : ''}`;
+    if (row.shared) {
+      const tasks = row.shared.map((number) => `#${number}`).join(', ');
+      row.title.textContent = `${CAUSES[causeOf(task)]}: ${tasks}`;
+      row.link.title = `${CAUSES[causeOf(task)]} — asked by tasks ${tasks}: ${plainAction(task)}. Answering one of them, or ${BRAND.name}’s own repair, answers them all.`;
+      row.sub.textContent = `, needs you, shared by tasks ${tasks}`;
+    }
     // What the time measures depends on the group, and the words say it (SPEC-087 TIM-003).
     row.age.textContent = row.time.text;
     row.age.title = row.time.title;
@@ -1264,9 +1277,18 @@ export function createSidebar(ctx) {
     }
     const seen = new Set();
     const grouped = new Map(GROUPS.map((g) => [g.id, []]));
+    const sharing = new Map();
+    for (const task of tasks) {
+      const cause = causeOf(task);
+      if (cause && rowInfo(task).group === 'needs') sharing.set(cause, [...(sharing.get(cause) || []), task]);
+    }
     for (const task of tasks) {
       seen.add(task.id);
-      const row = rowFor(task);
+      const shared = sharing.get(causeOf(task));
+      const sharedHere = shared && shared.length > 1 && shared.includes(task) ? shared : null;
+      // Shown on the first asking task's card.
+      if (sharedHere && sharedHere[0] !== task) continue;
+      const row = rowFor(task, sharedHere);
       grouped.get(row.info.group).push(row);
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
