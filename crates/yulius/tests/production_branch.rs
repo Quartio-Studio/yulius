@@ -180,6 +180,46 @@ async fn without_the_ruleset_the_agents_token_could_write_production() -> TestRe
     Ok(())
 }
 
+/// SPEC-495 (task #477, MRG-005): a person's production deploy opens the dev → main promotion
+/// pull request and merges it at once, through the production adapter. GitHub answers that first
+/// merge "405 Base branch was modified" while it computes the new pull request's mergeability;
+/// the merge waits and goes through, so the deploy goes on. A promotion with a real conflict still
+/// stops, saying it conflicts with `main`.
+#[tokio::test]
+async fn a_promotion_merged_at_once_waits_for_github_and_a_conflict_still_stops() -> TestResult {
+    let w = world().await?;
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_computing("acme", "app", number, 2);
+    let promoted = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &w.dev)
+        .await?;
+    assert_eq!(w.main(), Some(promoted.clone()), "promoted");
+    let merges = format!("/repos/acme/app/pulls/{number}/merge");
+    assert_eq!(w.fake.count("PUT", &merges), 2, "the 405, then the merge");
+
+    let next = w.fake.add_commit("acme", "app", &[&w.dev]);
+    w.fake.set_branch("acme", "app", "dev", &next);
+    let number = w.promotion(&w.admin).await?;
+    w.fake.set_pull_mergeable("acme", "app", number, false);
+    let refused = w
+        .adapter
+        .merge_pull(&w.admin, "acme", "app", number, "merge", &next)
+        .await;
+    let Err(yulius_app::error::AppError::Conflict(message)) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("it conflicts with 'main'"), "{message}");
+    assert_eq!(w.main(), Some(promoted), "nothing moved");
+    assert_eq!(
+        w.fake
+            .count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        1,
+        "a real refusal is not retried"
+    );
+    Ok(())
+}
+
 /// SPEC-184 (issue #574): CD and promotion read the integration and production heads through the
 /// adapter, with the installation token and with a person's. The adapter asks GitHub for them;
 /// a branch GitHub does not have is `None`, and a nested branch name is one branch.

@@ -1,10 +1,12 @@
 //! Pull requests, checks, merges, fast-forwards and comparisons (GIT-001/002, DLV).
 
+use std::time::{Duration, Instant};
+
 use reqwest::Method;
 
 use crate::client::{GitHubClient, decode};
 use crate::error::GitHubError;
-use crate::http::{Call, upstream_message};
+use crate::http::{Call, backoff, upstream_message};
 use crate::secret::Secret;
 use crate::types::{
     CheckSource, ChecksReport, CompareStatus, Comparison, MergeMethod, MergeOutcome, NewPull,
@@ -12,12 +14,68 @@ use crate::types::{
 };
 use crate::validate;
 use crate::wire::{
-    CheckReads, WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge, WirePull,
-    WireWorkflowRuns, summarize,
+    CheckReads, WireCheckRun, WireCheckRuns, WireCombinedStatus, WireCompare, WireMerge,
+    WireMergeability, WirePull, WireWorkflowRuns, summarize,
 };
 
 /// Most check-run pages read for one commit.
 const MAX_CHECK_PAGES: u32 = 5;
+
+/// Most merge requests one [`GitHubClient::merge_pull`] sends while GitHub answers 405 for a pull
+/// request it has not finished checking (SPEC-495 MRG-002).
+pub const MERGE_ATTEMPTS: u32 = 4;
+
+/// Most reads of a pull request per wait for GitHub to compute its mergeability (MRG-001).
+const MERGEABILITY_READS: u32 = 6;
+
+/// GitHub's 405 for a merge it could not judge yet: right after the pull request was opened or
+/// its base moved, while `mergeable` is still being computed.
+fn is_base_modified(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("base branch was modified")
+}
+
+/// The message of a merge GitHub refused (405): the reason read from the pull request, when it
+/// names one, then GitHub's own words (MRG-003).
+fn refusal(
+    pull: Option<&WireMergeability>,
+    github: &str,
+    attempts: u32,
+    transient: bool,
+) -> String {
+    let reason = pull.and_then(|p| {
+        if p.merged == Some(true) || p.merged_at.is_some() {
+            Some("it is already merged".to_owned())
+        } else if p.state != "open" {
+            Some("it is closed".to_owned())
+        } else if p.draft == Some(true) {
+            Some("it is a draft".to_owned())
+        } else if p.mergeable == Some(false) || p.mergeable_state.as_deref() == Some("dirty") {
+            Some(format!("it conflicts with '{}'", p.base()))
+        } else if p.mergeable.is_none() {
+            Some("GitHub had not finished checking whether it can merge".to_owned())
+        } else {
+            match p.mergeable_state.as_deref() {
+                Some("blocked") => Some(
+                    "branch protection blocks it (required reviews or required checks)".to_owned(),
+                ),
+                Some("behind") => Some(format!(
+                    "it is behind '{}', which branch protection requires it to contain",
+                    p.base()
+                )),
+                _ if transient => {
+                    Some(format!("GitHub still refused it after {attempts} attempts"))
+                }
+                _ => None,
+            }
+        }
+    });
+    match reason {
+        Some(reason) => format!("{reason} (GitHub: {github})"),
+        None => github.to_owned(),
+    }
+}
 
 /// Whether a 403 means the App lacks the permission for the endpoint (GitHub's wording for App
 /// installation and user-to-server tokens), as opposed to another refusal.
@@ -251,9 +309,18 @@ impl GitHubClient {
     /// Merges pull request `number` only if its head is still `expected_head_sha`
     /// (GIT-002: stale heads are refused by GitHub with 409).
     ///
+    /// A 405 is not taken at its word at once (SPEC-495): right after a pull request was opened
+    /// or its base moved GitHub answers "Base branch was modified" while it computes the
+    /// mergeability. The pull request is read until GitHub has computed it, and a merge GitHub
+    /// then reports possible is sent again, with doubling backoff, at most [`MERGE_ATTEMPTS`]
+    /// merge requests in all and within the retry policy's `max_total`. A merge that succeeds at
+    /// once sends one request.
+    ///
     /// # Errors
     /// [`GitHubError::Conflict`] when the head moved, [`GitHubError::NotMergeable`] (405) when
-    /// GitHub refuses the merge, or other typed errors.
+    /// GitHub refuses the merge (its message names the reason: a conflict, branch protection, a
+    /// base the branch must contain, a draft, a closed pull request, a mergeability GitHub did
+    /// not finish computing), or other typed errors.
     pub async fn merge_pull(
         &self,
         token: &Secret,
@@ -267,21 +334,82 @@ impl GitHubClient {
         validate::sha(expected_head_sha)?;
         let number = number.to_string();
         let url = self.api_url(&["repos", owner, repo, "pulls", &number, "merge"])?;
-        let call = Call::new(Method::PUT, url, Some(token.expose())).json(serde_json::json!({
-            "merge_method": method.as_str(),
-            "sha": expected_head_sha,
-        }));
-        let reply = self.send_any(&call).await?;
-        if reply.status == 405 {
+        let policy = self.inner.config.retry;
+        let deadline = Instant::now() + policy.max_total;
+        let mut attempt = 0_u32;
+        loop {
+            attempt += 1;
+            let call =
+                Call::new(Method::PUT, url.clone(), Some(token.expose())).json(serde_json::json!({
+                    "merge_method": method.as_str(),
+                    "sha": expected_head_sha,
+                }));
+            let reply = self.send_any(&call).await?;
+            if reply.status != 405 {
+                if !reply.is_success() {
+                    return Err(self.error_for(&reply, &call));
+                }
+                let wire: WireMerge = decode(&reply)?;
+                return Ok(MergeOutcome { sha: wire.sha });
+            }
+            let github = upstream_message(&reply.body, &call.known_secrets());
+            let read = self
+                .settled_mergeability(token, owner, repo, &number, deadline, policy.base_delay)
+                .await;
+            let (pull, computing) = match &read {
+                Some((pull, computing)) => (Some(pull), *computing),
+                None => (None, false),
+            };
+            let transient = computing || is_base_modified(&github);
+            let mergeable = pull.is_some_and(|p| {
+                p.state == "open" && p.mergeable == Some(true) && p.draft != Some(true)
+            });
+            let delay = backoff(policy.base_delay, attempt);
+            if transient
+                && mergeable
+                && attempt < MERGE_ATTEMPTS
+                && Instant::now() + delay < deadline
+            {
+                tokio::time::sleep(delay).await;
+                continue;
+            }
             return Err(GitHubError::NotMergeable {
-                message: upstream_message(&reply.body, &call.known_secrets()),
+                message: refusal(pull, &github, attempt, transient),
             });
         }
-        if !reply.is_success() {
-            return Err(self.error_for(&reply, &call));
+    }
+
+    /// Reads pull request `number` until GitHub has computed its mergeability (`mergeable` not
+    /// `null`), at most [`MERGEABILITY_READS`] reads with doubling backoff, before `deadline`.
+    /// Returns the last read and whether GitHub was still computing at the first one; `None`
+    /// when the pull request could not be read (the caller keeps GitHub's refusal).
+    async fn settled_mergeability(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: &str,
+        deadline: Instant,
+        base_delay: Duration,
+    ) -> Option<(WireMergeability, bool)> {
+        let url = self
+            .api_url(&["repos", owner, repo, "pulls", number])
+            .ok()?;
+        let mut computing = false;
+        let mut read = 0_u32;
+        loop {
+            read += 1;
+            let pull: WireMergeability = self.get_json(url.clone(), Some(token)).await.ok()?;
+            if pull.mergeable.is_some() || pull.state != "open" {
+                return Some((pull, computing));
+            }
+            computing = true;
+            let delay = backoff(base_delay, read);
+            if read >= MERGEABILITY_READS || Instant::now() + delay >= deadline {
+                return Some((pull, computing));
+            }
+            tokio::time::sleep(delay).await;
         }
-        let wire: WireMerge = decode(&reply)?;
-        Ok(MergeOutcome { sha: wire.sha })
     }
 
     /// Moves `branch` to `to_sha` only as a fast-forward (`force: false`).
@@ -358,5 +486,88 @@ impl GitHubClient {
             behind_by: wire.behind_by,
             status,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WireMergeability, is_base_modified, refusal};
+
+    fn pull(fields: serde_json::Value) -> WireMergeability {
+        let mut value = serde_json::json!({
+            "state": "open", "mergeable": true, "mergeable_state": "clean",
+            "base": {"ref": "main", "sha": "0".repeat(40)},
+        });
+        if let (Some(base), Some(extra)) = (value.as_object_mut(), fields.as_object()) {
+            for (key, field) in extra {
+                base.insert(key.clone(), field.clone());
+            }
+        }
+        serde_json::from_value(value).unwrap_or_else(|err| panic!("{err}"))
+    }
+
+    /// SPEC-495 MRG-003: a refusal says which kind it is, then GitHub's words.
+    #[test]
+    fn a_refusal_names_its_reason() {
+        let github = "Pull Request is not mergeable";
+        for (fields, reason) in [
+            (
+                serde_json::json!({"mergeable": false, "mergeable_state": "dirty"}),
+                "it conflicts with 'main'",
+            ),
+            (
+                serde_json::json!({"mergeable_state": "blocked"}),
+                "branch protection blocks it (required reviews or required checks)",
+            ),
+            (
+                serde_json::json!({"mergeable_state": "behind"}),
+                "it is behind 'main', which branch protection requires it to contain",
+            ),
+            (
+                serde_json::json!({"draft": true, "mergeable_state": "draft"}),
+                "it is a draft",
+            ),
+            (serde_json::json!({"state": "closed"}), "it is closed"),
+            (
+                serde_json::json!({"state": "closed", "merged": true}),
+                "it is already merged",
+            ),
+            (
+                serde_json::json!({"mergeable": null, "mergeable_state": "unknown"}),
+                "GitHub had not finished checking whether it can merge",
+            ),
+        ] {
+            assert_eq!(
+                refusal(Some(&pull(fields)), github, 1, false),
+                format!("{reason} (GitHub: {github})")
+            );
+        }
+        // A transient refusal that outlived its retries says so.
+        assert_eq!(
+            refusal(
+                Some(&pull(serde_json::json!({}))),
+                "Base branch was modified.",
+                4,
+                true
+            ),
+            "GitHub still refused it after 4 attempts (GitHub: Base branch was modified.)"
+        );
+        // No reason to add: GitHub's words alone.
+        assert_eq!(
+            refusal(Some(&pull(serde_json::json!({}))), github, 1, false),
+            github
+        );
+        assert_eq!(refusal(None, github, 1, true), github);
+    }
+
+    #[test]
+    fn only_base_branch_was_modified_reads_as_transient() {
+        assert!(is_base_modified(
+            "Base branch was modified. Review and try the merge again."
+        ));
+        assert!(!is_base_modified(
+            "Head branch was modified. Review and try the merge again."
+        ));
+        assert!(!is_base_modified("Pull Request is not mergeable"));
     }
 }

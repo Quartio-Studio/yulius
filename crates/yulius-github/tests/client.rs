@@ -1001,6 +1001,150 @@ async fn pull_request_merge_refuses_stale_head() -> TestResult {
     Ok(())
 }
 
+/// A pull request `task/x` → `dev` opened by a writer, ready to merge: the fake, the client,
+/// the writer's token, the pull request's number and head.
+async fn fresh_pull() -> Result<(FakeGitHub, GitHubClient, Secret, u64, String), Box<dyn Error>> {
+    let (fake, client) = setup().await?;
+    let root = fake.add_repo("acme", "app", true);
+    fake.set_branch("acme", "app", "dev", &root);
+    let head = fake.add_commit("acme", "app", &[&root]);
+    fake.set_branch("acme", "app", "task/x", &head);
+    fake.add_user("dev", None);
+    fake.set_permission("acme", "app", "dev", writer());
+    let token = fake.issue_user_token("dev");
+    let pull = client
+        .create_pull(
+            &token,
+            "acme",
+            "app",
+            &NewPull {
+                head: "task/x".into(),
+                base: "dev".into(),
+                title: "X".into(),
+                body: String::new(),
+            },
+        )
+        .await?;
+    Ok((fake, client, token, pull.number, head))
+}
+
+const BASE_MODIFIED: &str = "Base branch was modified. Review and try the merge again.";
+
+/// SPEC-495 AC1 (MRG-002, #477): GitHub's transient 405 "Base branch was modified" right after a
+/// pull request was opened is retried once GitHub reports it mergeable; the merge goes through.
+#[tokio::test]
+async fn a_merge_goes_through_githubs_transient_base_branch_was_modified() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 1).message(BASE_MODIFIED));
+    let merged = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await?;
+    assert_eq!(fake.branch_sha("acme", "app", "dev"), Some(merged.sha));
+    assert_eq!(fake.count("PUT", &merge), 2, "one retry");
+    Ok(())
+}
+
+/// SPEC-495 AC2 (MRG-001): while GitHub is still computing the mergeability (`mergeable: null`)
+/// the merge waits, reading the pull request, and merges once GitHub has an answer.
+#[tokio::test]
+async fn a_merge_waits_until_github_has_computed_the_mergeability() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    fake.set_pull_computing("acme", "app", number, 3);
+    let merged = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await?;
+    assert_eq!(fake.branch_sha("acme", "app", "dev"), Some(merged.sha));
+    assert_eq!(
+        fake.count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        2
+    );
+    assert!(fake.count("GET", &format!("/repos/acme/app/pulls/{number}")) >= 3);
+    Ok(())
+}
+
+/// SPEC-495 AC3 (MRG-003): a pull request with conflicts is a real refusal: one merge request,
+/// and the error says it conflicts with the base branch.
+#[tokio::test]
+async fn a_conflicting_pull_request_is_refused_at_once_with_the_reason() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    fake.set_pull_mergeable("acme", "app", number, false);
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("conflicts with 'dev'"), "{message}");
+    assert_eq!(
+        fake.count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        1
+    );
+    Ok(())
+}
+
+/// SPEC-495 AC3 (MRG-003, MRG-004): a branch-protection refusal is not GitHub's transient
+/// answer: one merge request, GitHub's words kept.
+#[tokio::test]
+async fn a_branch_protection_refusal_is_not_retried() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    let protection = "At least 1 approving review is required by reviewers with write access.";
+    fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 1).message(protection));
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains(protection), "{message}");
+    assert_eq!(fake.count("PUT", &merge), 1);
+    Ok(())
+}
+
+/// SPEC-495 AC4 (MRG-002): a transient 405 that never clears stops after `MERGE_ATTEMPTS` (4)
+/// merge requests, saying GitHub kept refusing.
+#[tokio::test]
+async fn a_transient_405_that_never_clears_stops_after_four_merge_requests() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    let merge = format!("/repos/acme/app/pulls/{number}/merge");
+    fake.inject_fault(FakeFault::new("PUT", merge.clone(), 405, 100).message(BASE_MODIFIED));
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(message.contains("after 4 attempts"), "{message}");
+    assert!(message.contains("Base branch was modified"), "{message}");
+    assert_eq!(fake.count("PUT", &merge), 4);
+    assert_eq!(fake.branch_sha("acme", "app", "task/x"), Some(head));
+    Ok(())
+}
+
+/// SPEC-495 MRG-003: a mergeability GitHub never finishes computing ends the merge, bounded,
+/// saying so.
+#[tokio::test]
+async fn a_mergeability_github_never_computes_ends_the_merge_saying_so() -> TestResult {
+    let (fake, client, token, number, head) = fresh_pull().await?;
+    fake.set_pull_computing("acme", "app", number, 1000);
+    let refused = client
+        .merge_pull(&token, "acme", "app", number, MergeMethod::Merge, &head)
+        .await;
+    let Err(GitHubError::NotMergeable { message }) = refused else {
+        return Err(format!("{refused:?}").into());
+    };
+    assert!(
+        message.contains("GitHub had not finished checking whether it can merge"),
+        "{message}"
+    );
+    assert_eq!(
+        fake.count("PUT", &format!("/repos/acme/app/pulls/{number}/merge")),
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn fast_forward_is_refused_unless_descendant_and_compare_counts() -> TestResult {
     let (fake, client) = setup().await?;

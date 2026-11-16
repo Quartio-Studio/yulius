@@ -225,6 +225,9 @@ struct FakePull {
     base: String,
     state: PullState,
     mergeable: bool,
+    /// Reads of the pull request left that answer `mergeable: null` (GitHub still computing);
+    /// while it is above zero, a merge answers 405 "Base branch was modified".
+    computing: u32,
     merged_head_sha: Option<String>,
     merged_base_sha: Option<String>,
     merge_commit_sha: Option<String>,
@@ -588,6 +591,18 @@ impl FakeGitHub {
         }
     }
 
+    /// GitHub has not finished computing the mergeability of pull request `number`: its next
+    /// `reads` single reads answer `mergeable: null` (`mergeable_state: unknown`), and until
+    /// then a merge answers 405 "Base branch was modified. Review and try the merge again.", as
+    /// GitHub does right after a pull request is opened or its base moved.
+    pub fn set_pull_computing(&self, owner: &str, repo: &str, number: u64, reads: u32) {
+        if let Some(repo) = lock(&self.state).repos.get_mut(&key(owner, repo))
+            && let Some(pull) = repo.pulls.iter_mut().find(|p| p.number == number)
+        {
+            pull.computing = reads;
+        }
+    }
+
     /// Replaces the check runs of commit `sha`.
     pub fn set_check_runs(&self, owner: &str, repo: &str, sha: &str, runs: Vec<FakeCheckRun>) {
         if let Some(repo) = lock(&self.state).repos.get_mut(&key(owner, repo)) {
@@ -940,7 +955,17 @@ fn pull_json(state: &FakeState, repo: &FakeRepo, pull: &FakePull) -> Value {
         "draft": false,
         "merged": merged,
         "merged_at": if merged { json!("2026-10-07T12:00:00Z") } else { Value::Null },
-        "mergeable": pull.state == PullState::Open && pull.mergeable,
+        "mergeable": if pull.state == PullState::Open && pull.computing > 0 {
+            Value::Null
+        } else {
+            json!(pull.state == PullState::Open && pull.mergeable)
+        },
+        "mergeable_state": match (pull.state, pull.computing, pull.mergeable) {
+            (PullState::Open, 1.., _) => "unknown",
+            (PullState::Open, 0, false) => "dirty",
+            (PullState::Open, 0, true) => "clean",
+            _ => "unknown",
+        },
         "merge_commit_sha": pull.merge_commit_sha,
         "head": {"ref": pull.head, "sha": head_sha},
         "base": {"ref": pull.base, "sha": base_sha},
@@ -1509,6 +1534,7 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 base,
                 state: PullState::Open,
                 mergeable: true,
+                computing: 0,
                 merged_head_sha: None,
                 merged_base_sha: None,
                 merge_commit_sha: None,
@@ -1616,8 +1642,17 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
             reply(200, Value::Array(paginate(&matching, query)))
         }
         ("GET", ["pulls", number]) => {
-            match repo.pulls.iter().find(|p| p.number.to_string() == *number) {
-                Some(pull) => reply(200, pull_json(state, repo, pull)),
+            match repo
+                .pulls
+                .iter()
+                .position(|p| p.number.to_string() == *number)
+            {
+                Some(index) => {
+                    let value = pull_json(state, repo, &repo.pulls[index]);
+                    let pull = &mut repo.pulls[index];
+                    pull.computing = pull.computing.saturating_sub(1);
+                    reply(200, value)
+                }
                 None => error(404, "Not Found"),
             }
         }
@@ -1873,6 +1908,12 @@ fn merge(state: &mut FakeState, repo: &mut FakeRepo, number: &str, body: &Value)
         return error(404, "Not Found");
     };
     let pull = repo.pulls[index].clone();
+    if pull.state == PullState::Open && pull.computing > 0 {
+        return error(
+            405,
+            "Base branch was modified. Review and try the merge again.",
+        );
+    }
     if pull.state != PullState::Open || !pull.mergeable {
         return error(405, "Pull Request is not mergeable");
     }
