@@ -427,6 +427,7 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - [ ] Fix 6's independent review answered test-first
 - [ ] Fix 7: a limit that cuts a subagent off is the session's news, and a cut-off reviewer is resumed after the move (RLM-001, RLM-002)
 - [ ] Fix 7: a review does not start on a subscription about to run out; the rules say resume, never restart, high effort (RLM-003, RLM-004)
+- [ ] Fix 7's review round 1 answered test-first: a reviewer's limit is its model's, its state ends with its round, the turn's end moves
 - [ ] Fix 7's independent review answered test-first
 - [ ] Fix 8: scripts/dev mutants, one bounded mutation run on the changed lines, measured (MUT-001)
 - [ ] Fix 8: the rules: once per pull request, the result in the Evidence, no campaign by the reviewer (MUT-002)
@@ -1580,3 +1581,17 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   - p1, answered in words: pre-existing on dev since fix 1d (REV-007's "Do nothing else now"
     when the live run changed before the spawned switch). The room move inherits it; it is
     left as it is in this change.
+- Review round 2 (Opus 5.5, head `24b419d71`): request changes. Every round-1 finding is closed
+  in the code, and the reviewer accepts M2's answer and p1. Two new findings, both answered:
+  - Major (tests): nothing held "with hooks, never move outside a turn's end". The cut-off test
+    now looks for 6 s, longer than a watcher poll and the background check, while the session
+    waits and nothing is typed: no switch, one run. Only then does a turn end, and the
+    `review_resume` move follows. An injected move at the cut-off fails it.
+  - Minor (the no-hooks idle path untested): the path is unreachable and is removed. A review
+    round exists only with hooks: its start is the `PreToolUse` of the Agent tool, and its
+    subagent is linked by `SubagentStart`. So a cut-off reviewer is always one of a session
+    with hooks, whose thread Claude Code wakes with the failed task notification.
+    - Removed: `move_for_reviewer` and its retries, `reviewer_session_idle`, the
+      `reviewer_move_retry_ms` setting and `turn_ended`'s branch.
+    - The Stop hook is the only path that moves, and ADR-0346 says so. RLM-002's "at once when
+      idle" is that woken turn's end.

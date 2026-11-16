@@ -101,10 +101,6 @@ pub(crate) fn reviewer_resume_prompt(after: Option<&str>, reviewer: &CutOffRevie
     }
 }
 
-/// How often a move for a cut-off reviewer is tried again outside a turn's end while it stays
-/// due, `reviewer_move_retry_ms` apart: about ten minutes in all (review round 1 of fix 7).
-const REVIEWER_MOVE_TRIES: u32 = 120;
-
 /// How often, and how far apart, a session is offered [`reviewer_nowhere`] while it does not take
 /// typed text: about two minutes in all.
 const NOWHERE_TRIES: u32 = 12;
@@ -531,20 +527,6 @@ impl App {
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Whether `task`'s session is idle, as a move outside a turn's end needs it: a prompt-mode
-    /// session running and waiting for its person, with no turn under way and no goal of its
-    /// person's open (as `move_idle_session` asks; review round 1 of fix 7).
-    async fn reviewer_session_idle(&self, task: &yulius_domain::ids::TaskId) -> bool {
-        if self.runtime(task).turn_in_progress() {
-            return false;
-        }
-        matches!(self.deps.store.task(task).await, Ok(Some(t))
-            if t.mode == crate::model::TaskMode::Prompt
-                && t.status == yulius_domain::task::TaskStatus::Running
-                && t.activity == Some(yulius_domain::task::Activity::Waiting)
-                && !self.keeps_own_goal(&t))
-    }
-
     /// The reviewer `agent_id` of `task`'s open review round, with the model its round runs:
     /// `None` when that subagent is no open round's.
     pub(crate) async fn open_round_reviewer(
@@ -606,19 +588,13 @@ impl App {
         if !moves {
             return;
         }
-        // Due now. With hooks the turn's end makes it: Claude Code wakes the session's thread
-        // with the reviewer's failed task notification, and that turn's Stop hook decides,
-        // with the gate's answer (review round 1 of fix 7). Without hooks the session makes it
-        // once idle, at a turn's end the transcript shows or a later try.
+        // Due now; the turn's end makes it. A round exists only with hooks (its start and its
+        // subagent are hook events), and Claude Code wakes the session's thread with the
+        // reviewer's failed task notification: that turn's Stop hook decides the move, with the
+        // gate's answer (review rounds 1 and 2 of fix 7).
         runtime
             .reviewer_move
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        if runtime.hooks_seen.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
-        }
-        let app = Arc::clone(self);
-        let task = task.clone();
-        tokio::spawn(async move { app.move_for_reviewer(&task).await });
     }
 
     /// Where `task`'s session moves for its cut-off reviewer (RLM-002): a subscription that can
@@ -672,66 +648,6 @@ impl App {
             }
         });
         ReviewerMove::Nothing
-    }
-
-    /// Moves `task_id`'s idle session for its cut-off reviewer (RLM-002): while background work
-    /// runs or a prompt waits (which a move would end), or a move cannot be decided now, at a
-    /// later turn's end instead.
-    pub(crate) async fn move_for_reviewer(self: &Arc<Self>, task_id: &yulius_domain::ids::TaskId) {
-        use std::sync::atomic::Ordering;
-        let runtime = self.runtime(task_id);
-        for attempt in 0..REVIEWER_MOVE_TRIES {
-            if attempt > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    self.config.reviewer_move_retry_ms,
-                ))
-                .await;
-            }
-            // A turn's end took the move meanwhile, or nothing is due any more.
-            if !runtime.reviewer_move.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            if self.try_move_for_reviewer(task_id).await {
-                return;
-            }
-            // Due again: the next turn's end makes it, or this, once the session is idle.
-            runtime.reviewer_move.store(true, Ordering::SeqCst);
-        }
-    }
-
-    /// One try of [`App::move_for_reviewer`]: `false` while the move cannot be made now.
-    async fn try_move_for_reviewer(self: &Arc<Self>, task_id: &yulius_domain::ids::TaskId) -> bool {
-        let (Ok(Some(task)), Ok(Some(attempt))) = (
-            self.deps.store.task(task_id).await,
-            self.deps.store.live_attempt(task_id).await,
-        ) else {
-            return true;
-        };
-        let account = match self
-            .reviewer_move_target(&task, attempt.account_id.clone())
-            .await
-        {
-            ReviewerMove::To(account) => account,
-            ReviewerMove::Later => return false,
-            ReviewerMove::Nothing => return true,
-        };
-        let prompts_before = self.prompts_passed(task_id);
-        self.await_transcript_read(task_id).await;
-        if !self.reviewer_session_idle(task_id).await
-            || self.background_or_wait_now(task_id).await != Some(false)
-            || self.prompt_waits_for_turns_end(task_id, prompts_before)
-        {
-            return false;
-        }
-        tracing::info!(task = %task_id, "the session moves for its cut-off reviewer");
-        if let Err(err) = self
-            .switch_task_now(task_id, Some(account), REVIEW_RESUME, None)
-            .await
-        {
-            tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
-            return false;
-        }
-        true
     }
 
     /// What a subagent's transcript says of a review round's reviewer: the model that answered

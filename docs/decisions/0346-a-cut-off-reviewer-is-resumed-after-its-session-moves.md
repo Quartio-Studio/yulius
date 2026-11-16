@@ -29,9 +29,11 @@ model, also after the process was restarted with `--resume` (measured with Claud
   limit does.
 - **A cut-off reviewer moves the session** (RLM-002): when the refused subagent is an open review
   round's reviewer and the limit binds its model, not the session's, the session moves to a
-  subscription that can run both models, at once when its thread is idle, else at its turn's end
-  (after reading that turn's lines; a move for it waits while background work runs or a prompt
-  is queued). The new process's first prompt tells it to resume that reviewer with
+  subscription that can run both models, at a turn's end: an idle session's thread is woken by
+  the reviewer's failed task notification, and that turn's Stop hook moves it, with the gate's
+  answer, after reading the turn's lines (a move waits while background work runs or a prompt is
+  queued). Nothing moves a session outside a turn's end: a round exists only with hooks, so its
+  Stop hook always comes. The new process's first prompt tells it to resume that reviewer with
   `SendMessage` to its id and not to start a new one; a relaunch past a limit of the session's
   own model says the same. With no such subscription the session is told to start the review
   again, which then runs on Opus 5.5 (REV-007).

@@ -1168,7 +1168,6 @@ mod real {
                 };
                 let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
                     config.claude_code_queue_record_ms = 0;
-                    config.reviewer_move_retry_ms = 600_000;
                 })
                 .await?;
                 let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
@@ -1253,6 +1252,18 @@ mod real {
         Ok(())
     }
 
+    /// Whether the task's second run was started.
+    async fn second_run_started(
+        app: &yulius_app::context::App,
+        id: &yulius_domain::ids::TaskId,
+    ) -> bool {
+        app.deps
+            .store
+            .attempts(id)
+            .await
+            .is_ok_and(|attempts| attempts.len() > 1)
+    }
+
     /// The RLM-002 tests: the second subscription runs Fable or does not; `command` cuts the
     /// reviewer off while the session is idle or inside a turn.
     fn a_cut_off_reviewer(second_runs_fable: bool, command: &'static [u8]) -> TestResult {
@@ -1269,8 +1280,6 @@ mod real {
             };
             let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
                 config.claude_code_queue_record_ms = 0;
-                // Only the path each test names makes the move: no retry within the run.
-                config.reviewer_move_retry_ms = 600_000;
             })
             .await?;
             let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
@@ -1307,6 +1316,18 @@ mod real {
             })
             .await;
             assert!(cut.is_ok(), "{}", screen(&app, &id));
+            // While the session waits, nothing moves: only a turn's end does (review round 2 of
+            // fix 7). Longer than a watcher poll and the background check.
+            if command == b"/reviewer-limit yulius-reviewer\r" && second_runs_fable {
+                let early = wait_for(
+                    "a move outside a turn's end",
+                    Duration::from_secs(6),
+                    || second_run_started(&app, &id),
+                )
+                .await;
+                assert!(early.is_err(), "the session moved while it waited");
+                assert!(app.deps.store.switches(&id).await?.is_empty());
+            }
             // The turn Claude Code starts with the reviewer's failed task notification; its
             // Stop hook makes the move (an in-turn cut-off ends its own turn).
             if !command.starts_with(b"/reviewer-limit-turn ") {

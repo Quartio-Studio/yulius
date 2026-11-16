@@ -1164,12 +1164,6 @@ impl App {
         account: Option<yulius_domain::ids::AccountId>,
     ) {
         let runtime = self.runtime(task_id);
-        // A move for a cut-off reviewer due at a turn's end (SPEC-493 RLM-002).
-        if runtime.reviewer_move.load(Ordering::SeqCst) {
-            let app = Arc::clone(self);
-            let task_id = task_id.clone();
-            tokio::spawn(async move { app.move_for_reviewer(&task_id).await });
-        }
         if runtime.proactive_switch.swap(false, Ordering::SeqCst) {
             let app = Arc::clone(self);
             let task_id = task_id.clone();
