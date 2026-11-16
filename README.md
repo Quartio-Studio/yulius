@@ -9,7 +9,7 @@ review, opens a pull request and merges it into `dev` once Yulius's own CI is gr
 steer and unblock from the browser. Yulius is self-hosted (one Rust binary on one Linux server),
 written in Rust and inspired by [Cezar](https://github.com/open-mercato/cezar).
 
-> **Just found Yulius on X/Twitter or [juliusz.dev](https://juliusz.dev)?** Read
+> **Just found Yulius on X/Twitter or [yulius.dev](https://www.yulius.dev/)?** Read
 > [the 5-minute path](#from-curious-to-first-task) below. It tells you what you need, what each
 > word on the setup screens means and what to click, in order.
 >
@@ -44,7 +44,7 @@ The full list is in the [product summary](docs/product.md).
 
 ```mermaid
 flowchart TD
-    A["👀 You see Yulius<br/>on X/Twitter or online"] --> B["🌐 You open juliusz.dev<br/>or this GitHub page"]
+    A["👀 You see Yulius<br/>on X/Twitter or online"] --> B["🌐 You open yulius.dev<br/>or this GitHub page"]
     B --> C{"Is it for you?<br/>(table above)"}
     C -- "not yet" --> Z["⭐ Star the repo and<br/>come back later"]
     C -- "yes" --> D["🖥️ Rent a Linux VPS<br/>(8 vCPU, 16 GB RAM)"]

@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- The README links the Yulius website at https://www.yulius.dev/ (SPEC-500, task #482, outside
+  pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
+  named an old domain.
+
 - Notifications reach a person's own Telegram chat (SPEC-498, task #480,
   [ADR-0351](decisions/0351-a-personal-telegram-channel-behind-a-notification-channel-port.md),
   part 1 of #1107, from outside pull request #1130 by studenciak00owl).
