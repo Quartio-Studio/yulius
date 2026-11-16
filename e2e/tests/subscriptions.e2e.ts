@@ -1285,7 +1285,7 @@ test('a Claude sign-in the server no longer has says so instead of reconnecting 
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #3 is connected")')).toBeVisible();
 });
 
-test('a dialog shows its whole body, also in Safari (SPEC-448 DLG-001)', async ({ app, browser, screen }) => {
+test('a dialog shows its whole body, also in Safari (SPEC-500 DLG-001)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
   await screen.getByRole('button', 'Add subscription').first().click();
   await expect(screen.getByRole('dialog', 'Add a Claude subscription')).toBeVisible();
