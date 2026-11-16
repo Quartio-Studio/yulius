@@ -75,13 +75,16 @@ few lines rarely finds anything.
 - A nit fix after an approval merges on the head's green Yulius CI without another round; the
   audit entry shows what went in unreviewed.
 - A reviewer's minors in product code are fixed within 20 lines or need a round; tests and
-  documents can grow freely after an approval.
+  documents can grow freely after an approval as long as no added product line has a loading
+  word (below), which makes them count.
 - What the count catches: the clone's settings, attributes, replace refs and grafts change
   nothing; the integration branch is origin's commit; a fake test module (in a comment, a
   string, a macro's input, a module an attribute macro rewrites) counts; a Rust file under
   `src/` is product code whatever its folder; a test or document file the follow-up changed
-  counts when a new product line names it, and every one does when a new product line loads
-  code (`import`, `require`, `include`, `concat`, `export … from`, `#[path]`, `mod name;`); a
+  counts when a new product line names it, and every one does when a new product line has a
+  loading word (a word containing `import`, `require`, `include` or `concat` in any case,
+  `export … from`, `#[path]`, `mod name;`, a manifest's `path =` or `file:`), whether or not it
+  loads anything (`arr.concat()` counts too: when in doubt, a line counts); a
   new Rust `#[path]` or `include!` refuses.
 - What it does not catch, by the person's rule ("tests and documents do not count"): a test or
   document file that product code already built in before the review (an `include_str!` of a

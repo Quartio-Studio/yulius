@@ -435,23 +435,17 @@ pub struct FollowUp {
     pub includes: Vec<String>,
 }
 
-/// Words of a line that loads code from another file, in the languages a project may use: an
-/// import (`import`, `from … import`, `export … from`, `require`, `require_relative`), an
-/// inclusion (`include`, `include_str`, `include_bytes`, C's `#include`) or a path built for
-/// one (`concat`).
-const LOADING_WORDS: [&str; 7] = [
-    "import",
-    "require",
-    "require_relative",
-    "include",
-    "include_str",
-    "include_bytes",
-    "concat",
-];
+/// Parts of a word that loads code from another file, in the languages a project may use, in
+/// any case: an import (`import`, `importlib.import_module`, `__import__`, `require`,
+/// `require_relative`), an inclusion (`include`, `include_str`, C's `#include`) or a path built
+/// for one (`concat`).
+const LOADING_WORDS: [&str; 4] = ["import", "require", "include", "concat"];
 
-/// Whether a product line loads code from another file ([`LOADING_WORDS`], `export … from`,
-/// `#[path`, or a Rust `mod name;` declaration): with one, a test or document file the same
-/// follow-up changed may be built in, so it counts (review round 5 of SPEC-493 fix 6).
+/// Whether a product line loads code from another file: a word with one of
+/// [`LOADING_WORDS`] in it, `export … from`, `#[path`, a Rust `mod name;` declaration, or a
+/// manifest's `path =` or `file:` (a Cargo path dependency, an npm `file:` one). With one, a
+/// test or document file the same follow-up changed may be built in, so it counts (review
+/// rounds 5 and 6 of SPEC-493 fix 6).
 fn loads_code(text: &str) -> bool {
     let words: Vec<&str> = text
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -462,9 +456,14 @@ fn loads_code(text: &str) -> bool {
         .iter()
         .find_map(|vis| text.trim().strip_prefix(vis))
         .unwrap_or(text.trim());
-    words.iter().any(|w| LOADING_WORDS.contains(w))
-        || (words.contains(&"export") && words.contains(&"from"))
+    words.iter().any(|w| {
+        let w = w.to_lowercase();
+        LOADING_WORDS.iter().any(|part| w.contains(part))
+    }) || (words.contains(&"export") && words.contains(&"from"))
         || tight.contains("#[path")
+        || tight.contains("path=")
+        || tight.contains("\"file:")
+        || tight.contains("'file:")
         || (item.starts_with("mod ") && item.ends_with(';'))
 }
 
@@ -761,6 +760,27 @@ mod tests {
                 "const T: &str = include_str!(\"../README.md\");",
                 "README.md",
             ),
+            // Round 6: a manifest's path dependency, and imports by a function.
+            (
+                "Cargo.toml",
+                "evil = { path = \"tests/evil\" }",
+                "tests/evil/lib.rs",
+            ),
+            (
+                "web/package.json",
+                "\"evil\": \"file:./__tests__/evil\",",
+                "web/__tests__/evil/index.js",
+            ),
+            (
+                "app/run.py",
+                "m = importlib.import_module(\"tests.evil\")",
+                "tests/evil.py",
+            ),
+            (
+                "app/run.py",
+                "m = __import__(\"tests.evil\")",
+                "tests/evil.py",
+            ),
         ] {
             let follow = FollowUp::count(
                 &[with_text(path, &[line]), with_text(hidden, &["x"; 30])],
@@ -768,10 +788,11 @@ mod tests {
             );
             assert_eq!(follow.lines, 31, "{line}: {follow:?}");
         }
-        // A plain product line keeps tests out; `not_product` keeps a loaded file out.
+        // A plain product line keeps tests out (`important` would not: a word containing
+        // `import` counts, erring towards a review); `not_product` keeps a loaded file out.
         let plain = FollowUp::count(
             &[
-                with_text("src/lib.rs", &["let important = 1;"]),
+                with_text("src/lib.rs", &["let total = 1;"]),
                 with_text("tests/it.rs", &["x"; 30]),
             ],
             &ProductRule::default(),
