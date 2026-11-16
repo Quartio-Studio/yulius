@@ -1192,21 +1192,30 @@ impl App {
         });
         secret.0.zeroize();
         let (email, sealed) = sealed?;
-        if let Some(active) = self.active_login(&account.id) {
-            let ended = active.ended.notified();
-            tokio::pin!(ended);
+        // Every running sign-in of the account is cancelled and waited out, within one bound: a
+        // "Sign in again" replaces a sign-in without waiting, so two may still run.
+        let running = self.active_logins(&account.id);
+        let mut ends = Vec::with_capacity(running.len());
+        for active in &running {
+            let mut ended = Box::pin(active.ended.notified());
             ended.as_mut().enable();
+            ends.push(ended);
+        }
+        for active in &running {
+            active.request_cancel();
+        }
+        let deadline = tokio::time::Instant::now() + CANCEL_WAIT;
+        for (active, ended) in running.iter().zip(ends) {
             if active.is_running() {
-                active.request_cancel();
-                let _ = tokio::time::timeout(CANCEL_WAIT, ended).await;
+                let _ = tokio::time::timeout_at(deadline, ended).await;
             }
-            // A sign-in that has not ended could still seal a token it captured over this one.
-            if active.is_running() {
-                return Err(AppError::Conflict(
-                    "the sign-in running for this subscription has not stopped yet; try again"
-                        .into(),
-                ));
-            }
+        }
+        // A sign-in that has not ended (or one started meanwhile) could still seal a token it
+        // captured over this one.
+        if !self.active_logins(&account.id).is_empty() {
+            return Err(AppError::Conflict(
+                "the sign-in running for this subscription has not stopped yet; try again".into(),
+            ));
         }
         // A new sign-in like the terminal's: the old one's model limits go (SPEC-464 UCL-004).
         self.store_sealed_credential(&account.id, &sealed).await?;
@@ -1585,6 +1594,20 @@ impl App {
             }
             let _ = tokio::task::spawn_blocking(move || secure_delete(&path)).await;
         }
+    }
+
+    /// Every sign-in of the account still running (a replaced one runs on while it stops).
+    fn active_logins(&self, account: &AccountId) -> Vec<Arc<LoginSession>> {
+        self.logins
+            .sessions
+            .lock()
+            .map(|m| {
+                m.values()
+                    .filter(|s| &s.account_id == account && s.is_running())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn active_login(&self, account: &AccountId) -> Option<Arc<LoginSession>> {

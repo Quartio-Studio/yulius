@@ -104,11 +104,13 @@ impl UsageProbe for Profile {
 
 /// A process host whose sign-ins run until they are stopped, printing `prints` (if set) first.
 /// A `stuck` host's sign-ins ignore the stop, and killing them does not return until `release`.
+/// A `deaf` host's sign-ins ignore the stop, so they end only when killed, after the 10 s wait.
 #[derive(Default)]
 struct WaitingHost {
     runs: Mutex<Vec<mpsc::Sender<RunEvent>>>,
     prints: Mutex<Option<&'static str>>,
     stuck: AtomicBool,
+    deaf: AtomicBool,
     released: (Mutex<bool>, Condvar),
 }
 
@@ -203,7 +205,10 @@ impl SessionHost for WaitingHost {
                 snapshot: None,
             },
             reader: Box::new(Reader(rx)),
-            writer: Box::new(Writer(Some(tx), self.stuck.load(Ordering::SeqCst))),
+            writer: Box::new(Writer(
+                Some(tx),
+                self.stuck.load(Ordering::SeqCst) || self.deaf.load(Ordering::SeqCst),
+            )),
         })
     }
 
@@ -729,6 +734,81 @@ async fn a_paste_a_sign_in_does_not_let_go_of_is_refused() -> TestResult {
     .await?;
     assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
     assert_eq!(opened(&w, &record(&w, &id).await?)?, PASTED);
+    Ok(())
+}
+
+/// TKP-002 with two sign-ins of one subscription running: "Sign in again" replaced the first,
+/// which has captured a token and is still stopping, by a second. The paste cancels and waits out
+/// both, so neither runs on after it and the token the first captured never lands over the paste.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paste_waits_out_every_running_sign_in() -> TestResult {
+    let w = world().await?;
+    let ctx = admin_ctx(&w).await?;
+    if let Ok(mut prints) = w.host.prints.lock() {
+        *prints = Some(CAPTURED);
+    }
+    w.h.app
+        .set_account_login_token_grace(Duration::from_secs(600));
+    // The first sign-in captures a token and takes its full stop wait to end.
+    w.host.deaf.store(true, Ordering::SeqCst);
+    let (id, first) = signing_in(&w, "Claude #4").await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let terminal = w.h.app.login_terminal(&ctx, &first)?;
+            let shown = terminal.subscribe().snapshot;
+            terminal.unsubscribe();
+            if String::from_utf8_lossy(&shown).contains("[REDACTED]") {
+                return Ok::<(), Box<dyn std::error::Error>>(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+    w.host.deaf.store(false, Ordering::SeqCst);
+    if let Ok(mut prints) = w.host.prints.lock() {
+        *prints = None;
+    }
+    let again = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/relogin"),
+        None,
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    let second = again.body["login_id"]
+        .as_str()
+        .ok_or("login_id")?
+        .to_owned();
+    assert_eq!(
+        login_ended(&w, &ctx, &first)?,
+        None,
+        "the first is still stopping"
+    );
+
+    let replaced = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/admin/accounts/{id}/token"),
+        Some(json!({"token": PASTED})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    assert!(
+        login_ended(&w, &ctx, &first)?.is_some(),
+        "the first sign-in ended before the paste was stored"
+    );
+    assert!(
+        login_ended(&w, &ctx, &second)?.is_some(),
+        "the second sign-in ended before the paste was stored"
+    );
+    assert_eq!(
+        opened(&w, &record(&w, &id).await?)?,
+        PASTED,
+        "the paste came last"
+    );
     Ok(())
 }
 
