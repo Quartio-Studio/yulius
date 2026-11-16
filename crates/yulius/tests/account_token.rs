@@ -10,7 +10,8 @@ use crate::pool_supervision::{
 use crate::support;
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -102,10 +103,23 @@ impl UsageProbe for Profile {
 }
 
 /// A process host whose sign-ins run until they are stopped, printing `prints` (if set) first.
+/// A `stuck` host's sign-ins ignore the stop, and killing them does not return until `release`.
 #[derive(Default)]
 struct WaitingHost {
     runs: Mutex<Vec<mpsc::Sender<RunEvent>>>,
     prints: Mutex<Option<&'static str>>,
+    stuck: AtomicBool,
+    released: (Mutex<bool>, Condvar),
+}
+
+impl WaitingHost {
+    fn release(&self) {
+        let (lock, released) = &self.released;
+        if let Ok(mut done) = lock.lock() {
+            *done = true;
+        }
+        released.notify_all();
+    }
 }
 
 struct Reader(mpsc::Receiver<RunEvent>);
@@ -117,8 +131,8 @@ impl RunReader for Reader {
     }
 }
 
-/// Stopping the sign-in makes it exit at once.
-struct Writer(Option<mpsc::Sender<RunEvent>>);
+/// Stopping the sign-in makes it exit at once, unless it is deaf.
+struct Writer(Option<mpsc::Sender<RunEvent>>, bool);
 
 #[async_trait]
 impl RunWriter for Writer {
@@ -129,6 +143,9 @@ impl RunWriter for Writer {
         Ok(())
     }
     async fn signal(&mut self, _: RunSignal) -> AppResult<()> {
+        if self.1 {
+            return Ok(());
+        }
         if let Some(tx) = self.0.take() {
             let _ = tx
                 .send(RunEvent::Exit(RunExit {
@@ -186,7 +203,7 @@ impl SessionHost for WaitingHost {
                 snapshot: None,
             },
             reader: Box::new(Reader(rx)),
-            writer: Box::new(Writer(Some(tx))),
+            writer: Box::new(Writer(Some(tx), self.stuck.load(Ordering::SeqCst))),
         })
     }
 
@@ -195,6 +212,16 @@ impl SessionHost for WaitingHost {
     }
 
     fn terminate(&self, _: &Path) -> AppResult<()> {
+        if self.stuck.load(Ordering::SeqCst) {
+            // The worker hands its other tasks on while this one hangs, as a slow kill would.
+            tokio::task::block_in_place(|| {
+                let (lock, released) = &self.released;
+                if let Ok(done) = lock.lock() {
+                    let _ =
+                        released.wait_timeout_while(done, Duration::from_secs(60), |done| !*done);
+                }
+            });
+        }
         Ok(())
     }
 }
@@ -647,6 +674,61 @@ async fn a_new_token_drops_the_old_model_limits_and_keeps_a_typed_email() -> Tes
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     assert_eq!(again.body["email"], "team@example.com");
     assert_eq!(again.body["email_typed"], true);
+    Ok(())
+}
+
+/// AC-8 (TKP-011): a sign-in that has not ended 15 s after the paste cancelled it could still
+/// store a token it captured over the pasted one, so the paste is refused with 409 and nothing is
+/// stored or audited. Here the sign-in ignores its stop and its host does not return when killed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paste_a_sign_in_does_not_let_go_of_is_refused() -> TestResult {
+    let w = world().await?;
+    let ctx = admin_ctx(&w).await?;
+    w.host.stuck.store(true, Ordering::SeqCst);
+    let (id, login) = signing_in(&w, "Claude #3").await?;
+    let started = tokio::time::Instant::now();
+    let refused = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/admin/accounts/{id}/token"),
+        Some(json!({"token": PASTED})),
+        &w.admin,
+    )
+    .await;
+    let waited = started.elapsed();
+    w.host.release();
+    let refused = refused?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_no_token(&refused.body);
+    assert!(waited >= Duration::from_secs(15), "waited {waited:?}");
+    let unchanged = record(&w, &id).await?;
+    assert_eq!(unchanged.status, AccountStatus::PendingLogin);
+    assert!(unchanged.credential.is_none(), "nothing was stored");
+    assert!(
+        w.h.store
+            .last_audit(&id, "account.token_replaced", Timestamp(0))
+            .await?
+            .is_none(),
+        "a refused paste is not audited"
+    );
+    // Once the sign-in has let go, the same paste goes through.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while login_ended(&w, &ctx, &login)?.is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await??;
+    let accepted = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/admin/accounts/{id}/token"),
+        Some(json!({"token": PASTED})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.body);
+    assert_eq!(opened(&w, &record(&w, &id).await?)?, PASTED);
     Ok(())
 }
 
