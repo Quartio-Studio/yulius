@@ -1093,7 +1093,10 @@ from a sandbox, and no daemon needs to run on the host.
   connection whose client hung up, and closes one 30 s after the engine ended its side.
   `docker-front.log` and the journal (`the sandbox's Docker front: …`, at most once a minute per
   kind) say each of these with the totals; `docker-front-state.json` beside it holds the
-  connections held now, the limit, the totals and since when it is full. A front started by an
+  connections held now, the limit, the totals and since when it is full. While it is full, or
+  refused since the last tick, the panel shows "Docker full: <sandbox>" (one notification per
+  trouble) and each running task of the sandbox is told once, in its session, not to ask a
+  person; they hear again once it has room. A front started by an
   earlier Yulius keeps its old behavior until it starts again: `kill -TERM` the pid in
   `docker-front.json` and the upkeep starts a new one within a tick (its engine and running
   containers stop; volumes stay).

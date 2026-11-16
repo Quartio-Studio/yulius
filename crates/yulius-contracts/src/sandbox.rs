@@ -425,6 +425,9 @@ pub struct DockerFrontRecord {
 
 /// A front's connections and events (`docker-front-state.json`), written by the front at most
 /// every few seconds when they changed (SPEC-494 DFJ-005). Totals count since the front started.
+///
+/// A front outlives server updates, so a newer server reads what an older front writes: fields
+/// are only ever added, each with a serde default, and never renamed or made required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerFrontState {
     /// The front process.

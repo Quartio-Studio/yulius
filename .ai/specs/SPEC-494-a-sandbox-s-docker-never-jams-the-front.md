@@ -85,8 +85,8 @@ ever reaches it).
   of `MAX_CONNECTIONS` (256) places. At the limit it closes the connection idle longest (no byte
   either way) for the new one, if that one was idle at least `IDLE_FLOOR` (300 s), SPEC-355's
   rule. When every place was active within the floor the new connection gets a Docker-API answer
-  (HTTP 503, JSON `message`) saying the sandbox's Docker front is at its limit, that Yulius knows
-  and repairs it, and that nobody needs to be asked; at most `REFUSING_AT_ONCE` (16) such answers
+  (HTTP 503, JSON `message`) saying the sandbox's Docker front is at its limit and how it is
+  freed; once slice 3 repairs it, that Yulius repairs it and nobody needs to be asked; at most `REFUSING_AT_ONCE` (16) such answers
   are written at once, beyond that the connection is closed.
 - **DFJ-002** Once a client has stopped sending (its side read EOF), the front looks every
   `HANGUP_CHECK` (1 s) whether the client hung up entirely (the socket's peer is closed, `POLLHUP`).
@@ -112,9 +112,18 @@ ever reaches it).
   of its sandbox (`docker`), in SPEC-361's registry: it begins at the first state read that shows
   it, ends once the front holds at most seven eighths of its limit and refused nothing since the
   last read, and shows once on the panel and in the notification center like the other troubles.
-- **DFJ-007** The tasks of the sandbox with a live run are told once per trouble, in their
-  session, that the sandbox's Docker is jammed, that Yulius repairs it and that they should not
-  ask a person; the refusal's message says the same to the calls that hit it.
+- **DFJ-007** The tasks of the sandbox with a live session are told once per trouble, in their
+  session (a pass every 15 s; a session that takes no typed text now is told at a later pass),
+  that the sandbox's Docker is full and that they should not ask a person (unless it lasts more
+  than 15 minutes, until slice 3 repairs it); once the trouble has stayed ended for five
+  passes (75 s), the tasks told hear that Docker works again. A trouble that ends and begins again
+  before they heard it goes on as one for them. Nothing is typed into a session where a person
+  must act (a prompt on screen, an open Needs you), one paused or held by an update; a task told
+  keeps waiting for "works again" until it rests. An adopted front's past refusals (after a
+  server restart) are no new trouble; every path that drops a holder ends its trouble. A
+  production holder's front (SPEC-279, CD deploys) is journaled only: its name is no sandbox of
+  the panel and no task runs there. The refusal's message says the same to the
+  calls that hit it. (Slice 3 adds that Yulius repairs it.)
 
 ### Yulius repairs it itself (slice 3)
 
@@ -159,9 +168,10 @@ ever reaches it).
 - [x] The front admits through one table and gives way at its limit
 - [x] A connection whose client hung up or whose engine ended ends in bounded time
 - [x] The front logs its events and writes its state; the server journals them
-- [ ] Slice 1 reviewed independently, findings fixed test-first
-- [ ] A jammed front is a sandbox trouble on the panel
-- [ ] The sandbox's tasks are told once per trouble
+- [x] Slice 1 reviewed independently, findings fixed test-first
+- [x] Slice 1's round-2 review notes fixed test-first
+- [x] A jammed front is a sandbox trouble on the panel
+- [x] The sandbox's tasks are told once per trouble
 - [ ] Slice 2 reviewed independently, findings fixed test-first
 - [ ] Yulius restarts a jammed front at a quiet moment and tells the tasks
 - [ ] The Superagent restarts its sandbox's Docker
@@ -256,3 +266,62 @@ ever reaches it).
   giving way with its client count dropping, a half-close followed by a close.
 - `cargo test -p yulius-sandbox --lib -- front_gate:: engine_supervisor:: docker_front::`: 32
   passed (the gate's tests 8 times in a row: 14 passed each); the real-engine probe passed.
+
+### Slice 1, review round 2 (approve; minor notes fixed in slice 2's pull request)
+
+PR #1330 merged into dev at 201749a4d on green CI (merge train run 1f932ccc passed). Its notes,
+own code, fixed test-first here: the ordinary-close test waits up to 20 s for the engine's end
+(it ends at the engine's close, so it stays fast and still fails without the round-1 fix); the
+size case writes a valid state padded past 16 KiB; the unchanged-state test compares inode and
+modification time; a state that cannot be written is said once a minute; the at-limit answer
+says only what holds before slice 3 (retry; restarting the front frees it); `DockerFrontState`
+states its compatibility rule and an older front's state is read; `running_now` counts a held
+lock as running; the front's log lines start with their UTC time. The reviewer's other cause,
+a container start in the sandbox failing a parallel e2e job's page loads, is commented on
+#1331.
+
+### Slice 2 (the jam seen once)
+
+- Pill: `npx e2e run tests/connection-health.e2e.ts`: the new "a full Docker front says the
+  sandbox’s Docker is full …" failed before (no "Docker full: studio"), 4 passed after.
+- `a_full_front_is_one_docker_trouble_of_its_sandbox_until_it_has_room` (front_gate) and
+  `the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble` (manager, through
+  `watch_front`; another front's file is not read): passed.
+- `cargo test -p yulius --test main -- docker_trouble_notices::` (fake agent): told once, nothing
+  more within the trouble, told once that it works again; another sandbox's trouble says
+  nothing: passed.
+
+### Slice 2, review round 1 (request changes; every finding own code, all fixed)
+
+- An adopted front's old refusals began a trouble after every restart:
+  `an_adopted_fronts_past_refusals_are_no_new_trouble` (a front first seen, not started by
+  this server, baselines its refusals; one it started counts from zero).
+- The pass typed into sessions where a person must act: it now skips an open Needs you, a
+  prompt on screen, an open pause and an update's hold. The integration test sets a Needs you
+  before "works again": nothing typed over it; red with the guard removed ("typed over a
+  Needs you"), green with it.
+- A told task not running at the end pass lost "works again": told tasks are kept until they
+  rest (closed, stopped, failed), as the pull-request watch keeps them.
+- Flapping: "works again" waits until the trouble stayed ended for three passes; a trouble that
+  ends and begins again before that goes on as one (both in the integration test).
+- Every path that drops a holder ends its trouble (`stop_holder`; tested in
+  `the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble`). "Works again" became
+  "no longer full" (a holder that ended also ends the trouble). `docker` is documented as a
+  wire value (`docs/api.md`, the contract and domain docs). The at-limit answer and the notice
+  cite no Yulius path and say to raise a Needs you only past 15 minutes, until slice 3.
+- Pre-existing, outside the change: the subscriptions e2e test that fails before midnight
+  (issue #1334).
+
+### Slice 2, review round 2 (request changes; every finding own code, all fixed)
+
+- The notice-direction Needs-you check now holds the Needs you open for 3 s of passes after the
+  session's start window (deterministic): red with the Needs-you clause removed ("typed over a
+  Needs you" at the notice), green with it.
+- Kept-until-rest and the four blocking reasons are pure functions with unit tests
+  (`a_told_task_waits_for_the_end_until_it_rests`,
+  `a_prompt_a_needs_you_a_pause_or_an_update_hold_each_block_typing`); the task is read again
+  right before each paste.
+- `a_front_this_server_starts_reports_its_refusals_as_new` (a fake front started by the
+  upkeep): red with `started` removed from `keep_front`, green with it.
+- A production holder's front is journaled only (`a_production_fronts_state_is_no_panel_trouble`).
+- `BACK_AFTER` is 5 passes (75 s, past two upkeep ticks); stale "works again" wording updated.

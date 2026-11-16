@@ -543,6 +543,20 @@ open(stopped, "w").write("stopped")
         Ok(())
     }
 
+    /// SPEC-494 review round 2: asked without waiting, an engine whose start or stop holds its
+    /// lock counts as running; an engine that never started does not.
+    #[tokio::test]
+    async fn running_now_never_waits_and_counts_a_start_in_progress() -> io::Result<()> {
+        let f = Fixture::new()?;
+        let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
+        assert!(!supervisor.running_now());
+        let held = supervisor.running.lock().await;
+        assert!(supervisor.running_now());
+        drop(held);
+        assert!(!supervisor.running_now());
+        Ok(())
+    }
+
     /// SPEC-494 review round 1: the engine's front gives way at its limit like the others, and
     /// a connection that gave way stops counting as the engine's client (or the engine would
     /// never idle).
