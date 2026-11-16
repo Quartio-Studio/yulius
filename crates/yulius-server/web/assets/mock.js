@@ -6488,6 +6488,8 @@ class LoginSession {
  * WebCodecs is missing. Clicks and keys change the drawn page; copy answers with the typed text.
  */
 /** What the server answers a click or a key while the host's browser policy is missing. */
+// The refusal with the reason a test may set (`browserLockMessage`, SPEC-493 fix 10b).
+const inputLocked = (db) => (db.browserLockMessage ? { ...INPUT_LOCKED, message: db.browserLockMessage } : INPUT_LOCKED);
 const INPUT_LOCKED = { type: 'error', code: 'input_locked', message: "clicks and keys are off in this browser: the host's browser policy is not in force, so Chrome's own file dialogs and developer tools would reach the host's files. An administrator runs `sudo yulius host setup` on the host" };
 
 class BrowserSession {
@@ -6595,7 +6597,7 @@ class BrowserSession {
       case 'mouse': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown || msg.event === 'wheel') break;
-        if (this.db.browserLocked && msg.event !== 'move') { ws.push(JSON.stringify(INPUT_LOCKED)); break; }
+        if (this.db.browserLocked && msg.event !== 'move') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         this.cursor = { x: msg.x, y: msg.y };
         if (msg.event === 'down' && shown.id === 'tab-aws' && shown.action_requested && msg.x > 60 && msg.x < 360 && msg.y > 330 && msg.y < 380) {
           shown.action_requested = null;
@@ -6609,7 +6611,7 @@ class BrowserSession {
       case 'key': {
         const shown = this.tabs.find((t) => t.active);
         if (!shown) break;
-        if (this.db.browserLocked && msg.event !== 'up') { ws.push(JSON.stringify(INPUT_LOCKED)); break; }
+        if (this.db.browserLocked && msg.event !== 'up') { ws.push(JSON.stringify(inputLocked(this.db))); break; }
         const typed = this.typed.get(shown.id) || '';
         if (msg.event === 'down' && msg.key === 'Backspace') this.typed.set(shown.id, typed.slice(0, -1));
         else if (msg.event === 'down' && typeof msg.key === 'string' && msg.key.length === 1) this.typed.set(shown.id, (typed + msg.key).slice(-80));

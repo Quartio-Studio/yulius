@@ -1609,6 +1609,42 @@ async fn an_enter_typed_before_the_policy_keeps_input_off_until_a_restart() -> T
     chooser_before_the_policy("browser_type", |tab| json!({"tab_id": tab, "text": "\n"})).await
 }
 
+/// Review round 1 of fix 10b: on a host set up from the start, an agent that clicks or types
+/// before any viewer pressed anything (the policy was never asked yet) opens no chooser, and
+/// the viewer it hands over to (a captcha, a sign-in) gets input. The first rule took "never
+/// asked" for "not in force" and locked such a browser until its restart.
+#[tokio::test]
+async fn an_agent_first_on_a_host_with_the_policy_keeps_viewers_input() -> TestResult {
+    for (tool, args) in [
+        ("browser_click", json!({"x": 50, "y": 60})),
+        ("browser_type", json!({"text": "\n"})),
+    ] {
+        with_display(FakeDisplay::new(), |f| async move {
+            let display = display_of(&f)?;
+            f.fake.set_browser_policy(true);
+            let served = serve(f.h.router.clone()).await?;
+            let mut socket =
+                ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.writer, ORIGIN).await?;
+            let tabs = next_json(&mut socket).await?;
+            let tab = tabs["tabs"][0]["id"].as_str().ok_or("no tab")?.to_owned();
+            let mut args = args.clone();
+            args["tab_id"] = json!(tab);
+            let done = mcp_tool(&f.h, TOKEN, tool, args).await?;
+            assert_eq!(done["isError"], false, "{done}");
+            let down = json!({"type": "mouse", "tab_id": tab, "event": "down", "x": 10, "y": 20, "button": "left"});
+            send(&mut socket, down).await?;
+            let pressed = |i: &DisplayInput| *i == DisplayInput::Button { button: 1, press: true };
+            assert!(
+                display.wait_for_input(pressed, WAIT).await,
+                "{tool}: the viewer was refused on a host with the policy"
+            );
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
 /// AC-24: an agent's `tool` with `args(tab)` while the policy is not in force.
 async fn chooser_before_the_policy(tool: &'static str, args: fn(&str) -> Value) -> TestResult {
     with_display(FakeDisplay::new(), |f| async move {

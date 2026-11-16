@@ -134,7 +134,7 @@ pub enum BrowserError {
     /// host's policy was not in force: a native file chooser it opened may still be there
     /// (SPEC-493 DEF-002). Not delivered until the browser restarts.
     #[error(
-        "clicks and keys are still off in this browser: it ran without the host's browser policy, and a file dialog an agent's click opened then may still be on its display, where it reaches the host's files. They come back once the browser restarts (it does after 30 idle minutes with no viewer, or with the server)"
+        "clicks and keys are still off in this browser: it ran without the host's browser policy, and a file dialog an agent's click opened then may still be on its display, where it reaches the host's files. They come back once the browser restarts: after 30 minutes in which no page shows it and no agent uses it, or with the server"
     )]
     InputLockedUntilRestart,
     /// The tab's page, read with the input lock held, is not one the secret may be typed into

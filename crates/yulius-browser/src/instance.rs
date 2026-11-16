@@ -2382,11 +2382,14 @@ impl BrowserInstance {
         }
     }
 
-    /// An agent's click or key goes to this browser: on a display, while the policy is not
-    /// known to be in force (its last answer said no, or it was never asked), it may open a
-    /// native file chooser that stays when the policy comes (SPEC-493 DEF-002).
-    fn agent_input(&self) {
-        if self.display.is_some() && !lock(&self.policy).in_force {
+    /// An agent's click or key goes to this browser: on a display, while the policy is not in
+    /// force, it may open a native file chooser that stays when the policy comes (SPEC-493
+    /// DEF-002). The policy is asked as for a viewer's press (again once its answer no longer
+    /// stands, or for the first time): a browser that was never asked is not taken to run
+    /// without it, and a "yes" from long ago is not taken to stand (review round 1 of fix
+    /// 10b). An answer that cannot be had counts as "no".
+    async fn agent_input(&self) {
+        if self.display.is_some() && !self.policy_in_force().await {
             self.chooser_may_be_open
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
@@ -3080,8 +3083,8 @@ impl BrowserInstance {
             }
             ClickTarget::Selector(selector) => self.element_center(&session, selector).await?,
         };
+        self.agent_input().await;
         let _input = self.input_lock.lock().await;
-        self.agent_input();
         for (kind, button, buttons, count) in [
             ("mouseMoved", "none", 0, 0),
             ("mousePressed", "left", 1, 1),
@@ -3170,7 +3173,7 @@ impl BrowserInstance {
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
         // A typed Enter on a focused file input opens the chooser too.
-        self.agent_input();
+        self.agent_input().await;
         let focus = || async {
             if let Some(selector) = &params.selector {
                 let value = self

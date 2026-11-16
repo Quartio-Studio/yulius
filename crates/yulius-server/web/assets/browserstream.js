@@ -76,6 +76,7 @@ export function createStreamView(ctx, sandbox, hooks) {
   let lastError = null;
   // When the viewer was last told that clicks and keys are off (ADR-0318).
   let inputLockedToldAt = 0;
+  let inputLockedTold = '';
   let mode = 'video'; // what this view asks for
   let streamMode = null; // what the server sends: 'video' | 'pixels'
   let streamReason = null;
@@ -680,10 +681,12 @@ export function createStreamView(ctx, sandbox, hooks) {
         break;
       case 'error':
         // Clicks and keys are off until the host's browser policy is in force (ADR-0318): every
-        // refused click and key is answered, the viewer is told once a minute at most.
+        // refused click and key is answered, the viewer is told once a minute at most, and at
+        // once when the reason changed (until a restart, SPEC-493 fix 10b).
         if (message.code === 'input_locked') {
-          if (Date.now() - inputLockedToldAt > 60000) {
+          if (Date.now() - inputLockedToldAt > 60000 || (message.message || '') !== inputLockedTold) {
             inputLockedToldAt = Date.now();
+            inputLockedTold = message.message || '';
             toast(message.message || 'Clicks and keys are off in this browser.', { kind: 'error' });
           }
           break;

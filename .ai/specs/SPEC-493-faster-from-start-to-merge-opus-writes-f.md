@@ -1930,3 +1930,22 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
 - A week later: see Decisions (fix 10b's log line).
 - Not covered: a browser whose policy is taken away while it runs and an agent clicks within the
   five minutes a "yes" stands (ADR-0318 accepts that window for viewers too).
+- Review round 1 (Opus 5.5, head `e79d8c809`, PR #1352, its CI passed): request changes, one
+  major, one minor and two nits, all in own code, answered test-first.
+  - Major: the policy was asked only at a viewer's press, so an agent that clicked or typed
+    first on a host set up from the start found "never asked", marked the browser, and the
+    viewer it handed over to (a captcha, a sign-in) was locked out until a restart, with a
+    false reason. `agent_input` now asks the policy as a viewer's press does (it probes when
+    the answer no longer stands or was never had; no answer counts as "no") and marks only on
+    a "no". `browser::an_agent_first_on_a_host_with_the_policy_keeps_viewers_input` (click and
+    typed Enter) failed on the head and passes; the AC-24 tests still pass.
+  - Minor: an agent read a "yes" of any age. The same change re-asks it after five minutes, so
+    the gap is the five minutes the line above names.
+  - Nit: the viewer's toast for `input_locked` came at most once a minute and could hide the
+    new reason. It now shows at once when the reason changed. e2e "a new reason why clicks and
+    keys are off is shown at once" (the mock's `browserLockMessage`); with the change undone it
+    fails.
+  - Nit: the restart wording now says when the browser restarts: after 30 minutes in which no
+    page shows it and no agent uses it, or with the server (`reap_idle`). Changed in the
+    message, ADR-0318 and the operations guide.
+  - Suites: `browser` 41 passed (4 opt-in ignored); e2e `browser.e2e.ts` lock tests 2 passed.

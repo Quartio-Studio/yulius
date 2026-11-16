@@ -6,6 +6,7 @@ failOnPageErrors();
 
 type MockBrowser = { typed: Map<string, string>; acked: number };
 type WithMock = Window & { __yuliusMock: { browsers: Map<string, MockBrowser> } };
+type WithLock = Window & { __yuliusMock: { browserLockMessage?: string } };
 
 // The browser panel (SPEC-002 ADR-15): the sandbox Chrome — the agents' browser — streamed onto a
 // canvas (in mock mode a page drawn by assets/mock.js, sent as video where the browser's
@@ -101,6 +102,29 @@ test('a sandbox browser without the host policy says once that clicks and keys a
   // Nothing was typed into the page, and the notice did not multiply.
   expect(await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.browsers.get('sb_studio')?.typed.get('tab-app') ?? '')).toBe('');
   expect(await browser.evaluate(() => [...document.querySelectorAll('.toast')].filter((t) => (t.textContent || '').includes('clicks and keys are off')).length)).toBe(1);
+});
+
+// SPEC-493 fix 10b (review round 1): a browser that ran without the policy while an agent
+// clicked keeps clicks and keys off after host setup, until it restarts. That new reason is
+// shown at once, though the first notice was less than a minute ago; the same one is not.
+test('a new reason why clicks and keys are off is shown at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&browser=locked'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect
+    .poll(() => browser.evaluate(() => ((document.querySelector('.bp-canvas') as HTMLCanvasElement | null)?.width ?? 0) > 10), { timeout: 15000 })
+    .toBe(true);
+  await browser.locator('.bp-surface').click({ position: { x: 120, y: 270 } });
+  await expect(browser.locator('.toast:has-text("sudo yulius host setup")')).toBeVisible();
+  await browser.evaluate(() => {
+    (window as unknown as WithLock).__yuliusMock.browserLockMessage =
+      'clicks and keys are still off in this browser: a file dialog may still be on its display. They come back once the browser restarts';
+  });
+  await browser.locator('.bp-surface').click({ position: { x: 200, y: 355 } });
+  const restart = browser.locator('.toast:has-text("once the browser restarts")');
+  await expect(restart).toBeVisible();
+  await browser.locator('.bp-surface').click({ position: { x: 220, y: 355 } });
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.toast')].filter((t) => (t.textContent || '').includes('once the browser restarts')).length)).toBe(1);
 });
 
 test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
