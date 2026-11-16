@@ -24,20 +24,28 @@ few lines rarely finds anything.
   commit, beside Git's own clean merges of the integration branch. It walks the first parents
   from the head to the reviewed commit: a merge must be a clean merge of the integration branch
   (its second parent on that branch, its tree what Git's merge gives); every other commit's
-  lines are counted, added plus removed, commit by commit (`git show -U0 --no-renames`), so a
-  line changed twice counts twice and a large change undone later is not nothing.
+  lines are counted, added plus removed, commit by commit, so a line changed twice counts twice
+  and a large change undone later is not nothing. They are read with plumbing (`git diff-tree
+  -p -U0 --text`, checked against `--numstat -z`), so the clone's configuration (coloured or
+  prefix-less diffs) and attributes (`-diff`) change nothing; a hunk takes exactly the lines its
+  header counts. The integration branch is its full remote-tracking ref after a fresh fetch, so
+  a tag or a local branch named like it, or a moved ref, passes nothing off as it.
 - **What counts**: every file but documentation, tests (a `tests/`, `test/`, `e2e/`,
   `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`, `*.test.*`, `*.spec.*`,
-  `*.e2e.*`) and a Rust file's lines from its first `#[cfg(test)]` on. A project sets its own in
-  `yulius.toml`: `[review] product = [globs]` (only these count), `not_product = [globs]` (never
-  these). The integration branch's table counts, so a pull request does not loosen its own
+  `*.e2e.*`) and the lines of a Rust file's `#[cfg(test)] mod name {` to its closing brace (a
+  `mod tests;` declaration or a single test-only item counts). A project sets its own in
+  `yulius.toml`: `[review] product = [globs]` (only these count, tests and documents still not),
+  `not_product = [globs]` (never these). The integration branch's table counts, so a pull request does not loosen its own
   count; a table that does not parse refuses.
 - **A new review is needed** for more than 20 lines, for a file of the reviewed change that left
   the pull request's change, for a merge that resolved a conflict, merged another branch or
-  changed more than Git's merge, and when the reviewed commit is not on the head's first-parent
-  way. The refusal names the count and the files, or the reason.
-- **The record says what was counted**: the merge's and the armed merge's audit entries and the
-  review summary end with "reviewed at X; since then N product lines in M files: a 12, b 3".
+  changed more than Git's merge, when the reviewed commit is not on the head's first-parent
+  way, when the integration branch could not be fetched, and when a product file's changed line
+  has a NUL byte or is over 1,000 bytes (a binary file, a minified line). The refusal names the count and the files, or the reason.
+- **The record says what was counted**: the tool's answer (`review`), the merge's and the armed
+  merge's audit entries and the review summary say "reviewed at X; since then N product lines
+  in M files: a 12, b 3"; the merge's review record (`delivery.review.models`) counts such a
+  head as approved.
 - **One rule, everywhere reviews and merges are described**: "After an approval, fix the
   remaining nits within 20 product lines and merge without another round: `delivery_merge` with
   the approved head counts them (tests and documents do not count). More than that, or a file

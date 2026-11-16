@@ -310,12 +310,17 @@ person's decision is read as holding after an approval).
   Tests and documents do not count.
 - **APR-002** What counts: every file except documentation (`is_documentation_path`), test files
   (a `tests/`, `test/`, `e2e/`, `__tests__/` or `fixtures/` folder; `*_test.*`, `test_*.*`,
-  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines from its first `#[cfg(test)]`
-  on. A project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count) or
-  `not_product = [globs]` (these never count).
+  `*.test.*`, `*.spec.*`, `*.e2e.*`) and, in a Rust file, the lines of a `#[cfg(test)] mod name {`
+  to its closing brace (`#[cfg(test)] mod tests;` or a single test-only item is product code). A
+  project sets its own in `yulius.toml`: `[review] product = [globs]` (only these count; tests and
+  documents still do not) or `not_product = [globs]` (these never count). Lines are read with
+  plumbing and `--text`, so the clone's configuration and attributes change nothing.
 - **APR-003** The rule does not hold, and the head needs its review, when a file of the reviewed
   change is no longer part of the pull request's change, when a merge after the reviewed commit
-  resolved a conflict, or when the reviewed commit is not an ancestor of the head.
+  resolved a conflict or merged anything but the integration branch (its full remote-tracking
+  ref, freshly fetched: without the fetch nothing carries), when the reviewed commit is not an
+  ancestor of the head, or when a product file's changed line has a NUL byte or is over 1,000
+  bytes (no line count says what it changed).
 - **APR-004** The merge record says what was counted ("reviewed at X; since then N product lines
   in M files: …"), and so does the tool's answer; a refusal names the count and the files.
 - **APR-005** The review rules say, the same way everywhere: after an approval, fix the remaining
@@ -1276,3 +1281,62 @@ Both are checked on current `dev` first and fixed test-first if they still hold.
   ('delivery.agent.merge', 'delivery.agent.merge_armed') AND detail LIKE '%since then%product
   line%'` lists the merges that used the bound, with their counts; the analytics read's rounds
   per pull request (fix 1's) says whether rounds fell.
+- Review round 1 (Opus 5.5 while Fable's weekly limit held, head `de8377238`): request changes,
+  1 blocker and 5 majors in own code, each answered test-first. All seven mutations below fail a
+  test, and each is restored after.
+  1. Blocker: `git show` follows the clone's settings (`color.diff=always` → 0 lines; `-diff`
+     in `info/attributes` or a committed `.gitattributes` → "Binary files differ").
+     - The fix: `commit_lines` reads `git diff-tree -r -p -U0 --text --no-color --src-prefix=a/
+       --dst-prefix=b/` with `GIT_ATTR_NOSYSTEM=1`, `core.quotePath=false` and an empty
+       `diff.orderFile`. `diff-tree --numstat -z` gives the exact paths, and its counts must
+       agree with the patch. `--numstat` gives `-` for a `-diff` file; the patch, with
+       `--text`, does not, and decides.
+     - A changed line with a NUL byte or over 1,000 bytes makes its file opaque, and product
+       code that is opaque refuses.
+     - Tests: `git_ops::a_commits_lines_ignore_the_clones_settings` (real Git: colour, no
+       prefix, `-diff` everywhere, a binary file, a path with a space and `ü.rs`), and the
+       delivery cases "the clone's settings do not hide lines" and the NUL byte. Dropping
+       `--text`, or the opaque refusal, fails them.
+  2. Major: the stateless parser.
+     - The fix: `parse_unified_zero` starts a file only at `diff --git` and gives a hunk
+       exactly the lines its header counts; `None` (refused) when a hunk ends short.
+     - Test: unit `a_patch_is_read_by_its_hunk_counts` (a `++ b/docs/x.md` content line, `\ No
+       newline` markers, a new file, a mode change, a short hunk, NUL and long lines).
+  3. Major: the first `#[cfg(test)]` ended the count.
+     - The fix: `follow_up::test_module_spans` excludes only a `#[cfg(test)] mod name {` to the
+       first `}` at its indentation. A module never closed, `mod tests;` and a single item are
+       counted. APR-002 and the ADR are amended.
+     - Tests: unit `only_test_modules_are_test_spans`; the delivery case
+       `#[cfg(test)]\nmod tests;` + 30 lines is refused (32). Marking every line a test fails it.
+  4. Major: the answer lacked the count, and the test read it from the audit.
+     - The fix: an accepted answer has `review: "reviewed at X; since then …"`.
+     - Test: `deliver_after_follow_up` returns the answer and the audit entries apart, and each
+       accepted case asserts both. Dropping the field fails it.
+  5. Major: the merge record (`delivery.review.models`) used only the clean-merge rule.
+     - The fix: it also accepts a follow-up within the bound, judged against the merge's base.
+     - Test: `a_merge_commit_merge_judges_the_head_against_the_branch_before_it` adds a small
+       follow-up, merged three ways, which is not flagged; the side branch still is. Dropping
+       the call fails it.
+  6. Major: `origin/<branch>` resolves a tag or a local branch of that name first.
+     - The fix: the integration branch is `refs/remotes/origin/<branch>` here and in
+       `review_covers_against` (on dev before this change; fixed here because the follow-up
+       relies on it). A failed refresh now refuses in both, where it only warned.
+     - Tests: the side-branch merge with a tag and with a local branch `origin/dev`; and the
+       origin moved away, which refuses with "could not be refreshed". The short name fails the
+       first, keeping the warning fails the second.
+  7. Minor: a Git error is logged and said ("Git could not walk the commits …"), not read as a
+     conflict.
+  8. Minor: the playground's merged and armed audit entries end with the count too.
+  9. Minor: `product` globs no longer make tests or documents count (unit
+     `product_code_is_every_file_but_tests_and_documents`).
+  10. Minor (design), answered in words: shipped instruction files (`SKILL.md`, `AGENTS.md`)
+      are documents by the repository's own rule (`is_documentation_path`, the one the spec
+      check uses). The person decided that documents do not count. A project that wants them
+      counted can drop them with `not_product`, which only removes paths, or narrow `product`.
+      The bound is per follow-up after an approval, and every such merge's record names the
+      files. Not changed.
+  11. Nits:
+      - `only_clean_merges_since` is now the follow-up walk with nothing counted.
+      - The left-the-change check uses a set.
+      - The second refresh in `delivery_merge` (once for the clean-merge rule, once for the
+        count) stays: it is a local fetch, and only when the head moved past the review.
