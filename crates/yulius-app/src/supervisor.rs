@@ -129,6 +129,11 @@ pub struct TaskRuntime {
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
+    /// A review round's reviewer a usage limit cut off, not yet resumed: a relaunch tells the
+    /// session to resume it (SPEC-493 RLM-002).
+    pub(crate) cut_off_reviewer: Mutex<Option<crate::review::CutOffReviewer>>,
+    /// The session moves for its cut-off reviewer at its next turn's end (RLM-002).
+    pub(crate) reviewer_move: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
     /// switches and pauses, not the transcript (SPEC-002 §7.5).
     pub(crate) hooks_seen: AtomicBool,
@@ -555,6 +560,8 @@ impl TaskRuntime {
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
+            cut_off_reviewer: Mutex::new(None),
+            reviewer_move: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             at_limit: AtomicBool::new(false),
             workflows: Mutex::new(crate::dynamic_workflow::Unfinished::default()),
@@ -1843,18 +1850,37 @@ impl App {
                 Vec::new()
             }
         };
-        let resumes = |prompt: Option<&str>| {
-            Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+        // A reviewer a usage limit cut off is resumed in the new process, not started again
+        // (SPEC-493 RLM-002).
+        let reviewer = match (&start, &previous) {
+            (RunStart::Resume { .. } | RunStart::AfterLimit, Some(_)) => self
+                .runtime(&task.id)
+                .cut_off_reviewer
+                .lock()
+                .ok()
+                .and_then(|cut| cut.clone()),
+            _ => None,
         };
+        let resumes = |prompt: Option<&str>| {
+            let prompt = if unfinished.is_empty() {
+                prompt.map(str::to_owned)
+            } else {
+                Some(crate::dynamic_workflow::resume_prompt(prompt, &unfinished))
+            };
+            match &reviewer {
+                Some(reviewer) => Some(crate::review::reviewer_resume_prompt(
+                    prompt.as_deref(),
+                    reviewer,
+                )),
+                None => prompt,
+            }
+        };
+        let told = !unfinished.is_empty() || reviewer.is_some();
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: if unfinished.is_empty() {
-                        prompt.clone()
-                    } else {
-                        resumes(prompt.as_deref())
-                    },
+                    prompt: resumes(prompt.as_deref()),
                     continue_interrupted: false,
                 },
                 LaunchKind::Resume,
@@ -1862,8 +1888,8 @@ impl App {
             (RunStart::AfterLimit, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
-                    prompt: (!unfinished.is_empty()).then(|| resumes(None)).flatten(),
-                    continue_interrupted: unfinished.is_empty(),
+                    prompt: told.then(|| resumes(None)).flatten(),
+                    continue_interrupted: !told,
                 },
                 LaunchKind::Resume,
             ),
@@ -5234,6 +5260,14 @@ impl App {
                     self.record_limit(account, limit, family).await;
                 }
             }
+            // A limit that cut off a subagent of the session's thread is the session's news as
+            // a workflow agent's is (SPEC-493 RLM-001), read live only.
+            if !catching_up {
+                for observation in &observations {
+                    self.subagent_limit(&task_id, &attempt, family, observation)
+                        .await;
+                }
+            }
             for observation in &observations {
                 facts.fold(observation);
             }
@@ -5565,6 +5599,50 @@ impl App {
             Observation::Session { .. } => {}
         }
         runtime.with_queue(|queue| queue.work_seen(worked));
+    }
+
+    /// A usage limit that cut off a subagent of `task_id`'s thread (SPEC-493 RLM-001, RLM-002):
+    /// the subscription's reading keeps it, for the model family it binds. One that binds the
+    /// session's own model (`family`, or the subscription) moves or pauses the session as any
+    /// limit does; one of another model leaves the session where it is, unless the subagent is
+    /// a review round's reviewer, whose model the session then moves for. Either way a relaunch
+    /// tells the session to resume that reviewer.
+    async fn subagent_limit(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        family: ModelFamily,
+        observation: &Observation,
+    ) {
+        let Observation::SubagentCutOff {
+            agent_id,
+            at,
+            resets_at,
+            message,
+            window_minutes,
+            scope,
+        } = observation
+        else {
+            return;
+        };
+        let limit = ReportedLimit {
+            scope: *scope,
+            window_minutes: *window_minutes,
+            resets_at: *resets_at,
+        };
+        let binds_session = !matches!(
+            scope,
+            yulius_domain::usage::LimitScope::Model(Some(other)) if *other != family
+        );
+        tracing::info!(task = %task_id, %message, ?scope, binds_session, "usage limit reached by a subagent");
+        // Known before any relaunch the limit leads to, whose prompt names the reviewer.
+        self.reviewer_cut_off(task_id, agent_id, !binds_session)
+            .await;
+        if binds_session {
+            self.limit_met(task_id, attempt, limit, *at).await;
+        } else if let Some(account) = &attempt.account_id {
+            self.record_limit(account, limit, family).await;
+        }
     }
 
     /// The session of `task_id` is at the usage limit `limit`, recorded at `at`: its turn is

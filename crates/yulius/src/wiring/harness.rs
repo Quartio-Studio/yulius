@@ -652,10 +652,30 @@ impl Watch {
                     }
                 })
             }
-            Observed::LimitReached { at, .. } => Some(Observation::SubagentCutOff {
-                agent_id: id.to_owned(),
-                at: *at,
-            }),
+            Observed::LimitReached {
+                at,
+                resets_at,
+                message,
+                window_minutes,
+                scope,
+            } => {
+                // A limit of "the model that ran" is of the model that answered this subagent.
+                let scope = match (scope, self.subagent_models.get(id)) {
+                    (LimitScope::Model(None), Some(model)) => match ModelFamily::of(Some(model)) {
+                        ModelFamily::Any => LimitScope::Model(None),
+                        family => LimitScope::Model(Some(family)),
+                    },
+                    (scope, _) => *scope,
+                };
+                Some(Observation::SubagentCutOff {
+                    agent_id: id.to_owned(),
+                    at: *at,
+                    resets_at: *resets_at,
+                    message: message.clone(),
+                    window_minutes: *window_minutes,
+                    scope,
+                })
+            }
             _ => None,
         }
     }
@@ -1019,7 +1039,8 @@ mod tests {
         }));
         assert!(
             seen.iter().any(
-                |o| matches!(o, Observation::SubagentCutOff { agent_id, at: Some(_) }
+                |o| matches!(o, Observation::SubagentCutOff { agent_id, at: Some(_),
+                    scope: LimitScope::Account, window_minutes: Some(300), resets_at: Some(_), .. }
                 if agent_id == "a73a9170080d69b92")
             ),
             "{seen:?}"
@@ -1029,6 +1050,21 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, Observation::SubagentAnswered { model, .. }
                 if model == "<synthetic>")),
+            "{seen:?}"
+        );
+        // A refusal of the usage credits of "the model that ran" names no family: it is the
+        // family of the model that answered the subagent (SPEC-493 RLM-001).
+        let credits = r#"{"isSidechain":true,"agentId":"b2","type":"assistant","timestamp":"2026-11-15T10:00:03.000Z","message":{"id":"e-b2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"apiError":"model_requires_usage_credits","error":"rate_limit","isApiErrorMessage":true}"#;
+        std::fs::write(
+            sub.join("agent-b2.jsonl"),
+            answer("m5", "claude-fable-5-2") + "\n" + credits + "\n",
+        )?;
+        let seen = watch.poll().map_err(|err| err.to_string())?;
+        assert!(
+            seen.iter().any(
+                |o| matches!(o, Observation::SubagentCutOff { agent_id, scope, .. }
+                if agent_id == "b2" && *scope == LimitScope::Model(Some(ModelFamily::Fable)))
+            ),
             "{seen:?}"
         );
         // A workflow agent's lines are not a subagent's of the thread.

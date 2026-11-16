@@ -526,3 +526,52 @@ mod tests {
         std::fs::remove_dir_all(&dir)
     }
 }
+
+/// `/reviewer-limit <kind>`: the Agent tool starts reviewer `kind` (its `PreToolUse`, then
+/// `SubagentStart` for the agent the answer runs), the reviewer answers once on Fable 5.2, and
+/// then its own transcript gets the refusal of its model's usage credits, as at `/credits-out`.
+/// No `SubagentStop` follows, as with Claude Code 2.1.325 (SPEC-493 RLM-002).
+pub(super) fn reviewer_cut_off(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) -> io::Result<()> {
+    let kind = line
+        .get("/reviewer-limit ".len()..)
+        .unwrap_or_default()
+        .trim();
+    let Some((path, session)) = transcript.and_then(|t| {
+        t.lock()
+            .ok()
+            .map(|t| (t.path.clone(), t.session_id.clone()))
+    }) else {
+        return say("REVIEWER NEEDS A TRANSCRIPT");
+    };
+    let agent = format!("arev{:x}", now_ms());
+    if let Some(hooks) = hooks {
+        let answer: Value = serde_json::from_str(hooks.agent(kind).trim()).unwrap_or_default();
+        let runs = answer["hookSpecificOutput"]["updatedInput"]["subagent_type"]
+            .as_str()
+            .unwrap_or(kind)
+            .to_owned();
+        hooks.subagent_start(&agent, &runs);
+    }
+    let file = Layout::of(&path)
+        .session
+        .join("subagents")
+        .join(format!("agent-{agent}.jsonl"));
+    let message = json!({
+        "id": format!("msg_fake_{agent}"), "type": "message", "role": "assistant",
+        "model": REVIEWER_MODEL, "content": [{"type": "text", "text": "Reading the diff."}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 7, "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0, "output_tokens": 3},
+    });
+    append(&file, &[agent_record(&session, &agent, &message)])?;
+    Transcript::open(file, &session)?.credits_out(options.credits_reset_s)?;
+    say(&format!("REVIEWER {agent} CUT OFF"))
+}
+
+/// The model the reviewer of `/reviewer-limit` answers on.
+const REVIEWER_MODEL: &str = "claude-fable-5-2";

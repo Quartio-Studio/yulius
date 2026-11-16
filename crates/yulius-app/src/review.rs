@@ -68,6 +68,54 @@ const NO_FABLE_REVIEWER_LINE: &str = "\n\nYulius: this task's session cannot run
      and cannot move to a subscription that can, so this round runs on Opus 5.5. Say so in the \
      first line of your summary.";
 
+/// The switch reason of a move for a reviewer a usage limit cut off (RLM-002): made at a turn's
+/// end or while the session is idle, so it interrupts nothing.
+pub(crate) const REVIEW_RESUME: &str = "review_resume";
+
+/// A review round's reviewer that a usage limit cut off and that was not resumed yet
+/// (SPEC-493 RLM-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CutOffReviewer {
+    /// Claude Code's id of the subagent: `SendMessage` to it resumes it.
+    pub(crate) agent_id: String,
+    /// The model its round runs.
+    pub(crate) model: String,
+}
+
+/// What the new process of a session moved past its reviewer's limit is told (RLM-002), after
+/// the prompt it would open with (`after`).
+#[must_use]
+pub(crate) fn reviewer_resume_prompt(after: Option<&str>, reviewer: &CutOffReviewer) -> String {
+    let told = format!(
+        "Yulius continued this session in a new process on a Claude subscription that can run          {model}, because a usage limit cut off your reviewer `{id}` in the middle of its review          round. Resume that reviewer now: SendMessage to `{id}`, asking it to continue its          review. Do not start a new reviewer for this round: the one you resume keeps what it          has read. Then continue the task where you left off.",
+        model = claude_model_name(&reviewer.model),
+        id = reviewer.agent_id,
+    );
+    match after.map(str::trim).filter(|prompt| !prompt.is_empty()) {
+        Some(prompt) => format!("{prompt}\n\n{told}"),
+        None => told,
+    }
+}
+
+/// What a session is told whose cut-off reviewer no subscription can run now (RLM-002, REV-007).
+fn reviewer_nowhere(reviewer: &CutOffReviewer) -> String {
+    format!(
+        "Yulius: a usage limit cut off your reviewer `{id}` in the middle of its review round, and          no Claude subscription can run {model} now. Start the review again (the Agent tool with          the `yulius-reviewer` agent and the same prompt): this round then runs on Opus 5.5,          which says so in its summary.",
+        model = claude_model_name(&reviewer.model),
+        id = reviewer.agent_id,
+    )
+}
+
+/// Where a session moves for its cut-off reviewer ([`App::reviewer_move_target`]).
+pub(crate) enum ReviewerMove {
+    /// To this subscription.
+    To(yulius_domain::ids::AccountId),
+    /// Not now: at a later turn's end.
+    Later,
+    /// Nowhere: no reviewer waits, or the session was told the round runs on Opus.
+    Nothing,
+}
+
 /// What a review round that cannot run Fable on its subscription does (REV-007).
 enum FableMove {
     /// The Agent call is refused with this reason (the session moves, or work would be lost).
@@ -349,6 +397,149 @@ impl App {
             })
     }
 
+    /// The cut-off reviewer `agent_id` of `task` started again or reported: nothing is left to
+    /// tell a relaunch, and no move is due for it (RLM-002).
+    fn reviewer_went_on(&self, task: &yulius_domain::ids::TaskId, agent_id: &str) {
+        let Some(runtime) = self.existing_runtime(task) else {
+            return;
+        };
+        if let Ok(mut cut) = runtime.cut_off_reviewer.lock()
+            && cut.as_ref().is_some_and(|c| c.agent_id == agent_id)
+        {
+            *cut = None;
+            runtime
+                .reviewer_move
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A usage limit cut off subagent `agent_id` of `task` (RLM-002). When it is an unfinished
+    /// review round's reviewer, a relaunch tells the session to resume it; and when the limit
+    /// binds the reviewer's model and not the session's (`moves`), the session moves to a
+    /// subscription that can run both: at once when its thread is idle, else at its turn's
+    /// end. A limit that binds the session's own model moves it as any limit does.
+    pub(crate) async fn reviewer_cut_off(
+        self: &Arc<Self>,
+        task: &yulius_domain::ids::TaskId,
+        agent_id: &str,
+        moves: bool,
+    ) {
+        let Ok(rounds) = self.deps.store.review_rounds(task, true).await else {
+            return;
+        };
+        let Some(round) = rounds
+            .iter()
+            .find(|r| r.ended_at.is_none() && r.subagent_id.as_deref() == Some(agent_id))
+        else {
+            return;
+        };
+        let runtime = self.runtime(task);
+        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
+            *cut = Some(CutOffReviewer {
+                agent_id: agent_id.to_owned(),
+                model: round.model.clone(),
+            });
+        }
+        if !moves {
+            return;
+        }
+        if runtime.turn_in_progress() {
+            runtime
+                .reviewer_move
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            let app = Arc::clone(self);
+            let task = task.clone();
+            tokio::spawn(async move { app.move_for_reviewer(&task).await });
+        }
+    }
+
+    /// Where `task`'s session moves for its cut-off reviewer (RLM-002): a subscription that can
+    /// run the reviewer's model beside the session's, or none. With none the reviewer is
+    /// forgotten and the session told the round runs on Opus 5.5 (REV-007). `Later` while a
+    /// move cannot be decided now (one was refused moments ago, the pool cannot be read).
+    pub(crate) async fn reviewer_move_target(
+        self: &Arc<Self>,
+        task: &crate::model::TaskRecord,
+        current: Option<yulius_domain::ids::AccountId>,
+    ) -> ReviewerMove {
+        let runtime = self.runtime(&task.id);
+        let Some(reviewer) = runtime.cut_off_reviewer.lock().ok().and_then(|c| c.clone()) else {
+            return ReviewerMove::Nothing;
+        };
+        if self.switch_cooling(&task.id) {
+            return ReviewerMove::Later;
+        }
+        let Ok(input) = self.rotation_input(task, current).await else {
+            return ReviewerMove::Later;
+        };
+        let family = ModelFamily::of(Some(&reviewer.model));
+        if let Some(account) = yulius_domain::rotation::move_to_also_run(&input, family) {
+            return ReviewerMove::To(account);
+        }
+        if let Ok(mut cut) = runtime.cut_off_reviewer.lock() {
+            *cut = None;
+        }
+        let paste = format!("\x1b[200~{}\x1b[201~", reviewer_nowhere(&reviewer));
+        let app = Arc::clone(self);
+        let task = task.clone();
+        tokio::spawn(async move {
+            if let Err(err) = app
+                .type_into_session(
+                    &task,
+                    paste.as_bytes(),
+                    crate::task_message::Typed::Prompt,
+                    crate::task_message::Sender::Yulius,
+                )
+                .await
+            {
+                tracing::warn!(error = %err, task = %task.id, "the session was not told its reviewer cannot go on");
+            }
+        });
+        ReviewerMove::Nothing
+    }
+
+    /// Moves `task_id`'s idle session for its cut-off reviewer (RLM-002): while background work
+    /// runs or a prompt waits (which a move would end), or a move cannot be decided now, at a
+    /// later turn's end instead.
+    pub(crate) async fn move_for_reviewer(self: &Arc<Self>, task_id: &yulius_domain::ids::TaskId) {
+        let runtime = self.runtime(task_id);
+        let later = || {
+            runtime
+                .reviewer_move
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        let (Ok(Some(task)), Ok(Some(attempt))) = (
+            self.deps.store.task(task_id).await,
+            self.deps.store.live_attempt(task_id).await,
+        ) else {
+            return;
+        };
+        let account = match self
+            .reviewer_move_target(&task, attempt.account_id.clone())
+            .await
+        {
+            ReviewerMove::To(account) => account,
+            ReviewerMove::Later => return later(),
+            ReviewerMove::Nothing => return,
+        };
+        let prompts_before = self.prompts_passed(task_id);
+        self.await_transcript_read(task_id).await;
+        if runtime.turn_in_progress()
+            || self.background_or_wait_now(task_id).await != Some(false)
+            || self.prompt_waits_for_turns_end(task_id, prompts_before)
+        {
+            return later();
+        }
+        tracing::info!(task = %task_id, "the session moves for its cut-off reviewer");
+        if let Err(err) = self
+            .switch_task_now(task_id, Some(account), REVIEW_RESUME, None)
+            .await
+        {
+            tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
+        }
+    }
+
     /// What a subagent's transcript says of a review round's reviewer: the model that answered
     /// it, or that a usage limit cut it off. A subagent that is no round's changes nothing.
     pub(crate) async fn review_subagent_noted(
@@ -369,12 +560,13 @@ impl App {
     }
 
     /// `SubagentStart`: links a reviewer's subagent to the round that started it. A resumed
-    /// subagent (the same id) changes nothing.
+    /// subagent (the same id) changes nothing, but that it was resumed (RLM-002).
     pub(crate) async fn review_subagent_started(&self, ctx: &AgentContext, input: &HookInput) {
         let (Some(agent), Some(id)) = (input.agent_type.as_deref(), input.agent_id.as_deref())
         else {
             return;
         };
+        self.reviewer_went_on(&ctx.task.id, id);
         if !REVIEWERS.contains(&agent) {
             return;
         }
@@ -393,6 +585,7 @@ impl App {
         let Some(id) = input.agent_id.as_deref() else {
             return;
         };
+        self.reviewer_went_on(&ctx.task.id, id);
         if !input
             .agent_type
             .as_deref()

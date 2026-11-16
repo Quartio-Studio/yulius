@@ -996,4 +996,99 @@ mod real {
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
     }
+
+    /// SPEC-493 RLM-001, RLM-002 (AC-18) end to end: a real session on Opus runs its Fable
+    /// reviewer, which a refusal of Fable's credits cuts off in its own transcript. The limit is
+    /// recorded on the subscription for Fable, the session moves to the one that runs both
+    /// models, and its new process is told to resume that reviewer by its id with
+    /// `SendMessage`, not to start a new one.
+    #[test]
+    fn a_cut_off_reviewer_moves_the_session_and_is_resumed_there() -> TestResult {
+        let fake =
+            locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+        let (_dir, data) = temp()?;
+        let rt = runtime()?;
+        rt.block_on(async {
+            let probe = Arc::new(ScriptedUsage::default());
+            let agent = FakeAgentOptions {
+                resume_prompts: true,
+                transcript: true,
+                ..hooked()
+            };
+            let (app, _port) = start_with(&data, &fake, agent, 0, probe.clone(), |config| {
+                config.claude_code_queue_record_ms = 0;
+            })
+            .await?;
+            let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+            probe.set("a-first", usage(5.0, 4 * HOUR, 10.0, 100));
+            probe.set("b-second", usage(40.0, 4 * HOUR, 50.0, 100));
+            refresh(&app, &user, "a-first").await?;
+            refresh(&app, &user, "b-second").await?;
+            let id = new_task(&app, &sandbox, &user, "Review it", TaskMode::Prompt).await?;
+            ready(&app, &id).await?;
+            assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+            let person = app.deps.store.task(&id).await?.ok_or("task")?.created_by;
+            let ctx = yulius_app::auth::AuthContext {
+                user: app.deps.store.user(&person).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            };
+            let attach = app
+                .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+                .await?;
+            app.terminal_input(&ctx, &attach, b"/reviewer-limit yulius-reviewer", false)
+                .await?;
+            app.terminal_input(&ctx, &attach, b"\r", false).await?;
+            let cut = wait_for("the cut-off reviewer", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("CUT OFF")
+            })
+            .await;
+            assert!(cut.is_ok(), "{}", screen(&app, &id));
+            // A turn's end, should the cut-off have come while one ran.
+            app.terminal_input(&ctx, &attach, b"carry on", false)
+                .await?;
+            app.terminal_input(&ctx, &attach, b"\r", false).await?;
+            live_run(&app, &id, 2).await?;
+            assert_eq!(
+                run_accounts(&app, &id).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            let told = wait_for("the resume prompt", Duration::from_secs(30), || async {
+                let seen = screen(&app, &id);
+                seen.contains("Resume that reviewer now: SendMessage to `arev")
+                    && seen.contains("Do not start a new reviewer for this round")
+            })
+            .await;
+            assert!(told.is_ok(), "{}", screen(&app, &id));
+            wait_for("the completed switch", Duration::from_secs(30), || async {
+                app.deps.store.switches(&id).await.is_ok_and(|switches| {
+                    switches.iter().any(|switch| switch.outcome == "completed")
+                })
+            })
+            .await?;
+            let switches = app.deps.store.switches(&id).await?;
+            assert_eq!(switches.len(), 1, "{switches:?}");
+            assert_eq!(switches[0].reason, "review_resume");
+            // The limit is Fable's on the first subscription, which Opus may still use.
+            let first = app
+                .deps
+                .store
+                .account(&yulius_domain::ids::AccountId::parse("a-first")?)
+                .await?
+                .ok_or("a-first")?;
+            let read =
+                yulius_app::usage_json::from_json(first.usage_json.as_deref().unwrap_or("{}"));
+            assert_eq!(
+                read.weekly_fable.and_then(|w| w.used_percent),
+                Some(100.0),
+                "{:?}",
+                first.usage_json
+            );
+            stop(&app, &id).await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
 }

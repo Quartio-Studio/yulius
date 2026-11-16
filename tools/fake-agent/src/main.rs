@@ -1550,6 +1550,16 @@ impl Hooks {
         )
     }
 
+    /// `SubagentStart` of subagent `agent_id` of type `kind`.
+    fn subagent_start(&self, agent_id: &str, kind: &str) {
+        run_hook(
+            &self.exe,
+            "SubagentStart",
+            &json!({"session_id": self.session_id, "hook_event_name": "SubagentStart",
+                "agent_id": agent_id, "agent_type": kind}),
+        );
+    }
+
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
@@ -2805,6 +2815,9 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
                 state.turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
+            }
+            _ if line.starts_with("/reviewer-limit ") => {
+                workflow::reviewer_cut_off(options, &line, transcript.as_ref(), hooks.as_ref())?;
             }
             "/workflow" => {
                 workflow::launch(

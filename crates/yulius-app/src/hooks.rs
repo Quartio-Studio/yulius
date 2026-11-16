@@ -946,6 +946,51 @@ impl App {
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
         let decision = rotation::decide(&pool, Trigger::Proactive);
+        // A reviewer a usage limit cut off moves the session to a subscription that can run
+        // its model, at this turn's end, as a switch the pool decides would (SPEC-493 RLM-002).
+        if matches!(decision.0, Decision::Stay)
+            && self
+                .runtime(&task.id)
+                .reviewer_move
+                .swap(false, Ordering::SeqCst)
+        {
+            let later = || {
+                self.runtime(&task.id)
+                    .reviewer_move
+                    .store(true, Ordering::SeqCst);
+            };
+            match self.reviewer_move_target(task, current.clone()).await {
+                crate::review::ReviewerMove::To(account) => {
+                    let prompts_before = self.prompts_passed(&task.id);
+                    self.await_transcript_read(&task.id).await;
+                    if self.background_work_now(&task.id).await != Some(false)
+                        || self.prompt_waits_for_turns_end(&task.id, prompts_before)
+                    {
+                        later();
+                    } else {
+                        let continuation = gate_continues.then(|| reasons.join("\n\n"));
+                        let app = Arc::clone(self);
+                        let task_id = task.id.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = app
+                                .switch_task_now(
+                                    &task_id,
+                                    Some(account),
+                                    crate::review::REVIEW_RESUME,
+                                    continuation,
+                                )
+                                .await
+                            {
+                                tracing::warn!(error = %err, task = %task_id, "the move for a cut-off reviewer failed");
+                            }
+                        });
+                        return Ok(self.hold_for(&task.id));
+                    }
+                }
+                crate::review::ReviewerMove::Later => later(),
+                crate::review::ReviewerMove::Nothing => {}
+            }
+        }
         // A switch restarts the session and ends its background shells, agents and monitors: a
         // build, gate or review the agent left running would be lost (tasks #3 and #5, F
         // 2026-10-11/12, #271). An agent launched in this turn is known only from the lines
@@ -1111,6 +1156,12 @@ impl App {
         account: Option<yulius_domain::ids::AccountId>,
     ) {
         let runtime = self.runtime(task_id);
+        // A move for a cut-off reviewer due at a turn's end (SPEC-493 RLM-002).
+        if runtime.reviewer_move.swap(false, Ordering::SeqCst) {
+            let app = Arc::clone(self);
+            let task_id = task_id.clone();
+            tokio::spawn(async move { app.move_for_reviewer(&task_id).await });
+        }
         if runtime.proactive_switch.swap(false, Ordering::SeqCst) {
             let app = Arc::clone(self);
             let task_id = task_id.clone();
