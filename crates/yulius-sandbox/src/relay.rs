@@ -51,7 +51,7 @@ pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 
 /// One relay's places toward Yulius (SLR-001): at its limit the longest-idle connection past the
 /// floor gives way to a new one. Each place holds the sender that ends its connection.
-struct Places {
+pub(crate) struct Places {
     table: Mutex<Connections<(), oneshot::Sender<()>>>,
     epoch: Instant,
     max: usize,
@@ -70,7 +70,7 @@ struct Report {
 }
 
 /// The wall clock in ms since the epoch: when a trouble began.
-fn wall_ms() -> i64 {
+pub(crate) fn wall_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -79,14 +79,14 @@ fn wall_ms() -> i64 {
 }
 
 /// A connection's place, freed when dropped.
-struct Place {
+pub(crate) struct Place {
     places: Arc<Places>,
     id: u64,
     activity: Activity,
 }
 
 impl Places {
-    fn new(max: usize, floor: Duration) -> Arc<Self> {
+    pub(crate) fn new(max: usize, floor: Duration) -> Arc<Self> {
         Self::reporting(max, floor, None)
     }
 
@@ -107,7 +107,7 @@ impl Places {
 
     /// A place, what resolves once its connection gave way, and how long the connection that
     /// gave way to it had been idle (ms); `None` when every connection was active lately.
-    fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
+    pub(crate) fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
         let (end, ended) = oneshot::channel();
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
         let admitted = table.admit((), end, self.now());
@@ -139,6 +139,40 @@ impl Places {
             activity: admitted.activity,
         };
         Some((place, ended, idle))
+    }
+}
+
+impl Places {
+    /// Connections held now.
+    pub(crate) fn held(&self) -> usize {
+        self.table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+}
+
+impl Place {
+    /// What marks this place's connection active, for copy loops of its halves.
+    pub(crate) fn toucher(&self) -> Toucher {
+        Toucher {
+            places: Arc::clone(&self.places),
+            activity: self.activity.clone(),
+        }
+    }
+}
+
+/// Marks a place's connection active (a byte either way), shared by the halves of a split
+/// connection.
+#[derive(Clone)]
+pub(crate) struct Toucher {
+    places: Arc<Places>,
+    activity: Activity,
+}
+
+impl Toucher {
+    pub(crate) fn touch(&self) {
+        self.activity.touch(self.places.now());
     }
 }
 

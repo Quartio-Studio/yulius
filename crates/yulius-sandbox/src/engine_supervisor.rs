@@ -9,8 +9,8 @@
 //! cgroup (a container). Stopping closes the engine's stdin, which `yulius sandbox-host engine`
 //! takes as "stop `dockerd`", then kills it after [`STOP_GRACE`].
 //!
-//! The holder serves at most [`crate::relay::MAX_CONNECTIONS`] clients at once; one start runs at
-//! a time and later clients wait for it. The engine can write its control directory, so the
+//! Clients are admitted through the front's [`Gate`] (SPEC-494, ADR-0344); one start runs at a
+//! time and later clients wait for it. The engine can write its control directory, so the
 //! holder never follows a link there (`connect_control`).
 
 use std::io;
@@ -23,7 +23,26 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Child;
-use tokio::sync::Semaphore;
+
+use crate::front_gate::Gate;
+
+/// A client of the engine while its connection lasts: it keeps the engine from idling.
+struct Client(Arc<Supervisor>);
+
+impl Client {
+    fn new(supervisor: &Arc<Supervisor>) -> Self {
+        supervisor.connections.fetch_add(1, Ordering::SeqCst);
+        supervisor.touch();
+        Self(Arc::clone(supervisor))
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.connections.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Bound on the engine becoming ready after it is started.
 pub const START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -107,30 +126,23 @@ impl Supervisor {
             .unwrap_or_else(PoisonError::into_inner) = Instant::now();
     }
 
-    /// Serves the sandbox's socket until the listener fails.
-    pub async fn serve(self: Arc<Self>, listener: UnixListener) {
-        let limit = Arc::new(Semaphore::new(crate::relay::MAX_CONNECTIONS));
-        loop {
-            let Ok((client, _)) = listener.accept().await else {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            };
-            let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-                continue;
-            };
-            let supervisor = Arc::clone(&self);
-            tokio::spawn(async move {
-                supervisor.connections.fetch_add(1, Ordering::SeqCst);
-                supervisor.touch();
+    /// Serves the sandbox's socket through `gate` until the listener fails (SPEC-494 DFJ-001).
+    pub async fn serve(self: Arc<Self>, listener: UnixListener, gate: Arc<Gate>) {
+        let through = Arc::clone(&gate);
+        gate.serve(listener, move |admitted| {
+            let (supervisor, gate) = (Arc::clone(&self), Arc::clone(&through));
+            async move {
+                // Counted until the connection ends, also when it gave way mid-call.
+                let _client = Client::new(&supervisor);
                 match supervisor.connect().await {
-                    Ok(engine) => crate::relay::splice(client, engine).await,
-                    Err(reason) => refuse(client, &reason).await,
+                    Ok(engine) => {
+                        gate.splice(admitted, engine).await;
+                    }
+                    Err(reason) => Gate::refuse(admitted, &reason).await,
                 }
-                supervisor.touch();
-                supervisor.connections.fetch_sub(1, Ordering::SeqCst);
-                drop(permit);
-            });
-        }
+            }
+        })
+        .await;
     }
 
     /// A connection to the engine, started first when it does not run.
@@ -226,6 +238,17 @@ impl Supervisor {
                 ));
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Whether the engine runs now, without waiting: a start or a stop in progress (which holds
+    /// the engine's lock for up to a minute) counts as running.
+    pub fn running_now(&self) -> bool {
+        match self.running.try_lock() {
+            Ok(mut running) => running
+                .as_mut()
+                .is_some_and(|child| matches!(child.try_wait(), Ok(None))),
+            Err(_) => true,
         }
     }
 
@@ -364,7 +387,17 @@ fn log_tail(path: &Path) -> String {
 /// Answers a client the engine could not serve: its request head is read (bounded), then a
 /// Docker-API error, which `docker` prints as "Error response from daemon: …", naming how the
 /// operator checks the host (SPEC-196 DKL-005).
-pub(crate) async fn refuse(mut client: UnixStream, reason: &str) {
+pub(crate) async fn refuse(client: UnixStream, reason: &str) {
+    let message = format!(
+        "the sandbox's Docker engine is not available: {reason}. The operator checks the host \
+         with `yulius doctor` and `yulius doctor --docker-smoke`"
+    );
+    answer_error(client, &message).await;
+}
+
+/// Answers `client` a Docker-API error (HTTP 503, JSON `message`) of exactly `message`, after
+/// reading its request's head (bounded in size and time).
+pub(crate) async fn answer_error(mut client: UnixStream, message: &str) {
     let mut head = Vec::new();
     let _ = tokio::time::timeout(REQUEST_HEAD_TIMEOUT, async {
         let mut buf = [0u8; 4096];
@@ -376,13 +409,7 @@ pub(crate) async fn refuse(mut client: UnixStream, reason: &str) {
         }
     })
     .await;
-    let body = serde_json::json!({
-        "message": format!(
-            "the sandbox's Docker engine is not available: {reason}. The operator checks the host \
-             with `yulius doctor` and `yulius doctor --docker-smoke`"
-        )
-    })
-    .to_string();
+    let body = serde_json::json!({ "message": message }).to_string();
     let response = format!(
         "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -471,8 +498,16 @@ open(stopped, "w").write("stopped")
         }
 
         fn serve(&self, supervisor: &Arc<Supervisor>) -> io::Result<tokio::task::JoinHandle<()>> {
+            self.serve_through(supervisor, Gate::new())
+        }
+
+        fn serve_through(
+            &self,
+            supervisor: &Arc<Supervisor>,
+            gate: Arc<Gate>,
+        ) -> io::Result<tokio::task::JoinHandle<()>> {
             let listener = UnixListener::bind(&self.socket)?;
-            Ok(tokio::spawn(Arc::clone(supervisor).serve(listener)))
+            Ok(tokio::spawn(Arc::clone(supervisor).serve(listener, gate)))
         }
 
         fn starts(&self) -> usize {
@@ -505,6 +540,55 @@ open(stopped, "w").write("stopped")
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        Ok(())
+    }
+
+    /// SPEC-494 review round 2: asked without waiting, an engine whose start or stop holds its
+    /// lock counts as running; an engine that never started does not.
+    #[tokio::test]
+    async fn running_now_never_waits_and_counts_a_start_in_progress() -> io::Result<()> {
+        let f = Fixture::new()?;
+        let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
+        assert!(!supervisor.running_now());
+        let held = supervisor.running.lock().await;
+        assert!(supervisor.running_now());
+        drop(held);
+        assert!(!supervisor.running_now());
+        Ok(())
+    }
+
+    /// SPEC-494 review round 1: the engine's front gives way at its limit like the others, and
+    /// a connection that gave way stops counting as the engine's client (or the engine would
+    /// never idle).
+    #[tokio::test]
+    async fn a_full_engine_front_gives_way_and_stops_counting_the_closed_client() -> io::Result<()>
+    {
+        let f = Fixture::new()?;
+        let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
+        let gate = Gate::with(
+            1,
+            Duration::ZERO,
+            crate::front_gate::HANGUP_CHECK,
+            crate::front_gate::CLOSE_GRACE,
+        );
+        let server = f.serve_through(&supervisor, Arc::clone(&gate))?;
+        // Sends nothing: the fake engine keeps it open.
+        let mut idle = UnixStream::connect(&f.socket).await?;
+        until("the idle client counts", || {
+            supervisor.connections.load(Ordering::SeqCst) == 1
+        })
+        .await?;
+        assert_eq!(ask(&f.socket, "ping").await?, "engine:ping");
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(10), idle.read(&mut byte)).await;
+        assert!(matches!(read, Ok(Ok(0) | Err(_))), "it gave way: {read:?}");
+        until("no client counts", || {
+            supervisor.connections.load(Ordering::SeqCst) == 0
+        })
+        .await?;
+        assert_eq!(gate.state(false).gave_way, 1);
+        server.abort();
+        supervisor.stop(Duration::from_millis(300)).await;
         Ok(())
     }
 

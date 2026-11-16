@@ -352,6 +352,8 @@ struct Live {
     front: Option<DockerFrontRecord>,
     /// Mount namespaces of its runs: attempts to bind the Docker directory, or [`BIND_DONE`].
     bound: HashMap<u64, u8>,
+    /// What the journal said of its front's state (SPEC-494 DFJ-005).
+    front_watch: crate::front_gate::StateWatch,
 }
 
 impl Live {
@@ -361,6 +363,7 @@ impl Live {
             relays,
             front: None,
             bound: HashMap::new(),
+            front_watch: crate::front_gate::StateWatch::default(),
         }
     }
 
@@ -791,11 +794,45 @@ impl Manager {
         {
             Ok(front) => {
                 tracing::info!(sandbox, mode = %front.mode, pid = front.pid, "sandbox Docker front serving");
+                live.front_watch.started(front.pid);
                 live.front = Some(front);
             }
             Err(error) => {
                 tracing::warn!(sandbox, %error, "cannot start the sandbox's Docker front");
             }
+        }
+    }
+
+    /// Journals what grew in the state of `sandbox`'s front since the last tick, each kind at most
+    /// once a minute (SPEC-494 DFJ-005), and reports a full or refusing front as the sandbox's
+    /// Docker trouble (DFJ-006). A state file of an earlier front is ignored.
+    fn watch_front(&self, sandbox: &str, state: &mut SandboxState) {
+        let Some(live) = state.live.as_mut() else {
+            return;
+        };
+        let Some(front) = &live.front else {
+            return;
+        };
+        let paths = StatePaths::new(self.state_dir(sandbox));
+        let Some(seen) = crate::front_gate::read_state(&paths.docker_state(), front.pid) else {
+            return;
+        };
+        let grown = live.front_watch.observe(&seen, Instant::now());
+        // A production holder's front (SPEC-279) serves CD deploys, which fail and say so; its
+        // name is no sandbox the panel knows, so it is journaled only.
+        if production_sandbox(sandbox).is_none() {
+            live.front_watch.report(&seen, sandbox, &self.config.health);
+        }
+        for grew in grown {
+            tracing::warn!(
+                sandbox,
+                new = grew.new,
+                total = grew.total,
+                held = seen.held,
+                max = seen.max,
+                "the sandbox's Docker front: {}",
+                grew.what
+            );
         }
     }
 
@@ -1519,6 +1556,13 @@ impl Manager {
     }
 
     async fn stop_holder(&self, sandbox: &str, record: &HolderRecord) {
+        // Its front goes with it: no Docker trouble of it is left open (SPEC-494), on every path
+        // that drops a holder.
+        self.config.health.held(
+            yulius_domain::connection_health::Limit::Docker,
+            Some(sandbox),
+            0,
+        );
         let state = StatePaths::new(self.state_dir(sandbox));
         let record = record.clone();
         let _ = tokio::task::spawn_blocking(move || crate::holder::stop(&state, &record)).await;
@@ -1653,6 +1697,7 @@ impl Manager {
                         }
                     }
                     self.keep_front(&sandbox, &mut state).await;
+                    self.watch_front(&sandbox, &mut state);
                     self.bind_docker_dirs(&sandbox, &mut state).await;
                     let front = state.live.as_ref().map_or(0, Live::front_pid);
                     let runs = tokio::task::spawn_blocking(move || {
@@ -2284,6 +2329,65 @@ mod tests {
         }
     }
 
+    /// SPEC-494 DFJ-005/006 (review round 2): the upkeep reads the state file of the front it
+    /// knows and reports it full as the sandbox's Docker trouble; another front's file is not
+    /// read.
+    #[tokio::test]
+    async fn the_upkeep_reports_its_fronts_state_as_the_sandboxs_docker_trouble()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        use yulius_domain::connection_health::Limit;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let paths = StatePaths::new(manager.state_dir("s1"));
+        std::fs::create_dir_all(&paths.dir)?;
+        let full = |pid| DockerFrontState {
+            pid,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+        };
+        let mut live = Live::new(live_record(true), Vec::new());
+        // This server started it: its refusals are all new.
+        live.front_watch.started(77);
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        crate::holder::write_json(&paths.docker_state(), &full(78))?;
+        manager.watch_front("s1", &mut state);
+        assert!(
+            health.troubles().is_empty(),
+            "another front's state was read"
+        );
+        crate::holder::write_json(&paths.docker_state(), &full(77))?;
+        manager.watch_front("s1", &mut state);
+        let open = health.troubles();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(
+            (open[0].limit, open[0].sandbox.as_deref(), open[0].refused),
+            (Limit::Docker, Some("s1"), 2)
+        );
+        // A holder dropped, by any path, leaves no Docker trouble of its sandbox (its boot id
+        // is not this host's: nothing is signalled).
+        manager.stop_holder("s1", &live_record(true)).await;
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
+        Ok(())
+    }
+
     /// Stands in for `yulius sandbox-host docker`: serves the spec's socket, answering every
     /// connection with its mode (and reason), until killed. `bind-docker` does nothing.
     const FAKE_FRONT: &str = r#"#!/usr/bin/env python3
@@ -2437,6 +2541,84 @@ while True:
             "{mode}: the engine's root and group are back"
         );
         kill(front.pid);
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a front this server starts counts its refusals as new
+    /// (one adopted after a restart would take them as its baseline).
+    #[tokio::test]
+    async fn a_front_this_server_starts_reports_its_refusals_as_new()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let manager = adopting(data.path(), Ok(()), false)?;
+        assert_eq!(manager.adopt().await, 1);
+        let front = front_of(&manager).await.ok_or("no front")?;
+        let state = DockerFrontState {
+            pid: front.pid,
+            held: 10,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: None,
+            engine_running: true,
+        };
+        write_json(
+            &StatePaths::new(manager.state_dir("s1")).docker_state(),
+            &state,
+        )?;
+        {
+            let entry = manager.entry("s1");
+            let mut guard = entry.lock().await;
+            manager.watch_front("s1", &mut guard);
+        }
+        let open = manager.config.health.troubles();
+        kill(front.pid);
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].refused, 2);
+        Ok(())
+    }
+
+    /// SPEC-494 slice 2 review round 2: a production holder's full front is journaled, not a
+    /// trouble under a name no sandbox has.
+    #[test]
+    fn a_production_fronts_state_is_no_panel_trouble() -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_contracts::sandbox::DockerFrontState;
+        let data = tempfile::tempdir()?;
+        let config = config(data.path(), 1);
+        let health = Arc::clone(&config.health);
+        let manager = Manager::new(config);
+        let name = production_holder("s1");
+        let paths = StatePaths::new(manager.state_dir(&name));
+        std::fs::create_dir_all(&paths.dir)?;
+        let mut live = Live::new(live_record(true), Vec::new());
+        live.front_watch.started(77);
+        live.front = Some(DockerFrontRecord {
+            pid: 77,
+            mode: "engine".into(),
+            reason: None,
+            started_at_ms: 0,
+        });
+        let mut state = SandboxState {
+            live: Some(live),
+            ..SandboxState::default()
+        };
+        let full = DockerFrontState {
+            pid: 77,
+            held: 256,
+            max: 256,
+            gave_way: 0,
+            refused: 2,
+            hung_up: 0,
+            closed_after_grace: 0,
+            at_limit_since_ms: Some(1),
+            engine_running: true,
+        };
+        crate::holder::write_json(&paths.docker_state(), &full)?;
+        manager.watch_front(&name, &mut state);
+        assert!(health.troubles().is_empty(), "{:?}", health.troubles());
         Ok(())
     }
 

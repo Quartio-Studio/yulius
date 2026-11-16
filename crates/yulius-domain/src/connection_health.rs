@@ -1,6 +1,6 @@
-//! Connection troubles: a limit of the egress proxy or of a sandbox's relay toward Yulius that
-//! refuses connections (SPEC-361, ADR-0246). The proxy and the server's relays report each
-//! refusal and each freed place; the app reads the open troubles and is told when one begins or
+//! Connection troubles: a limit of the egress proxy, of a sandbox's relay toward Yulius or of its
+//! Docker front (SPEC-494) that refuses connections (SPEC-361, ADR-0246). The proxy and the
+//! server's relays report each refusal and each freed place, the server's upkeep a front's state; the app reads the open troubles and is told when one begins or
 //! ends, so the people of the sandbox see it once per trouble rather than once per refusal.
 
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -17,16 +17,20 @@ pub enum Limit {
     Relay,
     /// The egress proxy's own total.
     Proxy,
+    /// A sandbox's Docker front (SPEC-494 DFJ-006), reported by the server from the front's
+    /// state file.
+    Docker,
 }
 
 impl Limit {
-    /// Its name on the wire: `share`, `relay` or `proxy`.
+    /// Its name on the wire: `share`, `relay`, `proxy` or `docker`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Share => "share",
             Self::Relay => "relay",
             Self::Proxy => "proxy",
+            Self::Docker => "docker",
         }
     }
 }
@@ -152,6 +156,13 @@ impl ConnectionHealth {
     /// A connection was refused at `refusal`'s limit at `now_ms`: begins its trouble (told), or
     /// updates the open one's counts (not told).
     pub fn refused(&self, refusal: Refusal, now_ms: i64) {
+        self.refused_times(refusal, 1, now_ms);
+    }
+
+    /// [`ConnectionHealth::refused`] for `times` refusals seen at once (a reporter that reads
+    /// counts, not single refusals, SPEC-494); 0 begins or updates the trouble of a limit that
+    /// is full without having refused yet.
+    pub fn refused_times(&self, refusal: Refusal, times: u64, now_ms: i64) {
         let began = {
             let mut inner = self.lock();
             if let Some(open) = inner
@@ -161,7 +172,7 @@ impl ConnectionHealth {
             {
                 open.held = refusal.held;
                 open.max = refusal.max;
-                open.refused = open.refused.saturating_add(1);
+                open.refused = open.refused.saturating_add(times);
                 open.holders = refusal.holders;
                 return;
             }
@@ -172,7 +183,7 @@ impl ConnectionHealth {
                 since_ms: now_ms,
                 held: refusal.held,
                 max: refusal.max,
-                refused: 1,
+                refused: times,
                 holders: refusal.holders,
             };
             inner.next = inner.next.wrapping_add(1);

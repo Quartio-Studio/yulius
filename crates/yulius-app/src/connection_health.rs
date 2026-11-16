@@ -27,7 +27,7 @@ pub(crate) fn connection_health(events: EventBus) -> Arc<ConnectionHealth> {
                 held = trouble.held,
                 max = trouble.max,
                 holders = %connection_health::listed(&trouble.holders),
-                "connection trouble began: a limit refuses connections (docs/operations.md)"
+                "connection trouble began: a limit is full or refuses connections (docs/operations.md)"
             );
         } else {
             tracing::info!(
@@ -91,7 +91,7 @@ impl App {
             for holder in &trouble.holders {
                 holders.push(match trouble.limit {
                     Limit::Proxy => sandbox_holder(holder, &visible),
-                    Limit::Share | Limit::Relay => self.run_holder(holder).await?,
+                    Limit::Share | Limit::Relay | Limit::Docker => self.run_holder(holder).await?,
                 });
             }
             out.push(view(&trouble, sandbox_name, holders));

@@ -155,6 +155,14 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   without it get the directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
+- **The front's places** ([decision 0344](decisions/0344-the-docker-front-gives-way-and-ends-connections-whose-client-is-gone.md)).
+  Every mode admits through one table of 256 places: at the limit the connection idle longest
+  past 300 s gives way, else the call gets a Docker-API 503 saying so (from slice 3 of SPEC-494, that Yulius repairs it). A connection
+  whose client hung up ends within about two seconds, one whose engine side ended gives the client 30 s. The
+  front logs these once a minute per kind and writes `docker-front-state.json`, which the upkeep
+  reads each tick, journals and reports: a full or refusing front is its sandbox's `docker`
+  connection trouble (the panel's pill, once), and the sandbox's live tasks are told once in
+  their session, and again when Docker works.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
   joins `sandboxes/<sandbox>/engine/inside` (the engine's limits stay on `engine`, out of its
   view, ADR-0339) and execs `bwrap`, then `yulius sandbox-host engine`

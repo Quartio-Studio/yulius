@@ -112,13 +112,13 @@ pub struct ConnectionsView {
     pub troubles: Vec<ConnectionTroubleView>,
 }
 
-/// A limit refusing connections: a sandbox's proxy share, its relay toward Yulius, or the proxy's
-/// own total.
+/// A limit refusing connections: a sandbox's proxy share, its relay toward Yulius, its Docker
+/// front (SPEC-494), or the proxy's own total.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionTroubleView {
     /// Unique per trouble, also across restarts: one notification per id.
     pub id: String,
-    /// `share`, `relay` or `proxy`.
+    /// `share`, `relay`, `docker` or `proxy`.
     pub limit: String,
     /// Its sandbox; `None` for the proxy's own total.
     pub sandbox_id: Option<String>,
@@ -133,7 +133,7 @@ pub struct ConnectionTroubleView {
     /// Refusals since it began.
     pub refused: u64,
     /// The busiest holders at its last refusal, busiest first: runs at a share, sandboxes at the
-    /// proxy's total, none for a relay.
+    /// proxy's total, none for a relay or a Docker front.
     pub holders: Vec<ConnectionHolderView>,
 }
 

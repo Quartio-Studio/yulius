@@ -17,7 +17,7 @@ layer = "adapter"
 [dependencies]
 yulius-contracts = { workspace = true }
 yulius-domain = { workspace = true }
-nix = { workspace = true, features = ["sched", "mount"] }
+nix = { workspace = true, features = ["sched", "mount", "poll"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
