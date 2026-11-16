@@ -43,7 +43,7 @@ without breaking each other's rustup toolchain.
 ## Plan
 
 - [x] Spec SPEC-499 renumbered from the contributor's SPEC-445 and validated
-- [ ] The contributor's lock on current dev: home_lock with its tests, bootstrap holds it around the rustup install
+- [x] The contributor's lock on current dev: home_lock with its tests, bootstrap holds it around the rustup install
 - [ ] A bootstrap test proves the toolchain install runs under the lock; per-tool locks share the helper
 - [ ] Changelog entry at the top of docs/changes.md, spec Evidence
 - [ ] Independent review answered test-first
