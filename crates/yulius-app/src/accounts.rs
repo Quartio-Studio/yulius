@@ -2294,11 +2294,9 @@ mod tests {
     /// SPEC-502 TKP-006: a pasted token's working copy is wiped whenever it is dropped (also with
     /// a request dropped while Claude's profile is asked), and a wipe leaves nothing of it.
     #[test]
-    fn a_pasted_token_is_wiped_when_it_is_dropped() {
+    fn a_pasted_token_is_wiped_when_it_is_dropped() -> Result<(), Box<dyn std::error::Error>> {
         let good = format!("sk-ant-oat01-{}", "SYNTHETICwipe0123456789");
-        let mut token = pasted_token(&good)
-            .ok()
-            .expect("a token of the right shape");
+        let mut token = pasted_token(&good).map_err(|_| "a token of the right shape")?;
         token.wipe();
         assert!(token.0.expose().is_empty());
         let before = PASTED_WIPES.with(Cell::get);
@@ -2308,6 +2306,7 @@ mod tests {
             before + 1,
             "dropping it wipes it"
         );
+        Ok(())
     }
 
     #[test]

@@ -75,7 +75,7 @@ requests later). What changed under it since:
 | TKP-006 | The token never leaves the request in clear: it is never in a response, an error message, an event, the audit log or a log line, the request types' `Debug` prints it redacted, and the plaintext copy is zeroed once sealed, and also when the request is dropped before (a client that goes away). A body of another shape is 422 `invalid` with a fixed sentence: serde's message, which quotes what it could not take, is never sent. |
 | TKP-007 | Each paste is audited without the token: a new subscription as `account.created` with detail `provider=anthropic label="<label>" via=token` (the label quoted, as `update_account` quotes it, so a name holding ` via=token` cannot pass for a paste), a replaced token as `account.token_replaced` (no detail). A refused paste is not audited. |
 | TKP-008 | The Subscriptions page's Add subscription dialog offers a choice of **Sign in here** (today's terminal, the default) and **Paste token**. Paste token shows a Token field and one hint: run `claude setup-token` on any computer signed in to the subscription and paste what it prints; do not send it through chats or email in clear text. An empty or malformed token, or one the server refuses, is shown under the field (`invalid()`); success closes the dialog and a toast says the subscription is connected. |
-| TKP-009 | Every subscription card has **Paste a new token**, a dialog with the same field and hint that calls TKP-002; success says so in a toast, a refusal under the field. Both dialogs pass the e2e accessibility (axe) check. |
+| TKP-009 | Every subscription card has **Paste a new token**, a dialog with the same field and hint that calls TKP-002; success says so in a toast (naming the email only when Claude gave it, SPEC-463 EML-006), a refusal under the field. Both dialogs pass the e2e accessibility (axe) check. |
 | TKP-011 | When a running sign-in has not ended 15 s after the paste cancelled it, `PUT …/token` is 409 `conflict` and nothing is stored or audited; the paste can be sent again. |
 | TKP-010 | A subscription connected by paste is used like any other: a new task starts on it, and its run gets the pasted token as `CLAUDE_CODE_OAUTH_TOKEN`. |
 
@@ -87,6 +87,7 @@ requests later). What changed under it since:
 - [x] The paste dialogs pass e2e on the current Subscriptions page, focus back on the card
 - [x] Docs on current dev: api.md, architecture, product, changes, ADR-0352
 - [x] Review round 1 findings fixed test-first, mutants run on the head
+- [x] Review round 2 findings fixed test-first, each mutant line undone by hand
 - [ ] Independent review in a fresh session of the final head
 
 ## Acceptance criteria
@@ -116,7 +117,8 @@ requests later). What changed under it since:
   token and slow to stop, `PUT …/token` answers only once both ended, and the pasted token is the
   one stored.
 - AC-10 (TKP-006): a bare JSON string holding a token, or the token in a field of the wrong type
-  or name, sent to either route is 422 `invalid` and the answer holds no token.
+  or name (also in an otherwise complete create request), sent to either route is 422 `invalid`,
+  nothing is created and the answer holds no token.
 - AC-11 (TKP-005): a task waiting for capacity, whose resume loop sleeps its 5-minute recheck,
   starts on a pasted subscription within seconds; a pasted token's usage is read right after it
   is stored, a new subscription's and a replaced one's.
@@ -210,11 +212,38 @@ From `dev` at c7348d04, 2026-11-16, Rust 1.99.0, Node 24.21.0.
     new e2e test failed before the fix); the Plan names the work before the review.
   - e2e after the fixes: `subscriptions`, `claude-connect`, `onboarding-flow`,
     `subscription-names`, `consistency`: 104 passed.
-- `scripts/dev mutants` (ADR-0347) at c87538ea4, the code of this head (only documents changed
-  after it): `mutants: 94 listed, 18 caught, 0 missed, 0 timed out, 76 unviable, 0 not reached
-  (bound 30 min, took 629 s)`.
+- `scripts/dev mutants` (ADR-0347) at c87538ea4: `mutants: 94 listed, 18 caught, 0 missed, 0
+  timed out, 76 unviable, 0 not reached (bound 30 min, took 629 s)`. **That summary proves
+  nothing** (review round 2): every one of the 18 "caught" mutants failed on the unrelated
+  `xtask::cli security_is_listed_and_needs_a_vidoc_key`, which cannot pass in cargo-mutants' copy
+  (no `.git`), and nextest stopped there; filed as #1364, outside this change (`tools/`,
+  `scripts/`). Instead each of those lines was undone by hand on 21c5881c4 and the tests meant to
+  hold it run (`target/hand_mutants.py`, one `git checkout` after each): all 17 distinct mutants
+  caught by this change's own tests, none missed. The shape check's 8 by
+  `pasted_tokens_must_have_the_setup_token_shape`, the zeroing guard's `Drop` by
+  `a_pasted_token_is_wiped_when_it_is_dropped` (added in round 2: before it, no test held that
+  line), the cancel deadline, the still-running check and `active_logins`' three by the
+  `account_token::` sign-in tests (AC-8, AC-9 and others), the two `Debug` impls by
+  `pasted_tokens_are_redacted_in_debug`, and the routes' `public()` by every `account_token::` HTTP
+  test. The 76 unviable are function replacements that do not compile.
 - Yulius CI at 270fac55 (the head of review round 1): `quality` failed only on `fixture_hygiene`
   (the blocker above, fixed since), `e2e` passed, `security` skipped (Vidoc key refused).
+- Review round 2 (Fable 5.2, request changes at a84cd2dd): answered on this branch.
+  - The card's "Paste a new token" toast named an email a person typed, against SPEC-463
+    EML-006: the new e2e test failed ("…is connected (team@example.com)…"), passes with the
+    toast naming only an email Claude gave.
+  - The mutants summary: corrected above, with each line undone by hand; the tool's fault is #1364.
+  - The zeroing guard had no test: `a_pasted_token_is_wiped_when_it_is_dropped`; emptying `Drop`
+    makes it fail.
+  - A complete create request with the token under a mistyped name started a sign-in in a
+    terminal: AC-10 now sends it and failed (201), passes with `CreateAccount` refusing unknown
+    fields (the page sends only `provider`, `label`, `token`).
+  - Outside this change, filed: `record_access_lost` marks a fresh sign-in `relogin` for a run
+    refused on the old credential (#1365, on `dev` before this change; terminal sign-ins meet it
+    the same way).
+  - Nits: the misplaced doc comments are back on their items; the contracts' token fixture is
+    built from parts.
+  - e2e `subscriptions`: 48 passed.
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401); no pass is claimed, Yulius CI runs its own scan on the pull request.
 
 ### In the contributor's fork (as SPEC-450, 2026-11-10)
