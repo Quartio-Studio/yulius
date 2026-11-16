@@ -489,44 +489,6 @@ pub(super) fn resume(
     Ok(true)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn run_ids_are_read_from_a_prompt() {
-        assert_eq!(
-            runs_named("resume (runs wf_fake0001-a1b and wf_2), not wf_fake0001-a1b again."),
-            ["wf_fake0001-a1b", "wf_2"]
-        );
-        assert!(runs_named("nothing to resume").is_empty());
-    }
-
-    /// A launch whose second agent is refused, and its resume: what is on disk at each point.
-    #[test]
-    fn a_paused_run_is_unfinished_until_it_is_resumed() -> io::Result<()> {
-        let dir = std::env::temp_dir().join(format!("fake-agent-wf-{}", now_ms()));
-        let transcript = dir.join("s1.jsonl");
-        let layout = Layout::of(&transcript);
-        let run = "wf_fake0001-000";
-        std::fs::create_dir_all(layout.run(run))?;
-        std::fs::write(layout.run(run).join(TASK_FILE), "w1")?;
-        agent_finishes(&layout, "s1", run, "alpha")?;
-        agent_is_refused(&layout, "s1", run, "beta", None)?;
-        assert_eq!(layout.unfinished(), [(run.to_owned(), "w1".to_owned())]);
-        let refused = std::fs::read_dir(layout.run(run))?
-            .flatten()
-            .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
-            .filter(|text| text.contains("\"usage_limit_reached\""))
-            .count();
-        assert_eq!(refused, 1, "in the refused agent's file only");
-        std::fs::create_dir_all(layout.snapshot(run).parent().unwrap_or(&dir))?;
-        std::fs::write(layout.snapshot(run), "{}")?;
-        assert!(layout.unfinished().is_empty());
-        std::fs::remove_dir_all(&dir)
-    }
-}
-
 /// `/reviewer-limit <kind>`: the Agent tool starts reviewer `kind` (its `PreToolUse`, then
 /// `SubagentStart` for the agent the answer runs), the reviewer answers once on Fable 5.2, and
 /// then its own transcript gets the refusal of its model's usage credits, as at `/credits-out`.
@@ -575,3 +537,41 @@ pub(super) fn reviewer_cut_off(
 
 /// The model the reviewer of `/reviewer-limit` answers on.
 const REVIEWER_MODEL: &str = "claude-fable-5-2";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_ids_are_read_from_a_prompt() {
+        assert_eq!(
+            runs_named("resume (runs wf_fake0001-a1b and wf_2), not wf_fake0001-a1b again."),
+            ["wf_fake0001-a1b", "wf_2"]
+        );
+        assert!(runs_named("nothing to resume").is_empty());
+    }
+
+    /// A launch whose second agent is refused, and its resume: what is on disk at each point.
+    #[test]
+    fn a_paused_run_is_unfinished_until_it_is_resumed() -> io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("fake-agent-wf-{}", now_ms()));
+        let transcript = dir.join("s1.jsonl");
+        let layout = Layout::of(&transcript);
+        let run = "wf_fake0001-000";
+        std::fs::create_dir_all(layout.run(run))?;
+        std::fs::write(layout.run(run).join(TASK_FILE), "w1")?;
+        agent_finishes(&layout, "s1", run, "alpha")?;
+        agent_is_refused(&layout, "s1", run, "beta", None)?;
+        assert_eq!(layout.unfinished(), [(run.to_owned(), "w1".to_owned())]);
+        let refused = std::fs::read_dir(layout.run(run))?
+            .flatten()
+            .map(|entry| std::fs::read_to_string(entry.path()).unwrap_or_default())
+            .filter(|text| text.contains("\"usage_limit_reached\""))
+            .count();
+        assert_eq!(refused, 1, "in the refused agent's file only");
+        std::fs::create_dir_all(layout.snapshot(run).parent().unwrap_or(&dir))?;
+        std::fs::write(layout.snapshot(run), "{}")?;
+        assert!(layout.unfinished().is_empty());
+        std::fs::remove_dir_all(&dir)
+    }
+}
