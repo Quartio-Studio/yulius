@@ -89,11 +89,13 @@ mode.
   groups were measured to use over the last sampling window (CPU time per second; anonymous
   memory). A job that uses more than it declared, or Docker containers it starts, therefore
   hold the host back from the next job. Waiters are served first come, first served; a job
-  larger than the budget runs alone.
+  larger than the budget runs alone. A job's default share (no `cpus`) is a share of the CI
+  budget, so a run's jobs start together on an idle host.
 - **HBA-003** Docker networks are part of the budget per engine. Each engine gets address
-  pools of /24 networks within Docker's own default ranges (4,096 networks instead of 31). A job
-  of a sandbox whose engine has fewer than 32 free networks waits, saying so; when none of its
-  sandbox's CI jobs runs, unused networks are pruned first.
+  pools of /24 networks within Docker's own default ranges (4,096 networks instead of 31), read
+  back from the engine's `/info` (an engine started before keeps 31). A job of a sandbox whose
+  engine has fewer than 32 free networks (a quarter of a smaller engine's) waits, saying so;
+  networks no container used for 10 minutes are pruned first.
 - **HBA-004** Agents' heavy local commands take what CI does not hold: a sandbox's weight among
   sandboxes grows with the CPUs its running jobs hold, so under contention its CI gets about its
   reservation; agent processes keep their own weight and nice level.
@@ -229,3 +231,46 @@ mode.
   job spans (a job's `wait` stage and its run time, per project) and in `ci_status`'s reasons;
   the number of runs whose output says "could not find an available, non-overlapping IPv4
   address pool" (expected 0).
+- **Review round 1** (Fable 5.2, head `2bed1757d`; its own CI run passed). Request changes, all
+  own code. Answered at head `049fc02e8`:
+  - Major: the admission test failed 3 of 24 (a rate of 3.0000002 rounded up to 4). Rates are
+    rounded to a tenth before the ceiling, and the fake uses 2.5 CPUs. 24 of 24 passed under
+    `--stress-count 24` (both admission tests, 300 s).
+  - Major: two waiters reading the groups at once could apply an older reading after a newer
+    one and reset the rate. Readings are now taken inside the admission's lock
+    (`CiAdmission::measure` takes the reader). Unit
+    `resources::tests::what_ci_uses_is_measured_over_a_recent_window`: no rate before 5 s, two
+    sandboxes' rates add up, clock noise keeps 3, memory in MiB, a counter that goes back starts
+    over, a sandbox no longer running is forgotten, a base older than 30 s is not settled.
+  - Major: a run's default shares were of the capacity and no longer fitted the budget
+    together. They are of the CI budget (`exec.rs`); domain
+    `resources::tests::a_runs_default_shares_start_together` (1 to 8 jobs on 64 CPUs).
+  - Major: the queue and the measurement had no tests of their own. Unit
+    `resources::tests::the_queue_keeps_its_order`: a small job behind a waiting large one waits
+    its turn (`Behind`), a large one leaving lets it in, an unsettled reading holds a job back
+    only while CI runs. The `Weighing` fake records the CPUs, and
+    `running_ci_jobs_weigh_on_their_sandbox_until_they_end` asserts they reach the isolation.
+    Manager: `engine_networks` and `prune_engine_networks` are `None` without a holder, without
+    an engine and with a stopped one. `scripts/dev mutants`: 135 listed, 98 caught, 0 missed,
+    0 timed out, 16 unviable, 21 not reached (bound 30 min, took 1801 s). Of those not reached,
+    two were undone by hand and caught: counting `host`/`null` networks instead of the others
+    (`the_engines_networks_are_counted_and_pruned` fails) and a queued reason never written
+    (`local_ci::a_job_waits_for_docker_networks` fails).
+  - Minor: the rate window had no upper bound. The dispatcher reads the groups at every pass
+    (at most 15 s apart), and a base older than 30 s is a new base: the next job waits one look
+    ("waits for a reading of what CI uses now").
+  - Minor: engines started with Docker's default pools never waited. The engine's `/info`
+    (`DefaultAddressPools`, Docker's 31 when it names none) gives its capacity
+    (`engine::pool_networks`, doctest; unit test with configured pools giving 512 and an old
+    engine giving 31); a smaller engine needs a quarter free (`network_reserve`, 7 of 31).
+  - Minor: the prune could remove a network an agent or a job had just made. It now removes only
+    networks unused for 10 minutes (`until=10m`, asserted at the request), whatever runs.
+  - Minor: a stopped engine logged a warning at each job: debug now.
+  - Minor: the new address layout is in `docs/operations.md`, `changes.md` and ADR-0350 (the
+    first network is 172.17.1.0/24; a project needing another range sets its own `subnet`).
+  - Nit: the weight comment now says "at least its CPUs while `n` is below …"; ADR-0350 names
+    the price for other sandboxes' agents while CI uses more than it reserved.
+  - Nit (network room before the slot): kept, deliberately: a job held by one engine then holds
+    no slot or budget the other sandboxes need. Said in the doc comment and the ADR.
+- Security scan: `yulius security-scan` exited 2, not run (Vidoc refused the key, HTTP 401);
+  CI's `security` job ends skipped. Task #478 issues a new key.
