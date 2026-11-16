@@ -1,6 +1,6 @@
 ---
 yulius-task: e807d154-9d41-4466-bfed-481ba2d61e0e
-status: done
+status: in-progress
 ---
 
 # SPEC-494: A sandbox's Docker never jams: the front gives way and repairs itself
@@ -224,6 +224,9 @@ ever reaches it).
 - [x] br_netfilter decided on a real host and applied
 - [x] Front restarts, give-ways and Docker Needs you are counted on the instance
 - [x] Slices 5 to 7 reviewed independently, findings fixed test-first
+- [ ] Manager tests start a rewritten fake front without a race (#1339)
+- [ ] The texts state the relay-front limit and one window wording (#1341)
+- [ ] The follow-up reviewed independently, findings fixed test-first
 
 ## Acceptance criteria
 
