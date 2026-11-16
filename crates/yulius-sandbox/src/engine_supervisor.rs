@@ -559,8 +559,14 @@ open(stopped, "w").write("stopped")
         let f = Fixture::new()?;
         let supervisor = f.supervisor(f.fake(), Duration::from_secs(300), ok());
         assert!(!supervisor.running_now());
+        assert_eq!(supervisor.engine_now(), (false, false));
         let held = supervisor.running.lock().await;
         assert!(supervisor.running_now());
+        assert_eq!(
+            supervisor.engine_now(),
+            (true, true),
+            "a start in progress is busy"
+        );
         drop(held);
         assert!(!supervisor.running_now());
         Ok(())

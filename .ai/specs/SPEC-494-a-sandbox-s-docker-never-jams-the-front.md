@@ -130,7 +130,9 @@ ever reaches it).
 
 - **DFJ-008** Yulius restarts the front and its engine (as the hand repair did: stop the front,
   then start a new one at once) when the front has been full, or refusing, at every upkeep tick
-  for `REPAIR_AFTER` (2 min), or when a `GET /_ping` through the front got no answer within 5 s
+  for `REPAIR_AFTER` (2 min), or when a `GET /_ping` through the front (connected without
+  following a link, as the engine's control socket is) got no answer within 5 s, connecting
+  included,
   on three ticks in a row. The ping is asked only while a client holds a connection, the engine
   runs and is not starting or stopping, and the front is not jammed: a ping is itself a client
   of the engine, and asked at other times it would keep an idle engine from stopping
@@ -378,6 +380,24 @@ in slice 3's pull request.
   (`the_superagent_restarts_its_sandboxs_docker_or_hears_why_not`, a recording isolation).
 - Not tested here: the server connecting to a real front's socket from the host (a QEMU guest
   would show it); by reading, the socket is the service user's own 0660 path socket in its
-  state directory, and a refused connect never makes a repair due.
+  state directory; a connect refused for permission is no answer either way, while a missing or
+  refusing socket counts as unanswered.
 - A repair after unanswered pings, or an asked restart with no trouble open, tells no task (no
   task was told of a trouble); the Superagent's answer says what stopped.
+
+### Slice 3, review round 2 (request changes; every finding own code, all fixed)
+
+- The ping followed a link planted at the front's socket (its directory is writable from the
+  sandbox): it now connects through `connect_control` (`O_PATH | O_NOFOLLOW`, must be a socket)
+  within one 5 s bound (`a_link_at_the_fronts_socket_is_never_followed`: the decoy behind the link
+  sees no request).
+- The ping rule is pinned at its call site:
+  `the_upkeep_pings_only_beside_a_client_and_restarts_an_unanswered_engine` (a socket answered by
+  the test: no ping with no client, a busy or no engine over nine ticks; three 503s beside a
+  client restart the front, `Why::Unanswered`); `engine_now` is `(true, true)` while a start
+  holds the lock.
+- A successor front starts its own count (`a_successor_front_is_not_restarted_for_its_predecessors_jam`;
+  `keep_front` resets it when it starts a front); a restart whose front starts only at a later
+  tick is counted and journaled then. The instance reads the counts in slice 7
+  (`/api/analytics/docker`).
+- Wording: a relay or refuse front has no engine of its own to stop.

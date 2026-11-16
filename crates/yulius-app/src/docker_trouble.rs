@@ -76,7 +76,7 @@ impl App {
         tracing::info!(sandbox = %sandbox, "the sandbox's Docker was restarted at a person's ask");
         Ok(serde_json::json!({
             "restarted": true,
-            "said": "The sandbox's Docker front was restarted (its engine with it: running containers stopped, volumes and images stay); the engine starts again at the next Docker call. Its tasks hear that it is no longer full once the trouble has ended."
+            "said": "The sandbox's Docker front was restarted: an engine it ran stopped with it (its running containers stopped; volumes and images stay) and starts again at the next Docker call. Its tasks hear that it is no longer full once the trouble has ended."
         }))
     }
 

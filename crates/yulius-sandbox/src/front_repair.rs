@@ -125,32 +125,35 @@ impl RepairWatch {
 }
 
 /// Whether the engine answers `GET /_ping` through the front's `socket` within
-/// [`PING_TIMEOUT`]; `None` when the server may not connect to the socket at all (the answer
-/// would say nothing of the engine, and must never make a repair due).
+/// [`PING_TIMEOUT`] (connecting and answering together); `None` when the server may not
+/// connect to the socket at all (the answer would say nothing of the engine, and must never
+/// make a repair due). The socket's directory is writable from the sandbox, so a link planted
+/// there is never followed (`connect_control`; review round 2 of slice 3).
 pub async fn ping(socket: &Path) -> Option<bool> {
     ping_within(socket, PING_TIMEOUT).await
 }
 
 /// [`ping`] bounded by `limit` (tests use a short one).
 async fn ping_within(socket: &Path, limit: Duration) -> Option<bool> {
-    let stream = match tokio::time::timeout(limit, tokio::net::UnixStream::connect(socket)).await {
-        Ok(Ok(stream)) => stream,
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => return None,
-        Ok(Err(_)) | Err(_) => return Some(false),
-    };
     let asked = async {
-        let mut stream = stream;
-        stream
-            .write_all(b"GET /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
-            .await?;
-        let mut head = [0u8; 12];
-        stream.read_exact(&mut head).await?;
-        std::io::Result::Ok(head.starts_with(b"HTTP/1.") && head.ends_with(b" 200"))
+        let mut stream = match crate::engine_supervisor::connect_control(socket).await {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(_) => return Some(false),
+        };
+        let answered = async {
+            stream
+                .write_all(b"GET /_ping HTTP/1.1\r\nHost: docker\r\nConnection: close\r\n\r\n")
+                .await?;
+            let mut head = [0u8; 12];
+            stream.read_exact(&mut head).await?;
+            std::io::Result::Ok(head.starts_with(b"HTTP/1.") && head.ends_with(b" 200"))
+        };
+        Some(matches!(answered.await, Ok(true)))
     };
-    Some(matches!(
-        tokio::time::timeout(limit, asked).await,
-        Ok(Ok(true))
-    ))
+    tokio::time::timeout(limit, asked)
+        .await
+        .unwrap_or(Some(false))
 }
 
 #[cfg(test)]
@@ -271,6 +274,37 @@ mod tests {
         let started = Instant::now();
         assert_eq!(ping_within(&silent, limit).await, Some(false));
         assert!(started.elapsed() < Duration::from_secs(5), "bounded");
+        server.abort();
+        Ok(())
+    }
+
+    /// Slice 3 review round 2: a link planted at the front's socket (its directory is writable
+    /// from the sandbox) is never followed: the socket it names sees no request.
+    #[tokio::test]
+    async fn a_link_at_the_fronts_socket_is_never_followed() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let decoy = dir.path().join("other-sandbox.sock");
+        let listener = tokio::net::UnixListener::bind(&decoy)?;
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = std::sync::Arc::clone(&seen);
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\nOK").await;
+            }
+        });
+        let planted = dir.path().join("docker.sock");
+        std::os::unix::fs::symlink(&decoy, &planted)?;
+        assert_eq!(
+            ping_within(&planted, Duration::from_millis(500)).await,
+            Some(false)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "followed the link"
+        );
         server.abort();
         Ok(())
     }
