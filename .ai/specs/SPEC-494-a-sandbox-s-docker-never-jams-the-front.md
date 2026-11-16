@@ -547,3 +547,9 @@ operations line is wrapped.
 - `a_week_is_named_by_its_monday` (the week's Monday, UTC).
 - `npx e2e run tests/pipeline.e2e.ts`: the Docker card's totals and "a week" figures (failed
   before: no card; 18 passed after).
+
+### Slice 4, review round 3 (approve; its notes fixed in the next pull request)
+
+PR #1337 approved at 9b39c0590 (round 3, Opus 5.5). Its notes, own code: the shared card's
+tooltip names what answers the requests (a person's answer, the trouble's end, a restart through
+the Superagent), and a stopping task's request no longer opens an episode (it is not shown).

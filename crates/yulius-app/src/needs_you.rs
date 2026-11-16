@@ -319,8 +319,11 @@ impl App {
         };
         let mut oldest = at;
         for other in others {
+            // A stopping task shows its request no more than a stopped one (review round 3).
             let resting = match self.deps.store.task(&other).await {
-                Ok(Some(t)) => t.status.is_resting(),
+                Ok(Some(t)) => {
+                    t.status.is_resting() || t.status == yulius_domain::task::TaskStatus::Stopping
+                }
                 _ => true,
             };
             if resting {

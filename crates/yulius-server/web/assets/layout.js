@@ -1104,7 +1104,7 @@ export function createSidebar(ctx) {
       return h('a', { href: href(path), dataset: { route: path }, title: `Task #${t.number} ${t.title || ''}`.trim() }, `#${t.number}`);
     });
     const list = links.flatMap((link, at) => (at ? [', ', link] : [link]));
-    const el = h('div', { class: 'task-shared', role: 'listitem', title: `${CAUSES[cause]}: ${tasks.length} tasks asked a person about it. Answering one of them, or ${BRAND.name}’s own repair, answers them all.` },
+    const el = h('div', { class: 'task-shared', role: 'listitem', title: `${CAUSES[cause]}: ${tasks.length} tasks asked a person about it. A person’s answer to one of them, the end of the Docker trouble, or a restart asked through the Superagent answers them all.` },
       statusMark({ icon: 'st-attention', tone: 'attention' }, 16),
       h('span', { class: 'task-shared-text' }, `${CAUSES[cause]} · asked by `, ...list));
     card = { key, el };
