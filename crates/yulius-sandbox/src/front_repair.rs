@@ -207,7 +207,9 @@ fn no_children(pid: u32) -> bool {
     })
 }
 
-/// How many sockets `pid` holds open (bounded read of its descriptors).
+/// How many sockets `pid` holds open (bounded read of its descriptors; tests show that a
+/// front's socket count says nothing of its connections).
+#[cfg(test)]
 fn sockets_of(pid: u32) -> Option<usize> {
     let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
     Some(
