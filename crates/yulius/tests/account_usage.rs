@@ -76,6 +76,7 @@ impl UsageProbe for FakeProbe {
                 }),
                 ..AccountUsage::default()
             }),
+            Provider::OpenAi => Err(UsageFailure::not_shared()),
         }
     }
 

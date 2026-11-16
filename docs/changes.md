@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-16
 
+- Codex returns as a second harness: MrFishPL accepted outside pull request #1146 by
+  studenciak00owl (SPEC-503, task #485,
+  [ADR-0355](decisions/0355-codex-returns-as-a-second-harness-with-a-pinned-cli.md)), reversing
+  the Codex part of `F 2026-10-08`; provider switching and session translation stay removed. It
+  arrives in five slices. The first is the Codex adapter: Yulius knows the Codex harness and
+  OpenAI subscriptions, plans a Codex run (home, `config.toml`, hooks, MCP), reads a Codex rollout
+  (checked on one the real Codex CLI 0.169.0 wrote) and checks Codex sign-ins; tasks, automations
+  and subscriptions still refuse Codex until the slices that run it.
 - The README links the Yulius website at https://www.yulius.dev/ (SPEC-500, task #482, outside
   pull request #1149 by Damian Fajfer). The "Just found Yulius" note and the first-task diagram
   named an old domain.

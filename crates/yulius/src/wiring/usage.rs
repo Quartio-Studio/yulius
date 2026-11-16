@@ -368,6 +368,8 @@ impl UsageProbe for ProviderUsage {
                     Err(f) => Err(f),
                 }
             }
+            // Codex usage is read with Codex subscriptions (SPEC-503 slice C2); none exists yet.
+            Provider::OpenAi => Err(UsageFailure::new("Codex usage is not read yet")),
         }
     }
 
@@ -401,6 +403,11 @@ impl UsageProbe for ProviderUsage {
                     );
                 })
             }
+            // Codex reports no limit of one model's family, so there is nothing to ask
+            // (SPEC-503 CDX-008).
+            Provider::OpenAi => Err(UsageFailure::new(
+                "a Codex subscription has no model limit to ask about",
+            )),
         }
     }
 
@@ -419,6 +426,8 @@ impl UsageProbe for ProviderUsage {
                     .header("accept", "application/json");
                 Ok(parse_profile_email(&self.get_json(request).await?))
             }
+            // A Codex subscription's email comes with its sign-in (SPEC-503 slice C2).
+            Provider::OpenAi => Ok(None),
         }
     }
 }
