@@ -1,4 +1,4 @@
-//! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 structures).
+//! [`HarnessPort`] over `yulius-harness` (Claude Code 2.1.292 and Codex 0.169.0 structures).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ use yulius_app::ports::harness::{
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
+
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{LimitScope, ModelFamily};
 use yulius_harness::launch::{
@@ -19,7 +20,7 @@ use yulius_harness::launch::{
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
 use yulius_harness::subagents::{LinesSince, SubagentTails};
-use yulius_harness::{claude, login, paths, recount, skills, tail};
+use yulius_harness::{claude, codex, login, paths, recount, skills, tail};
 
 /// Harness adapter.
 pub struct HarnessAdapter {
@@ -134,6 +135,9 @@ impl HarnessPort for HarnessAdapter {
             Harness::ClaudeCode => {
                 Credential::ClaudeOauthToken(HSecret::new(l.credential.expose().to_owned()))
             }
+            Harness::Codex => {
+                Credential::CodexAuthJson(HSecret::new(l.credential.expose().as_bytes().to_vec()))
+            }
         };
         let mode = match &l.mode {
             SessionMode::New { session_id, prompt } => LaunchMode::New {
@@ -156,6 +160,8 @@ impl HarnessPort for HarnessAdapter {
             worktree: l.worktree.clone(),
             sandbox_home: l.sandbox_home.clone(),
             run_dir: l.run_dir.clone(),
+            codex_home: l.codex_home.clone(),
+            codex_program: l.codex_program.clone(),
             model: l.model.clone(),
             effort: l.effort.clone(),
             contained: l.contained,
@@ -173,6 +179,8 @@ impl HarnessPort for HarnessAdapter {
                     l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
                     &l.worktree,
                 ),
+                // Codex has no plugins of Claude Code's (SPEC-503).
+                Harness::Codex => Vec::new(),
             },
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
@@ -287,6 +295,78 @@ impl HarnessPort for HarnessAdapter {
         yulius_harness::step_back::step_back_file(&transcript).map_err(io)
     }
 
+    fn find_codex_rollout(
+        &self,
+        sessions_dir: &Path,
+        session_id: &str,
+    ) -> AppResult<Option<PathBuf>> {
+        if !paths::valid_session_id(session_id) {
+            return Ok(None);
+        }
+        paths::find_codex_rollout(sessions_dir, session_id).map_err(io)
+    }
+
+    fn discover_codex_session(
+        &self,
+        sessions_dir: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>> {
+        let wanted = worktree.to_string_lossy();
+        // The run's own session started first; a later one is a `codex` the agent ran there. A
+        // rollout's path (`YYYY/MM/DD/rollout-<start time>-…`) orders sessions by their start; its
+        // modification time grows as it is written.
+        let mut recent =
+            paths::recent_codex_rollouts(sessions_dir, to_system(since)).map_err(io)?;
+        recent.sort();
+        for path in &recent {
+            let Ok(file) = std::fs::File::open(path) else {
+                continue;
+            };
+            // The first line is the session's `session_meta` (its base instructions included).
+            let mut first = String::new();
+            let mut reader = std::io::BufReader::new(std::io::Read::take(file, 4 << 20));
+            let _ = std::io::BufRead::read_line(&mut reader, &mut first);
+            for observed in codex::observe_line(first.trim_end()) {
+                if let Observed::SessionMeta {
+                    session_id,
+                    cwd: Some(cwd),
+                    ..
+                } = observed
+                    && cwd.trim_end_matches('/') == wanted.trim_end_matches('/')
+                    && paths::valid_session_id(&session_id)
+                {
+                    return Ok(Some((session_id, path.clone())));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String> {
+        login::validate_codex_auth(auth_json)
+            .err()
+            .map(|e| e.to_string())
+    }
+
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String> {
+        login::validate_codex_import(auth_json)
+            .err()
+            .map(|e| e.to_string())
+    }
+
+    fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
+        login::valid_openai_api_key(api_key).then(|| login::codex_api_key_auth(api_key))
+    }
+
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+        login::codex_auth_replaces(fresh, stored, now)
+    }
+
+    fn codex_login_config(&self) -> Vec<u8> {
+        login::CODEX_FILE_STORE_CONFIG.as_bytes().to_vec()
+    }
+
     fn newest_claude_session(
         &self,
         sandbox_home: &Path,
@@ -314,6 +394,7 @@ impl HarnessPort for HarnessAdapter {
             harness,
             tail: tail::TranscriptTail::open(path, tail::DEFAULT_MAX_LINE_BYTES).map_err(io)?,
             since: LinesSince::new(since),
+            // Codex keeps no sub-agent transcripts beside its rollout.
             subagents: SubagentTails::new(path, since),
             acc: UsageAccumulator::new(),
             limits: WorkflowLimits::default(),
@@ -336,13 +417,22 @@ impl HarnessPort for HarnessAdapter {
         if !paths::valid_session_id(session_id) {
             return Ok(None);
         }
-        let path = self.claude_transcript(sandbox_home, worktree, session_id);
         let since = match from {
             WatchFrom::Start => None,
             WatchFrom::Since(at) => Some(at),
         };
         let counted = match harness {
-            Harness::ClaudeCode => recount::count_run(&path, since, until).map_err(io)?,
+            Harness::ClaudeCode => {
+                let path = self.claude_transcript(sandbox_home, worktree, session_id);
+                recount::count_run(&path, since, until).map_err(io)?
+            }
+            Harness::Codex => {
+                let sessions = codex_sessions_of(sandbox_home);
+                match paths::find_codex_rollout(&sessions, session_id).map_err(io)? {
+                    Some(path) => recount::count_codex_run(&path, since, until).map_err(io)?,
+                    None => None,
+                }
+            }
         };
         Ok(counted.map(|acc| snapshot(&acc)))
     }
@@ -350,6 +440,7 @@ impl HarnessPort for HarnessAdapter {
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         match harness {
             Harness::ClaudeCode => login::claude_setup_token_argv(),
+            Harness::Codex => login::codex_device_login_argv(),
         }
     }
 
@@ -380,6 +471,17 @@ impl HarnessPort for HarnessAdapter {
     }
 }
 
+/// The sandbox's shared Codex sessions directory, `<sandbox>/codex/sessions`, from its home
+/// `<sandbox>/home` (SPEC-503 CDX-003).
+#[must_use]
+pub fn codex_sessions_of(sandbox_home: &Path) -> PathBuf {
+    sandbox_home
+        .parent()
+        .unwrap_or(sandbox_home)
+        .join("codex")
+        .join("sessions")
+}
+
 /// A run's figures as the transcript's lines give them (SPEC-087).
 fn snapshot(acc: &UsageAccumulator) -> UsageSnapshot {
     UsageSnapshot {
@@ -407,7 +509,7 @@ struct Watch {
     tail: tail::TranscriptTail,
     /// The run's own lines of a resumed session's transcript (SPEC-087 MET-002).
     since: LinesSince,
-    /// Its sub-agents' transcripts: their tokens are the session's too (MET-004).
+    /// Its sub-agents' transcripts: their tokens are the session's too (MET-004). Claude Code only.
     subagents: SubagentTails,
     acc: UsageAccumulator,
     /// What the session's own thread and its workflows' agents last said of a usage limit.
@@ -751,6 +853,9 @@ impl TranscriptWatch for Watch {
                     }
                     claude::observe_versioned(&line)
                 }
+                // A rollout's `session_meta` names its Codex CLI, which is not a Claude Code
+                // version (SPEC-503).
+                Harness::Codex => (codex::observe_line(&line), None),
             };
             // Every record of the run's own thread names its Claude Code (SPEC-461 CCM-011).
             if let Some(version) = version {
@@ -816,7 +921,10 @@ impl TranscriptWatch for Watch {
                     Observed::AccessLost { message, at } => {
                         out.push(Observation::AccessLost { message, at });
                     }
-                    Observed::AssistantMessage { .. } | Observed::Malformed => {}
+                    Observed::RateLimits(usage) => out.push(Observation::RateLimits(usage)),
+                    Observed::AssistantMessage { .. }
+                    | Observed::TurnContext { .. }
+                    | Observed::Malformed => {}
                 }
             }
             for observation in &out[heard..] {
@@ -1467,6 +1575,8 @@ mod tests {
             worktree: PathBuf::from("/w"),
             sandbox_home: PathBuf::from("/h"),
             run_dir: PathBuf::from("/r"),
+            codex_home: None,
+            codex_program: None,
             model: None,
             effort: None,
             contained: false,
@@ -1549,6 +1659,8 @@ mod tests {
             contained: false,
             mcp: Vec::new(),
             credential: Secret("token".into()),
+            codex_home: None,
+            codex_program: None,
         })?;
         let settings = planned
             .plan
@@ -1595,6 +1707,59 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-503 CDX-003: without a hook, a Codex run's session is the first rollout of its
+    /// worktree since it started, never a later one (a `codex` the agent ran there), nor one of
+    /// another worktree.
+    #[test]
+    fn a_codex_session_is_the_first_rollout_of_the_worktree()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let sessions = dir.path().join("sessions");
+        let day = sessions.join("2026/11/09");
+        std::fs::create_dir_all(&day)?;
+        let meta = |id: &str, cwd: &str| {
+            format!(
+                "{{\"timestamp\":\"2026-11-09T10:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{cwd}\"}}}}\n"
+            )
+        };
+        let since = SystemTime::now() - Duration::from_secs(60);
+        // The run's own rollout started first but is written to last (newest modification).
+        for (name, id, cwd, age) in [
+            (
+                "rollout-2026-11-09T10-00-00-first.jsonl",
+                "first",
+                "/w/t1",
+                1,
+            ),
+            (
+                "rollout-2026-11-09T10-00-20-nested.jsonl",
+                "nested",
+                "/w/t1",
+                10,
+            ),
+            (
+                "rollout-2026-11-09T09-59-59-other.jsonl",
+                "other",
+                "/w/t2",
+                5,
+            ),
+        ] {
+            let path = day.join(name);
+            std::fs::write(&path, meta(id, cwd))?;
+            std::fs::File::options()
+                .write(true)
+                .open(&path)?
+                .set_modified(SystemTime::now() - Duration::from_secs(age))?;
+        }
+        let adapter = HarnessAdapter::new(PathBuf::from("/bin/yulius"), "http://127.0.0.1:1");
+        let since_ts = Timestamp(i64::try_from(
+            since.duration_since(UNIX_EPOCH)?.as_millis(),
+        )?);
+        let found = adapter.discover_codex_session(&sessions, Path::new("/w/t1"), since_ts)?;
+        assert_eq!(found.map(|(id, _)| id).as_deref(), Some("first"));
+        Ok(())
+    }
+
     /// SPEC-210 CON-001: a task run and a Superagent both start with their config dir's user
     /// settings defaulted to the Concise output style.
     #[test]
@@ -1622,6 +1787,8 @@ mod tests {
             contained: false,
             mcp: Vec::new(),
             credential: Secret("token".into()),
+            codex_home: None,
+            codex_program: None,
         })?;
         assert_eq!(style(&home.join(".claude"))?, "Concise");
         let config = dir.path().join("cockpit");

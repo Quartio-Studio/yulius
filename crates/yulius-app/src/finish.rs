@@ -234,6 +234,7 @@ impl TranscriptFacts {
             }
             Observation::Queue(change, at) => self.queue.record(*change, *at),
             Observation::Session { .. }
+            | Observation::RateLimits(_)
             | Observation::CompactFailed
             | Observation::WorkflowLaunched { .. }
             | Observation::SubagentAnswered { .. }
